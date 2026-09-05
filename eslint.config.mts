@@ -13,6 +13,8 @@ export default defineConfig(
 		'package.json',
 		'package-lock.json',
 		'tsconfig.json',
+		// Test double for the herdr binary: plain node script, not plugin code.
+		'tests/fixtures/*.mjs',
 	]),
 	{
 		languageOptions: {
