@@ -3,6 +3,7 @@ import { DEFAULT_SETTINGS, HerdrSettings, HerdrSettingTab } from './settings';
 import { discoverHerdr, type DiscoveryResult } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
+import { SshTunnel } from './herdr/ssh';
 import { GhosttyWebRenderer } from './views/renderer/ghosttyWeb';
 
 /** Colour ramp, bold/underline and a box drawing line; enough to eyeball the renderer. */
@@ -21,6 +22,8 @@ export default class HerdrPlugin extends Plugin {
 	/** Null until the herdr binary and socket have been discovered. */
 	client: HerdrClient | null = null;
 	scope: WorkspaceScope | null = null;
+	/** Non-null only while a remote profile is enabled (PRD S5). */
+	tunnel: SshTunnel | null = null;
 
 	private discovery: DiscoveryResult | null = null;
 	private mismatch: ProtocolMismatch | null = null;
@@ -50,6 +53,11 @@ export default class HerdrPlugin extends Plugin {
 		this.client?.dispose();
 		this.client = null;
 		this.scope = null;
+		// `stop()` is async (SIGTERM, then SIGKILL, then the socket file) but
+		// `onunload` is not; the tunnel owns its own teardown from here.
+		const tunnel = this.tunnel;
+		this.tunnel = null;
+		void tunnel?.stop();
 	}
 
 	async loadSettings() {
@@ -96,24 +104,39 @@ export default class HerdrPlugin extends Plugin {
 			socketOverride: this.settings.socketPath,
 		});
 		this.discovery = discovery;
-		if (!discovery.binary) {
+		const remoteProfile = this.settings.remote;
+		// A remote profile needs `ssh`, not a local herdr, so a missing local
+		// binary only stops the local path.
+		if (!discovery.binary && !remoteProfile.enabled) {
 			new Notice(`Herdr: ${discovery.error ?? 'herdr binary not found'}`);
 			return;
 		}
 
+		// Remote: the API socket is the local end of an SSH forward (PRD S5).
+		// Terminals do not use it; they run the CLI over `ssh -T` (PRD S17).
+		let socketPath = discovery.socketPath;
+		if (remoteProfile.enabled) {
+			try {
+				socketPath = await this.startTunnel();
+			} catch (error) {
+				this.connectError = (error as Error).message;
+				new Notice(`Herdr: ${this.connectError}`);
+				return;
+			}
+		}
+
 		const client = new HerdrClient({
-			socketPath: discovery.socketPath,
+			socketPath,
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
 			},
 		});
 		this.client = client;
 
-		const remote = this.settings.remote;
 		const scope = new WorkspaceScope({
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),
-			remoteVaultPath: remote.enabled ? remote.remoteVaultPath : undefined,
+			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
 		});
 		this.scope = scope;
 
@@ -129,6 +152,30 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Opens the SSH forward for the remote profile and returns its local socket.
+	 * The client is pointed at that socket instead of the discovered one; the
+	 * tunnel keeps itself alive with backoff after a drop.
+	 */
+	private async startTunnel(): Promise<string> {
+		const remote = this.settings.remote;
+		const host = remote.host.trim();
+		if (host.length === 0) {
+			throw new Error('the remote profile has no SSH host');
+		}
+		const tunnel = new SshTunnel({
+			host,
+			remoteSocketPath: remote.remoteSocketPath.trim(),
+			onStatus: (status) => {
+				// The local path never changes, so this only matters after a
+				// reconnect: the client picks the fresh socket up on the next call.
+				if (status.state === 'connected') this.client?.setSocketPath(status.localSocketPath);
+			},
+		});
+		this.tunnel = tunnel;
+		return await tunnel.start();
+	}
+
 	/** Connection status shown at the top of the settings tab (PRD M1-M3, M6). */
 	private renderStatus(el: HTMLElement): void {
 		const line = (text: string, warning = false): void => {
@@ -139,19 +186,35 @@ export default class HerdrPlugin extends Plugin {
 			line('Not connected yet.');
 			return;
 		}
-		if (!discovery.binary) {
-			line(discovery.error ?? 'Herdr binary not found.', true);
-			return;
+		const remote = this.settings.remote;
+		const tunnel = this.tunnel;
+		if (tunnel) {
+			line(tunnel.statusText, tunnel.status.state !== 'connected');
+		} else if (remote.enabled) {
+			line('SSH tunnel: not started.', true);
 		}
-		line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
+		if (discovery.binary) {
+			line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
+		} else {
+			// A remote profile only needs `ssh` locally, so this is not fatal there.
+			line(discovery.error ?? 'Herdr binary not found.', !remote.enabled);
+			if (!remote.enabled) return;
+		}
+		if (remote.enabled) {
+			line(`Remote terminals: ssh -T ${remote.host} ${remote.remoteBinary}`);
+		}
 		line(`Socket: ${this.client?.socket ?? discovery.socketPath}`);
+		// `discovery.status` describes the *local* server. With a remote profile
+		// that is the wrong machine, so the tunnel line above stands in for it.
 		const status = discovery.status;
-		line(
-			status
-				? `Server: ${status.status}, version ${status.version ?? 'unknown'}, protocol ${status.protocol ?? 'unknown'}`
-				: `Server: not reachable (${discovery.error ?? 'unknown error'})`,
-			!status,
-		);
+		if (!remote.enabled) {
+			line(
+				status
+					? `Server: ${status.status}, version ${status.version ?? 'unknown'}, protocol ${status.protocol ?? 'unknown'}`
+					: `Server: not reachable (${discovery.error ?? 'unknown error'})`,
+				!status,
+			);
+		}
 		const mismatch = this.mismatch ?? this.client?.lastMismatch ?? null;
 		if (mismatch) {
 			line(
