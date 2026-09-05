@@ -8,6 +8,10 @@ export default defineConfig(
 		'dist',
 		'esbuild.config.mjs',
 		'version-bump.mjs',
+		// Build-time script, not plugin code, and not in tsconfig's project.
+		'scripts/*.mjs',
+		// Generated from `herdr api schema --json`; `npm run gen:types` owns it.
+		'src/herdr/types.gen.ts',
 		'versions.json',
 		'main.js',
 		'package.json',

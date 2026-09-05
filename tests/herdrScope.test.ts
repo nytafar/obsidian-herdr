@@ -1,0 +1,396 @@
+import { describe, expect, it } from 'vitest';
+import type { HerdrEvent } from '../src/herdr/client';
+import {
+	WorkspaceScope,
+	isUnder,
+	relevantDiff,
+	resolveWorkspace,
+	stripTitleSpinner,
+	toPaneState,
+	type PaneState,
+} from '../src/herdr/scope';
+import type { PaneInfo, WorkspaceInfo } from '../src/herdr/types.gen';
+
+const VAULT = '/Users/lasse/Vaults/hvelv';
+
+function workspace(id: string, label: string): WorkspaceInfo {
+	return {
+		workspace_id: id,
+		number: Number(id.replace(/\D/g, '')) || 1,
+		label,
+		focused: false,
+		pane_count: 1,
+		tab_count: 1,
+		active_tab_id: `${id}:t1`,
+		agent_status: 'idle',
+	};
+}
+
+function pane(overrides: Partial<PaneInfo> & { pane_id: string }): PaneInfo {
+	const id = overrides.pane_id;
+	const workspaceId = overrides.workspace_id ?? id.split(':')[0] ?? 'w4';
+	return {
+		terminal_id: `term_${id}`,
+		workspace_id: workspaceId,
+		tab_id: `${workspaceId}:t1`,
+		focused: false,
+		agent_status: 'idle',
+		revision: 1,
+		agent: 'claude',
+		cwd: VAULT,
+		...overrides,
+		pane_id: id,
+	};
+}
+
+function event(name: string, data: Record<string, unknown>): HerdrEvent {
+	return { event: name, data: { type: name, ...data } };
+}
+
+interface Recorded {
+	added: PaneState[];
+	removed: PaneState[];
+	changed: { paneId: string; prev: PaneState; next: PaneState }[];
+	resolved: { workspaceId: string | null; method: string }[];
+}
+
+function record(scope: WorkspaceScope): Recorded {
+	const rec: Recorded = { added: [], removed: [], changed: [], resolved: [] };
+	scope.on('added', (state) => rec.added.push(state));
+	scope.on('removed', (state) => rec.removed.push(state));
+	scope.on('changed', (paneId, prev, next) => rec.changed.push({ paneId, prev, next }));
+	scope.on('workspaceResolved', (workspaceId, method) => rec.resolved.push({ workspaceId, method }));
+	return rec;
+}
+
+describe('isUnder', () => {
+	it('matches the root and paths below it, not a sibling with the same prefix', () => {
+		expect(isUnder(VAULT, VAULT)).toBe(true);
+		expect(isUnder(`${VAULT}/notes`, `${VAULT}/`)).toBe(true);
+		expect(isUnder(`${VAULT}-old/notes`, VAULT)).toBe(false);
+		expect(isUnder('', VAULT)).toBe(false);
+	});
+});
+
+describe('toPaneState (M7)', () => {
+	it('drops panes without an agent and prefers the stripped title', () => {
+		expect(toPaneState(pane({ pane_id: 'w4:p1', agent: null }))).toBeNull();
+		const state = toPaneState(
+			pane({
+				pane_id: 'w4:p1',
+				terminal_title: '✳ Document skills',
+				terminal_title_stripped: 'Document skills',
+			}),
+		);
+		expect(state).toMatchObject({ paneId: 'w4:p1', agent: 'claude', title: 'Document skills' });
+	});
+
+	it('falls back to foreground_cwd when cwd is absent', () => {
+		expect(
+			toPaneState(pane({ pane_id: 'w4:p1', cwd: null, foreground_cwd: '/tmp/x' }))?.cwd,
+		).toBe('/tmp/x');
+	});
+});
+
+describe('stripTitleSpinner (N4)', () => {
+	it('drops the leading spinner glyph herdr leaves in terminal_title_stripped', () => {
+		// Captured live: these two alternate about four times a second.
+		expect(stripTitleSpinner('◐ Obsidian-herdr repository')).toBe('Obsidian-herdr repository');
+		expect(stripTitleSpinner('◑ Obsidian-herdr repository')).toBe('Obsidian-herdr repository');
+		expect(stripTitleSpinner('✳ Document dormant skills')).toBe('Document dormant skills');
+	});
+
+	it('leaves an ordinary title alone and never empties a symbol-only title', () => {
+		expect(stripTitleSpinner('Spesialkaffe rapport')).toBe('Spesialkaffe rapport');
+		expect(stripTitleSpinner('…')).toBe('…');
+		expect(stripTitleSpinner('')).toBe('');
+	});
+});
+
+describe('resolveWorkspace (M6)', () => {
+	const workspaces = [workspace('w1', 'other'), workspace('w4', 'hvelv')];
+	const panes = [pane({ pane_id: 'w1:p1', cwd: '/tmp' }), pane({ pane_id: 'w4:p1' })];
+
+	it('uses the settings id first, without needing it in the list', () => {
+		expect(resolveWorkspace(workspaces, panes, { workspaceId: 'wZ', vaultPath: VAULT })).toEqual({
+			workspaceId: 'wZ',
+			method: 'setting',
+		});
+	});
+
+	it('then the label equal to the vault folder name', () => {
+		expect(resolveWorkspace(workspaces, panes, { vaultPath: VAULT })).toEqual({
+			workspaceId: 'w4',
+			method: 'label',
+		});
+	});
+
+	it('matches a label case-insensitively as a fallback', () => {
+		expect(
+			resolveWorkspace([workspace('w7', 'Hvelv')], panes, { vaultPath: VAULT }),
+		).toEqual({ workspaceId: 'w7', method: 'label' });
+	});
+
+	it('then the workspace with the most panes under the vault path', () => {
+		const byCwd = [
+			pane({ pane_id: 'w1:p1', cwd: '/tmp' }),
+			pane({ pane_id: 'w5:p1', workspace_id: 'w5', cwd: `${VAULT}/notes` }),
+			pane({ pane_id: 'w5:p2', workspace_id: 'w5', cwd: VAULT }),
+			pane({ pane_id: 'w6:p1', workspace_id: 'w6', cwd: `${VAULT}/x` }),
+		];
+		expect(
+			resolveWorkspace([workspace('w1', 'other')], byCwd, { vaultPath: VAULT }),
+		).toEqual({ workspaceId: 'w5', method: 'cwd' });
+	});
+
+	it('uses the remote vault path for the cwd rule when a remote profile is on', () => {
+		const remotePanes = [pane({ pane_id: 'w9:p1', workspace_id: 'w9', cwd: '/home/lasse/hvelv/n' })];
+		expect(
+			resolveWorkspace([], remotePanes, {
+				vaultPath: VAULT,
+				vaultName: 'not-a-label',
+				remoteVaultPath: '/home/lasse/hvelv',
+			}),
+		).toEqual({ workspaceId: 'w9', method: 'cwd' });
+	});
+
+	it('resolves to nothing when no rule matches', () => {
+		expect(
+			resolveWorkspace([workspace('w1', 'other')], [pane({ pane_id: 'w1:p1', cwd: '/tmp' })], {
+				vaultPath: VAULT,
+			}),
+		).toEqual({ workspaceId: null, method: 'none' });
+	});
+});
+
+describe('WorkspaceScope.prime', () => {
+	it('keeps only agent panes of the scoped workspace (M6, M7)', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		const rec = record(scope);
+		scope.prime(
+			[workspace('w4', 'hvelv'), workspace('w1', 'other')],
+			[
+				pane({ pane_id: 'w4:p1' }),
+				pane({ pane_id: 'w4:p2', agent: null }),
+				pane({ pane_id: 'w1:p1', workspace_id: 'w1' }),
+			],
+		);
+		expect(scope.workspaceId).toBe('w4');
+		expect(scope.method).toBe('label');
+		expect(scope.workspaceLabel).toBe('hvelv');
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(rec.resolved).toEqual([{ workspaceId: 'w4', method: 'label' }]);
+	});
+
+	it('re-priming after a reconnect only reports real differences', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		const workspaces = [workspace('w4', 'hvelv')];
+		scope.prime(workspaces, [pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2' })]);
+		const rec = record(scope);
+		scope.prime(workspaces, [
+			pane({ pane_id: 'w4:p1', revision: 99 }),
+			pane({ pane_id: 'w4:p3' }),
+		]);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['w4:p3']);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p2']);
+		expect(rec.changed).toHaveLength(0);
+		expect(rec.resolved).toHaveLength(0);
+	});
+
+	it('re-resolves when settings change', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		const rec = record(scope);
+		scope.configure({ workspaceId: 'w9' });
+		expect(scope.workspaceId).toBe('w9');
+		expect(rec.resolved).toEqual([{ workspaceId: 'w9', method: 'setting' }]);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
+	});
+});
+
+describe('WorkspaceScope.ingest', () => {
+	function primed(): { scope: WorkspaceScope; rec: Recorded } {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		return { scope, rec: record(scope) };
+	}
+
+	it('ignores pane_updated that only moves revision or the title spinner (N4)', () => {
+		const { scope, rec } = primed();
+		// Establish the title once; after that only the spinner and revision move.
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', terminal_title_stripped: '◐ Same work' }),
+			}),
+		);
+		rec.changed.length = 0;
+		for (let revision = 2; revision < 40; revision += 1) {
+			scope.ingest(
+				event('pane_updated', {
+					pane: pane({
+						pane_id: 'w4:p1',
+						revision,
+						terminal_title_stripped: `${revision % 2 === 0 ? '◐' : '◑'} Same work`,
+					}),
+				}),
+			);
+		}
+		expect(rec.changed).toHaveLength(0);
+		expect(scope.get('w4:p1')?.agentStatus).toBe('idle');
+	});
+
+	it('emits changed on an agent_status transition with prev and next', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'blocked' }) }),
+		);
+		expect(rec.changed).toHaveLength(1);
+		expect(rec.changed[0]?.prev.agentStatus).toBe('idle');
+		expect(rec.changed[0]?.next.agentStatus).toBe('blocked');
+		expect(scope.get('w4:p1')?.agentStatus).toBe('blocked');
+	});
+
+	it('emits changed on title, label, tab and cwd changes', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', terminal_title_stripped: 'Refactor scope' }),
+			}),
+		);
+		scope.ingest(event('pane_updated', { pane: pane({ pane_id: 'w4:p1', label: '? hvelv' }) }));
+		scope.ingest(event('pane_moved', { pane: pane({ pane_id: 'w4:p1', tab_id: 'w4:t2' }) }));
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', cwd: `${VAULT}/notes` }) }),
+		);
+		expect(rec.changed.map((entry) => relevantDiff(entry.prev, entry.next))).toEqual([
+			['title'],
+			['title', 'label'],
+			['label', 'tabId'],
+			['tabId', 'cwd'],
+		]);
+	});
+
+	it('adds a new agent pane and ignores a new shell pane (M7)', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p2' }) }));
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p3', agent: null }) }));
+		expect(rec.added.map((state) => state.paneId)).toEqual(['w4:p2']);
+		expect(scope.size).toBe(2);
+	});
+
+	it('ignores panes of other workspaces entirely (M6)', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_created', { pane: pane({ pane_id: 'wT:p8', workspace_id: 'wT' }) }),
+		);
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'wT:p8', workspace_id: 'wT', agent_status: 'blocked' }),
+			}),
+		);
+		expect(rec.added).toHaveLength(0);
+		expect(rec.changed).toHaveLength(0);
+		expect(scope.size).toBe(1);
+	});
+
+	it('removes a pane on pane_closed and pane_exited', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('pane_closed', { pane_id: 'w4:p1', workspace_id: 'w4' }));
+		scope.ingest(event('pane_closed', { pane_id: 'w4:p1', workspace_id: 'w4' }));
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(scope.size).toBe(0);
+	});
+
+	it('removes a pane whose agent was released, and one moved out of scope', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p2' }) }));
+		scope.ingest(
+			event('pane_agent_detected', { pane_id: 'w4:p1', workspace_id: 'w4', agent: null, released: true }),
+		);
+		scope.ingest(
+			event('pane_moved', {
+				pane: pane({ pane_id: 'w4:p2', workspace_id: 'wT' }),
+				previous_pane_id: 'w4:p2',
+				previous_workspace_id: 'w4',
+				previous_tab_id: 'w4:t1',
+			}),
+		);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1', 'w4:p2']);
+		expect(scope.size).toBe(0);
+	});
+
+	it('tracks focus, which pane_focused reports without a PaneInfo', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p2', focused: true }) }));
+		rec.changed.length = 0;
+		scope.ingest(event('pane_focused', { pane_id: 'w4:p1', workspace_id: 'w4' }));
+		expect(rec.changed.map((entry) => [entry.paneId, entry.next.focused])).toEqual([
+			['w4:p1', true],
+			['w4:p2', false],
+		]);
+	});
+
+	it('resolves later when a workspace is renamed to the vault name', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('w4', 'scratch')], [pane({ pane_id: 'w4:p1', cwd: '/tmp' })]);
+		expect(scope.workspaceId).toBeNull();
+		const rec = record(scope);
+		scope.ingest(event('workspace_renamed', { workspace_id: 'w4', label: 'hvelv' }));
+		expect(rec.resolved).toEqual([{ workspaceId: 'w4', method: 'label' }]);
+	});
+
+	it('resolves when a matching workspace is created later', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([], []);
+		const rec = record(scope);
+		scope.ingest(event('workspace_created', { workspace: workspace('w4', 'hvelv') }));
+		expect(rec.resolved).toEqual([{ workspaceId: 'w4', method: 'label' }]);
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p1' }) }));
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+	});
+
+	it('empties the scope when the workspace is closed', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('workspace_closed', { workspace_id: 'w4' }));
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(rec.resolved).toEqual([{ workspaceId: null, method: 'none' }]);
+		expect(scope.workspaceId).toBeNull();
+	});
+
+	it('ignores malformed and unknown events', () => {
+		const { scope, rec } = primed();
+		scope.ingest(event('pane_updated', { pane: null }));
+		scope.ingest(event('pane_updated', {}));
+		scope.ingest(event('layout_updated', { layout: {} }));
+		scope.ingest({ event: 'something_new', data: {} });
+		expect(rec.changed).toHaveLength(0);
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.size).toBe(1);
+	});
+
+	it('keeps delivering to other subscribers when one throws', () => {
+		const { scope } = primed();
+		const seen: string[] = [];
+		scope.on('changed', () => {
+			throw new Error('subscriber blew up');
+		});
+		scope.on('changed', (paneId) => seen.push(paneId));
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'done' }) }),
+		);
+		expect(seen).toEqual(['w4:p1']);
+	});
+
+	it('stops delivering after unsubscribe', () => {
+		const { scope } = primed();
+		const seen: string[] = [];
+		const off = scope.on('changed', (paneId) => seen.push(paneId));
+		off();
+		off();
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'done' }) }),
+		);
+		expect(seen).toEqual([]);
+	});
+});

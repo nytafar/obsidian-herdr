@@ -30,7 +30,10 @@ const context = await esbuild.context({
 		'@lezer/common',
 		'@lezer/highlight',
 		'@lezer/lr',
+		// Both spellings: the herdr client and the terminal bridge import
+		// `node:net`, `node:child_process` and friends with the prefix.
 		...builtinModules,
+		...builtinModules.map((name) => `node:${name}`),
 	],
 	// PRD N5: the release must be main.js/manifest.json/styles.css only.
 	// ghostty-web 0.4.0 already carries ghostty-vt.wasm as an inline
