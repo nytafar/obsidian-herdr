@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+	"id": "herdr",
+	"name": "Herdr",
+	"version": "0.1.0",
+	"minAppVersion": "1.7.2",
+	"description": "See, reach and start your herdr agents from inside Obsidian: live agent list, notifications, embedded pane terminals, new tabs at a note's folder.",
+	"author": "Lasse",
+	"authorUrl": "https://github.com/nytafar",
+	"isDesktopOnly": true
 }
