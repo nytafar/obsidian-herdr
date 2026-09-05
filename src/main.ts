@@ -8,6 +8,7 @@ import {
 	TAbstractFile,
 	TFile,
 	TFolder,
+	type WorkspaceLeaf,
 } from 'obsidian';
 import { DEFAULT_SETTINGS, HerdrSettings, HerdrSettingTab } from './settings';
 import { discoverHerdr, type DiscoveryResult } from './herdr/binary';
@@ -18,6 +19,7 @@ import { GhosttyWebRenderer } from './views/renderer/ghosttyWeb';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
+import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 
 /** Colour ramp, bold/underline and a box drawing line; enough to eyeball the renderer. */
 const SAMPLE_ANSI =
@@ -69,6 +71,7 @@ export default class HerdrPlugin extends Plugin {
 		);
 
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
+		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerCommands();
 		this.registerStatusBar();
 
@@ -145,22 +148,50 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Opens the terminal view for a herdr pane.
-	 *
-	 * Stub until T9 (PRD M13) replaces the body; the list view and the "start
-	 * agent here" action already call it, so only this method changes then.
+	 * Path of the local herdr binary, empty until discovery ran or when it failed.
+	 * The terminal view turns this into a spawn argv (`terminalArgvPrefix`).
+	 */
+	herdrBinaryPath(): string {
+		return this.discovery?.binary?.path ?? this.settings.herdrBinary.trim();
+	}
+
+	/**
+	 * Opens the terminal view for a herdr pane as a main-area tab (PRD M13).
+	 * One tab per pane: an existing leaf for the same pane is revealed instead of
+	 * a second bridge process being spawned for it.
 	 */
 	async openTerminal(paneId: string): Promise<void> {
-		new Notice(`Herdr: terminal view arrives in T9 (pane ${paneId}).`);
+		const workspace = this.app.workspace;
+		let leaf = this.terminalLeaf(paneId);
+		if (!leaf) {
+			leaf = workspace.getLeaf('tab');
+			await leaf.setViewState({
+				type: TERMINAL_VIEW_TYPE,
+				active: true,
+				state: { paneId, mode: this.settings.defaultAttachMode },
+			});
+		}
+		await workspace.revealLeaf(leaf);
 	}
 
 	/**
 	 * True when a terminal view for this pane is open, which mutes notifications
-	 * for it (PRD M12). Stub until T9; it will become a `getLeavesOfType` lookup.
+	 * for it (PRD M12).
 	 */
 	isTerminalOpen(paneId: string): boolean {
-		void paneId;
-		return false;
+		return this.terminalLeaf(paneId) !== null;
+	}
+
+	/**
+	 * The leaf showing this pane's terminal, if any. The persisted view state is
+	 * the lookup, not `leaf.view`: a background leaf may still be deferred, and
+	 * the guidelines forbid holding view references (PRD N1).
+	 */
+	private terminalLeaf(paneId: string): WorkspaceLeaf | null {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			if (stateMatchesPane(leaf.getViewState().state, paneId)) return leaf;
+		}
+		return null;
 	}
 
 	/** Everything `HerdrActions` needs from the plugin (PRD M19, M20). */
