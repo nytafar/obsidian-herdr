@@ -2,7 +2,13 @@
 
 `npm test` runs vitest (`tests/**/*.test.ts`) in a plain node environment.
 
-Only DOM-free logic is unit tested. The terminal renderer
+Only DOM-free logic is unit tested: the pure helpers of the agent list
+(`groupByTab`, `relativeCwd`, `countStatuses`), the notification decision path
+(`src/notify.ts`, with an injected clock) and the folder actions
+(`src/actions.ts`, against a fake client — nothing here talks to a live herdr).
+`obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
+aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
+`obsidian.d.ts`. The terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
 (`resolveFont`, `computeFit`, `cssVar`, `parsePx`).
@@ -47,3 +53,19 @@ connection through it then dies silently, because the tilde is not expanded —
 `SshTunnel` asks the remote `$HOME` instead. And the forwarded API socket gives
 no terminals, since the bridge speaks to herdr's separate client socket; remote
 terminals go through `ssh -T host <remote herdr> terminal session …`.
+## Smoking the agent list, actions and notifications inside Obsidian
+
+The unit tests cover the decisions, not the wiring. Inside the dev vault:
+
+1. Command palette → **Herdr: Show herdr agents** opens the list in the left
+   sidebar (first time it is created with `getLeftLeaf(true)`; after that it is
+   revealed wherever the user dragged it).
+2. Rows group by herdr tab and show a status dot, the agent name, the stripped
+   terminal title and the cwd relative to the vault. Clicking a row focuses that
+   pane in herdr; the terminal button shows the T9 placeholder notice.
+3. The status bar shows `N blocked · M done` and clicking it reveals the list.
+4. Right-click a folder or a note in the file explorer → the three Herdr items.
+   The same three exist in the command palette for the active note's folder.
+5. Notifications: let an agent finish or block while Obsidian is in the
+   background; expect one Notice and one system notification, and nothing more
+   for the next two seconds.
