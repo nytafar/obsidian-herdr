@@ -158,3 +158,48 @@
 .herdr-status-bar .herdr-status-bar-done {
 	color: var(--color-green);
 }
+
+/* Terminal view ------------------------------------------------------------ */
+
+.herdr-terminal-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+/* The renderer measures this box, so it must fill the leaf and never scroll. */
+.herdr-terminal-host {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	overflow: hidden;
+	background-color: var(--background-primary);
+}
+
+.herdr-terminal-status {
+	flex: 0 0 auto;
+	display: flex;
+	gap: var(--size-4-2);
+	align-items: baseline;
+	padding: var(--size-2-1) var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-terminal-status.mod-warning .herdr-terminal-status-text {
+	color: var(--text-warning);
+}
+
+.herdr-terminal-status-detail {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
