@@ -27,3 +27,23 @@ tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
    `grep -c 'data:application/wasm;base64' main.js && ls main.js manifest.json styles.css`.
    If `Ghostty.load()` ever falls through to `./ghostty-vt.wasm`, the devtools
    network tab shows a failed request for it — that means the embedding broke.
+
+## Checking the remote profile against `xl` (T10, PRD S5/S17)
+
+The SSH tunnel unit tests inject the spawn, the socket probe and the unlink, so
+`npm test` never runs `ssh`. The live check is manual and read-only:
+
+1. `ssh lasse@xl /home/lasse/.local/bin/herdr status server --json` — proves the
+   remote server is up and prints its socket (`/home/lasse/.config/herdr/herdr.sock`).
+2. Drive `SshTunnel` from a scratch script (`tsx`), or by hand:
+   `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L /tmp/herdr-<hash>.sock:/home/lasse/.config/herdr/herdr.sock lasse@xl`
+   then `printf '{"id":"1","method":"ping","params":{}}\n' | nc -U /tmp/herdr-<hash>.sock`
+   and the same with `workspace.list`. Both answer through the forward.
+3. Nothing is created on the remote host: no panes, no tabs, no agents, and
+   never `herdr update`.
+
+Two facts worth keeping: `ssh -L local:~/x` binds the local socket but every
+connection through it then dies silently, because the tilde is not expanded —
+`SshTunnel` asks the remote `$HOME` instead. And the forwarded API socket gives
+no terminals, since the bridge speaks to herdr's separate client socket; remote
+terminals go through `ssh -T host <remote herdr> terminal session …`.
