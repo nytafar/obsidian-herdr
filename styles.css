@@ -1,8 +1,10 @@
-/*
+/* Styles for the Herdr plugin. Kept minimal; views add their own. */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.herdr-settings-status {
+	margin-bottom: var(--size-4-4);
+	color: var(--text-muted);
+}
 
-If your plugin does not need CSS, delete this file.
-
-*/
+.herdr-status-text {
+	margin: 0;
+}
