@@ -32,6 +32,17 @@ const context = await esbuild.context({
 		'@lezer/lr',
 		...builtinModules,
 	],
+	// PRD N5: the release must be main.js/manifest.json/styles.css only.
+	// ghostty-web 0.4.0 already carries ghostty-vt.wasm as an inline
+	// `data:application/wasm;base64,…` literal and fetches that data URL, so no
+	// wasm file is emitted today (notes/ghostty-web.md). This loader entry keeps
+	// that true if a future ghostty-web imports the .wasm asset instead: esbuild
+	// would inline it as a data URL rather than write a sibling file. If the
+	// bundle ever stops containing `data:application/wasm;base64`, the wasm is no
+	// longer embedded — fail the release rather than shipping a loose file.
+	loader: {
+		'.wasm': 'dataurl',
+	},
 	format: 'cjs',
 	target: 'es2021',
 	logLevel: 'info',
