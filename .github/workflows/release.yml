@@ -1,17 +1,19 @@
 name: Release Obsidian plugin
 
+# Tag a release with the manifest version prefixed by `v`, e.g. `v0.1.0`.
+# BRAT and the community plugin list both read `manifest.json` from the release,
+# so the three shipped files are attached as plain assets (PRD N5).
 on:
     push:
         tags:
-            - '*'
+            - 'v*'
+
+permissions:
+    contents: write
 
 jobs:
-    build:
+    release:
         runs-on: ubuntu-latest
-        permissions:
-            contents: write
-            id-token: write
-            attestations: write
         steps:
             - uses: actions/checkout@v6
 
@@ -21,30 +23,46 @@ jobs:
                   node-version: 24
                   cache: 'npm'
 
-            - name: Build plugin
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Test
+              run: npm test
+
+            - name: Build
+              run: npm run build
+
+            - name: Check the tag matches manifest.json
               run: |
-                  npm ci
-                  npm run build
+                  tag="${GITHUB_REF#refs/tags/}"
+                  version="$(node -p "require('./manifest.json').version")"
+                  if [ "$tag" != "v$version" ]; then
+                    echo "tag $tag does not match manifest version $version" >&2
+                    exit 1
+                  fi
+                  # versions.json must map this version to a minAppVersion, or
+                  # Obsidian cannot decide whether the release is installable.
+                  node -e "
+                    const versions = require('./versions.json');
+                    const manifest = require('./manifest.json');
+                    if (versions[manifest.version] !== manifest.minAppVersion) {
+                      console.error('versions.json is missing or disagrees for ' + manifest.version);
+                      process.exit(1);
+                    }
+                  "
 
-            - name: Check for optional styles
-              id: styles
+            - name: Check the bundle ships only the three files
               run: |
-                  [ -f styles.css ] && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+                  test -f main.js
+                  test -f manifest.json
+                  test -f styles.css
 
-            - name: Attest build provenance
-              uses: actions/attest@v4
-              with:
-                  subject-path: |
-                      main.js
-                      ${{ steps.styles.outputs.exists == 'true' && 'styles.css' || '' }}
-
-            - name: Create release
+            - name: Create the GitHub release
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   tag="${GITHUB_REF#refs/tags/}"
-
                   gh release create "$tag" \
-                    --title="$tag" \
-                    --draft \
-                    main.js manifest.json ${{ steps.styles.outputs.exists == 'true' && 'styles.css' || '' }}
+                    --title "$tag" \
+                    --generate-notes \
+                    main.js manifest.json styles.css
