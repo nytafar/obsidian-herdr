@@ -20,9 +20,6 @@
  * node so the tests can drive it against a fake NDJSON server on a temp socket.
  */
 
-/* eslint-disable obsidianmd/prefer-window-timers -- process-side module: it also
-   runs under plain node in tests, where there is no `window`. */
-
 import { connect, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import {
@@ -32,6 +29,15 @@ import {
 	type Subscription,
 	type WorkspaceInfo,
 } from './types.gen';
+
+/**
+ * Timers taken from `globalThis`, bound: this is a process-side module that also
+ * runs under plain node in the unit tests, where there is no `window`. Bound
+ * because a DOM `setTimeout` called detached from its global throws
+ * "Illegal invocation". Same shape as `src/herdr/ssh.ts`.
+ */
+const setTimer = globalThis.setTimeout.bind(globalThis);
+const clearTimer = globalThis.clearTimeout.bind(globalThis);
 
 /** Request line cap on the server side; keep well under it. */
 export const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -262,7 +268,7 @@ export class HerdrClient {
 
 	private stream: Socket | null = null;
 	private streamState: EventStreamState = 'idle';
-	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private reconnectTimer: ReturnType<typeof setTimer> | null = null;
 	private currentBackoff: number;
 	private subscriptions: Subscription[] = [];
 	private readonly handlers = new Map<string, Set<EventHandler | MetaHandler>>();
@@ -326,7 +332,7 @@ export class HerdrClient {
 			const splitter = new LineSplitter(MAX_LINE_BYTES);
 			let settled = false;
 
-			const timer = setTimeout(() => {
+			const timer = setTimer(() => {
 				finish(
 					new HerdrError(
 						CLIENT_ERROR_CODES.timeout,
@@ -339,7 +345,7 @@ export class HerdrClient {
 			function finish(error: Error | null, result?: T): void {
 				if (settled) return;
 				settled = true;
-				clearTimeout(timer);
+				clearTimer(timer);
 				socket.destroy();
 				if (error) reject(error);
 				else resolve(result as T);
@@ -566,7 +572,7 @@ export class HerdrClient {
 		this.streamState = 'reconnecting';
 		const delay = this.currentBackoff;
 		this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
-		this.reconnectTimer = setTimeout(() => {
+		this.reconnectTimer = setTimer(() => {
 			this.reconnectTimer = null;
 			this.openStream();
 		}, delay);
@@ -576,7 +582,7 @@ export class HerdrClient {
 
 	private closeStream(error: Error | null): void {
 		if (this.reconnectTimer) {
-			clearTimeout(this.reconnectTimer);
+			clearTimer(this.reconnectTimer);
 			this.reconnectTimer = null;
 		}
 		const socket = this.stream;

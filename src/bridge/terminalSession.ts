@@ -17,10 +17,16 @@
  * `['ssh', '-T', 'host', '/home/lasse/.local/bin/herdr']`.
  */
 
-/* eslint-disable obsidianmd/prefer-window-timers -- process-side module: it also
-   runs under plain node in tests, where there is no `window`. */
-
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+
+/**
+ * Timers taken from `globalThis`, bound: this is a process-side module that also
+ * runs under plain node in the unit tests, where there is no `window`. Bound
+ * because a DOM `setTimeout` called detached from its global throws
+ * "Illegal invocation". Same shape as `src/herdr/ssh.ts`.
+ */
+const setTimer = globalThis.setTimeout.bind(globalThis);
+const clearTimer = globalThis.clearTimeout.bind(globalThis);
 
 /** herdr caps a frame payload at 32 MiB; base64 inflates that by 4/3. */
 export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
@@ -182,7 +188,7 @@ export class TerminalSession {
 	private readonly listeners = new Map<string, Set<AnyListener>>();
 	private readonly stdoutSplitter = new LineSplitter();
 	private readonly stderrSplitter = new LineSplitter(1024 * 1024);
-	private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+	private readonly timers = new Set<ReturnType<typeof setTimer>>();
 	private readonly options: TerminalSessionOptions;
 	private started = false;
 	private exited = false;
@@ -489,17 +495,17 @@ export class TerminalSession {
 	}
 
 	private clearTimers(): void {
-		for (const timer of this.timers) clearTimeout(timer);
+		for (const timer of this.timers) clearTimer(timer);
 		this.timers.clear();
 	}
 
 	/** @internal used by raceTimeout so no timer outlives the session. */
-	trackTimer(timer: ReturnType<typeof setTimeout>): void {
+	trackTimer(timer: ReturnType<typeof setTimer>): void {
 		this.timers.add(timer);
 	}
 
 	/** @internal */
-	untrackTimer(timer: ReturnType<typeof setTimeout>): void {
+	untrackTimer(timer: ReturnType<typeof setTimer>): void {
 		this.timers.delete(timer);
 	}
 }
@@ -507,13 +513,13 @@ export class TerminalSession {
 /** Resolves true if `promise` settled within `ms`, false on timeout. */
 function raceTimeout(promise: Promise<void>, ms: number, session: TerminalSession): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
-		const timer = setTimeout(() => {
+		const timer = setTimer(() => {
 			session.untrackTimer(timer);
 			resolve(false);
 		}, ms);
 		session.trackTimer(timer);
 		void promise.then(() => {
-			clearTimeout(timer);
+			clearTimer(timer);
 			session.untrackTimer(timer);
 			resolve(true);
 		});
