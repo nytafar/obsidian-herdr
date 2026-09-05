@@ -30,7 +30,10 @@ const context = await esbuild.context({
 		'@lezer/common',
 		'@lezer/highlight',
 		'@lezer/lr',
+		// Both spellings: the herdr client and the terminal bridge import
+		// `node:net`, `node:child_process` and friends with the prefix.
 		...builtinModules,
+		...builtinModules.map((name) => `node:${name}`),
 	],
 	format: 'cjs',
 	target: 'es2021',
