@@ -30,8 +30,10 @@ function makeSession(
 		takeover: true,
 		cols: 80,
 		rows: 24,
-		releaseGraceMs: 150,
-		killGraceMs: 200,
+		// Generous by default so a loaded machine cannot mistake a slow clean exit
+		// for a hung child; the escalation tests shorten these deliberately.
+		releaseGraceMs: 2000,
+		killGraceMs: 2000,
 		env: { ...process.env, ...env },
 		...overrides,
 	});
@@ -160,7 +162,8 @@ describe('TerminalSession against the fake herdr', () => {
 
 	it('surfaces non-JSON stderr without treating it as protocol, and reports non-JSON stdout as an error', async () => {
 		const { session, rec } = makeSession({}, { FAKE_STDERR: 'herdr: connection failed', FAKE_GARBAGE: '1' });
-		await waitFor(() => rec.stderr.length >= 1 && rec.errors.length >= 1);
+		// stdout and stderr are separate pipes: wait for all three, in no fixed order.
+		await waitFor(() => rec.stderr.length >= 1 && rec.errors.length >= 1 && rec.frames.length >= 1);
 		expect(rec.stderr[0]).toBe('herdr: connection failed');
 		expect(rec.errors[0]!.message).toContain('non-JSON stdout line');
 		expect(rec.frames.length).toBeGreaterThanOrEqual(1);
@@ -180,7 +183,7 @@ describe('TerminalSession against the fake herdr', () => {
 	});
 
 	it('escalates to SIGTERM when release is ignored', async () => {
-		const { session, rec } = makeSession({}, { FAKE_IGNORE_RELEASE: '1' });
+		const { session, rec } = makeSession({ releaseGraceMs: 150 }, { FAKE_IGNORE_RELEASE: '1' });
 		await waitFor(() => rec.frames.length >= 1);
 		const pid = session.pid!;
 		await session.dispose();
@@ -190,7 +193,10 @@ describe('TerminalSession against the fake herdr', () => {
 	});
 
 	it('escalates to SIGKILL when SIGTERM is ignored too', async () => {
-		const { session, rec } = makeSession({}, { FAKE_IGNORE_RELEASE: '1', FAKE_IGNORE_SIGTERM: '1' });
+		const { session, rec } = makeSession(
+			{ releaseGraceMs: 150, killGraceMs: 200 },
+			{ FAKE_IGNORE_RELEASE: '1', FAKE_IGNORE_SIGTERM: '1' },
+		);
 		await waitFor(() => rec.frames.length >= 1);
 		const pid = session.pid!;
 		await session.dispose();
