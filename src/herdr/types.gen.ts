@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * GENERATED FILE — do not edit. Run `npm run gen:types` (PRD N3).
  * Source: `herdr api schema --json` from herdr 0.8.0.
@@ -115,39 +114,39 @@ export interface AgentViewClearParams {
 
 export type AgentViewContext = 'current_workspace_id' | 'current_tab_id';
 
-export type AgentViewField = 
+export type AgentViewField =
 	| AgentViewBuiltinField
 	| {
-	token: string;
-};
+		token: string;
+	};
 
-export type AgentViewFilter = 
+export type AgentViewFilter =
 	| {
-	filters: AgentViewFilter[];
-	op: 'all';
-}
+		filters: AgentViewFilter[];
+		op: 'all';
+	}
 	| {
-	filters: AgentViewFilter[];
-	op: 'any';
-}
+		filters: AgentViewFilter[];
+		op: 'any';
+	}
 	| {
-	filter: AgentViewFilter;
-	op: 'not';
-}
+		filter: AgentViewFilter;
+		op: 'not';
+	}
 	| {
-	field: AgentViewField;
-	op: 'eq';
-	value: AgentViewValue;
-}
+		field: AgentViewField;
+		op: 'eq';
+		value: AgentViewValue;
+	}
 	| {
-	field: AgentViewField;
-	op: 'in';
-	values: AgentViewValue[];
-}
+		field: AgentViewField;
+		op: 'in';
+		values: AgentViewValue[];
+	}
 	| {
-	field: AgentViewField;
-	op: 'exists';
-};
+		field: AgentViewField;
+		op: 'exists';
+	};
 
 export interface AgentViewSetParams {
 	filter?: AgentViewFilter | null;
@@ -161,21 +160,21 @@ export interface AgentViewSort {
 	order?: AgentViewSortOrder;
 }
 
-export type AgentViewSortField = 
+export type AgentViewSortField =
 	| AgentViewBuiltinSortField
 	| {
-	token: string;
-};
+		token: string;
+	};
 
 export type AgentViewSortOrder = 'asc' | 'desc';
 
-export type AgentViewValue = 
+export type AgentViewValue =
 	| string
 	| boolean
 	| number
 	| {
-	context: AgentViewContext;
-};
+		context: AgentViewContext;
+	};
 
 export interface AgentWaitParams {
 	target: string;
@@ -198,152 +197,152 @@ export interface ErrorBody {
 	message: string;
 }
 
-export type EventData = 
+export type EventData =
 	| {
-	type: 'workspace_created';
-	workspace: WorkspaceInfo;
-}
+		type: 'workspace_created';
+		workspace: WorkspaceInfo;
+	}
 	| {
-	type: 'workspace_updated';
-	workspace: WorkspaceInfo;
-}
+		type: 'workspace_updated';
+		workspace: WorkspaceInfo;
+	}
 	| {
-	type: 'workspace_metadata_updated';
-	workspace: WorkspaceInfo;
-}
+		type: 'workspace_metadata_updated';
+		workspace: WorkspaceInfo;
+	}
 	| {
-	type: 'workspace_closed';
-	workspace?: WorkspaceInfo | null;
-	workspace_id: string;
-}
+		type: 'workspace_closed';
+		workspace?: WorkspaceInfo | null;
+		workspace_id: string;
+	}
 	| {
-	label: string;
-	type: 'workspace_renamed';
-	workspace_id: string;
-}
+		label: string;
+		type: 'workspace_renamed';
+		workspace_id: string;
+	}
 	| {
-	insert_index: number;
-	type: 'workspace_moved';
-	workspace_id: string;
-	workspaces: WorkspaceInfo[];
-}
+		insert_index: number;
+		type: 'workspace_moved';
+		workspace_id: string;
+		workspaces: WorkspaceInfo[];
+	}
 	| {
-	before_workspace_id?: string | null;
-	type: 'workspace_reordered';
-	workspace_ids: string[];
-	workspaces: WorkspaceInfo[];
-}
+		before_workspace_id?: string | null;
+		type: 'workspace_reordered';
+		workspace_ids: string[];
+		workspaces: WorkspaceInfo[];
+	}
 	| {
-	type: 'workspace_focused';
-	workspace_id: string;
-}
+		type: 'workspace_focused';
+		workspace_id: string;
+	}
 	| {
-	type: 'worktree_created';
-	workspace: WorkspaceInfo;
-	worktree: WorktreeInfo;
-}
+		type: 'worktree_created';
+		workspace: WorkspaceInfo;
+		worktree: WorktreeInfo;
+	}
 	| {
-	already_open: boolean;
-	type: 'worktree_opened';
-	workspace: WorkspaceInfo;
-	worktree: WorktreeInfo;
-}
+		already_open: boolean;
+		type: 'worktree_opened';
+		workspace: WorkspaceInfo;
+		worktree: WorktreeInfo;
+	}
 	| {
-	forced: boolean;
-	type: 'worktree_removed';
-	workspace?: WorkspaceInfo | null;
-	workspace_id: string;
-	worktree: WorktreeInfo;
-}
+		forced: boolean;
+		type: 'worktree_removed';
+		workspace?: WorkspaceInfo | null;
+		workspace_id: string;
+		worktree: WorktreeInfo;
+	}
 	| {
-	tab: TabInfo;
-	type: 'tab_created';
-}
+		tab: TabInfo;
+		type: 'tab_created';
+	}
 	| {
-	tab_id: string;
-	type: 'tab_closed';
-	workspace_id: string;
-}
+		tab_id: string;
+		type: 'tab_closed';
+		workspace_id: string;
+	}
 	| {
-	label: string;
-	tab_id: string;
-	type: 'tab_renamed';
-	workspace_id: string;
-}
+		label: string;
+		tab_id: string;
+		type: 'tab_renamed';
+		workspace_id: string;
+	}
 	| {
-	insert_index: number;
-	tab_id: string;
-	tabs: TabInfo[];
-	type: 'tab_moved';
-	workspace_id: string;
-}
+		insert_index: number;
+		tab_id: string;
+		tabs: TabInfo[];
+		type: 'tab_moved';
+		workspace_id: string;
+	}
 	| {
-	tab_id: string;
-	type: 'tab_focused';
-	workspace_id: string;
-}
+		tab_id: string;
+		type: 'tab_focused';
+		workspace_id: string;
+	}
 	| {
-	pane: PaneInfo;
-	type: 'pane_created';
-}
+		pane: PaneInfo;
+		type: 'pane_created';
+	}
 	| {
-	pane_id: string;
-	type: 'pane_closed';
-	workspace_id: string;
-}
+		pane_id: string;
+		type: 'pane_closed';
+		workspace_id: string;
+	}
 	| {
-	pane: PaneInfo;
-	type: 'pane_updated';
-}
+		pane: PaneInfo;
+		type: 'pane_updated';
+	}
 	| {
-	pane_id: string;
-	type: 'pane_focused';
-	workspace_id: string;
-}
+		pane_id: string;
+		type: 'pane_focused';
+		workspace_id: string;
+	}
 	| {
-	closed_tab_id?: string | null;
-	closed_workspace_id?: string | null;
-	created_tab?: TabInfo | null;
-	created_workspace?: WorkspaceInfo | null;
-	pane: PaneInfo;
-	previous_pane_id: string;
-	previous_tab_id: string;
-	previous_workspace_id: string;
-	type: 'pane_moved';
-}
+		closed_tab_id?: string | null;
+		closed_workspace_id?: string | null;
+		created_tab?: TabInfo | null;
+		created_workspace?: WorkspaceInfo | null;
+		pane: PaneInfo;
+		previous_pane_id: string;
+		previous_tab_id: string;
+		previous_workspace_id: string;
+		type: 'pane_moved';
+	}
 	| {
-	pane_id: string;
-	revision: number;
-	type: 'pane_output_changed';
-	workspace_id: string;
-}
+		pane_id: string;
+		revision: number;
+		type: 'pane_output_changed';
+		workspace_id: string;
+	}
 	| {
-	pane_id: string;
-	type: 'pane_exited';
-	workspace_id: string;
-}
+		pane_id: string;
+		type: 'pane_exited';
+		workspace_id: string;
+	}
 	| {
-	agent?: string | null;
-	final_status?: AgentStatus | null;
-	pane_id: string;
-	released?: boolean;
-	type: 'pane_agent_detected';
-	workspace_id: string;
-}
+		agent?: string | null;
+		final_status?: AgentStatus | null;
+		pane_id: string;
+		released?: boolean;
+		type: 'pane_agent_detected';
+		workspace_id: string;
+	}
 	| {
-	agent?: string | null;
-	agent_status: AgentStatus;
-	display_agent?: string | null;
-	pane_id: string;
-	state_labels?: Record<string, string>;
-	title?: string | null;
-	type: 'pane_agent_status_changed';
-	workspace_id: string;
-}
+		agent?: string | null;
+		agent_status: AgentStatus;
+		display_agent?: string | null;
+		pane_id: string;
+		state_labels?: Record<string, string>;
+		title?: string | null;
+		type: 'pane_agent_status_changed';
+		workspace_id: string;
+	}
 	| {
-	layout: PaneLayoutSnapshot;
-	type: 'layout_updated';
-};
+		layout: PaneLayoutSnapshot;
+		type: 'layout_updated';
+	};
 
 export interface EventEnvelope {
 	data: EventData;
@@ -352,90 +351,90 @@ export interface EventEnvelope {
 
 export type EventKind = 'workspace_created' | 'workspace_updated' | 'workspace_metadata_updated' | 'workspace_closed' | 'workspace_renamed' | 'workspace_moved' | 'workspace_reordered' | 'workspace_focused' | 'worktree_created' | 'worktree_opened' | 'worktree_removed' | 'tab_created' | 'tab_closed' | 'tab_renamed' | 'tab_moved' | 'tab_focused' | 'pane_created' | 'pane_closed' | 'pane_updated' | 'pane_focused' | 'pane_moved' | 'pane_output_changed' | 'pane_exited' | 'pane_agent_detected' | 'pane_agent_status_changed' | 'layout_updated';
 
-export type EventMatch = 
+export type EventMatch =
 	| {
-	event: 'workspace_created';
-	workspace_id?: string | null;
-}
+		event: 'workspace_created';
+		workspace_id?: string | null;
+	}
 	| {
-	event: 'workspace_updated';
-	workspace_id: string;
-}
+		event: 'workspace_updated';
+		workspace_id: string;
+	}
 	| {
-	event: 'workspace_closed';
-	workspace_id: string;
-}
+		event: 'workspace_closed';
+		workspace_id: string;
+	}
 	| {
-	event: 'workspace_renamed';
-	label?: string | null;
-	workspace_id: string;
-}
+		event: 'workspace_renamed';
+		label?: string | null;
+		workspace_id: string;
+	}
 	| {
-	event: 'workspace_moved';
-	workspace_id: string;
-}
+		event: 'workspace_moved';
+		workspace_id: string;
+	}
 	| {
-	event: 'workspace_focused';
-	workspace_id: string;
-}
+		event: 'workspace_focused';
+		workspace_id: string;
+	}
 	| {
-	event: 'tab_created';
-	tab_id?: string | null;
-	workspace_id?: string | null;
-}
+		event: 'tab_created';
+		tab_id?: string | null;
+		workspace_id?: string | null;
+	}
 	| {
-	event: 'tab_closed';
-	tab_id: string;
-}
+		event: 'tab_closed';
+		tab_id: string;
+	}
 	| {
-	event: 'tab_renamed';
-	label?: string | null;
-	tab_id: string;
-}
+		event: 'tab_renamed';
+		label?: string | null;
+		tab_id: string;
+	}
 	| {
-	event: 'tab_moved';
-	tab_id: string;
-}
+		event: 'tab_moved';
+		tab_id: string;
+	}
 	| {
-	event: 'tab_focused';
-	tab_id: string;
-}
+		event: 'tab_focused';
+		tab_id: string;
+	}
 	| {
-	event: 'pane_created';
-	pane_id?: string | null;
-	workspace_id?: string | null;
-}
+		event: 'pane_created';
+		pane_id?: string | null;
+		workspace_id?: string | null;
+	}
 	| {
-	event: 'pane_closed';
-	pane_id: string;
-}
+		event: 'pane_closed';
+		pane_id: string;
+	}
 	| {
-	event: 'pane_focused';
-	pane_id: string;
-}
+		event: 'pane_focused';
+		pane_id: string;
+	}
 	| {
-	event: 'pane_moved';
-	pane_id: string;
-}
+		event: 'pane_moved';
+		pane_id: string;
+	}
 	| {
-	event: 'pane_output_changed';
-	min_revision?: number | null;
-	pane_id: string;
-}
+		event: 'pane_output_changed';
+		min_revision?: number | null;
+		pane_id: string;
+	}
 	| {
-	event: 'pane_exited';
-	pane_id: string;
-}
+		event: 'pane_exited';
+		pane_id: string;
+	}
 	| {
-	agent?: string | null;
-	event: 'pane_agent_detected';
-	pane_id: string;
-}
+		agent?: string | null;
+		event: 'pane_agent_detected';
+		pane_id: string;
+	}
 	| {
-	agent_status: AgentStatus;
-	event: 'pane_agent_status_changed';
-	pane_id: string;
-};
+		agent_status: AgentStatus;
+		event: 'pane_agent_status_changed';
+		pane_id: string;
+	};
 
 export interface EventsSubscribeParams {
 	subscriptions: Subscription[];
@@ -505,22 +504,22 @@ export interface LayoutExportParams {
 	tab_id?: string | null;
 }
 
-export type LayoutNode = 
+export type LayoutNode =
 	| {
-	command?: string[] | null;
-	cwd?: string | null;
-	env?: Record<string, string>;
-	label?: string | null;
-	pane_id?: string | null;
-	type: 'pane';
-}
+		command?: string[] | null;
+		cwd?: string | null;
+		env?: Record<string, string>;
+		label?: string | null;
+		pane_id?: string | null;
+		type: 'pane';
+	}
 	| {
-	direction: SplitDirection;
-	first: LayoutNode;
-	ratio: number;
-	second: LayoutNode;
-	type: 'split';
-};
+		direction: SplitDirection;
+		first: LayoutNode;
+		ratio: number;
+		second: LayoutNode;
+		type: 'split';
+	};
 
 export interface LayoutSetSplitRatioParams {
 	pane_id?: string | null;
@@ -540,15 +539,15 @@ export type NotificationShowReason = 'shown' | 'disabled' | 'rate_limited' | 'no
 
 export type NotificationShowSound = 'none' | 'done' | 'request';
 
-export type OutputMatch = 
+export type OutputMatch =
 	| {
-	type: 'substring';
-	value: string;
-}
+		type: 'substring';
+		value: string;
+	}
 	| {
-	type: 'regex';
-	value: string;
-};
+		type: 'regex';
+		value: string;
+	};
 
 export type PaneAgentState = 'idle' | 'working' | 'blocked' | 'unknown';
 
@@ -684,24 +683,24 @@ export interface PaneListParams {
 	workspace_id?: string | null;
 }
 
-export type PaneMoveDestination = 
+export type PaneMoveDestination =
 	| {
-	ratio?: number | null;
-	split: SplitDirection;
-	tab_id: string;
-	target_pane_id?: string | null;
-	type: 'tab';
-}
+		ratio?: number | null;
+		split: SplitDirection;
+		tab_id: string;
+		target_pane_id?: string | null;
+		type: 'tab';
+	}
 	| {
-	label?: string | null;
-	type: 'new_tab';
-	workspace_id?: string | null;
-}
+		label?: string | null;
+		type: 'new_tab';
+		workspace_id?: string | null;
+	}
 	| {
-	label?: string | null;
-	tab_label?: string | null;
-	type: 'new_workspace';
-};
+		label?: string | null;
+		tab_label?: string | null;
+		type: 'new_workspace';
+	};
 
 export interface PaneMoveParams {
 	destination: PaneMoveDestination;
@@ -1116,265 +1115,265 @@ export type ReadFormat = 'text' | 'ansi';
 
 export type ReadSource = 'visible' | 'recent' | 'recent_unwrapped' | 'detection';
 
-export type ResponseResult = 
+export type ResponseResult =
 	| {
-	capabilities?: ServerCapabilities | null;
-	protocol: number;
-	type: 'pong';
-	version: string;
-}
+		capabilities?: ServerCapabilities | null;
+		protocol: number;
+		type: 'pong';
+		version: string;
+	}
 	| {
-	snapshot: SessionSnapshot;
-	type: 'session_snapshot';
-}
+		snapshot: SessionSnapshot;
+		type: 'session_snapshot';
+	}
 	| {
-	type: 'workspace_info';
-	workspace: WorkspaceInfo;
-}
+		type: 'workspace_info';
+		workspace: WorkspaceInfo;
+	}
 	| {
-	root_pane: PaneInfo;
-	tab: TabInfo;
-	type: 'workspace_created';
-	workspace: WorkspaceInfo;
-}
+		root_pane: PaneInfo;
+		tab: TabInfo;
+		type: 'workspace_created';
+		workspace: WorkspaceInfo;
+	}
 	| {
-	type: 'workspace_list';
-	workspaces: WorkspaceInfo[];
-}
+		type: 'workspace_list';
+		workspaces: WorkspaceInfo[];
+	}
 	| {
-	source: WorktreeSourceInfo;
-	type: 'worktree_list';
-	worktrees: WorktreeInfo[];
-}
+		source: WorktreeSourceInfo;
+		type: 'worktree_list';
+		worktrees: WorktreeInfo[];
+	}
 	| {
-	root_pane: PaneInfo;
-	tab: TabInfo;
-	type: 'worktree_created';
-	workspace: WorkspaceInfo;
-	worktree: WorktreeInfo;
-}
+		root_pane: PaneInfo;
+		tab: TabInfo;
+		type: 'worktree_created';
+		workspace: WorkspaceInfo;
+		worktree: WorktreeInfo;
+	}
 	| {
-	already_open: boolean;
-	root_pane: PaneInfo;
-	tab: TabInfo;
-	type: 'worktree_opened';
-	workspace: WorkspaceInfo;
-	worktree: WorktreeInfo;
-}
+		already_open: boolean;
+		root_pane: PaneInfo;
+		tab: TabInfo;
+		type: 'worktree_opened';
+		workspace: WorkspaceInfo;
+		worktree: WorktreeInfo;
+	}
 	| {
-	forced: boolean;
-	path: string;
-	type: 'worktree_removed';
-	workspace_id: string;
-}
+		forced: boolean;
+		path: string;
+		type: 'worktree_removed';
+		workspace_id: string;
+	}
 	| {
-	tab: TabInfo;
-	type: 'tab_info';
-}
+		tab: TabInfo;
+		type: 'tab_info';
+	}
 	| {
-	root_pane: PaneInfo;
-	tab: TabInfo;
-	type: 'tab_created';
-}
+		root_pane: PaneInfo;
+		tab: TabInfo;
+		type: 'tab_created';
+	}
 	| {
-	tabs: TabInfo[];
-	type: 'tab_list';
-}
+		tabs: TabInfo[];
+		type: 'tab_list';
+	}
 	| {
-	agent: AgentInfo;
-	type: 'agent_info';
-}
+		agent: AgentInfo;
+		type: 'agent_info';
+	}
 	| {
-	agent: AgentInfo;
-	argv: string[];
-	type: 'agent_started';
-}
+		agent: AgentInfo;
+		argv: string[];
+		type: 'agent_started';
+	}
 	| {
-	agent: AgentInfo;
-	type: 'agent_prompted';
-}
+		agent: AgentInfo;
+		type: 'agent_prompted';
+	}
 	| {
-	agents: AgentInfo[];
-	type: 'agent_list';
-}
+		agents: AgentInfo[];
+		type: 'agent_list';
+	}
 	| {
-	active: boolean;
-	label?: string | null;
-	source?: string | null;
-	type: 'agent_view';
-}
+		active: boolean;
+		label?: string | null;
+		source?: string | null;
+		type: 'agent_view';
+	}
 	| {
-	pane: PaneInfo;
-	type: 'pane_info';
-}
+		pane: PaneInfo;
+		type: 'pane_info';
+	}
 	| {
-	panes: PaneInfo[];
-	type: 'pane_list';
-}
+		panes: PaneInfo[];
+		type: 'pane_list';
+	}
 	| {
-	pane: PaneInfo;
-	type: 'pane_current';
-}
+		pane: PaneInfo;
+		type: 'pane_current';
+	}
 	| {
-	swap: PaneSwapResult;
-	type: 'pane_swap';
-}
+		swap: PaneSwapResult;
+		type: 'pane_swap';
+	}
 	| {
-	move_result: PaneMoveResult;
-	type: 'pane_move';
-}
+		move_result: PaneMoveResult;
+		type: 'pane_move';
+	}
 	| {
-	type: 'pane_zoom';
-	zoom: PaneZoomResult;
-}
+		type: 'pane_zoom';
+		zoom: PaneZoomResult;
+	}
 	| {
-	layout: PaneLayoutSnapshot;
-	type: 'pane_layout';
-}
+		layout: PaneLayoutSnapshot;
+		type: 'pane_layout';
+	}
 	| {
-	process_info: PaneProcessInfo;
-	type: 'pane_process_info';
-}
+		process_info: PaneProcessInfo;
+		type: 'pane_process_info';
+	}
 	| {
-	layout: LayoutDescription;
-	type: 'layout_export';
-}
+		layout: LayoutDescription;
+		type: 'layout_export';
+	}
 	| {
-	layout: LayoutDescription;
-	type: 'layout_apply';
-}
+		layout: LayoutDescription;
+		type: 'layout_apply';
+	}
 	| {
-	layout: LayoutDescription;
-	type: 'layout_split_ratio_set';
-}
+		layout: LayoutDescription;
+		type: 'layout_split_ratio_set';
+	}
 	| {
-	neighbor: PaneNeighborResult;
-	type: 'pane_neighbor';
-}
+		neighbor: PaneNeighborResult;
+		type: 'pane_neighbor';
+	}
 	| {
-	edges: PaneEdgesResult;
-	type: 'pane_edges';
-}
+		edges: PaneEdgesResult;
+		type: 'pane_edges';
+	}
 	| {
-	focus: PaneFocusDirectionResult;
-	type: 'pane_focus_direction';
-}
+		focus: PaneFocusDirectionResult;
+		type: 'pane_focus_direction';
+	}
 	| {
-	resize: PaneResizeResult;
-	type: 'pane_resize';
-}
+		resize: PaneResizeResult;
+		type: 'pane_resize';
+	}
 	| {
-	read: PaneReadResult;
-	type: 'pane_read';
-}
+		read: PaneReadResult;
+		type: 'pane_read';
+	}
 	| {
-	cell_height_px: number;
-	cell_width_px: number;
-	type: 'pane_graphics_info';
-}
+		cell_height_px: number;
+		cell_width_px: number;
+		type: 'pane_graphics_info';
+	}
 	| {
-	explain: unknown;
-	type: 'agent_explain';
-}
+		explain: unknown;
+		type: 'agent_explain';
+	}
 	| {
-	type: 'subscription_started';
-}
+		type: 'subscription_started';
+	}
 	| {
-	event: EventEnvelope;
-	type: 'wait_matched';
-}
+		event: EventEnvelope;
+		type: 'wait_matched';
+	}
 	| {
-	matched_line?: string | null;
-	pane_id: string;
-	read: PaneReadResult;
-	revision: number;
-	type: 'output_matched';
-}
+		matched_line?: string | null;
+		pane_id: string;
+		read: PaneReadResult;
+		revision: number;
+		type: 'output_matched';
+	}
 	| {
-	reason: NotificationShowReason;
-	shown: boolean;
-	type: 'notification_show';
-}
+		reason: NotificationShowReason;
+		shown: boolean;
+		type: 'notification_show';
+	}
 	| {
-	changed: boolean;
-	reason: ClientWindowTitleReason;
-	type: 'client_window_title';
-}
+		changed: boolean;
+		reason: ClientWindowTitleReason;
+		type: 'client_window_title';
+	}
 	| {
-	details: IntegrationInstallResult;
-	target: IntegrationTarget;
-	type: 'integration_install';
-}
+		details: IntegrationInstallResult;
+		target: IntegrationTarget;
+		type: 'integration_install';
+	}
 	| {
-	details: IntegrationUninstallResult;
-	target: IntegrationTarget;
-	type: 'integration_uninstall';
-}
+		details: IntegrationUninstallResult;
+		target: IntegrationTarget;
+		type: 'integration_uninstall';
+	}
 	| {
-	manifests: AgentManifestInfo[];
-	type: 'agent_manifest_reload';
-}
+		manifests: AgentManifestInfo[];
+		type: 'agent_manifest_reload';
+	}
 	| {
-	last_check_unix?: number | null;
-	last_result?: string | null;
-	manifests: AgentManifestInfo[];
-	type: 'agent_manifest_status';
-}
+		last_check_unix?: number | null;
+		last_result?: string | null;
+		manifests: AgentManifestInfo[];
+		type: 'agent_manifest_status';
+	}
 	| {
-	plugin: InstalledPluginInfo;
-	type: 'plugin_linked';
-}
+		plugin: InstalledPluginInfo;
+		type: 'plugin_linked';
+	}
 	| {
-	plugins: InstalledPluginInfo[];
-	type: 'plugin_list';
-}
+		plugins: InstalledPluginInfo[];
+		type: 'plugin_list';
+	}
 	| {
-	plugin_id: string;
-	removed: boolean;
-	type: 'plugin_unlinked';
-}
+		plugin_id: string;
+		removed: boolean;
+		type: 'plugin_unlinked';
+	}
 	| {
-	plugin: InstalledPluginInfo;
-	type: 'plugin_enabled';
-}
+		plugin: InstalledPluginInfo;
+		type: 'plugin_enabled';
+	}
 	| {
-	plugin: InstalledPluginInfo;
-	type: 'plugin_disabled';
-}
+		plugin: InstalledPluginInfo;
+		type: 'plugin_disabled';
+	}
 	| {
-	actions: PluginActionInfo[];
-	type: 'plugin_action_list';
-}
+		actions: PluginActionInfo[];
+		type: 'plugin_action_list';
+	}
 	| {
-	action: PluginActionInfo;
-	context: PluginInvocationContext;
-	log: PluginCommandLogInfo;
-	type: 'plugin_action_invoked';
-}
+		action: PluginActionInfo;
+		context: PluginInvocationContext;
+		log: PluginCommandLogInfo;
+		type: 'plugin_action_invoked';
+	}
 	| {
-	logs: PluginCommandLogInfo[];
-	type: 'plugin_log_list';
-}
+		logs: PluginCommandLogInfo[];
+		type: 'plugin_log_list';
+	}
 	| {
-	plugin_pane: PluginPaneInfo;
-	type: 'plugin_pane_opened';
-}
+		plugin_pane: PluginPaneInfo;
+		type: 'plugin_pane_opened';
+	}
 	| {
-	plugin_pane: PluginPaneInfo;
-	type: 'plugin_pane_focused';
-}
+		plugin_pane: PluginPaneInfo;
+		type: 'plugin_pane_focused';
+	}
 	| {
-	pane_id: string;
-	type: 'plugin_pane_closed';
-}
+		pane_id: string;
+		type: 'plugin_pane_closed';
+	}
 	| {
-	diagnostics: string[];
-	status: ConfigReloadStatus;
-	type: 'config_reload';
-}
+		diagnostics: string[];
+		status: ConfigReloadStatus;
+		type: 'config_reload';
+	}
 	| {
-	type: 'ok';
-};
+		type: 'ok';
+	};
 
 export interface ServerCapabilities {
 	detached_server_daemon?: boolean;
@@ -1402,96 +1401,96 @@ export interface SessionSnapshot {
 
 export type SplitDirection = 'right' | 'down';
 
-export type Subscription = 
+export type Subscription =
 	| {
-	type: 'workspace.created';
-}
+		type: 'workspace.created';
+	}
 	| {
-	type: 'workspace.updated';
-}
+		type: 'workspace.updated';
+	}
 	| {
-	type: 'workspace.metadata_updated';
-}
+		type: 'workspace.metadata_updated';
+	}
 	| {
-	type: 'workspace.renamed';
-}
+		type: 'workspace.renamed';
+	}
 	| {
-	type: 'workspace.moved';
-}
+		type: 'workspace.moved';
+	}
 	| {
-	type: 'workspace.reordered';
-}
+		type: 'workspace.reordered';
+	}
 	| {
-	type: 'workspace.closed';
-}
+		type: 'workspace.closed';
+	}
 	| {
-	type: 'workspace.focused';
-}
+		type: 'workspace.focused';
+	}
 	| {
-	type: 'worktree.created';
-}
+		type: 'worktree.created';
+	}
 	| {
-	type: 'worktree.opened';
-}
+		type: 'worktree.opened';
+	}
 	| {
-	type: 'worktree.removed';
-}
+		type: 'worktree.removed';
+	}
 	| {
-	type: 'tab.created';
-}
+		type: 'tab.created';
+	}
 	| {
-	type: 'tab.closed';
-}
+		type: 'tab.closed';
+	}
 	| {
-	type: 'tab.focused';
-}
+		type: 'tab.focused';
+	}
 	| {
-	type: 'tab.renamed';
-}
+		type: 'tab.renamed';
+	}
 	| {
-	type: 'tab.moved';
-}
+		type: 'tab.moved';
+	}
 	| {
-	type: 'pane.created';
-}
+		type: 'pane.created';
+	}
 	| {
-	type: 'pane.closed';
-}
+		type: 'pane.closed';
+	}
 	| {
-	type: 'pane.updated';
-}
+		type: 'pane.updated';
+	}
 	| {
-	type: 'pane.focused';
-}
+		type: 'pane.focused';
+	}
 	| {
-	type: 'pane.moved';
-}
+		type: 'pane.moved';
+	}
 	| {
-	type: 'pane.exited';
-}
+		type: 'pane.exited';
+	}
 	| {
-	type: 'pane.agent_detected';
-}
+		type: 'pane.agent_detected';
+	}
 	| {
-	lines?: number | null;
-	match: OutputMatch;
-	pane_id: string;
-	source: ReadSource;
-	strip_ansi?: boolean;
-	type: 'pane.output_matched';
-}
+		lines?: number | null;
+		match: OutputMatch;
+		pane_id: string;
+		source: ReadSource;
+		strip_ansi?: boolean;
+		type: 'pane.output_matched';
+	}
 	| {
-	agent_status?: AgentStatus | null;
-	pane_id: string;
-	type: 'pane.agent_status_changed';
-}
+		agent_status?: AgentStatus | null;
+		pane_id: string;
+		type: 'pane.agent_status_changed';
+	}
 	| {
-	pane_id: string;
-	type: 'pane.scroll_changed';
-}
+		pane_id: string;
+		type: 'pane.scroll_changed';
+	}
 	| {
-	type: 'layout.updated';
-};
+		type: 'layout.updated';
+	};
 
 export type SubscriptionEventData = PaneOutputMatchedEvent | PaneAgentStatusChangedEvent | PaneScrollChangedEvent;
 

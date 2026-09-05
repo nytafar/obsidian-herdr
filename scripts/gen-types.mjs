@@ -204,14 +204,13 @@ class Emitter {
 	}
 
 	union(members, indent) {
-		const parts = members.map((member) => this.type(member, indent));
-		const unique = [...new Set(parts)];
-		if (unique.length === 1) return unique[0];
-		// Multi-line unions of object literals stay readable; short ones inline.
-		if (unique.some((part) => part.includes('\n'))) {
-			return unique.map((part) => `\n${indent}\t| ${part}`).join('');
-		}
-		return unique.join(' | ');
+		const inline = [...new Set(members.map((member) => this.type(member, indent)))];
+		if (inline.length === 1) return inline[0];
+		if (!inline.some((part) => part.includes('\n'))) return inline.join(' | ');
+		// Multi-line unions of object literals: re-emit one level deeper so the
+		// members line up under the `|`.
+		const nested = [...new Set(members.map((member) => this.type(member, `${indent}\t`)))];
+		return nested.map((part) => `\n${indent}\t| ${part}`).join('');
 	}
 
 	object(node, indent) {
@@ -249,7 +248,6 @@ function generate(schema, version) {
 	const { mapping, emit } = planNames(schemas);
 
 	const out = [];
-	out.push('/* eslint-disable */');
 	out.push('/**');
 	out.push(' * GENERATED FILE — do not edit. Run `npm run gen:types` (PRD N3).');
 	out.push(` * Source: \`herdr api schema --json\`${version ? ` from ${version}` : ''}.`);
@@ -273,6 +271,7 @@ function generate(schema, version) {
 		const emitter = new Emitter(mapping, document);
 		const body = emitter.type(node, '');
 		if (body.startsWith('{\n')) out.push(`export interface ${tsName} ${body}`);
+		else if (body.startsWith('\n')) out.push(`export type ${tsName} =${body};`);
 		else out.push(`export type ${tsName} = ${body};`);
 		out.push('');
 	}
