@@ -23,3 +23,6 @@ data.json
 
 # hot-reload marker for the dev vault
 .hotreload
+
+# local agent definitions
+.claude/
