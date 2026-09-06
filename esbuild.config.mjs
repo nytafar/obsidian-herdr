@@ -1,5 +1,9 @@
 import esbuild from 'esbuild';
 import process from 'process';
+import zlib from 'node:zlib';
+import { Buffer } from 'node:buffer';
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { builtinModules } from 'node:module';
 
 const banner = `/*
@@ -8,56 +12,167 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const prod = process.argv[2] === 'production';
+// --- ghostty wasm, Brotli-compressed at build time (issue #63) --------------
+//
+// ghostty-web 0.4.0 inlines the 423 045 byte `ghostty-vt.wasm` as one base64
+// data URL inside its own `dist/ghostty-web.js`, and `Ghostty.load()` with no
+// argument always takes that path. Base64 costs 564 060 bytes in `main.js`;
+// Brotli q11 then base64 costs 131 824, about 430 KB saved.
+//
+// The transform rewrites that single literal into a call returning a `blob:`
+// URL built from the decompressed bytes. Everything around it — the
+// `new URL(…, self.location)` and the `loadFromPath(href)` that follows — works
+// unchanged, because a blob URL is fetchable in the renderer. So the runtime
+// code in src/ stays as it is.
+//
+// PRD N5 still holds: nothing is emitted next to `main.js`. If the literal ever
+// stops appearing exactly once, the build fails loudly rather than shipping an
+// unpatched, or wasm-less, bundle.
 
-const context = await esbuild.context({
-	banner: {
-		js: banner,
-	},
-	entryPoints: ['src/main.ts'],
-	bundle: true,
-	external: [
-		'obsidian',
-		'electron',
-		'@codemirror/autocomplete',
-		'@codemirror/collab',
-		'@codemirror/commands',
-		'@codemirror/language',
-		'@codemirror/lint',
-		'@codemirror/search',
-		'@codemirror/state',
-		'@codemirror/view',
-		'@lezer/common',
-		'@lezer/highlight',
-		'@lezer/lr',
-		// Both spellings: the herdr client and the terminal bridge import
-		// `node:net`, `node:child_process` and friends with the prefix.
-		...builtinModules,
-		...builtinModules.map((name) => `node:${name}`),
-	],
-	// PRD N5: the release must be main.js/manifest.json/styles.css only.
-	// ghostty-web 0.4.0 already carries ghostty-vt.wasm as an inline
-	// `data:application/wasm;base64,…` literal and fetches that data URL, so no
-	// wasm file is emitted today (notes/ghostty-web.md). This loader entry keeps
-	// that true if a future ghostty-web imports the .wasm asset instead: esbuild
-	// would inline it as a data URL rather than write a sibling file. If the
-	// bundle ever stops containing `data:application/wasm;base64`, the wasm is no
-	// longer embedded — fail the release rather than shipping a loose file.
-	loader: {
-		'.wasm': 'dataurl',
-	},
-	format: 'cjs',
-	target: 'es2021',
-	logLevel: 'info',
-	sourcemap: prod ? false : 'inline',
-	treeShaking: true,
-	outfile: 'main.js',
-	minify: prod,
-});
+/** The literal ghostty-web inlines. Global so `matchAll` and `replace` agree. */
+export const WASM_DATA_URL_PATTERN = /"data:application\/wasm;base64,([A-Za-z0-9+/=]+)"/g;
 
-if (prod) {
-	await context.rebuild();
-	process.exit(0);
-} else {
-	await context.watch();
+/** Kept as a string literal in the shim so a minified `main.js` stays greppable. */
+export const BROTLI_MARKER = 'herdr:wasm-brotli';
+
+/** Compresses the wasm the way the build does. Deterministic for fixed input. */
+export function compressWasm(wasm) {
+	return zlib.brotliCompressSync(wasm, {
+		params: {
+			[zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+			[zlib.constants.BROTLI_PARAM_SIZE_HINT]: wasm.length,
+		},
+	});
+}
+
+/**
+ * The decode shim prepended to ghostty-web's module body.
+ *
+ * `node:zlib` and `node:buffer` are externals, so esbuild turns these imports
+ * into plain `require` calls in the CommonJS output; both are reachable from
+ * the plugin (notes/electron-node.md). Decompressing ~99 KB happens once, on
+ * the first `Ghostty.load()`, not per frame.
+ */
+function decodeShim(base64) {
+	return [
+		'import { brotliDecompressSync as __herdrBrotliDecompress } from "node:zlib";',
+		'import { Buffer as __herdrBuffer } from "node:buffer";',
+		`const __herdrGhosttyWasmBrotli = ${JSON.stringify(base64)};`,
+		'let __herdrGhosttyWasmUrlCache;',
+		'function __herdrGhosttyWasmUrl() {',
+		'	if (__herdrGhosttyWasmUrlCache === undefined) {',
+		'		if (typeof __herdrBrotliDecompress !== "function") {',
+		`			throw new Error("herdr: cannot decode the embedded ghostty wasm (${BROTLI_MARKER})");`,
+		'		}',
+		'		const bytes = new Uint8Array(',
+		'			__herdrBrotliDecompress(__herdrBuffer.from(__herdrGhosttyWasmBrotli, "base64")),',
+		'		);',
+		'		__herdrGhosttyWasmUrlCache = URL.createObjectURL(',
+		'			new Blob([bytes], { type: "application/wasm" }),',
+		'		);',
+		'	}',
+		'	return __herdrGhosttyWasmUrlCache;',
+		'}',
+		'',
+	].join('\n');
+}
+
+/**
+ * Rewrites one ghostty-web module body. Throws unless the data URL literal
+ * appears exactly once, so a ghostty-web bump cannot pass silently. Pure, so
+ * tests can call it directly.
+ */
+export function rewriteGhosttyWeb(source) {
+	const matches = [...source.matchAll(WASM_DATA_URL_PATTERN)];
+	if (matches.length !== 1) {
+		throw new Error(
+			'ghostty-web brotli transform: expected exactly 1 embedded wasm data URL, found ' +
+				`${matches.length}. ghostty-web probably changed how it inlines ` +
+				'ghostty-vt.wasm; see issue #63.',
+		);
+	}
+	const wasm = Buffer.from(matches[0][1], 'base64');
+	const base64 = compressWasm(wasm).toString('base64');
+	return decodeShim(base64) + source.replace(WASM_DATA_URL_PATTERN, '__herdrGhosttyWasmUrl()');
+}
+
+/** esbuild plugin wrapper. Memoised, so watch rebuilds do not recompress. */
+export function brotliWasmPlugin() {
+	const cache = new Map();
+	return {
+		name: 'ghostty-web-brotli-wasm',
+		setup(build) {
+			build.onLoad({ filter: /ghostty-web[\\/]dist[\\/]ghostty-web\.js$/ }, async (args) => {
+				const source = await readFile(args.path, 'utf8');
+				let contents = cache.get(source);
+				if (contents === undefined) {
+					contents = rewriteGhosttyWeb(source);
+					cache.set(source, contents);
+				}
+				return { contents, loader: 'js' };
+			});
+		},
+	};
+}
+
+/** The shared build options; the bundle test reuses these with its own outfile. */
+export function buildOptions({ prod = false, outfile = 'main.js' } = {}) {
+	return {
+		banner: {
+			js: banner,
+		},
+		entryPoints: ['src/main.ts'],
+		bundle: true,
+		external: [
+			'obsidian',
+			'electron',
+			'@codemirror/autocomplete',
+			'@codemirror/collab',
+			'@codemirror/commands',
+			'@codemirror/language',
+			'@codemirror/lint',
+			'@codemirror/search',
+			'@codemirror/state',
+			'@codemirror/view',
+			'@lezer/common',
+			'@lezer/highlight',
+			'@lezer/lr',
+			// Both spellings: the herdr client and the terminal bridge import
+			// `node:net`, `node:child_process` and friends with the prefix.
+			...builtinModules,
+			...builtinModules.map((name) => `node:${name}`),
+		],
+		plugins: [brotliWasmPlugin()],
+		// PRD N5: the release must be main.js/manifest.json/styles.css only.
+		// The plugin above keeps ghostty-vt.wasm inside main.js, Brotli-encoded.
+		// This loader entry keeps N5 true if a future ghostty-web imports the
+		// .wasm asset instead of inlining it: esbuild would embed it as a data
+		// URL rather than write a sibling file. (That case would also trip the
+		// transform's "found 0" error, which is the loud failure we want.)
+		loader: {
+			'.wasm': 'dataurl',
+		},
+		format: 'cjs',
+		target: 'es2021',
+		logLevel: 'info',
+		sourcemap: prod ? false : 'inline',
+		treeShaking: true,
+		outfile,
+		minify: prod,
+	};
+}
+
+const invokedDirectly =
+	process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+	const prod = process.argv[2] === 'production';
+	const context = await esbuild.context(buildOptions({ prod }));
+
+	if (prod) {
+		await context.rebuild();
+		process.exit(0);
+	} else {
+		await context.watch();
+	}
 }

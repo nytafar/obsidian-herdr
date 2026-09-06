@@ -33,11 +33,12 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import { buildOptions } from '../esbuild.config.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -103,9 +104,10 @@ function retained() {
 // ---------------------------------------------------------------------------
 
 /**
- * The production build from `esbuild.config.mjs`, with a plugin that can stub
- * one or both renderer modules out. Kept in step by hand: if the real config
- * gains an option that changes size (minify, target, format), copy it here.
+ * The production build, taken from `esbuild.config.mjs`'s own `buildOptions()`
+ * so the two cannot drift, plus a plugin that can stub one or both renderer
+ * modules out. That means the ghostty-web Brotli transform (issue #63) is in
+ * the measured bundle here too, as it is in a release.
  */
 async function buildVariant(esbuild, outfile, stubbed) {
 	const stub = {
@@ -127,36 +129,14 @@ async function buildVariant(esbuild, outfile, stubbed) {
 			}));
 		},
 	};
+	const options = buildOptions({ prod: true, outfile });
 	await esbuild.build({
+		...options,
 		entryPoints: [path.join(ROOT, 'src/main.ts')],
 		absWorkingDir: ROOT,
-		bundle: true,
-		external: [
-			'obsidian',
-			'electron',
-			'@codemirror/autocomplete',
-			'@codemirror/collab',
-			'@codemirror/commands',
-			'@codemirror/language',
-			'@codemirror/lint',
-			'@codemirror/search',
-			'@codemirror/state',
-			'@codemirror/view',
-			'@lezer/common',
-			'@lezer/highlight',
-			'@lezer/lr',
-			...builtinModules,
-			...builtinModules.map((name) => `node:${name}`),
-		],
-		loader: { '.wasm': 'dataurl' },
-		format: 'cjs',
-		target: 'es2021',
 		logLevel: 'silent',
-		treeShaking: true,
-		minify: true,
-		sourcemap: false,
-		outfile,
-		plugins: Object.keys(stubbed).length > 0 ? [stub] : [],
+		plugins:
+			Object.keys(stubbed).length > 0 ? [stub, ...(options.plugins ?? [])] : (options.plugins ?? []),
 	});
 	return statSync(outfile).size;
 }
