@@ -205,3 +205,34 @@ describe('routeMouseButton', () => {
 		).toBe('\x1b[<0;4;2m');
 	});
 });
+
+describe('InputRouter composition flag (#49)', () => {
+	const shiftEnter = {
+		key: 'Enter',
+		shiftKey: true,
+		altKey: false,
+		ctrlKey: false,
+		metaKey: false,
+	};
+
+	it('starts not composing', () => {
+		expect(router().isComposing).toBe(false);
+	});
+
+	it('routes nothing while the element reports a composition', () => {
+		const instance = router();
+		expect(instance.routeKey(shiftEnter)).toBe(LEGACY_LINE_BREAK);
+		instance.setComposing(true);
+		expect(instance.isComposing).toBe(true);
+		expect(instance.routeKey(shiftEnter)).toBeNull();
+		expect(instance.routeKey({ ...shiftEnter, shiftKey: false })).toBeNull();
+		instance.setComposing(false);
+		expect(instance.routeKey(shiftEnter)).toBe(LEGACY_LINE_BREAK);
+	});
+
+	it('honours the event flags even when nothing told it (ghostty-web)', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...shiftEnter, isComposing: true })).toBeNull();
+		expect(instance.routeKey({ ...shiftEnter, keyCode: 229 })).toBeNull();
+	});
+});

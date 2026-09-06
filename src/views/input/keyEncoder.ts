@@ -36,6 +36,32 @@ export interface KeyEventLike {
 	altKey: boolean;
 	ctrlKey: boolean;
 	metaKey: boolean;
+	/**
+	 * DOM `KeyboardEvent.isComposing` (#49): true for every keydown that belongs
+	 * to an input-method composition, Enter included.
+	 */
+	isComposing?: boolean;
+	/**
+	 * Legacy `KeyboardEvent.keyCode`. 229 is the "processing key" every browser
+	 * still reports during a composition, and it is the only signal on a keydown
+	 * that a broken IME leaves `isComposing` false for.
+	 */
+	keyCode?: number;
+}
+
+/** The `keyCode` a browser reports for a keydown an IME is processing. */
+export const IME_PROCESSING_KEY_CODE = 229;
+
+/**
+ * True while an input method owns the keystroke (#49).
+ *
+ * xterm.js calls our custom key handler *before* its composition helper, so a
+ * composing Enter — the one that commits a CJK candidate — reaches `encodeKey`
+ * and would be turned into a line break by #18's rule. ghostty-web returns early
+ * on the same condition and never asks, so the check costs it nothing.
+ */
+export function isComposingKey(event: KeyEventLike): boolean {
+	return event.isComposing === true || event.keyCode === IME_PROCESSING_KEY_CODE;
 }
 
 /** Modifier bits of the kitty `modifiers` field, before the mandatory `+ 1`. */
@@ -137,6 +163,10 @@ export function encodeKey(
 	state: TerminalModeState,
 	options: KeyEncodingOptions = DEFAULT_KEY_ENCODING_OPTIONS,
 ): string | null {
+	// #49: during an IME composition every key belongs to the input method.
+	// Enter commits the candidate; encoding it as a line break would eat the
+	// commit, and any other encoding here would double the composed text.
+	if (isComposingKey(event)) return null;
 	if (options.shiftEnterLineBreak && isLineBreakEnter(event)) {
 		return kittyActive(state) ? (encodeKittyKey(event) ?? LEGACY_LINE_BREAK) : LEGACY_LINE_BREAK;
 	}
