@@ -45,6 +45,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,
+		splitIntoFolderTab: true,
 		panesPerTab: 2,
 		folderHoverButton: true,
 		extraPath: '',
@@ -556,6 +557,21 @@ describe('HerdrActions.startAgentHere splitting an existing tab (issue #29)', ()
 	it('creates a tab instead once the cap is reached', async () => {
 		const f = fake({
 			settings: settings({ panesPerTab: 1 }),
+			agentPanes: [{ paneId: 'w4:p1', tabId: 'w4:t1', cwd: NOTES }],
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': {},
+			},
+		});
+		const started = await f.actions.startAgentHere(NOTES);
+		expect(started?.paneId).toBe('w4:p9');
+		expect(f.calls.some((c) => c.method === 'pane.split')).toBe(false);
+	});
+
+	it('creates a tab when sharing a folder tab is switched off', async () => {
+		const f = fake({
+			settings: settings({ splitIntoFolderTab: false, panesPerTab: 4 }),
 			agentPanes: [{ paneId: 'w4:p1', tabId: 'w4:t1', cwd: NOTES }],
 			responses: {
 				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },

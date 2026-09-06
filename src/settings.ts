@@ -161,8 +161,15 @@ export interface HerdrSettings {
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
+	 * Whether "Start agent here" may split a herdr tab that already holds an
+	 * agent for the same folder (issue #29). Off means every agent gets its own
+	 * tab, which maps one-to-one onto how herdr itself is navigated.
+	 */
+	splitIntoFolderTab: boolean;
+	/**
 	 * How many agent panes "Start agent here" puts in one herdr tab before it
-	 * opens another tab. See {@link clampPanesPerTab}.
+	 * opens another tab, when {@link HerdrSettings.splitIntoFolderTab} is on.
+	 * See {@link clampPanesPerTab}.
 	 */
 	panesPerTab: number;
 	/**
@@ -270,6 +277,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
+	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
 	folderHoverButton: true,
 	extraPath: '',
@@ -618,20 +626,34 @@ export class HerdrSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Panes per herdr tab')
+			.setName('Share a herdr tab between agents in the same folder')
 			.setDesc(
-				'How many agents "Start agent here" puts in one herdr tab before it opens another. A second agent in the same folder splits that folder’s tab; set this to 1 to always get a new tab. Group the agent list by folder to keep a folder’s agents together whichever tab they landed in.',
+				'On: a second agent started in a folder splits that folder’s herdr tab instead of opening another tab. Off: every agent gets its own tab, matching how herdr is navigated. Group the agent list by folder to keep a folder’s agents together either way.',
 			)
-			.addSlider((slider) =>
-				slider
-					.setLimits(MIN_PANES_PER_TAB, MAX_PANES_PER_TAB, 1)
-					.setValue(clampPanesPerTab(settings.panesPerTab))
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						settings.panesPerTab = clampPanesPerTab(value);
-						await this.save();
-					}),
+			.addToggle((toggle) =>
+				toggle.setValue(settings.splitIntoFolderTab).onChange(async (value) => {
+					settings.splitIntoFolderTab = value;
+					await this.save();
+					// The cap below only means something while sharing is on.
+					this.display();
+				}),
 			);
+
+		if (settings.splitIntoFolderTab) {
+			new Setting(containerEl)
+				.setName('Panes per herdr tab')
+				.setDesc('How many agents share one herdr tab before the next one opens a new tab.')
+				.addSlider((slider) =>
+					slider
+						.setLimits(MIN_PANES_PER_TAB, MAX_PANES_PER_TAB, 1)
+						.setValue(clampPanesPerTab(settings.panesPerTab))
+						.setDynamicTooltip()
+						.onChange(async (value) => {
+							settings.panesPerTab = clampPanesPerTab(value);
+							await this.save();
+						}),
+				);
+		}
 
 		new Setting(containerEl).setName('File explorer').setHeading();
 

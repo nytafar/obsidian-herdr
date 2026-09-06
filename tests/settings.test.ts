@@ -190,6 +190,7 @@ describe('terminalTab (issue #38)', () => {
 
 describe('panes per tab (issue #29)', () => {
 	it('defaults to two, so the second agent in a folder splits its tab', () => {
+		expect(DEFAULT_SETTINGS.splitIntoFolderTab).toBe(true);
 		expect(DEFAULT_SETTINGS.panesPerTab).toBe(2);
 		expect(DEFAULT_PANES_PER_TAB).toBe(2);
 	});

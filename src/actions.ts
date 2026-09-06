@@ -367,11 +367,10 @@ export class HerdrActions {
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 
-		const target = chooseSplitTarget(
-			this.host.agentPanes(),
-			folderAbsPath,
-			settings.panesPerTab,
-		);
+		// Sharing off: every agent gets its own tab, the herdr way (issue #29).
+		const target: SplitTarget = settings.splitIntoFolderTab
+			? chooseSplitTarget(this.host.agentPanes(), folderAbsPath, settings.panesPerTab)
+			: { kind: 'new-tab' };
 		let tabId = '';
 		let paneId: string | null = null;
 		if (target.kind === 'split') {
