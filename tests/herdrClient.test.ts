@@ -171,6 +171,61 @@ describe('HerdrClient.request', () => {
 		await expect(client.ping()).rejects.toMatchObject({ code: CLIENT_ERROR_CODES.protocol });
 	});
 
+	it('turns an unsupported optional method into null, once (M3)', async () => {
+		const server = await startServer();
+		const unsupported: string[] = [];
+		const client = new HerdrClient({
+			socketPath: server.socketPath,
+			requestTimeoutMs: 2000,
+			onUnsupportedMethod: (method) => unsupported.push(method),
+		});
+		cleanups.push(() => client.dispose());
+		await expect(client.requestOptional('no.such.method', {})).resolves.toBeNull();
+		// Remembered: the second call never reaches the socket, and the user is
+		// told exactly once.
+		const before = server.requests.length;
+		await expect(client.requestOptional('no.such.method', {})).resolves.toBeNull();
+		expect(server.requests.length).toBe(before);
+		expect(unsupported).toEqual(['no.such.method']);
+		expect(client.isUnsupported('no.such.method')).toBe(true);
+	});
+
+	it('still rejects an optional call that failed for another reason', async () => {
+		const server = await startServer({
+			methods: {
+				'session.snapshot': () => {
+					throw new FakeError('internal', 'boom');
+				},
+			},
+		});
+		const client = makeClient(server);
+		await expect(client.snapshot()).rejects.toMatchObject({ code: 'internal' });
+		expect(client.isUnsupported('session.snapshot')).toBe(false);
+	});
+
+	it('reads a session snapshot in one call (PRD section 7)', async () => {
+		const server = await startServer({
+			methods: {
+				'session.snapshot': () => ({
+					type: 'session_snapshot',
+					snapshot: {
+						version: '0.8.0',
+						protocol: 19,
+						workspaces: [],
+						tabs: [],
+						panes: [],
+						layouts: [],
+						agents: [{ pane_id: 'w4:p1', name: 'vault-maintenance' }],
+					},
+				}),
+			},
+		});
+		const client = makeClient(server);
+		const snapshot = await client.snapshot();
+		expect(snapshot?.agents?.[0]?.name).toBe('vault-maintenance');
+		expect(server.requests).toHaveLength(1);
+	});
+
 	it('refuses requests after dispose', async () => {
 		const server = await startServer();
 		const client = makeClient(server);

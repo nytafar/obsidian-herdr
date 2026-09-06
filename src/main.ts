@@ -18,6 +18,9 @@ import { TransitionNotifier, sendOsNotification } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 
+/** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
+const AGENT_NAME_REFRESH_MS = 300;
+
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
 	/** Null until the herdr binary and socket have been discovered. */
@@ -29,6 +32,10 @@ export default class HerdrPlugin extends Plugin {
 	actions!: HerdrActions;
 
 	private discovery: DiscoveryResult | null = null;
+	/** One prime at a time; a reconnect can land while the first is in flight. */
+	private priming = false;
+	/** Pending coalesced `agent.list`, 0 when none. */
+	private agentNameTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
 	private connectError: string | null = null;
 	private notifier!: TransitionNotifier;
@@ -89,6 +96,8 @@ export default class HerdrPlugin extends Plugin {
 		const tunnel = this.tunnel;
 		this.tunnel = null;
 		void tunnel?.stop();
+		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
+		this.agentNameTimer = 0;
 		this.statusBarEl = null;
 	}
 
@@ -192,13 +201,9 @@ export default class HerdrPlugin extends Plugin {
 				if (!client) return Promise.reject(new Error('not connected to herdr'));
 				return client.request<T>(method, params);
 			},
-			takenAgentNames: () => {
-				const names = new Set<string>();
-				for (const pane of this.scope?.list() ?? []) {
-					if (pane.label) names.add(pane.label);
-				}
-				return names;
-			},
+			// Real agent names from `agent.list`, session-wide: herdr rejects a
+			// duplicate name anywhere, not just in this workspace (PRD M20).
+			takenAgentNames: () => this.scope?.agentNames() ?? new Set<string>(),
 			vaultName: () => this.app.vault.getName(),
 			notice: (message: string) => {
 				new Notice(message);
@@ -387,6 +392,10 @@ export default class HerdrPlugin extends Plugin {
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
 			},
+			// PRD M3: an unsupported method disables one feature, loudly but once.
+			onUnsupportedMethod: (method) => {
+				new Notice(`Herdr: this herdr does not support ${method}, so that feature is off.`);
+			},
 		});
 		this.client = client;
 
@@ -403,7 +412,12 @@ export default class HerdrPlugin extends Plugin {
 			this.notifier.onChanged(prev, next);
 			this.updateStatusBar();
 		});
-		scope.on('added', () => this.updateStatusBar());
+		scope.on('added', () => {
+			this.updateStatusBar();
+			// A pane that just gained an agent has no name yet: names are not on
+			// the event stream, only in `agent.list` (PRD M8).
+			this.refreshAgentNames();
+		});
 		scope.on('removed', (pane) => {
 			this.notifier.forget(pane.paneId);
 			this.updateStatusBar();
@@ -411,6 +425,14 @@ export default class HerdrPlugin extends Plugin {
 		scope.on('workspaceResolved', () => {
 			this.notifier.reset();
 			this.updateStatusBar();
+			this.refreshAgentNames();
+		});
+
+		// The stream is the only thing that knows it dropped, so re-prime from its
+		// `connected` edge: panes closed during an outage would otherwise stay
+		// listed forever (PRD M4).
+		client.on('connected', () => {
+			void this.primeScope();
 		});
 
 		try {
@@ -418,12 +440,63 @@ export default class HerdrPlugin extends Plugin {
 			// Subscribe before the first listing so nothing is missed in between.
 			client.on('*', (event) => scope.ingest(event));
 			client.subscribe([...SCOPE_SUBSCRIPTIONS]);
-			scope.prime(await client.listWorkspaces(), await client.listPanes());
-			this.updateStatusBar();
+			await this.primeScope();
 		} catch (error) {
 			this.connectError = (error as Error).message;
 			new Notice(`Herdr: ${this.connectError}`);
 		}
+	}
+
+	/**
+	 * Loads workspaces, panes and agent names into the scope.
+	 *
+	 * `session.snapshot` carries all three in one round trip (PRD section 7); a
+	 * server that does not know the method falls back to the three list calls
+	 * (PRD M3). Runs on the first connect and on every event-stream reconnect,
+	 * and `prime` diffs rather than resets, so a re-prime is invisible unless
+	 * something actually changed while the stream was down.
+	 */
+	private async primeScope(): Promise<void> {
+		const client = this.client;
+		const scope = this.scope;
+		if (!client || !scope || this.priming) return;
+		this.priming = true;
+		try {
+			const snapshot = await client.snapshot();
+			// Names first: `prime` reads them when it builds the pane states.
+			if (snapshot) {
+				scope.setAgentNames(snapshot.agents ?? []);
+				scope.prime(snapshot.workspaces ?? [], snapshot.panes ?? []);
+			} else {
+				scope.setAgentNames(await client.listAgents());
+				scope.prime(await client.listWorkspaces(), await client.listPanes());
+			}
+			this.connectError = null;
+		} catch (error) {
+			this.connectError = (error as Error).message;
+		} finally {
+			this.priming = false;
+		}
+		this.updateStatusBar();
+	}
+
+	/**
+	 * Coalesced `agent.list`. Agent names are the one thing the event stream
+	 * never carries, so they are re-read after the scope changes shape rather
+	 * than on a timer. A failure is cosmetic: rows fall back to the title.
+	 */
+	private refreshAgentNames(): void {
+		if (this.agentNameTimer) return;
+		this.agentNameTimer = window.setTimeout(() => {
+			this.agentNameTimer = 0;
+			const client = this.client;
+			const scope = this.scope;
+			if (!client || !scope) return;
+			void client.listAgents().then(
+				(agents) => scope.setAgentNames(agents),
+				() => undefined,
+			);
+		}, AGENT_NAME_REFRESH_MS);
 	}
 
 	/**

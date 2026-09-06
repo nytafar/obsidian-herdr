@@ -51,6 +51,14 @@ export interface TabGroup {
 	panes: PaneState[];
 }
 
+/**
+ * What a row calls an agent (PRD M8): its herdr name, else the stripped terminal
+ * title, else the pane id. Never `pane.agent`, which is only the kind.
+ */
+export function agentDisplayName(pane: PaneState): string {
+	return pane.name.trim() || pane.title.trim() || pane.paneId;
+}
+
 /** Counts the statuses the status bar cares about (PRD S11). */
 export function countStatuses(panes: readonly PaneState[]): { blocked: number; done: number } {
 	let blocked = 0;
@@ -225,8 +233,14 @@ export class AgentListView extends ItemView {
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
-		line.createSpan({ cls: 'herdr-agent-name', text: pane.label || pane.agent });
-		if (pane.title) line.createSpan({ cls: 'herdr-agent-title', text: pane.title });
+		// `pane.agent` is the kind ("claude") and is the same on every row, so it
+		// is never the name: the agent's own name comes from `agent.list`
+		// (scope.setAgentNames), then the stripped title, then the pane id.
+		const name = agentDisplayName(pane);
+		line.createSpan({ cls: 'herdr-agent-name', text: name });
+		if (pane.title && pane.title !== name) {
+			line.createSpan({ cls: 'herdr-agent-title', text: pane.title });
+		}
 		const cwd = relativeCwd(pane.cwd, vaultPath);
 		if (cwd) text.createDiv({ cls: 'herdr-agent-cwd', text: cwd });
 
@@ -269,18 +283,22 @@ export class AgentListView extends ItemView {
 	/**
 	 * Fills in tab labels with one read-only `tab.list`. Rows fall back to the
 	 * tab id until this lands, so a failure here is cosmetic and stays silent.
+	 * `tab.list` is optional (PRD M3): a herdr without it says so once through
+	 * the client's `onUnsupportedMethod` notice, and `requestOptional` then
+	 * returns null for good, so this stops asking.
 	 */
 	private async refreshTabLabels(): Promise<void> {
 		const client = this.plugin.client;
 		const workspaceId = this.plugin.scope?.workspaceId;
 		if (!client || !workspaceId || this.tabLabelsInFlight) return;
+		if (client.isUnsupported('tab.list')) return;
 		this.tabLabelsInFlight = true;
 		try {
-			const result = await client.request<{ tabs?: TabInfo[] }>('tab.list', {
+			const result = await client.requestOptional<{ tabs?: TabInfo[] }>('tab.list', {
 				workspace_id: workspaceId,
 			});
 			const labels = new Map<string, string>();
-			for (const tab of result.tabs ?? []) {
+			for (const tab of result?.tabs ?? []) {
 				if (typeof tab?.tab_id !== 'string') continue;
 				// Live `tab.list` labels carry herdr's own status prefix ("! trauma",
 				// "? vault-maintenance"); the row's status dot already says that.

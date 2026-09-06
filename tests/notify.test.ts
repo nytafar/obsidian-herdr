@@ -18,6 +18,7 @@ function pane(status: AgentStatus, overrides: Partial<PaneState> = {}): PaneStat
 		workspaceId: 'w4',
 		tabId: 'w4:t1',
 		agent: 'claude',
+		name: '',
 		agentStatus: status,
 		title: 'hvelv notes',
 		label: '',
@@ -76,7 +77,10 @@ describe('isNotifiedTransition', () => {
 });
 
 describe('paneName', () => {
-	it('prefers the label, then the title, then the id', () => {
+	it('prefers the agent name, then the label, then the title, then the id', () => {
+		expect(paneName(pane('done', { name: 'vault-maintenance', label: 'agent-a' }))).toBe(
+			'vault-maintenance',
+		);
 		expect(paneName(pane('done', { label: 'agent-a' }))).toBe('agent-a');
 		expect(paneName(pane('done', { label: '  ' }))).toBe('hvelv notes');
 		expect(paneName(pane('done', { label: '', title: '' }))).toBe('w4:p1');

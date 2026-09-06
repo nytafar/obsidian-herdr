@@ -19,7 +19,7 @@
  */
 
 import type { HerdrEvent } from './client';
-import type { AgentStatus, PaneInfo, WorkspaceInfo } from './types.gen';
+import type { AgentInfo, AgentStatus, PaneInfo, WorkspaceInfo } from './types.gen';
 
 /** Subscriptions the scope needs to stay current. */
 export const SCOPE_SUBSCRIPTIONS = [
@@ -50,6 +50,13 @@ export interface PaneState {
 	tabId: string;
 	/** Never null here: non-agent panes are not tracked (PRD M7). */
 	agent: string;
+	/**
+	 * The agent's own name, e.g. `vault-maintenance`. Only `agent.list` and
+	 * `session.snapshot` carry it — `PaneInfo.label` is null for a named agent
+	 * and `PaneInfo.agent` is just the kind ("claude"). Empty until a name
+	 * lookup has landed, or for an agent herdr never named.
+	 */
+	name: string;
 	agentStatus: AgentStatus;
 	/** `terminal_title_stripped`, falling back to `terminal_title`. */
 	title: string;
@@ -89,6 +96,7 @@ export interface ScopeOptions {
 /** Fields whose change is worth re-rendering a row for (PRD N4). */
 const RELEVANT: (keyof PaneState)[] = [
 	'agentStatus',
+	'name',
 	'title',
 	'label',
 	'tabId',
@@ -137,11 +145,15 @@ function stringField(data: Record<string, unknown>, key: string): string | null 
 	return typeof value === 'string' ? value : null;
 }
 
-/** Projects a `PaneInfo` onto the fields the plugin uses. */
-export function toPaneState(pane: PaneInfo): PaneState | null {
+/**
+ * Projects a `PaneInfo` onto the fields the plugin uses. `name` comes from a
+ * separate `agent.list` / `session.snapshot` lookup, so it is passed in.
+ */
+export function toPaneState(pane: PaneInfo, name = ''): PaneState | null {
 	if (typeof pane.agent !== 'string' || pane.agent.length === 0) return null;
 	return {
 		paneId: pane.pane_id,
+		name,
 		workspaceId: pane.workspace_id,
 		tabId: pane.tab_id,
 		agent: pane.agent,
@@ -219,6 +231,12 @@ export class WorkspaceScope {
 	private workspaces: WorkspaceInfo[] = [];
 	/** Last `pane.list`, kept so a later re-resolve can still use the cwd rule. */
 	private lastPaneList: PaneInfo[] = [];
+	/**
+	 * pane id → agent name, for every agent herdr knows, not just the scoped
+	 * workspace: `agent.start` rejects a duplicate name session-wide, so the
+	 * collision check needs them all (PRD M20).
+	 */
+	private names = new Map<string, string>();
 	private resolvedId: string | null = null;
 	private resolutionMethod: ResolutionMethod = 'none';
 	/** Handler tuples differ per event, so the table is untyped and `on` re-narrows. */
@@ -253,6 +271,33 @@ export class WorkspaceScope {
 
 	get size(): number {
 		return this.panes.size;
+	}
+
+	/**
+	 * Feeds in `agent.list` (or `session.snapshot().agents`). Names live outside
+	 * `PaneInfo`, so this is the only way a row can show one. Panes in scope
+	 * whose name changed emit `changed`, which is what repaints the list.
+	 */
+	setAgentNames(agents: readonly AgentInfo[]): void {
+		const names = new Map<string, string>();
+		for (const agent of agents) {
+			if (typeof agent?.pane_id !== 'string') continue;
+			const name = typeof agent.name === 'string' ? agent.name.trim() : '';
+			if (name) names.set(agent.pane_id, name);
+		}
+		this.names = names;
+		for (const [paneId, state] of this.panes) {
+			const name = names.get(paneId) ?? '';
+			if (state.name === name) continue;
+			const next = { ...state, name };
+			this.panes.set(paneId, next);
+			this.emit('changed', paneId, state, next);
+		}
+	}
+
+	/** Every agent name herdr currently knows, for `agent.start` uniqueness. */
+	agentNames(): Set<string> {
+		return new Set(this.names.values());
 	}
 
 	on<K extends keyof ScopeEventMap>(
@@ -299,7 +344,7 @@ export class WorkspaceScope {
 		if (workspaceId !== null) {
 			for (const pane of panes) {
 				if (pane.workspace_id !== workspaceId) continue;
-				const state = toPaneState(pane);
+				const state = toPaneState(pane, this.names.get(pane.pane_id) ?? '');
 				if (state) next.set(state.paneId, state);
 			}
 		}
@@ -434,7 +479,7 @@ export class WorkspaceScope {
 	private upsert(pane: PaneInfo): void {
 		const previous = this.panes.get(pane.pane_id);
 		const inScope = this.resolvedId !== null && pane.workspace_id === this.resolvedId;
-		const state = inScope ? toPaneState(pane) : null;
+		const state = inScope ? toPaneState(pane, this.names.get(pane.pane_id) ?? '') : null;
 
 		if (!state) {
 			// Moved out of scope, or the agent was released: it leaves the list.
