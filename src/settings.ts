@@ -1,5 +1,7 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
+import type { DiscoveryResult } from './herdr/binary';
+import type { ProtocolMismatch } from './herdr/client';
 
 /** Agent kinds herdr can start. Source of truth is `agent.start --help`. */
 export const AGENT_KINDS = [
@@ -102,10 +104,108 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 };
 
 /**
+ * Why the remote profile cannot turn a vault folder into a remote cwd, or null
+ * when it can (PRD S5, M19).
+ *
+ * With the remote profile on and `remoteVaultPath` empty, path resolution falls
+ * back to the local base path, which would hand a macOS path to a Linux host.
+ * Refusing beats silently running an agent in the wrong (or a non-existent)
+ * directory, so both the folder actions and the settings status ask this.
+ */
+export function remoteVaultPathIssue(settings: HerdrSettings): string | null {
+	const remote = settings.remote;
+	if (!remote.enabled) return null;
+	if (remote.remoteVaultPath.trim()) return null;
+	return 'the remote profile has no remote vault path, so folder paths cannot be resolved on the remote host';
+}
+
+/**
  * Renders connection status at the top of the settings tab. The plugin owns the
  * connection, so it supplies this; the tab only gives it a container.
  */
 export type RenderStatus = (el: HTMLElement) => void;
+
+/** The live connection state {@link renderConnectionStatus} describes. */
+export interface ConnectionStatus {
+	/** Binary and socket discovery, or null before the first connect attempt. */
+	discovery: DiscoveryResult | null;
+	/** Socket the client actually uses; the tunnel's local end when remote. */
+	socketPath: string;
+	/** SSH forward state, or null when no tunnel was started. */
+	tunnel: { text: string; connected: boolean } | null;
+	mismatch: ProtocolMismatch | null;
+	/** Scoped workspace, or null when none matches this vault. */
+	workspace: { id: string; label: string | null; method: string; agentCount: number } | null;
+	/** Last connect or prime failure. */
+	error: string | null;
+}
+
+/**
+ * The status block at the top of the settings tab (PRD M1-M3, M6, S5). Pure
+ * rendering: `main.ts` gathers the state and this decides what to say about it.
+ */
+export function renderConnectionStatus(
+	el: HTMLElement,
+	settings: HerdrSettings,
+	status: ConnectionStatus,
+): void {
+	const line = (text: string, warning = false): void => {
+		el.createEl('p', {
+			cls: warning ? 'herdr-status-text mod-warning' : 'herdr-status-text',
+			text,
+		});
+	};
+	const { discovery } = status;
+	if (!discovery) {
+		line('Not connected yet.');
+		return;
+	}
+	const remote = settings.remote;
+	if (status.tunnel) {
+		line(status.tunnel.text, !status.tunnel.connected);
+	} else if (remote.enabled) {
+		line('SSH tunnel: not started.', true);
+	}
+	if (discovery.binary) {
+		line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
+	} else {
+		// A remote profile only needs `ssh` locally, so this is not fatal there.
+		line(discovery.error ?? 'Herdr binary not found.', !remote.enabled);
+		if (!remote.enabled) return;
+	}
+	if (remote.enabled) {
+		line(`Remote terminals: ssh -T ${remote.host} ${remote.remoteBinary}`);
+		// Without it the folder actions refuse rather than send a local path to
+		// the remote host (see `remoteVaultPathIssue`).
+		const issue = remoteVaultPathIssue(settings);
+		if (issue) line(`Folder actions are off: ${issue}.`, true);
+	}
+	line(`Socket: ${status.socketPath}`);
+	// `discovery.status` describes the *local* server. With a remote profile
+	// that is the wrong machine, so the tunnel line above stands in for it.
+	if (!remote.enabled) {
+		const server = discovery.status;
+		line(
+			server
+				? `Server: ${server.status}, version ${server.version ?? 'unknown'}, protocol ${server.protocol ?? 'unknown'}`
+				: `Server: not reachable (${discovery.error ?? 'unknown error'})`,
+			!server,
+		);
+	}
+	if (status.mismatch) {
+		line(
+			`Protocol mismatch: herdr speaks ${status.mismatch.server}, this plugin was built against ${status.mismatch.expected}. Everything still works unless a method is missing.`,
+			true,
+		);
+	}
+	if (status.workspace) {
+		const { id, label, method, agentCount } = status.workspace;
+		line(`Workspace: ${label ?? id} (${id}, matched by ${method}), ${agentCount} agent panes`);
+	} else {
+		line('Workspace: no herdr workspace matches this vault yet.', true);
+	}
+	if (status.error) line(status.error, true);
+}
 
 export class HerdrSettingTab extends PluginSettingTab {
 	private readonly plugin: HerdrPlugin;

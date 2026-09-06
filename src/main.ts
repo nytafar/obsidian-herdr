@@ -8,7 +8,13 @@ import {
 	TFolder,
 	type WorkspaceLeaf,
 } from 'obsidian';
-import { DEFAULT_SETTINGS, HerdrSettings, HerdrSettingTab } from './settings';
+import {
+	DEFAULT_SETTINGS,
+	HerdrSettingTab,
+	renderConnectionStatus,
+	type ConnectionStatus,
+	type HerdrSettings,
+} from './settings';
 import { discoverHerdr, type DiscoveryResult } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
@@ -60,7 +66,9 @@ export default class HerdrPlugin extends Plugin {
 			},
 		});
 		this.addSettingTab(
-			new HerdrSettingTab(this.app, this, (el) => this.renderStatus(el)),
+			new HerdrSettingTab(this.app, this, (el) =>
+				renderConnectionStatus(el, this.settings, this.connectionStatus()),
+			),
 		);
 
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
@@ -523,60 +531,26 @@ export default class HerdrPlugin extends Plugin {
 		return await tunnel.start();
 	}
 
-	/** Connection status shown at the top of the settings tab (PRD M1-M3, M6). */
-	private renderStatus(el: HTMLElement): void {
-		const line = (text: string, warning = false): void => {
-			el.createEl('p', { cls: warning ? 'herdr-status-text mod-warning' : 'herdr-status-text', text });
-		};
-		const discovery = this.discovery;
-		if (!discovery) {
-			line('Not connected yet.');
-			return;
-		}
-		const remote = this.settings.remote;
-		const tunnel = this.tunnel;
-		if (tunnel) {
-			line(tunnel.statusText, tunnel.status.state !== 'connected');
-		} else if (remote.enabled) {
-			line('SSH tunnel: not started.', true);
-		}
-		if (discovery.binary) {
-			line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
-		} else {
-			// A remote profile only needs `ssh` locally, so this is not fatal there.
-			line(discovery.error ?? 'Herdr binary not found.', !remote.enabled);
-			if (!remote.enabled) return;
-		}
-		if (remote.enabled) {
-			line(`Remote terminals: ssh -T ${remote.host} ${remote.remoteBinary}`);
-		}
-		line(`Socket: ${this.client?.socket ?? discovery.socketPath}`);
-		// `discovery.status` describes the *local* server. With a remote profile
-		// that is the wrong machine, so the tunnel line above stands in for it.
-		const status = discovery.status;
-		if (!remote.enabled) {
-			line(
-				status
-					? `Server: ${status.status}, version ${status.version ?? 'unknown'}, protocol ${status.protocol ?? 'unknown'}`
-					: `Server: not reachable (${discovery.error ?? 'unknown error'})`,
-				!status,
-			);
-		}
-		const mismatch = this.mismatch ?? this.client?.lastMismatch ?? null;
-		if (mismatch) {
-			line(
-				`Protocol mismatch: herdr speaks ${mismatch.server}, this plugin was built against ${mismatch.expected}. Everything still works unless a method is missing.`,
-				true,
-			);
-		}
+	/** State the settings tab's status block describes (rendered in settings.ts). */
+	private connectionStatus(): ConnectionStatus {
 		const scope = this.scope;
-		if (scope?.workspaceId) {
-			line(
-				`Workspace: ${scope.workspaceLabel ?? scope.workspaceId} (${scope.workspaceId}, matched by ${scope.method}), ${scope.size} agent panes`,
-			);
-		} else {
-			line('Workspace: no herdr workspace matches this vault yet.', true);
-		}
-		if (this.connectError) line(this.connectError, true);
+		const tunnel = this.tunnel;
+		return {
+			discovery: this.discovery,
+			socketPath: this.client?.socket ?? this.discovery?.socketPath ?? '',
+			tunnel: tunnel
+				? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' }
+				: null,
+			mismatch: this.mismatch ?? this.client?.lastMismatch ?? null,
+			workspace: scope?.workspaceId
+				? {
+						id: scope.workspaceId,
+						label: scope.workspaceLabel,
+						method: scope.method,
+						agentCount: scope.size,
+					}
+				: null,
+			error: this.connectError,
+		};
 	}
 }

@@ -17,7 +17,7 @@
  * {@link ActionHost}, and the module stays unit testable against a fake client.
  */
 
-import type { HerdrSettings } from './settings';
+import { remoteVaultPathIssue, type HerdrSettings } from './settings';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
 
@@ -37,7 +37,7 @@ export interface ActionHost {
 	workspaceId(): string | null;
 	/** One JSON API call. Rejects with `HerdrError`. */
 	request<T>(method: string, params: unknown): Promise<T>;
-	/** Agent names already in use in this workspace, for uniqueness. */
+	/** Agent names herdr already uses session-wide, for uniqueness (M20). */
 	takenAgentNames(): Set<string>;
 	/** Vault folder name, for the `{vault}` placeholder. */
 	vaultName(): string;
@@ -335,13 +335,23 @@ export class HerdrActions {
 		}
 	}
 
-	/** True when there is a workspace to act in; otherwise it explains why not. */
+	/**
+	 * True when the action can run: a workspace to act in, and a path root that
+	 * belongs to the machine herdr runs on. Otherwise it explains why not.
+	 */
 	private guard(workspaceId: string | null): workspaceId is string {
-		if (workspaceId) return true;
-		this.host.notice(
-			'Herdr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
-		);
-		return false;
+		if (!workspaceId) {
+			this.host.notice(
+				'Herdr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
+			);
+			return false;
+		}
+		const issue = remoteVaultPathIssue(this.host.settings());
+		if (issue) {
+			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
+			return false;
+		}
+		return true;
 	}
 
 	private reportFailure(what: string, error: unknown): void {

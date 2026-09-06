@@ -240,6 +240,26 @@ describe('HerdrActions.newTabHere', () => {
 		expect(f.notices[0]).toContain('no herdr workspace');
 	});
 
+	it('refuses when a remote profile has no remote vault path (S5, M19)', async () => {
+		const f = fake({
+			settings: settings({
+				remote: {
+					enabled: true,
+					host: 'lasse@xl',
+					remoteSocketPath: '',
+					remoteBinary: '',
+					remoteVaultPath: '   ',
+				},
+			}),
+		});
+		// A local macOS path would otherwise be sent to the Linux host.
+		expect(await f.actions.newTabHere('/Users/lasse/Vaults/hvelv/notes')).toBeNull();
+		expect(await f.actions.splitHere('/Users/lasse/Vaults/hvelv/notes')).toBeNull();
+		expect(await f.actions.startAgentHere('/Users/lasse/Vaults/hvelv/notes')).toBeNull();
+		expect(f.calls).toHaveLength(0);
+		expect(f.notices.join(' ')).toMatch(/remote vault path/);
+	});
+
 	it('reports a herdr error as a notice', async () => {
 		const f = fake({
 			responses: { 'tab.create': () => new HerdrError('tab_create_failed', 'no space left') },
