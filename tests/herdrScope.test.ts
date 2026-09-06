@@ -502,6 +502,9 @@ describe('WorkspaceScope.ingest', () => {
 		const rec = record(scope);
 		scope.ingest(event('workspace_renamed', { workspace_id: 'w4', label: 'hvelv' }));
 		expect(rec.resolved).toEqual([{ workspaceId: 'w4', method: 'label' }]);
+		// The workspace's existing panes arrive in the same step as the identity.
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['w4:p1']);
 	});
 
 	it('resolves when a matching workspace is created later', () => {
@@ -520,6 +523,15 @@ describe('WorkspaceScope.ingest', () => {
 		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
 		expect(rec.resolved).toEqual([{ workspaceId: null, method: 'none' }]);
 		expect(scope.workspaceId).toBeNull();
+	});
+
+	it('resolves and populates from a workspace_updated that changes the label', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('w4', 'scratch')], [pane({ pane_id: 'w4:p1', cwd: '/tmp' })]);
+		const rec = record(scope);
+		scope.ingest(event('workspace_updated', { workspace: workspace('w4', 'hvelv') }));
+		expect(rec.resolved).toEqual([{ workspaceId: 'w4', method: 'label' }]);
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
 	});
 
 	it('ignores malformed and unknown events', () => {
@@ -556,5 +568,253 @@ describe('WorkspaceScope.ingest', () => {
 			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'done' }) }),
 		);
 		expect(seen).toEqual([]);
+	});
+});
+
+/**
+ * Identity and membership move together (issue #58). These mirror the
+ * invariants in `docs/reviews/2026-09-06/scope-repros.mjs`; the review found
+ * all three failing against a scope that changed `workspaceId` without touching
+ * the pane map and resolved against a frozen `pane.list` snapshot.
+ */
+describe('WorkspaceScope re-resolution keeps the collection in step (#58)', () => {
+	function members(scope: WorkspaceScope): [string, string][] {
+		return scope.list().map((state) => [state.paneId, state.workspaceId]);
+	}
+
+	function twoWorkspaces(): { scope: WorkspaceScope; rec: Recorded } {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('wA', 'hvelv'), workspace('wB', 'other')],
+			[
+				pane({ pane_id: 'pa', workspace_id: 'wA', cwd: '/elsewhere' }),
+				pane({ pane_id: 'pb', workspace_id: 'wB', cwd: '/elsewhere' }),
+			],
+		);
+		expect(members(scope)).toEqual([['pa', 'wA']]);
+		return { scope, rec: record(scope) };
+	}
+
+	it('renaming the matching workspace away removes its panes', () => {
+		const { scope, rec } = twoWorkspaces();
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'old' }));
+		expect(scope.workspaceId).toBeNull();
+		expect(scope.method).toBe('none');
+		expect(members(scope)).toEqual([]);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['pa']);
+		expect(rec.resolved).toEqual([{ workspaceId: null, method: 'none' }]);
+	});
+
+	it('renaming another workspace into scope replaces the pane collection', () => {
+		const { scope, rec } = twoWorkspaces();
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'old' }));
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wB', label: 'hvelv' }));
+		expect(scope.workspaceId).toBe('wB');
+		expect(members(scope)).toEqual([['pb', 'wB']]);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['pa']);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['pb']);
+		expect(rec.resolved).toEqual([
+			{ workspaceId: null, method: 'none' },
+			{ workspaceId: 'wB', method: 'label' },
+		]);
+	});
+
+	it('swaps the collection in one step when the label moves straight to another workspace', () => {
+		const { scope, rec } = twoWorkspaces();
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wB', label: 'hvelv' }));
+		// Two exact label matches: the first in list order still wins, so nothing moves...
+		expect(scope.workspaceId).toBe('wA');
+		expect(rec.resolved).toHaveLength(0);
+		// ...until A stops matching, and then B's panes replace A's atomically.
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'old' }));
+		expect(scope.workspaceId).toBe('wB');
+		expect(members(scope)).toEqual([['pb', 'wB']]);
+		expect(rec.resolved).toEqual([{ workspaceId: 'wB', method: 'label' }]);
+		// Every pane the views were told about is accounted for: none from A survive.
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['pa']);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['pb']);
+	});
+
+	it('a newly created in-vault pane enables cwd fallback resolution', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('wA', 'other')], []);
+		expect(scope.workspaceId).toBeNull();
+		const rec = record(scope);
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'pa', workspace_id: 'wA' }) }));
+		expect(scope.workspaceId).toBe('wA');
+		expect(scope.method).toBe('cwd');
+		expect(members(scope)).toEqual([['pa', 'wA']]);
+		expect(rec.resolved).toEqual([{ workspaceId: 'wA', method: 'cwd' }]);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['pa']);
+	});
+
+	it('a cwd change into the vault enables cwd fallback resolution', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('wA', 'other')],
+			[pane({ pane_id: 'pa', workspace_id: 'wA', cwd: '/tmp' })],
+		);
+		expect(scope.workspaceId).toBeNull();
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'pa', workspace_id: 'wA', cwd: `${VAULT}/n` }),
+			}),
+		);
+		expect(scope.workspaceId).toBe('wA');
+		expect(members(scope)).toEqual([['pa', 'wA']]);
+	});
+
+	it('a shell pane in the vault resolves the workspace but does not join the list (M7)', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('wA', 'other')], []);
+		scope.ingest(
+			event('pane_created', { pane: pane({ pane_id: 'sh', workspace_id: 'wA', agent: null }) }),
+		);
+		expect(scope.workspaceId).toBe('wA');
+		expect(scope.method).toBe('cwd');
+		expect(members(scope)).toEqual([]);
+		scope.ingest(
+			event('pane_created', { pane: pane({ pane_id: 'pa', workspace_id: 'wA', cwd: '/tmp' }) }),
+		);
+		expect(members(scope)).toEqual([['pa', 'wA']]);
+	});
+
+	it('loses a cwd-resolved workspace when its last in-vault pane leaves or closes', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('wA', 'other')],
+			[
+				pane({ pane_id: 'pa', workspace_id: 'wA' }),
+				pane({ pane_id: 'px', workspace_id: 'wA', cwd: '/tmp' }),
+			],
+		);
+		expect(scope.method).toBe('cwd');
+		expect(members(scope)).toEqual([
+			['pa', 'wA'],
+			['px', 'wA'],
+		]);
+		const rec = record(scope);
+
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'pa', workspace_id: 'wA', cwd: '/tmp' }) }),
+		);
+		expect(scope.workspaceId).toBeNull();
+		expect(members(scope)).toEqual([]);
+		expect(rec.removed.map((state) => state.paneId).sort()).toEqual(['pa', 'px']);
+
+		scope.ingest(event('pane_updated', { pane: pane({ pane_id: 'pa', workspace_id: 'wA' }) }));
+		expect(scope.workspaceId).toBe('wA');
+		expect(members(scope)).toEqual([
+			['pa', 'wA'],
+			['px', 'wA'],
+		]);
+
+		scope.ingest(event('pane_closed', { pane_id: 'pa', workspace_id: 'wA' }));
+		expect(scope.workspaceId).toBeNull();
+		expect(members(scope)).toEqual([]);
+	});
+
+	it('never resurrects a closed pane from stale inventory on a later re-resolution', () => {
+		const { scope } = twoWorkspaces();
+		scope.ingest(event('pane_closed', { pane_id: 'pb', workspace_id: 'wB' }));
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'old' }));
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wB', label: 'hvelv' }));
+		expect(scope.workspaceId).toBe('wB');
+		expect(members(scope)).toEqual([]);
+
+		// A pane that moved and got a new id is not still known under the old one.
+		scope.ingest(
+			event('pane_moved', {
+				pane: pane({ pane_id: 'wA:pa', workspace_id: 'wA', cwd: '/elsewhere' }),
+				previous_pane_id: 'pa',
+				previous_workspace_id: 'wA',
+			}),
+		);
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wB', label: 'other' }));
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'hvelv' }));
+		expect(members(scope)).toEqual([['wA:pa', 'wA']]);
+	});
+
+	it("drops the closed workspace's panes from the inventory too", () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('wA', 'other')], [pane({ pane_id: 'pa', workspace_id: 'wA' })]);
+		expect(scope.method).toBe('cwd');
+		const rec = record(scope);
+		scope.ingest(event('workspace_closed', { workspace_id: 'wA' }));
+		expect(scope.workspaceId).toBeNull();
+		expect(members(scope)).toEqual([]);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['pa']);
+		expect(rec.resolved).toEqual([{ workspaceId: null, method: 'none' }]);
+		// Re-creating the workspace with the same id finds no in-vault pane left.
+		scope.ingest(event('workspace_created', { workspace: workspace('wA', 'other') }));
+		expect(scope.workspaceId).toBeNull();
+	});
+
+	it('falls through to another workspace when a cwd-resolved one closes', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('wA', 'other'), workspace('wB', 'more')],
+			[
+				pane({ pane_id: 'pa', workspace_id: 'wA' }),
+				pane({ pane_id: 'pa2', workspace_id: 'wA' }),
+				pane({ pane_id: 'pb', workspace_id: 'wB' }),
+			],
+		);
+		expect(scope.workspaceId).toBe('wA');
+		const rec = record(scope);
+		scope.ingest(event('workspace_closed', { workspace_id: 'wA' }));
+		expect(scope.workspaceId).toBe('wB');
+		expect(members(scope)).toEqual([['pb', 'wB']]);
+		expect(rec.resolved).toEqual([{ workspaceId: 'wB', method: 'cwd' }]);
+	});
+
+	it('keeps a setting override unresolved after its workspace closes, with an empty list', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT, workspaceId: 'wA' });
+		scope.prime([workspace('wA', 'other')], [pane({ pane_id: 'pa', workspace_id: 'wA' })]);
+		const rec = record(scope);
+		scope.ingest(event('workspace_closed', { workspace_id: 'wA' }));
+		expect(scope.workspaceId).toBeNull();
+		expect(members(scope)).toEqual([]);
+		expect(rec.resolved).toEqual([{ workspaceId: null, method: 'none' }]);
+	});
+
+	it('stays quiet under the pane_updated storm while resolved by cwd (N4)', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime([workspace('wA', 'other')], [pane({ pane_id: 'pa', workspace_id: 'wA' })]);
+		expect(scope.method).toBe('cwd');
+		const rec = record(scope);
+		for (let revision = 2; revision < 40; revision += 1) {
+			scope.ingest(
+				event('pane_updated', {
+					pane: pane({
+						pane_id: 'pa',
+						workspace_id: 'wA',
+						revision,
+						terminal_title_stripped: `${revision % 2 === 0 ? '◐' : '◑'} Same work`,
+						tokens: { cache_ok: '31m', cache_sort: String(4000 - revision) },
+					}),
+				}),
+			);
+		}
+		// One repaint for the title and badge appearing; nothing for the churn.
+		expect(rec.changed).toHaveLength(1);
+		expect(rec.resolved).toHaveLength(0);
+		expect(rec.added).toHaveLength(0);
+		expect(rec.removed).toHaveLength(0);
+	});
+
+	it('re-primes after a reconnect from the fresh list, not from live inventory', () => {
+		const { scope } = twoWorkspaces();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'pa2', workspace_id: 'wA' }) }));
+		expect(members(scope)).toEqual([
+			['pa', 'wA'],
+			['pa2', 'wA'],
+		]);
+		// The reconnect list no longer has pa2: it is gone, whatever the events said.
+		scope.prime([workspace('wA', 'hvelv')], [pane({ pane_id: 'pa', workspace_id: 'wA' })]);
+		expect(members(scope)).toEqual([['pa', 'wA']]);
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'old' }));
+		scope.ingest(event('workspace_renamed', { workspace_id: 'wA', label: 'hvelv' }));
+		expect(members(scope)).toEqual([['pa', 'wA']]);
 	});
 });
