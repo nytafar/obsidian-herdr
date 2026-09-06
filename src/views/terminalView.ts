@@ -102,10 +102,15 @@ export function stateMatchesPane(raw: unknown, paneId: string): boolean {
  * is opened before `agent.list` lands) falls back to its id, so the tab is
  * still identifiable; the view subscribes to `added`/`changed` and re-reads
  * this as soon as a name arrives.
+ *
+ * A view with no pane at all — only a restored layout whose state was lost gets
+ * there — is titled with nothing rather than a fixed "Herdr terminal" (issue
+ * #37): the icon already says which plugin owns the tab, and a constant in the
+ * view header was the one place the header disagreed with the tab.
  */
 export function terminalTabTitle(pane: PaneState | undefined, paneId: string): string {
 	if (pane) return agentDisplayName(pane);
-	return paneId || 'Herdr terminal';
+	return paneId;
 }
 
 /**

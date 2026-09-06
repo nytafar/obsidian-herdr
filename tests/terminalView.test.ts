@@ -98,6 +98,12 @@ describe('terminalTabTitle (issue #36)', () => {
 		// before `agent.list` has answered for it.
 		expect(terminalTabTitle(undefined, 'w4:p1G')).toBe('w4:p1G');
 	});
+
+	it('says nothing at all when there is no pane either (issue #37)', () => {
+		// No fixed "Herdr terminal": the tab and the view header read the same
+		// string, and a constant there disagreed with an empty tab title.
+		expect(terminalTabTitle(undefined, '')).toBe('');
+	});
 });
 
 describe('stateMatchesPane', () => {
