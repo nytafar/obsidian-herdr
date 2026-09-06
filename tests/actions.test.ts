@@ -42,6 +42,8 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalFontFamily: '',
 		terminalTheme: 'obsidian',
 		terminalEngine: 'ghostty-web',
+		terminalCursorStyle: 'block',
+		terminalCursorBlink: true,
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,

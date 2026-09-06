@@ -42,7 +42,7 @@
 
 import { ItemView, Notice, setIcon, setTooltip, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import { scrollbackBytes, type AttachMode } from '../settings';
+import { cursorOptions, scrollbackBytes, type AttachMode } from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
 import {
 	TerminalSession,
@@ -448,6 +448,39 @@ export function summariseStderr(lines: readonly string[]): string | null {
 	return lines.length > 1 ? `${clipped} (+${lines.length - 1} more)` : clipped;
 }
 
+/** What a theme change costs on the renderer a view currently holds (#53). */
+export type ThemeUpdatePlan = 'defer' | 'in-place' | 'rebuild-renderer';
+
+/** State `planThemeUpdate` decides from; all of it is what the view knows. */
+export interface ThemeUpdateInput {
+	/** False before `onOpen` and after `onClose`. */
+	opened: boolean;
+	/** True while the renderer and the session are given up for a hidden leaf. */
+	suspended: boolean;
+	/** False when nothing is mounted, e.g. a start that never got a renderer. */
+	hasRenderer: boolean;
+	/** `TerminalRenderer.canUpdateThemeInPlace()`; absent method → true. */
+	inPlace: boolean;
+}
+
+/**
+ * Issue #53: the theme dropdown is inert on ghostty-web, whose `theme` option is
+ * a no-op after `open()`. The fix is to rebuild the **renderer**, never the
+ * session — a palette must not reclaim a terminal another controller took over,
+ * nor reconnect a tab whose session herdr closed.
+ *
+ * - `defer`: nothing is mounted (closed view, or a suspended one, #15). The next
+ *   mount reads the setting, so there is nothing to do now.
+ * - `in-place`: xterm.js; assign `options.theme` and let it repaint.
+ * - `rebuild-renderer`: ghostty-web; dispose, mount a fresh terminal carrying the
+ *   new theme, replay the snapshot. A closed session simply repaints its last
+ *   frame from that snapshot and keeps its closed status line.
+ */
+export function planThemeUpdate(input: ThemeUpdateInput): ThemeUpdatePlan {
+	if (!input.opened || input.suspended || !input.hasRenderer) return 'defer';
+	return input.inPlace ? 'in-place' : 'rebuild-renderer';
+}
+
 /** Stderr is unbounded noise on a broken host; keep only what the summary needs. */
 const MAX_STDERR_LINES = 20;
 
@@ -556,6 +589,16 @@ export class TerminalView extends ItemView {
 		});
 
 		this.registerDomEvent(this.hostEl, 'wheel', (event) => this.onWheel(event));
+		// #49: an input method owns every key between these two, Enter included,
+		// so the input layer must not encode any of them. Registered on the host
+		// because both engines put their own input element inside it, and
+		// composition events bubble.
+		this.registerDomEvent(this.hostEl, 'compositionstart', () =>
+			this.input.setComposing(true),
+		);
+		this.registerDomEvent(this.hostEl, 'compositionend', () =>
+			this.input.setComposing(false),
+		);
 		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {
@@ -573,7 +616,7 @@ export class TerminalView extends ItemView {
 		// A theme switch changes every colour the renderer was handed (PRD S18).
 		this.registerEvent(
 			// Optional on the interface: a renderer without it keeps its colours.
-			this.app.workspace.on('css-change', () => this.renderer?.refreshTheme?.()),
+			this.app.workspace.on('css-change', () => this.updateTheme()),
 		);
 
 		this.scheduleResize = debounce(() => this.applyFit(), RESIZE_DEBOUNCE_MS, {
@@ -860,8 +903,11 @@ export class TerminalView extends ItemView {
 			this.input.observeFrame(bytes, meta.seq);
 			this.perf?.frame(bytes.length);
 			this.frames.push(bytes, meta.full);
-			if (this.frames.pending >= MAX_PENDING_BYTES) this.flush(renderer);
-			else this.scheduleFlush(renderer);
+			// `this.renderer`, not the one captured above: a theme rebuild (#53)
+			// swaps the renderer under a live session, and bytes must land in the
+			// terminal that is on screen now.
+			if (this.frames.pending >= MAX_PENDING_BYTES) this.flush();
+			else this.scheduleFlush();
 		});
 		session.on('closed', (reason) => {
 			if (this.session !== session) return;
@@ -901,15 +947,17 @@ export class TerminalView extends ItemView {
 	 * from the window the view actually lives in (`containerEl.win`), so a popout
 	 * keeps painting while the main window is hidden.
 	 */
-	private scheduleFlush(renderer: TerminalRenderer): void {
+	private scheduleFlush(): void {
 		if (this.flushHandle) return;
 		this.flushHandle = this.containerEl.win.requestAnimationFrame(() => {
 			this.flushHandle = 0;
-			this.flush(renderer);
+			this.flush();
 		});
 	}
 
-	private flush(renderer: TerminalRenderer): void {
+	private flush(): void {
+		const renderer = this.renderer;
+		if (!renderer) return;
 		const batch = this.frames.take();
 		if (!batch) return;
 		renderer.write(batch);
@@ -923,25 +971,74 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * Repaints with the theme the settings now hold (issue #26). Called by
-	 * `HerdrPlugin.refreshTerminals()` after the setting changes, so an open
-	 * terminal switches palette without being reopened. A view whose renderer is
-	 * suspended picks the theme up from the options when it mounts again.
+	 * Repaints with the theme the settings now hold (issue #26, fixed in #53).
+	 * `HerdrPlugin.refreshTerminals()` calls this after the setting changes, so an
+	 * open terminal switches palette without being reopened.
+	 *
+	 * Which of the two paths runs is `planThemeUpdate`'s decision; neither touches
+	 * the session, so no takeover is re-sent and a closed tab stays closed.
 	 */
 	applyTheme(theme: string): void {
-		this.renderer?.refreshTheme?.(theme);
+		this.updateTheme(theme);
 	}
 
 	/**
-	 * Rebuilds the terminal on whatever engine the settings now name (issue #27).
-	 * `HerdrPlugin.rebuildTerminals()` calls this after the engine dropdown
-	 * changes; the renderer is not swappable in place, so this is the suspend half
-	 * of #15 (snapshot, dispose, empty the host) followed by a fresh `start()`.
-	 *
-	 * History survives as plain text, the same trade a hide/reveal makes. A
-	 * suspended view is left alone: it has no renderer, and the one it mounts when
-	 * its leaf comes back reads the setting then.
+	 * The one theme path (#53). `css-change` passes nothing, which keeps the
+	 * current theme name and only re-reads Obsidian's colours and fonts.
 	 */
+	private updateTheme(theme?: string): void {
+		const renderer = this.renderer;
+		const plan = planThemeUpdate({
+			opened: this.opened,
+			suspended: this.suspended,
+			hasRenderer: renderer !== null,
+			// A renderer without the method is taken at its word: `refreshTheme`
+			// implies it repaints.
+			inPlace: renderer?.canUpdateThemeInPlace?.() ?? true,
+		});
+		if (plan === 'defer' || !renderer) return;
+		// Assigned either way: it is what a fresh terminal is built from, and the
+		// font half of the refresh works on both engines.
+		renderer.refreshTheme?.(theme);
+		if (plan === 'rebuild-renderer') {
+			this.detached('theme rebuild', () => this.remountRenderer());
+		}
+	}
+
+	/** Cursor shape and blink from the settings (issue #52); in place on both. */
+	applyCursor(): void {
+		this.renderer?.applyCursor?.(cursorOptions(this.plugin.settings));
+	}
+
+	/**
+	 * Swaps the renderer under a **live** session (#53): snapshot, dispose, mount
+	 * a fresh one from the current settings, replay the snapshot, re-fit.
+	 *
+	 * Deliberately not `start()`: the bridge process, its attach mode and its
+	 * takeover are left exactly as they are, so a palette change cannot reclaim a
+	 * pane another controller owns, cannot reconnect a session herdr closed, and
+	 * cannot turn an observer into a controller. A view with no session at all —
+	 * closed, or never started — just repaints its last frame from the snapshot.
+	 */
+	private async remountRenderer(): Promise<void> {
+		const host = this.hostEl;
+		if (!this.opened || this.suspended || !host) return;
+		const renderer = this.renderer;
+		if (!renderer) return;
+		this.cancelFlush();
+		this.snapshot = renderer.snapshotLines?.() ?? null;
+		renderer.dispose();
+		this.renderer = null;
+		this.rendererReady = null;
+		this.wheelIntercepted = false;
+		host.empty();
+		// `ensureRenderer` replays the snapshot into the new terminal on mount.
+		const next = await this.ensureRenderer(host);
+		if (!next || this.renderer !== next) return;
+		// Same grid as before, so this normally sends herdr nothing at all.
+		this.applyFit();
+	}
+
 	async rebuildRenderer(): Promise<void> {
 		if (!this.opened || this.suspended) return;
 		// Invalidates any `start()` still in flight, so nothing can go on using
@@ -971,6 +1068,9 @@ export class TerminalView extends ItemView {
 				// Which library draws it (#27); read fresh on every mount, so a
 				// rebuilt view picks up a changed setting.
 				engine: settings.terminalEngine,
+				// Cursor shape and blink (#52); both engines also take these in
+				// place, so a change never rebuilds anything.
+				...cursorOptions(settings),
 				// Bytes, not lines — see `RendererOptions.scrollback`.
 				scrollback: scrollbackBytes(settings),
 				// Input is gated on the session's mode instead of here, so toggling

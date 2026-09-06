@@ -55,8 +55,10 @@ path**, **Remote herdr binary** (absolute path), **Remote vault path** (required
 | Attach mode | Control (type, scroll, the pane follows the tab's size) or observe (read-only, never resizes). Switchable per tab with the eye button. |
 | Terminal placement | Where a new terminal opens when the active note is inside the agent's folder: split right (default), split left, or a plain tab. Unrelated notes always get a tab. |
 | Terminal tab | Per agent (default): one tab per agent, reopening reveals it. Reuse: one tab, opening another agent switches it. Reuse saves roughly five megabytes per agent. |
-| Theme | Follow Obsidian (default), or Ghostty dark, Ghostty light, Solarized dark, Solarized light, Gruvbox dark, Dracula, Nord, One dark. Applies to open terminals at once. |
+| Theme | Follow Obsidian (default), or Ghostty dark, Ghostty light, Solarized dark, Solarized light, Gruvbox dark, Dracula, Nord, One dark. Applies to open terminals at once. On ghostty-web the terminal is rebuilt to repaint it, so colours from before the switch are replayed as plain text; the session is untouched, so nothing is reattached or taken over. |
 | Terminal engine | ghostty-web (default) or xterm.js. ghostty-web parses faster and handles complex scripts better but keeps its memory until Obsidian restarts; xterm.js gives memory back when a tab closes and stops drawing when hidden. Switch if Obsidian feels heavy with several terminals open. Open terminals are rebuilt on change. |
+| Cursor style | Shape of the terminal cursor: block (default), underline or bar. Applies to open terminals at once, on both engines. |
+| Blinking cursor | Whether the terminal cursor blinks. On by default. Applies to open terminals at once, on both engines. |
 | Font family, Font size | Override Obsidian's monospace font. Empty or 0 follows Obsidian. |
 | Scrollback memory budget | Megabytes of memory each visible terminal may use for scrollback, roughly 600 lines per MB. Default 10, range 1 to 64. With ghostty-web this memory is kept until Obsidian restarts. Note that scrolling in a control terminal moves herdr's own scrollback, not this buffer. |
 

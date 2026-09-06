@@ -21,6 +21,7 @@ import {
 	parsePx,
 	resolveFont,
 	type CellCoordinates,
+	type CursorOptions,
 	type FitResult,
 	type RendererOptions,
 	type ResolvedFont,
@@ -314,6 +315,30 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	 * name changed, or it is `obsidian` and the CSS variables just did — so a
 	 * `css-change` under a built-in palette costs nothing but a font read.
 	 */
+	/**
+	 * False (issue #53): ghostty-web's `handleOptionChange` warns and does nothing
+	 * for `theme`, so the assignment below repaints no cell that is already on
+	 * screen. The view rebuilds this renderer instead; the assignment is kept so a
+	 * terminal that has not painted yet, and any future ghostty-web that honours
+	 * it, still get the right palette.
+	 */
+	canUpdateThemeInPlace(): boolean {
+		return false;
+	}
+
+	/**
+	 * `TerminalRenderer.applyCursor` (issue #52). Unlike `theme`, ghostty-web does
+	 * forward these two to its renderer (`setCursorStyle` / `setCursorBlink`), so
+	 * they take effect without a rebuild.
+	 */
+	applyCursor(cursor: CursorOptions): void {
+		this.options.cursorStyle = cursor.cursorStyle;
+		this.options.cursorBlink = cursor.cursorBlink;
+		if (this.disposed || !this.terminal) return;
+		this.terminal.options.cursorStyle = cursor.cursorStyle;
+		this.terminal.options.cursorBlink = cursor.cursorBlink;
+	}
+
 	refreshTheme(theme?: string): void {
 		const next = theme === undefined ? this.themeName : normalizeThemeName(theme);
 		const changed = next !== this.themeName;

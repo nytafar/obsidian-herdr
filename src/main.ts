@@ -377,6 +377,17 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Applies the cursor style and blink settings to every open terminal (issue
+	 * #52). Both engines take these in place, so nothing is rebuilt or restarted.
+	 */
+	refreshTerminalCursors(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) view.applyCursor();
+		}
+	}
+
 	/** Applies the folder hover button setting, both ways (issue #30). */
 	refreshFolderHoverButton(): void {
 		if (this.settings.folderHoverButton) this.explorerButtons.enable();

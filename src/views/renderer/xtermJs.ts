@@ -45,6 +45,7 @@ import {
 	parsePx,
 	resolveFont,
 	type CellCoordinates,
+	type CursorOptions,
 	type FitResult,
 	type RendererOptions,
 	type ResolvedFont,
@@ -449,6 +450,24 @@ export class XtermJsRenderer implements TerminalRenderer {
 	 * short-circuits as the ghostty-web renderer: no argument keeps the current
 	 * theme and only re-reads the fonts, a name switches the palette.
 	 */
+	/**
+	 * True (issue #53): xterm.js routes `options.theme` through its theme service,
+	 * which repaints the open terminal, so the view never has to rebuild this one
+	 * for a palette change.
+	 */
+	canUpdateThemeInPlace(): boolean {
+		return true;
+	}
+
+	/** `TerminalRenderer.applyCursor` (issue #52); both options apply in place. */
+	applyCursor(cursor: CursorOptions): void {
+		this.options.cursorStyle = cursor.cursorStyle;
+		this.options.cursorBlink = cursor.cursorBlink;
+		if (this.disposed || !this.terminal) return;
+		this.terminal.options.cursorStyle = cursor.cursorStyle;
+		this.terminal.options.cursorBlink = cursor.cursorBlink;
+	}
+
 	refreshTheme(theme?: string): void {
 		const next = theme === undefined ? this.themeName : normalizeThemeName(theme);
 		const changed = next !== this.themeName;

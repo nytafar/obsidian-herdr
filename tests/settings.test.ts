@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	clampPanesPerTab,
+	cursorOptions,
 	clampScrollbackMb,
 	DEFAULT_PANES_PER_TAB,
 	DEFAULT_SCROLLBACK_MB,
@@ -212,6 +213,35 @@ describe('panes per tab (issue #29)', () => {
 		expect(clampPanesPerTab(undefined)).toBe(DEFAULT_PANES_PER_TAB);
 		expect(clampPanesPerTab('2')).toBe(DEFAULT_PANES_PER_TAB);
 		expect(clampPanesPerTab(Number.NaN)).toBe(DEFAULT_PANES_PER_TAB);
+	});
+});
+
+describe('cursor settings (issue #52)', () => {
+	it('defaults to a blinking block, which is what the engines already did', () => {
+		expect(DEFAULT_SETTINGS.terminalCursorStyle).toBe('block');
+		expect(DEFAULT_SETTINGS.terminalCursorBlink).toBe(true);
+	});
+
+	it('hands the renderer a normalised pair', () => {
+		expect(cursorOptions(DEFAULT_SETTINGS)).toEqual({
+			cursorStyle: 'block',
+			cursorBlink: true,
+		});
+		expect(
+			cursorOptions({
+				...DEFAULT_SETTINGS,
+				terminalCursorStyle: 'bar',
+				terminalCursorBlink: false,
+			}),
+		).toEqual({ cursorStyle: 'bar', cursorBlink: false });
+	});
+
+	it('survives a data.json written by another build', () => {
+		const odd = {
+			...DEFAULT_SETTINGS,
+			terminalCursorStyle: 'beam',
+		} as unknown as typeof DEFAULT_SETTINGS;
+		expect(cursorOptions(odd).cursorStyle).toBe('block');
 	});
 });
 
