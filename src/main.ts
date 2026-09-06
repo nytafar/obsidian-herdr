@@ -20,7 +20,7 @@ import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
-import { TransitionNotifier, sendOsNotification } from './notify';
+import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 
@@ -402,7 +402,7 @@ export default class HerdrPlugin extends Plugin {
 			},
 			// PRD M3: an unsupported method is reported once, then never retried.
 			onUnsupportedMethod: (method) => {
-				new Notice(`Herdr: this herdr does not support ${method}; carrying on without it.`);
+				new Notice(unsupportedMethodMessage(method));
 			},
 		});
 		this.client = client;
@@ -498,6 +498,8 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private refreshAgentNames(): void {
 		if (this.agentNameTimer) return;
+		// A herdr without `agent.list` said so once already: stay off it.
+		if (this.client?.isUnsupported('agent.list')) return;
 		this.agentNameTimer = window.setTimeout(() => {
 			this.agentNameTimer = 0;
 			const client = this.client;

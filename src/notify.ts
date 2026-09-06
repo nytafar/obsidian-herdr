@@ -170,3 +170,20 @@ export function sendOsNotification(title: string, body: string, onClick?: () => 
 		return false;
 	}
 }
+
+/**
+ * What the plugin loses when a server does not know an optional method. The
+ * client reports each method once per session (PRD M3); this turns that method
+ * name into a sentence the user can act on.
+ */
+const DEGRADED_WITHOUT: Record<string, string> = {
+	'session.snapshot': 'agents load in three calls instead of one',
+	'agent.list': 'agent rows show titles instead of names',
+	'tab.list': 'tabs show their ids instead of their labels',
+};
+
+/** Notice text for an optional method this herdr rejected as unknown (PRD M3). */
+export function unsupportedMethodMessage(method: string): string {
+	const degraded = DEGRADED_WITHOUT[method] ?? 'the feature that needs it stays off';
+	return `Herdr: this herdr does not support ${method}; ${degraded}.`;
+}
