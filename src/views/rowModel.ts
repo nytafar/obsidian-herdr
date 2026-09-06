@@ -7,14 +7,22 @@
  * elements, which keeps grouping, ordering and the display-name fallbacks
  * testable without a document (see `tests/rowModel.test.ts`).
  *
- * Queued features — kind icons, sort options, home-relative paths and the cache
- * TTL badge — are changes to this file, not to the render path.
+ * Sort and grouping (issue #20), the home-relative path (#22) and the cache TTL
+ * badge (#23) all landed here rather than in the render path, which is the point
+ * of the split.
  */
 
 import { isUnder, type PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 
-/** Order agents are shown in: the ones wanting attention float to the top. */
+/**
+ * Order agents are shown in: the ones wanting attention float to the top.
+ *
+ * This is herdr's own `tab_attention_priority` read the other way up — herdr
+ * scores blocked 4, unseen-idle 3 (the API calls it `done`), working 2,
+ * seen-idle 1 and unknown 0, highest first — so the sidebar and the herdr TUI
+ * with `agent_panel_sort = "priority"` agree row for row.
+ */
 export const STATUS_ORDER: Record<AgentStatus, number> = {
 	blocked: 0,
 	done: 1,
@@ -68,7 +76,11 @@ export interface RowBadge {
 	tone: BadgeTone;
 }
 
-/** Rows under one heading. `key` is the herdr tab id while grouping is by tab. */
+/**
+ * Rows under one heading. `key` is the herdr tab id, the cwd or the empty string
+ * depending on the grouping, and an empty `label` means the view draws no header
+ * at all (grouping "none").
+ */
 export interface RowGroup {
 	key: string;
 	label: string;
@@ -76,15 +88,19 @@ export interface RowGroup {
 }
 
 /**
- * Presentation choices that are settings-shaped but not settings yet. Declared
- * here rather than in `src/settings.ts` so the sort and grouping issues can add
- * a real setting without this module having to change shape first.
+ * Presentation choices, all of them settings (`agentListGroupBy`,
+ * `agentListSort`) except the home path, which the plugin resolves. The view
+ * reads them on every repaint, so changing one reorders the list without a
+ * reconnect (issue #20).
  */
 export interface RowModelOptions {
-	/** Only `tab` today; PRD M8 groups by herdr tab. */
-	groupBy?: 'tab';
-	/** Only `status` today: blocked, done, then the rest. */
-	sort?: 'status';
+	/**
+	 * Heading each row falls under: the herdr tab (PRD M8, the default), the
+	 * pane's working directory, or nothing at all.
+	 */
+	groupBy?: 'tab' | 'folder' | 'none';
+	/** Row order inside a group: herdr's attention priority, or by name. */
+	sort?: 'priority' | 'alphabetical';
 	/**
 	 * Home directory on the machine herdr runs on, used to shorten a cwd that
 	 * sits outside the vault (issue #22). Empty leaves such paths absolute.
@@ -92,7 +108,11 @@ export interface RowModelOptions {
 	homePath?: string;
 }
 
-const DEFAULTS: Required<RowModelOptions> = { groupBy: 'tab', sort: 'status', homePath: '' };
+const DEFAULTS: Required<RowModelOptions> = {
+	groupBy: 'tab',
+	sort: 'priority',
+	homePath: '',
+};
 
 type GroupBy = Required<RowModelOptions>['groupBy'];
 type SortBy = Required<RowModelOptions>['sort'];
@@ -184,22 +204,68 @@ function statusRank(status: AgentStatus): number {
 	return STATUS_ORDER[status] ?? STATUS_ORDER_FALLBACK;
 }
 
+/** One grouping option: how a pane is keyed into a group, and what it is called. */
+interface Grouping {
+	key: (pane: PaneState) => string;
+	label: (pane: PaneState, ctx: GroupContext) => string;
+}
+
+/** What a grouping needs besides the pane to name its heading. */
+interface GroupContext {
+	tabLabels: ReadonlyMap<string, string>;
+	vaultPath: string;
+	homePath: string;
+}
+
+/** Last path segment, used to name a folder group sitting at the vault root. */
+function lastSegment(path: string): string {
+	const trimmed = path.replace(/\/+$/, '');
+	const slash = trimmed.lastIndexOf('/');
+	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
+}
+
 /**
- * Which heading a pane falls under. One entry today; a "group by cwd" or
- * "no grouping" option becomes another entry here and nothing else.
+ * Which heading a pane falls under, and what that heading says. Grouping by tab
+ * is PRD M8 and the default; grouping by folder keeps one project's agents
+ * together even after herdr has spread them over two tabs (issue #20), and
+ * `none` is a single unlabelled group, which the view renders without a header.
  */
-const GROUP_KEY: Record<GroupBy, (pane: PaneState) => string> = {
-	tab: (pane) => pane.tabId,
+const GROUPS: Record<GroupBy, Grouping> = {
+	tab: {
+		key: (pane) => pane.tabId,
+		label: (pane, ctx) => ctx.tabLabels.get(pane.tabId) ?? pane.tabId,
+	},
+	folder: {
+		key: (pane) => pane.cwd,
+		label: (pane, ctx) => {
+			if (!pane.cwd) return 'No folder';
+			// The same label a row's path shows, so the two never disagree. At the
+			// vault root that is empty, where the vault's own name reads better.
+			return (
+				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) || lastSegment(ctx.vaultPath) || pane.cwd
+			);
+		},
+	},
+	none: { key: () => '', label: () => '' },
 };
 
 /**
- * Row order inside a group. `status` is the only one today: blocked first, then
- * done, then the rest; ties break on title and finally on pane id, so the list
- * does not shuffle when two rows are otherwise equal.
+ * Row order inside a group.
+ *
+ * `priority` is herdr's: blocked, then done (its unseen-idle), then working,
+ * then idle, then unknown, tie-broken by the most recent status change first —
+ * `statusChangedSeq`, which the scope counts because `pane.list` does not carry
+ * herdr's own sequence. `alphabetical` is by display name with a locale compare.
+ * Both end on title and pane id so a tie never shuffles between repaints.
  */
 const COMPARE: Record<SortBy, (a: PaneState, b: PaneState) => number> = {
-	status: (a, b) =>
+	priority: (a, b) =>
 		statusRank(a.agentStatus) - statusRank(b.agentStatus) ||
+		b.statusChangedSeq - a.statusChangedSeq ||
+		a.title.localeCompare(b.title) ||
+		a.paneId.localeCompare(b.paneId),
+	alphabetical: (a, b) =>
+		agentDisplayName(a).localeCompare(agentDisplayName(b)) ||
 		a.title.localeCompare(b.title) ||
 		a.paneId.localeCompare(b.paneId),
 };
@@ -227,9 +293,8 @@ export function toRow(pane: PaneState, vaultPath: string, homePath = ''): RowMod
 }
 
 /**
- * Groups panes into the rows the sidebar draws, in display order: tabs by their
- * most urgent pane then by label, panes by status then title then pane id (the
- * pane id last so the order is stable when two rows tie).
+ * Groups panes into the rows the sidebar draws, in display order: groups by
+ * their most urgent row and then by label, rows by the chosen sort.
  *
  * @param tabLabels tab id → label from `tab.list`; missing ids fall back to the
  *   id itself, which is what a row shows until the labels land.
@@ -241,26 +306,26 @@ export function buildRows(
 	options: RowModelOptions = {},
 ): RowGroup[] {
 	const { groupBy, sort, homePath } = { ...DEFAULTS, ...options };
-	const keyOf = GROUP_KEY[groupBy] ?? GROUP_KEY.tab;
-	// One sort up front: it fixes the row order inside every group and, because
-	// the most urgent pane of a tab is then its first, the group order too.
-	const ordered = [...panes].sort(COMPARE[sort] ?? COMPARE.status);
+	const grouping = GROUPS[groupBy] ?? GROUPS.tab;
+	const context: GroupContext = { tabLabels, vaultPath, homePath };
+	// One sort up front fixes the row order inside every group.
+	const ordered = [...panes].sort(COMPARE[sort] ?? COMPARE.priority);
 
 	const groups = new Map<string, { group: RowGroup; urgency: number }>();
 	for (const pane of ordered) {
-		const key = keyOf(pane);
+		const key = grouping.key(pane);
+		const urgency = statusRank(pane.agentStatus);
 		let entry = groups.get(key);
 		if (!entry) {
 			entry = {
-				group: {
-					key,
-					label: tabLabels.get(key) ?? key,
-					rows: [],
-				},
-				// `ordered` is sorted, so the first pane of a tab is its most urgent.
-				urgency: statusRank(pane.agentStatus),
+				group: { key, label: grouping.label(pane, context), rows: [] },
+				urgency,
 			};
 			groups.set(key, entry);
+		} else if (urgency < entry.urgency) {
+			// Not simply the first row: an alphabetical group's first row says
+			// nothing about how urgent the group is.
+			entry.urgency = urgency;
 		}
 		entry.group.rows.push(toRow(pane, vaultPath, homePath));
 	}

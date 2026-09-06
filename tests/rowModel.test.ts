@@ -32,6 +32,7 @@ function pane(
 		cwd: VAULT,
 		focused: false,
 		tokens: {},
+		statusChangedSeq: 0,
 		...overrides,
 	};
 }
@@ -339,9 +340,142 @@ describe('buildRows', () => {
 
 	it('accepts explicit options without changing the default behaviour', () => {
 		const panes = [pane('p1', 'w4:t1', 'done'), pane('p2', 'w4:t2', 'blocked')];
-		expect(buildRows(panes, new Map(), VAULT, { groupBy: 'tab', sort: 'status' })).toEqual(
+		expect(buildRows(panes, new Map(), VAULT, { groupBy: 'tab', sort: 'priority' })).toEqual(
 			buildRows(panes, new Map(), VAULT),
 		);
+	});
+
+	it('matches herdr’s priority order, unknown last (issue #20)', () => {
+		// herdr scores blocked 4, unseen-idle (`done`) 3, working 2, seen-idle 1,
+		// unknown 0, highest first: `tab_attention_priority` in its own source.
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'unknown'),
+				pane('p2', 'w4:t1', 'idle'),
+				pane('p3', 'w4:t1', 'working'),
+				pane('p4', 'w4:t1', 'done'),
+				pane('p5', 'w4:t1', 'blocked'),
+			],
+			new Map(),
+			VAULT,
+			{ sort: 'priority' },
+		);
+		expect(groups[0]?.rows.map((row) => row.status)).toEqual([
+			'blocked',
+			'done',
+			'working',
+			'idle',
+			'unknown',
+		]);
+	});
+
+	it('breaks a priority tie on the most recent status change (issue #20)', () => {
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'blocked', { title: 'a', statusChangedSeq: 4 }),
+				pane('p2', 'w4:t1', 'blocked', { title: 'b', statusChangedSeq: 9 }),
+				pane('p3', 'w4:t1', 'blocked', { title: 'c', statusChangedSeq: 7 }),
+				// Never stamped, so it sorts behind everything that has moved.
+				pane('p4', 'w4:t1', 'blocked', { title: 'a' }),
+			],
+			new Map(),
+			VAULT,
+			{ sort: 'priority' },
+		);
+		expect(groups[0]?.rows.map((row) => row.paneId)).toEqual(['p2', 'p3', 'p1', 'p4']);
+	});
+
+	it('sorts alphabetically by display name, not by status (issue #20)', () => {
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'blocked', { name: 'zeta' }),
+				pane('p2', 'w4:t1', 'idle', { name: 'Åse' }),
+				pane('p3', 'w4:t1', 'idle', { name: 'alpha' }),
+				// No herdr name: the display name is the title.
+				pane('p4', 'w4:t1', 'working', { title: 'beta' }),
+			],
+			new Map(),
+			VAULT,
+			{ sort: 'alphabetical' },
+		);
+		// A locale compare, so "Åse" files under A rather than after Z.
+		expect(groups[0]?.rows.map((row) => row.displayName)).toEqual([
+			'alpha',
+			'Åse',
+			'beta',
+			'zeta',
+		]);
+	});
+
+	it('still orders groups by their most urgent row when sorting by name', () => {
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'idle', { name: 'alpha' }),
+				pane('p2', 'w4:t2', 'idle', { name: 'beta' }),
+				// The blocked row is last alphabetically, but its tab still leads.
+				pane('p3', 'w4:t2', 'blocked', { name: 'zeta' }),
+			],
+			new Map([
+				['w4:t1', 'notes'],
+				['w4:t2', 'code'],
+			]),
+			VAULT,
+			{ sort: 'alphabetical' },
+		);
+		expect(groups.map((group) => group.label)).toEqual(['code', 'notes']);
+		expect(groups[0]?.rows.map((row) => row.displayName)).toEqual(['beta', 'zeta']);
+	});
+
+	it('groups by folder, labelled like the path a row shows (issue #20)', () => {
+		const groups = buildRows(
+			[
+				// The same folder split over two herdr tabs stays one group.
+				pane('p1', 'w4:t1', 'idle', { cwd: `${VAULT}/projects/herdr`, title: 'a' }),
+				pane('p2', 'w4:t2', 'blocked', { cwd: `${VAULT}/projects/herdr`, title: 'b' }),
+				pane('p3', 'w4:t1', 'idle', { cwd: '/Users/lasse/code/herdr' }),
+				pane('p4', 'w4:t1', 'idle', { cwd: VAULT }),
+			],
+			new Map([['w4:t1', 'notes']]),
+			VAULT,
+			{ groupBy: 'folder', homePath: '/Users/lasse' },
+		);
+		// The blocked folder leads; the two idle ones tie and fall back to their
+		// labels, where a locale compare looks past the leading tilde.
+		expect(groups.map((group) => group.label)).toEqual([
+			'projects/herdr',
+			'~/code/herdr',
+			'hvelv',
+		]);
+		expect(groups[0]?.rows.map((row) => row.paneId)).toEqual(['p2', 'p1']);
+		expect(groups.map((group) => group.key)).toEqual([
+			`${VAULT}/projects/herdr`,
+			'/Users/lasse/code/herdr',
+			VAULT,
+		]);
+	});
+
+	it('names a folder group without a cwd rather than leaving it blank', () => {
+		const groups = buildRows([pane('p1', 'w4:t1', 'idle', { cwd: '' })], new Map(), VAULT, {
+			groupBy: 'folder',
+		});
+		expect(groups.map((group) => group.label)).toEqual(['No folder']);
+	});
+
+	it('puts everything in one unlabelled group when grouping is off (issue #20)', () => {
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'idle'),
+				pane('p2', 'w4:t2', 'blocked'),
+				pane('p3', 'w4:t3', 'done'),
+			],
+			new Map([['w4:t1', 'notes']]),
+			VAULT,
+			{ groupBy: 'none' },
+		);
+		expect(groups).toHaveLength(1);
+		// The view draws no header for an empty label.
+		expect(groups[0]?.label).toBe('');
+		expect(groups[0]?.rows.map((row) => row.paneId)).toEqual(['p2', 'p3', 'p1']);
 	});
 
 	it('returns nothing for no panes', () => {

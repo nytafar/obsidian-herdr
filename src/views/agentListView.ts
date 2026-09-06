@@ -1,7 +1,8 @@
 /**
  * Agent list sidebar view (PRD M8, M9, M10, N1, N4; T4).
  *
- * One row per agent pane of the scoped workspace, grouped by herdr tab:
+ * One row per agent pane of the scoped workspace, grouped by herdr tab, by
+ * working directory or not at all (issue #20):
  * status glyph, agent name, stripped terminal title, and the cwd relative to the
  * vault. Clicking a row focuses that pane in herdr (`pane.focus`), which is the
  * one source of truth for "seen" (PRD M9); the icon button opens the pane as a
@@ -143,6 +144,15 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
+	 * Repaints on the next frame. Called by the plugin when a setting the row
+	 * model reads has changed (issue #20); the render path re-reads the settings
+	 * itself, so nothing has to be passed in.
+	 */
+	refresh(): void {
+		this.scheduleRender();
+	}
+
+	/**
 	 * Coalesces a burst of scope events into one repaint per animation frame, on
 	 * the window this view lives in so a popout sidebar still gets frames.
 	 */
@@ -180,7 +190,12 @@ export class AgentListView extends ItemView {
 			return;
 		}
 
+		// Settings are read here, once per repaint, so changing the sort or the
+		// grouping reorders the list on the next render and never reconnects.
+		const settings = this.plugin.settings;
 		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath(), {
+			groupBy: settings.agentListGroupBy,
+			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
 		});
 		for (const group of groups) this.renderGroup(list, group);
@@ -188,7 +203,8 @@ export class AgentListView extends ItemView {
 
 	private renderGroup(parent: HTMLElement, group: RowGroup): void {
 		const groupEl = parent.createDiv({ cls: 'herdr-tab-group' });
-		groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
+		// An empty label is grouping "none": one group, no header at all.
+		if (group.label) groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
 		for (const row of group.rows) this.renderRow(groupEl, row);
 	}
 

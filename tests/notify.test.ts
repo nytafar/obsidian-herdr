@@ -25,6 +25,7 @@ function pane(status: AgentStatus, overrides: Partial<PaneState> = {}): PaneStat
 		cwd: '/Users/lasse/Vaults/hvelv',
 		focused: false,
 		tokens: {},
+		statusChangedSeq: 0,
 		...overrides,
 	};
 }

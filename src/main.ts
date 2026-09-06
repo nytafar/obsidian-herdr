@@ -238,6 +238,19 @@ export default class HerdrPlugin extends Plugin {
 		return this.terminalLeaf(paneId) !== null;
 	}
 
+	/**
+	 * Repaints every open agent list (issue #20). The settings tab calls this
+	 * after a sort or grouping change, which the list reads on each render, so the
+	 * new order appears without a reconnect. No view is stored: the leaves are
+	 * looked up and a deferred one is skipped, since it rebuilds on load anyway.
+	 */
+	refreshAgentList(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(AGENT_LIST_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof AgentListView) view.refresh();
+		}
+	}
+
 	/** Runs `listener` whenever `scope` is replaced. Returns the unsubscribe. */
 	onScopeReplaced(listener: () => void): () => void {
 		this.scopeListeners.add(listener);
