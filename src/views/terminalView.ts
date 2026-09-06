@@ -55,6 +55,7 @@ import type { PaneState } from '../herdr/scope';
 import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
 import { InputRouter } from './input/inputRouter';
 import { pickModifiers } from './input/mouseEncoder';
+import { WheelAccumulator } from './input/wheelAccumulator';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -346,28 +347,11 @@ export class PerfCounter {
 	}
 }
 
-/** Pixels per scrolled line when the wheel reports `deltaMode: 0` (pixels). */
-export const WHEEL_PIXELS_PER_LINE = 24;
-/** Upper bound so a trackpad fling cannot ask herdr for thousands of lines. */
-export const MAX_SCROLL_LINES = 200;
-
 /**
- * Wheel delta -> `terminal.scroll` payload. `deltaMode` is 0 pixels, 1 lines,
- * 2 pages (DOM_DELTA_*). Returns null for a delta that rounds to nothing.
+ * Wheel maths moved to `./input/wheelAccumulator.ts` for #65; re-exported here
+ * because this is where the rest of the view's wheel handling lives.
  */
-export function wheelToScroll(
-	deltaY: number,
-	deltaMode: number,
-	rows: number,
-): { direction: ScrollDirection; lines: number } | null {
-	if (!Number.isFinite(deltaY) || deltaY === 0) return null;
-	const page = Math.max(1, Math.trunc(rows) || FALLBACK_ROWS);
-	const magnitude = Math.abs(deltaY);
-	const raw =
-		deltaMode === 2 ? magnitude * page : deltaMode === 1 ? magnitude : magnitude / WHEEL_PIXELS_PER_LINE;
-	const lines = Math.min(MAX_SCROLL_LINES, Math.max(1, Math.round(raw)));
-	return { direction: deltaY < 0 ? 'up' : 'down', lines };
-}
+export { WHEEL_PIXELS_PER_LINE, MAX_SCROLL_LINES } from './input/wheelAccumulator';
 
 /**
  * PATH for the spawned bridge. Obsidian inherits the launcher's environment, so
@@ -519,7 +503,23 @@ export class TerminalView extends ItemView {
 	 * `terminal.scroll` with the cell under the pointer (#25), everything else is
 	 * left to the renderer.
 	 */
-	private readonly input = new InputRouter({ wheelToScroll });
+	/**
+	 * Fractional wheel accumulator (#65). A trackpad's small pixel deltas add up
+	 * to whole lines here instead of each becoming one, and the view feeds it the
+	 * renderer's measured cell height as the divisor.
+	 */
+	private readonly wheel = new WheelAccumulator();
+	private readonly input = new InputRouter({
+		// Bound rather than passed directly: the accumulator is stateful, and the
+		// router only ever asks the same three-argument question.
+		wheelToScroll: (deltaY, deltaMode, rows) => this.wheel.push(deltaY, deltaMode, rows),
+	});
+	/** Pending coalescing frame for held wheel lines; 0 when none. */
+	private wheelFrame = 0;
+	/** Whether the last emission reached herdr, i.e. whether to consume a notch. */
+	private lastWheelSent = false;
+	/** Cell and modifiers of the most recent notch, for a deferred emission. */
+	private lastWheelRoute: { column?: number; row?: number; modifiers: number } = { modifiers: 0 };
 	/**
 	 * True once the renderer intercepts the wheel, so `onWheel` stands down. Only
 	 * meaningful while a renderer exists: a suspended view (#15) has none, and the
@@ -612,6 +612,7 @@ export class TerminalView extends ItemView {
 			for (const off of this.unbindScope.splice(0)) off();
 			if (this.pendingHeader) this.containerEl.win.cancelAnimationFrame(this.pendingHeader);
 			this.pendingHeader = 0;
+			this.cancelWheel();
 		});
 		// A theme switch changes every colour the renderer was handed (PRD S18).
 		this.registerEvent(
@@ -882,6 +883,10 @@ export class TerminalView extends ItemView {
 		this.awaitingConnection = false;
 
 		const fit = renderer.fit();
+		// #65: the wheel's pixels-per-line divisor, and a fresh session is a fresh
+		// gesture, so nothing of the previous one is carried.
+		this.wheel.setPixelsPerLine(fit.cellHeightPx);
+		this.cancelWheel();
 		const cols = fit.cols > 0 ? fit.cols : FALLBACK_COLS;
 		const rows = fit.rows > 0 ? fit.rows : FALLBACK_ROWS;
 		const attach = attachFor(this.mode);
@@ -1200,16 +1205,50 @@ export class TerminalView extends ItemView {
 			...(position === undefined ? {} : { position }),
 			...pickModifiers(event),
 		});
-		if (!route) return false;
-		// False from an observer (`scroll` is control-only, PRD section 7) or from
-		// a session whose bridge has exited: the notch was not sent, so the
-		// renderer may as well scroll whatever it holds locally.
-		return session.scroll(route.direction, route.lines, {
-			source: route.source,
+		// #65: a delta that only moved the accumulator's fraction along still
+		// belongs to us — the gesture is being handled, one line at a time — so the
+		// answer is whatever the gesture's last real emission got. Handing it back
+		// to the renderer instead would let it scroll its own buffer on every
+		// sub-line trackpad event, which is the flood this issue is about.
+		if (!route) return this.lastWheelSent;
+		this.lastWheelRoute = {
 			...(route.column === undefined ? {} : { column: route.column }),
 			...(route.row === undefined ? {} : { row: route.row }),
 			modifiers: route.modifiers,
+		};
+		// One `terminal.scroll` per animation frame: the first notch of a frame goes
+		// out at once so the terminal answers immediately, and everything that
+		// arrives before the next frame — momentum, mostly — merges into the
+		// accumulator and leaves as one request.
+		if (this.wheelFrame) return this.lastWheelSent;
+		this.lastWheelSent = this.emitWheel();
+		this.wheelFrame = this.containerEl.win.requestAnimationFrame(() => {
+			this.wheelFrame = 0;
+			this.emitWheel();
 		});
+		return this.lastWheelSent;
+	}
+
+	/** Sends whatever whole lines the accumulator holds. False when none went. */
+	private emitWheel(): boolean {
+		const session = this.session;
+		const scroll = this.wheel.take();
+		if (!session || !scroll) return false;
+		// False from an observer (`scroll` is control-only, PRD section 7) or from
+		// a session whose bridge has exited: the notch was not sent, so the
+		// renderer may as well scroll whatever it holds locally.
+		return session.scroll(scroll.direction, scroll.lines, {
+			source: 'wheel',
+			...this.lastWheelRoute,
+		});
+	}
+
+	/** Drops a pending coalescing frame and the gesture the accumulator held. */
+	private cancelWheel(): void {
+		if (this.wheelFrame) this.containerEl.win.cancelAnimationFrame(this.wheelFrame);
+		this.wheelFrame = 0;
+		this.wheel.reset();
+		this.lastWheelSent = false;
 	}
 
 	/** The cell under a mouse event, when the renderer can measure one. */
@@ -1223,6 +1262,8 @@ export class TerminalView extends ItemView {
 		if (!renderer) return;
 		const fit = renderer.fit();
 		if (fit.cols <= 0 || fit.rows <= 0) return;
+		// #65: pixel deltas divide by the measured cell height, as ghostty does.
+		this.wheel.setPixelsPerLine(fit.cellHeightPx);
 		const session = this.session;
 		if (!session || session.mode !== 'control') return;
 		const current = session.size;
