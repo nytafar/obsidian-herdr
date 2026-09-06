@@ -61,6 +61,7 @@ import {
 	type TerminalThemeName,
 	type ThemeColorKey,
 } from './themes';
+import { isHTMLElement } from '../dom';
 
 /**
  * The two libraries are loaded on first mount rather than at module scope, so a
@@ -345,10 +346,9 @@ export class XtermJsRenderer implements TerminalRenderer {
 		const metrics = this.cellMetrics();
 		if (!metrics) return undefined;
 		const screen = terminal.element?.querySelector('.xterm-screen');
-		const el =
-			screen instanceof HTMLElement
-				? screen
-				: (terminal.element ?? this.container);
+		const el = isHTMLElement(screen)
+			? screen
+			: (terminal.element ?? this.container);
 		if (!el) return undefined;
 		const rect = el.getBoundingClientRect();
 		const view = el.ownerDocument.defaultView;
@@ -548,7 +548,7 @@ export class XtermJsRenderer implements TerminalRenderer {
 			return { width: cell.width, height: cell.height };
 		}
 		const screen = terminal.element?.querySelector('.xterm-screen');
-		if (!(screen instanceof HTMLElement)) return undefined;
+		if (!isHTMLElement(screen)) return undefined;
 		const rect = screen.getBoundingClientRect();
 		const width = rect.width / Math.max(1, terminal.cols);
 		const height = rect.height / Math.max(1, terminal.rows);

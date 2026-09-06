@@ -31,6 +31,7 @@ import type HerdrPlugin from './main';
 import { resolveFolderPath } from './actions';
 import { trimTrailingSlashes } from './paths';
 import { isUnder, type PaneState } from './herdr/scope';
+import { asElement } from './views/dom';
 
 /** View type of the built-in file explorer. */
 const FILE_EXPLORER_VIEW_TYPE = 'file-explorer';
@@ -144,13 +145,10 @@ export function folderAbsPath(dataPath: string, herdrVaultPath: string): string 
 /**
  * An event target as an `Element`, without `instanceof`: a popout window has its
  * own `Element` constructor, so `target instanceof Element` is false for
- * anything clicked in a detached explorer.
+ * anything clicked in a detached explorer. Re-exported here for existing
+ * importers; the implementation lives in `./views/dom`.
  */
-export function asElement(target: EventTarget | null): Element | null {
-	if (target === null || typeof target !== 'object') return null;
-	const candidate = target as Element;
-	return typeof candidate.closest === 'function' ? candidate : null;
-}
+export { asElement };
 
 /** A pending rescan. Trailing edge, cancellable, because `disable()` must. */
 interface Rescan {
