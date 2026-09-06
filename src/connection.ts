@@ -49,7 +49,11 @@ export interface ConnectionTunnel {
 	stop(): Promise<void>;
 }
 
-export interface ConnectionDeps {
+export interface ConnectionDeps<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
 	/** Finds the binary and the socket. Never expected to throw. */
 	discover(): Promise<DiscoveryResult>;
 	/** True when the attempt should go through an SSH forward instead. */
@@ -59,10 +63,10 @@ export interface ConnectionDeps {
 	 * socket after every (re)connect of the forward. May throw synchronously
 	 * (no host configured); the attempt reports that as its error.
 	 */
-	createTunnel(onSocket: (localSocketPath: string) => void): ConnectionTunnel;
-	createClient(socketPath: string): ConnectionClient;
+	createTunnel(onSocket: (localSocketPath: string) => void): T;
+	createClient(socketPath: string): C;
 	/** Builds the scope and wires whatever the caller hangs off its events. */
-	createScope(): ConnectionScope;
+	createScope(): S;
 	/** Event subscriptions the scope needs (`SCOPE_SUBSCRIPTIONS`). */
 	subscriptions: readonly Subscription[];
 	/** Something the user should see (a missing binary, a failed ping). */
@@ -77,16 +81,20 @@ export interface ConnectionDeps {
 }
 
 /** A live, published connection: what the plugin points views and actions at. */
-export class Connection {
+export class Connection<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
 	private retired = false;
 	private priming: Promise<void> | null = null;
 	private primeQueued = false;
 
 	constructor(
 		readonly discovery: DiscoveryResult,
-		readonly client: ConnectionClient,
-		readonly scope: ConnectionScope,
-		readonly tunnel: ConnectionTunnel | null,
+		readonly client: C,
+		readonly scope: S,
+		readonly tunnel: T | null,
 		private readonly deps: Pick<ConnectionDeps, 'setError'>,
 		private readonly onPrimed: () => void,
 	) {}
@@ -160,18 +168,22 @@ export class Connection {
 	}
 }
 
-export class ConnectionCoordinator {
+export class ConnectionCoordinator<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
 	private generation = 0;
 	private disposed = false;
-	private connection: Connection | null = null;
+	private connection: Connection<C, S, T> | null = null;
 	/** Teardown of retired connections, chained so attempts start after it. */
 	private teardown: Promise<void> = Promise.resolve();
 	/** Discovery of the newest attempt, kept for the settings status. */
 	private latestDiscovery: DiscoveryResult | null = null;
 
-	constructor(private readonly deps: ConnectionDeps) {}
+	constructor(private readonly deps: ConnectionDeps<C, S, T>) {}
 
-	get current(): Connection | null {
+	get current(): Connection<C, S, T> | null {
 		return this.connection;
 	}
 
@@ -211,8 +223,8 @@ export class ConnectionCoordinator {
 
 		// Remote: the API socket is the local end of an SSH forward (PRD S5).
 		// Terminals do not use it; they run the CLI over `ssh -T` (PRD S17).
-		let client: ConnectionClient | null = null;
-		let tunnel: ConnectionTunnel | null = null;
+		let client: C | null = null;
+		let tunnel: T | null = null;
 		let socketPath = discovery.socketPath;
 		if (remote) {
 			try {
