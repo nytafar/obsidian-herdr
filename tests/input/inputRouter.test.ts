@@ -68,16 +68,36 @@ describe('mode observation', () => {
 });
 
 describe('routeKey', () => {
-	it('encodes nothing with the shipped options (#17)', () => {
-		const instance = router();
-		feed(instance, '\x1b[>1u');
-		expect(instance.routeKey(keyEvent)).toBeNull();
+	it('sends shift+enter as the legacy line break with the shipped options (#18)', () => {
+		expect(router().routeKey(keyEvent)).toBe(LEGACY_LINE_BREAK);
 	});
 
-	it('honours the options #18 will pass', () => {
-		const instance = router({ key: { shiftEnterLineBreak: true, kittyModifiedKeys: false } });
-		expect(instance.routeKey(keyEvent)).toBe(LEGACY_LINE_BREAK);
+	it('sends alt+enter the same way, and leaves plain enter to the renderer', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBe(
+			LEGACY_LINE_BREAK,
+		);
 		expect(instance.routeKey({ ...keyEvent, shiftKey: false })).toBeNull();
+	});
+
+	it('leaves ctrl+enter, cmd+enter and ordinary typing to the renderer', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, ctrlKey: true })).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, metaKey: true })).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, key: 'a' })).toBeNull();
+	});
+
+	it('prefers the kitty encoding if a pane ever reports the protocol', () => {
+		const instance = router();
+		feed(instance, '\x1b[>1u');
+		expect(instance.routeKey(keyEvent)).toBe('\x1b[13;2u');
+	});
+
+	it('can be switched off, and then encodes nothing at all', () => {
+		const instance = router({ key: { shiftEnterLineBreak: false, kittyModifiedKeys: false } });
+		feed(instance, '\x1b[>1u');
+		expect(instance.routeKey(keyEvent)).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBeNull();
 	});
 });
 

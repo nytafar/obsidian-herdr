@@ -796,8 +796,9 @@ export class TerminalView extends ItemView {
 			this.rendererReady = renderer.mount(host).then(() => {
 				renderer.onData((data) => this.onData(data));
 				this.replaySnapshot(renderer);
-				// #17: keys pass the input layer before the renderer encodes them.
-				// Optional on the interface, and it consumes nothing today.
+				// #17/#18: keys pass the input layer before the renderer encodes
+				// them, so shift+enter can be sent as a line break. Optional on the
+				// interface; a renderer without it keeps its own encoding.
 				renderer.onKeyEvent?.((event) => this.onKeyEvent(event));
 			});
 		}
@@ -844,13 +845,18 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * Keys the input layer encodes itself (#17). True means "consumed": the
-	 * renderer swallows the event and emits nothing through `onData`. Returns
-	 * false for everything today, so typing is untouched.
+	 * Keys the input layer encodes itself (#17, #18). True means "consumed": the
+	 * renderer swallows the event and emits nothing through `onData`, so a key we
+	 * send is never also sent by ghostty-web's own encoder. Today that is
+	 * shift+enter and alt+enter; every other key returns false and is typed
+	 * exactly as before.
 	 */
 	private onKeyEvent(event: KeyboardEvent): boolean {
 		const session = this.session;
 		if (!session || session.mode !== 'control') return false;
+		// ghostty-web only routes keydown through its custom handler; a renderer
+		// that also offered keyup must not send the same key twice.
+		if (event.type !== 'keydown') return false;
 		const data = this.input.routeKey(event);
 		if (data === null) return false;
 		session.input(data);
