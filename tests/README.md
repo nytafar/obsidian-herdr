@@ -21,16 +21,17 @@ tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
 1. `npm run build` (or `npm run dev` for a watch build). The dev vault
    `/Users/lasse/Vaults/hvelv` has this repo symlinked at
    `.obsidian/plugins/herdr`; Hot-Reload picks up `main.js`.
-2. Command palette → **Herdr: Show renderer smoke test**. The command is
-   dev-only, opens a modal, and talks to no herdr socket or pane.
+2. Open an agent's terminal from the agent list (the terminal button on a row).
+   The shipped build has no dev-only smoke command; the real terminal view is the
+   harness. To eyeball escape handling without an agent, run
+   `printf '\033[1mbold\033[0m \033[38;2;255;128;0mtruecolour\033[0m ┌──┐ äöü 漢字 🐑\n'`
+   inside that pane.
 3. Expect: bold/underline/reverse/dim text, the 8 normal + 8 bright ANSI colours,
    a 256-colour background and a truecolour foreground, box-drawing characters,
-   `äöü 漢字 🐑`, and a blinking cursor after `$ `. Colours come from the active
-   Obsidian theme (`--text-normal`, `--background-primary`, `--color-*`), so
-   switching light/dark and reopening the modal should change them.
-4. Typing goes to `onData` — nothing consumes it in the smoke test, so the screen
-   stays still; the renderer is not echoing locally. That is correct.
-5. Console check for the WASM path (PRD N5): the bundle must contain exactly one
+   `äöü 漢字 🐑`, and a blinking cursor. Colours come from the active Obsidian
+   theme (`--text-normal`, `--background-primary`, `--color-*`), so switching
+   light/dark should change them (the view re-reads them on `css-change`).
+4. Console check for the WASM path (PRD N5): the bundle must contain exactly one
    `data:application/wasm;base64` literal and no `ghostty-vt.wasm` file may be
    emitted next to `main.js`:
    `grep -c 'data:application/wasm;base64' main.js && ls main.js manifest.json styles.css`.

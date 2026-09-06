@@ -188,7 +188,6 @@ Command palette:
 | **Herdr: New tab here** | `tab.create` in the scoped workspace at the active note's folder, labelled with the folder name. |
 | **Herdr: Split here** | Splits the focused herdr pane with that folder as cwd. |
 | **Herdr: Start agent here** | Creates the tab, waits for its pane to reach a shell prompt, then starts an agent of the configured kind and name pattern in it. Reports the result as a notice, and opens the terminal when *Open terminal after starting an agent* is on. |
-| **Herdr: Show renderer smoke test** | Development aid: renders a canned ANSI sample in a modal. Talks to no socket and no pane. |
 
 The last three are hidden when no note is open, since there is no folder to act
 on.
