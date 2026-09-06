@@ -519,10 +519,19 @@ function raceTimeout(promise: Promise<void>, ms: number, session: TerminalSessio
 	});
 }
 
+/**
+ * A copy, never a view. Node allocates buffers under 4 KB out of one shared 8 KB
+ * pool, so a `Uint8Array` view on `Buffer.from(...)` keeps the whole slab alive
+ * for as long as anyone holds the frame — 8 KB pinned for an average 945 B frame
+ * (notes/memory.md, suspect 3). Nothing retains frames today; the copy is what
+ * keeps that true for the next consumer.
+ */
 function decodeBase64(value: unknown): Uint8Array | null {
 	if (typeof value !== 'string') return null;
 	const buf = Buffer.from(value, 'base64');
-	return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+	const out = new Uint8Array(buf.byteLength);
+	out.set(buf);
+	return out;
 }
 
 function numberOr(value: unknown, fallback: number): number {

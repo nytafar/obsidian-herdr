@@ -12,7 +12,7 @@ const FAKE = fileURLToPath(new URL('./fixtures/fake-herdr.mjs', import.meta.url)
 const COMMAND = [process.execPath, FAKE];
 
 interface Recorded {
-	frames: { text: string; meta: FrameMeta }[];
+	frames: { text: string; bytes: Uint8Array; meta: FrameMeta }[];
 	closed: string[];
 	errors: Error[];
 	stderr: string[];
@@ -44,7 +44,9 @@ function makeSession(
 	const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
 		session.on('exit', (code, signal) => resolve({ code, signal }));
 	});
-	session.on('frame', (bytes, meta) => frames.push({ text: Buffer.from(bytes).toString('utf8'), meta }));
+	session.on('frame', (bytes, meta) =>
+		frames.push({ text: Buffer.from(bytes).toString('utf8'), bytes, meta }),
+	);
 	session.on('closed', (reason) => closed.push(reason));
 	session.on('error', (err) => errors.push(err));
 	session.on('stderr', (line) => stderr.push(line));
@@ -125,6 +127,10 @@ describe('TerminalSession against the fake herdr', () => {
 		const first = rec.frames[0]!;
 		expect(first.text).toBe('hello w4:p1 control takeover 80x24');
 		expect(first.meta).toMatchObject({ seq: 0, encoding: 'ansi', width: 80, height: 24, full: true });
+		// The frame owns its bytes: a view on a pooled node Buffer would report an
+		// 8 KB backing store for a short frame and pin the pool (notes/memory.md).
+		expect(first.bytes.byteOffset).toBe(0);
+		expect(first.bytes.buffer.byteLength).toBe(first.bytes.length);
 		await session.dispose();
 	});
 
