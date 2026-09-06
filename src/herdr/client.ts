@@ -24,20 +24,15 @@ import { connect, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import {
 	HERDR_PROTOCOL,
+	type AgentInfo,
 	type HerdrMethod,
 	type PaneInfo,
+	type SessionSnapshot,
 	type Subscription,
 	type WorkspaceInfo,
 } from './types.gen';
 
-/**
- * Timers taken from `globalThis`, bound: this is a process-side module that also
- * runs under plain node in the unit tests, where there is no `window`. Bound
- * because a DOM `setTimeout` called detached from its global throws
- * "Illegal invocation". Same shape as `src/herdr/ssh.ts`.
- */
-const setTimer = globalThis.setTimeout.bind(globalThis);
-const clearTimer = globalThis.clearTimeout.bind(globalThis);
+import { clearTimer, setTimer } from '../timers';
 
 /** Request line cap on the server side; keep well under it. */
 export const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -104,6 +99,11 @@ export interface HerdrClientOptions {
 	onProtocolMismatch?: (mismatch: ProtocolMismatch) => void;
 	/** Protocol to compare against. Defaults to the generated `HERDR_PROTOCOL`. */
 	expectedProtocol?: number;
+	/**
+	 * Called the first time an optional method turns out to be unsupported
+	 * (PRD M3): the feature that needs it is switched off, once, visibly.
+	 */
+	onUnsupportedMethod?: (method: string) => void;
 }
 
 /** `{"type":"pong",…}` as returned by `ping`. */
@@ -262,6 +262,9 @@ export class HerdrClient {
 	private readonly maxBackoffMs: number;
 	private readonly expectedProtocol: number;
 	private readonly onProtocolMismatch?: (mismatch: ProtocolMismatch) => void;
+	private readonly onUnsupportedMethod?: (method: string) => void;
+	/** Methods this server rejected as unknown; never retried (PRD M3). */
+	private readonly unsupported = new Set<string>();
 
 	private nextId = 1;
 	private disposed = false;
@@ -284,6 +287,7 @@ export class HerdrClient {
 		this.currentBackoff = this.backoffMs;
 		this.expectedProtocol = options.expectedProtocol ?? HERDR_PROTOCOL;
 		this.onProtocolMismatch = options.onProtocolMismatch;
+		this.onUnsupportedMethod = options.onUnsupportedMethod;
 	}
 
 	/** Socket path in use, already `~`-expanded. */
@@ -425,6 +429,52 @@ export class HerdrClient {
 			workspace_id: workspaceId ?? null,
 		});
 		return result.panes ?? [];
+	}
+
+	/** `agent.list`. Only agents carry the user-visible name; `PaneInfo` does not. */
+	async listAgents(): Promise<AgentInfo[]> {
+		const result = await this.request<{ agents?: AgentInfo[] }>('agent.list', {});
+		return result.agents ?? [];
+	}
+
+	/**
+	 * `session.snapshot`: workspaces, panes and agents in one round trip instead
+	 * of three (PRD section 7). Optional — an older or stripped-down server that
+	 * does not know the method returns null and the caller falls back to the
+	 * three list calls.
+	 */
+	snapshot(): Promise<SessionSnapshot | null> {
+		return this.requestOptional<{ snapshot?: SessionSnapshot }>('session.snapshot', {}).then(
+			(result) => result?.snapshot ?? null,
+		);
+	}
+
+	/**
+	 * A call the plugin can live without (PRD M3). An unsupported method resolves
+	 * to `null`, is remembered so the wire is never touched for it again, and is
+	 * reported once through {@link HerdrClientOptions.onUnsupportedMethod}. Every
+	 * other error still rejects — a socket problem is not a missing feature.
+	 */
+	async requestOptional<T = unknown>(
+		method: HerdrMethodName,
+		params: unknown = {},
+	): Promise<T | null> {
+		if (this.unsupported.has(method)) return null;
+		try {
+			return await this.request<T>(method, params);
+		} catch (error) {
+			if (error instanceof HerdrError && error.isUnsupportedMethod) {
+				this.unsupported.add(method);
+				this.onUnsupportedMethod?.(method);
+				return null;
+			}
+			throw error;
+		}
+	}
+
+	/** True once {@link requestOptional} has seen herdr reject this method. */
+	isUnsupported(method: HerdrMethodName): boolean {
+		return this.unsupported.has(method);
 	}
 
 	/**

@@ -105,7 +105,9 @@ Turn on **Use a remote herdr** and fill in:
   `~/.local/bin` is typically not on it, so a bare `herdr` will not be found.
 - **Remote vault path** — where this same vault lives on the remote host. Folder
   actions translate note paths against it, and it is also what the cwd rule of
-  workspace resolution matches against.
+  workspace resolution matches against. **Required** while the remote profile is
+  on: without it a local path would be sent to the remote host, so the folder
+  actions refuse and the settings status says so.
 
 Two things worth knowing about how this works:
 
@@ -188,7 +190,6 @@ Command palette:
 | **Herdr: New tab here** | `tab.create` in the scoped workspace at the active note's folder, labelled with the folder name. |
 | **Herdr: Split here** | Splits the focused herdr pane with that folder as cwd. |
 | **Herdr: Start agent here** | Creates the tab, waits for its pane to reach a shell prompt, then starts an agent of the configured kind and name pattern in it. Reports the result as a notice, and opens the terminal when *Open terminal after starting an agent* is on. |
-| **Herdr: Show renderer smoke test** | Development aid: renders a canned ANSI sample in a modal. Talks to no socket and no pane. |
 
 The last three are hidden when no note is open, since there is no folder to act
 on.
@@ -204,7 +205,12 @@ on the row opens it as a tab.
 Agent kind (`claude`, `codex`, `gemini`, `opencode`, `pi`, `cursor`, `amp`,
 `copilot`, `kimi`, `droid`, `grok`) and the name pattern are settings. The
 pattern understands `{folder}`, `{vault}` and `{n}`, where `{n}` is a counter
-that avoids colliding with agent names already taken.
+that avoids colliding with agent names already taken (read from `agent.list`, so
+names taken by agents outside this vault count too).
+
+Starting an agent races the new pane's shell: herdr answers `agent_pane_busy`
+until a prompt is up, so the start is retried for two seconds, exactly like
+herdr's own `herdr agent start`.
 
 ## Troubleshooting
 

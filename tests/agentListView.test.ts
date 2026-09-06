@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { countStatuses, groupByTab, relativeCwd } from '../src/views/agentListView';
+import {
+	agentDisplayName,
+	countStatuses,
+	groupByTab,
+	relativeCwd,
+} from '../src/views/agentListView';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus } from '../src/herdr/types.gen';
 
@@ -16,6 +21,7 @@ function pane(
 		workspaceId: 'w4',
 		tabId,
 		agent: 'claude',
+		name: '',
 		agentStatus,
 		title: paneId,
 		label: '',
@@ -44,6 +50,18 @@ describe('relativeCwd', () => {
 	it('survives an unknown vault path', () => {
 		expect(relativeCwd('/tmp/x', '')).toBe('/tmp/x');
 		expect(relativeCwd('', VAULT)).toBe('');
+	});
+});
+
+describe('agentDisplayName (M8)', () => {
+	it('prefers the agent name, then the title, and never the kind', () => {
+		expect(agentDisplayName(pane('w4:p1', 'w4:t1', 'idle', { name: 'vault-maintenance' }))).toBe(
+			'vault-maintenance',
+		);
+		expect(
+			agentDisplayName(pane('w4:p1', 'w4:t1', 'idle', { name: '  ', title: 'Refactor scope' })),
+		).toBe('Refactor scope');
+		expect(agentDisplayName(pane('w4:p1', 'w4:t1', 'idle', { title: '' }))).toBe('w4:p1');
 	});
 });
 

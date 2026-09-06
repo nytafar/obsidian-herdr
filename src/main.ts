@@ -1,8 +1,6 @@
 import {
-	App,
 	FileSystemAdapter,
 	Menu,
-	Modal,
 	Notice,
 	Plugin,
 	TAbstractFile,
@@ -10,27 +8,24 @@ import {
 	TFolder,
 	type WorkspaceLeaf,
 } from 'obsidian';
-import { DEFAULT_SETTINGS, HerdrSettings, HerdrSettingTab } from './settings';
+import {
+	DEFAULT_SETTINGS,
+	HerdrSettingTab,
+	renderConnectionStatus,
+	type ConnectionStatus,
+	type HerdrSettings,
+} from './settings';
 import { discoverHerdr, type DiscoveryResult } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
-import { GhosttyWebRenderer } from './views/renderer/ghosttyWeb';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 
-/** Colour ramp, bold/underline and a box drawing line; enough to eyeball the renderer. */
-const SAMPLE_ANSI =
-	'\x1b[1mHerdr renderer smoke test\x1b[0m\r\n' +
-	'\x1b[4munderline\x1b[0m \x1b[7mreverse\x1b[0m \x1b[2mdim\x1b[0m\r\n' +
-	[0, 1, 2, 3, 4, 5, 6, 7]
-		.map((i) => `\x1b[3${i}m${i}\x1b[0m\x1b[9${i}m${i}\x1b[0m`)
-		.join(' ') +
-	'\r\n\x1b[48;5;24m 256-colour \x1b[0m \x1b[38;2;255;128;0mtruecolour\x1b[0m\r\n' +
-	'┌──────────┐\r\n│ box draw │\r\n└──────────┘\r\n' +
-	'unicode: äöü 漢字 🐑\r\n$ ';
+/** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
+const AGENT_NAME_REFRESH_MS = 300;
 
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
@@ -43,6 +38,10 @@ export default class HerdrPlugin extends Plugin {
 	actions!: HerdrActions;
 
 	private discovery: DiscoveryResult | null = null;
+	/** One prime at a time; a reconnect can land while the first is in flight. */
+	private priming = false;
+	/** Pending coalesced `agent.list`, 0 when none. */
+	private agentNameTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
 	private connectError: string | null = null;
 	private notifier!: TransitionNotifier;
@@ -67,7 +66,9 @@ export default class HerdrPlugin extends Plugin {
 			},
 		});
 		this.addSettingTab(
-			new HerdrSettingTab(this.app, this, (el) => this.renderStatus(el)),
+			new HerdrSettingTab(this.app, this, (el) =>
+				renderConnectionStatus(el, this.settings, this.connectionStatus()),
+			),
 		);
 
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
@@ -103,6 +104,8 @@ export default class HerdrPlugin extends Plugin {
 		const tunnel = this.tunnel;
 		this.tunnel = null;
 		void tunnel?.stop();
+		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
+		this.agentNameTimer = 0;
 		this.statusBarEl = null;
 	}
 
@@ -206,13 +209,9 @@ export default class HerdrPlugin extends Plugin {
 				if (!client) return Promise.reject(new Error('not connected to herdr'));
 				return client.request<T>(method, params);
 			},
-			takenAgentNames: () => {
-				const names = new Set<string>();
-				for (const pane of this.scope?.list() ?? []) {
-					if (pane.label) names.add(pane.label);
-				}
-				return names;
-			},
+			// Real agent names from `agent.list`, session-wide: herdr rejects a
+			// duplicate name anywhere, not just in this workspace (PRD M20).
+			takenAgentNames: () => this.scope?.agentNames() ?? new Set<string>(),
 			vaultName: () => this.app.vault.getName(),
 			notice: (message: string) => {
 				new Notice(message);
@@ -258,15 +257,6 @@ export default class HerdrPlugin extends Plugin {
 		this.addFolderCommand('start-agent-here', 'Start agent here', (path) =>
 			this.actions.startAgentHere(path),
 		);
-		// Renderer smoke test (PRD M14): no herdr connection involved, it only
-		// writes a canned ANSI sample so the ghostty-web bundle can be eyeballed.
-		this.addCommand({
-			id: 'renderer-smoke-test',
-			name: 'Show renderer smoke test',
-			callback: () => {
-				new RendererSmokeModal(this.app).open();
-			},
-		});
 	}
 
 	/** A command acting on the active file's folder; hidden when there is none. */
@@ -410,6 +400,10 @@ export default class HerdrPlugin extends Plugin {
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
 			},
+			// PRD M3: an unsupported method is reported once, then never retried.
+			onUnsupportedMethod: (method) => {
+				new Notice(`Herdr: this herdr does not support ${method}; carrying on without it.`);
+			},
 		});
 		this.client = client;
 
@@ -426,7 +420,12 @@ export default class HerdrPlugin extends Plugin {
 			this.notifier.onChanged(prev, next);
 			this.updateStatusBar();
 		});
-		scope.on('added', () => this.updateStatusBar());
+		scope.on('added', () => {
+			this.updateStatusBar();
+			// A pane that just gained an agent has no name yet: names are not on
+			// the event stream, only in `agent.list` (PRD M8).
+			this.refreshAgentNames();
+		});
 		scope.on('removed', (pane) => {
 			this.notifier.forget(pane.paneId);
 			this.updateStatusBar();
@@ -434,19 +433,81 @@ export default class HerdrPlugin extends Plugin {
 		scope.on('workspaceResolved', () => {
 			this.notifier.reset();
 			this.updateStatusBar();
+			this.refreshAgentNames();
+		});
+
+		// The one place the scope is loaded: the event stream's `connected` edge,
+		// which fires on the first subscribe ack and again after every reconnect.
+		// Listing only there means nothing is missed between the two (PRD M4) and
+		// that panes closed during an outage do not stay listed forever.
+		client.on('connected', () => {
+			this.connectError = null;
+			void this.primeScope();
+		});
+		client.on('disconnected', (error) => {
+			if (error) this.connectError = error.message;
 		});
 
 		try {
 			await client.ping();
-			// Subscribe before the first listing so nothing is missed in between.
 			client.on('*', (event) => scope.ingest(event));
 			client.subscribe([...SCOPE_SUBSCRIPTIONS]);
-			scope.prime(await client.listWorkspaces(), await client.listPanes());
-			this.updateStatusBar();
 		} catch (error) {
 			this.connectError = (error as Error).message;
 			new Notice(`Herdr: ${this.connectError}`);
 		}
+	}
+
+	/**
+	 * Loads workspaces, panes and agent names into the scope.
+	 *
+	 * `session.snapshot` carries all three in one round trip (PRD section 7); a
+	 * server that does not know the method falls back to the three list calls
+	 * (PRD M3). Runs from the event stream's `connected` edge — the first ack and
+	 * every reconnect — and `prime` diffs rather than resets, so a re-prime is
+	 * invisible unless something actually changed while the stream was down.
+	 */
+	private async primeScope(): Promise<void> {
+		const client = this.client;
+		const scope = this.scope;
+		if (!client || !scope || this.priming) return;
+		this.priming = true;
+		try {
+			const snapshot = await client.snapshot();
+			// Names first: `prime` reads them when it builds the pane states.
+			if (snapshot) {
+				scope.setAgentNames(snapshot.agents ?? []);
+				scope.prime(snapshot.workspaces ?? [], snapshot.panes ?? []);
+			} else {
+				scope.setAgentNames(await client.listAgents());
+				scope.prime(await client.listWorkspaces(), await client.listPanes());
+			}
+			this.connectError = null;
+		} catch (error) {
+			this.connectError = (error as Error).message;
+		} finally {
+			this.priming = false;
+		}
+		this.updateStatusBar();
+	}
+
+	/**
+	 * Coalesced `agent.list`. Agent names are the one thing the event stream
+	 * never carries, so they are re-read after the scope changes shape rather
+	 * than on a timer. A failure is cosmetic: rows fall back to the title.
+	 */
+	private refreshAgentNames(): void {
+		if (this.agentNameTimer) return;
+		this.agentNameTimer = window.setTimeout(() => {
+			this.agentNameTimer = 0;
+			const client = this.client;
+			const scope = this.scope;
+			if (!client || !scope) return;
+			void client.listAgents().then(
+				(agents) => scope.setAgentNames(agents),
+				() => undefined,
+			);
+		}, AGENT_NAME_REFRESH_MS);
 	}
 
 	/**
@@ -473,94 +534,26 @@ export default class HerdrPlugin extends Plugin {
 		return await tunnel.start();
 	}
 
-	/** Connection status shown at the top of the settings tab (PRD M1-M3, M6). */
-	private renderStatus(el: HTMLElement): void {
-		const line = (text: string, warning = false): void => {
-			el.createEl('p', { cls: warning ? 'herdr-status-text mod-warning' : 'herdr-status-text', text });
-		};
-		const discovery = this.discovery;
-		if (!discovery) {
-			line('Not connected yet.');
-			return;
-		}
-		const remote = this.settings.remote;
-		const tunnel = this.tunnel;
-		if (tunnel) {
-			line(tunnel.statusText, tunnel.status.state !== 'connected');
-		} else if (remote.enabled) {
-			line('SSH tunnel: not started.', true);
-		}
-		if (discovery.binary) {
-			line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
-		} else {
-			// A remote profile only needs `ssh` locally, so this is not fatal there.
-			line(discovery.error ?? 'Herdr binary not found.', !remote.enabled);
-			if (!remote.enabled) return;
-		}
-		if (remote.enabled) {
-			line(`Remote terminals: ssh -T ${remote.host} ${remote.remoteBinary}`);
-		}
-		line(`Socket: ${this.client?.socket ?? discovery.socketPath}`);
-		// `discovery.status` describes the *local* server. With a remote profile
-		// that is the wrong machine, so the tunnel line above stands in for it.
-		const status = discovery.status;
-		if (!remote.enabled) {
-			line(
-				status
-					? `Server: ${status.status}, version ${status.version ?? 'unknown'}, protocol ${status.protocol ?? 'unknown'}`
-					: `Server: not reachable (${discovery.error ?? 'unknown error'})`,
-				!status,
-			);
-		}
-		const mismatch = this.mismatch ?? this.client?.lastMismatch ?? null;
-		if (mismatch) {
-			line(
-				`Protocol mismatch: herdr speaks ${mismatch.server}, this plugin was built against ${mismatch.expected}. Everything still works unless a method is missing.`,
-				true,
-			);
-		}
+	/** State the settings tab's status block describes (rendered in settings.ts). */
+	private connectionStatus(): ConnectionStatus {
 		const scope = this.scope;
-		if (scope?.workspaceId) {
-			line(
-				`Workspace: ${scope.workspaceLabel ?? scope.workspaceId} (${scope.workspaceId}, matched by ${scope.method}), ${scope.size} agent panes`,
-			);
-		} else {
-			line('Workspace: no herdr workspace matches this vault yet.', true);
-		}
-		if (this.connectError) line(this.connectError, true);
-	}
-}
-
-/**
- * Dev-only harness for PRD M14: mounts `GhosttyWebRenderer` in a modal and writes
- * a canned ANSI sample. Nothing here touches herdr.
- */
-class RendererSmokeModal extends Modal {
-	private renderer: GhosttyWebRenderer | undefined;
-
-	constructor(app: App) {
-		super(app);
-	}
-
-	override onOpen(): void {
-		this.setTitle('Herdr renderer smoke test');
-		const host = this.contentEl.createDiv({ cls: 'herdr-terminal-host' });
-		const renderer = new GhosttyWebRenderer({ scrollback: 200 });
-		this.renderer = renderer;
-		void renderer
-			.mount(host)
-			.then(() => {
-				renderer.write(new TextEncoder().encode(SAMPLE_ANSI));
-				renderer.focus();
-			})
-			.catch((err: unknown) => {
-				new Notice(`Herdr: renderer failed to start (${String(err)})`);
-			});
-	}
-
-	override onClose(): void {
-		this.renderer?.dispose();
-		this.renderer = undefined;
-		this.contentEl.empty();
+		const tunnel = this.tunnel;
+		return {
+			discovery: this.discovery,
+			socketPath: this.client?.socket ?? this.discovery?.socketPath ?? '',
+			tunnel: tunnel
+				? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' }
+				: null,
+			mismatch: this.mismatch ?? this.client?.lastMismatch ?? null,
+			workspace: scope?.workspaceId
+				? {
+						id: scope.workspaceId,
+						label: scope.workspaceLabel,
+						method: scope.method,
+						agentCount: scope.size,
+					}
+				: null,
+			error: this.connectError,
+		};
 	}
 }

@@ -206,8 +206,8 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	}
 
 	/**
-	 * Re-read Obsidian's CSS variables. Not part of `TerminalRenderer`; the view
-	 * may call it from the workspace `css-change` event so theme switches apply.
+	 * Re-read Obsidian's CSS variables. The optional `TerminalRenderer.refreshTheme`;
+	 * the view calls it from the workspace `css-change` event (PRD S18).
 	 */
 	refreshTheme(): void {
 		const el = this.container;

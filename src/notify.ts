@@ -67,13 +67,13 @@ export function isNotifiedTransition(
 	return (NOTIFIED as readonly string[]).includes(next.agentStatus);
 }
 
-/** Human-readable name of a pane: the agent's label, then its title, then the id. */
+/**
+ * Human-readable name of a pane: the agent's herdr name (`agent.list`), then the
+ * pane label, then the terminal title, then the id. Never `pane.agent`: that is
+ * the kind, so every notification would read "claude".
+ */
 export function paneName(pane: PaneState): string {
-	const label = pane.label.trim();
-	if (label) return label;
-	const title = pane.title.trim();
-	if (title) return title;
-	return pane.paneId;
+	return pane.name.trim() || pane.label.trim() || pane.title.trim() || pane.paneId;
 }
 
 function planFor(pane: PaneState, transition: NotifiedTransition): NotifyPlan {

@@ -17,7 +17,7 @@
  * {@link ActionHost}, and the module stays unit testable against a fake client.
  */
 
-import type { HerdrSettings } from './settings';
+import { remoteVaultPathIssue, type HerdrSettings } from './settings';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
 
@@ -29,6 +29,22 @@ const MAX_AGENT_NAME = 32;
 export const PANE_WAIT_TIMEOUT_MS = 5000;
 const PANE_POLL_INTERVAL_MS = 150;
 
+/**
+ * How long `agent.start` is retried while the new pane's shell is still coming
+ * up, and how often. Same window and interval as herdr's own CLI
+ * (`src/cli/agent.rs`: `PANE_SHELL_READINESS_RETRY_TIMEOUT` 2 s,
+ * `AGENT_START_POLL_INTERVAL` 100 ms).
+ */
+export const AGENT_START_RETRY_MS = 2000;
+const AGENT_START_POLL_MS = 100;
+
+/**
+ * herdr's answers when the pane exists but cannot host an agent *yet*
+ * (`src/app/agents.rs`): no terminal runtime attached, or no shell prompt found
+ * by `available_shell_name`. Both are the launch race, not a real refusal.
+ */
+const PANE_NOT_READY_CODES = new Set(['agent_pane_unavailable', 'agent_pane_busy']);
+
 /** The bits of the plugin an action needs. Everything Obsidian-shaped is here. */
 export interface ActionHost {
 	/** Live settings; read through a function because the object is replaced. */
@@ -37,7 +53,7 @@ export interface ActionHost {
 	workspaceId(): string | null;
 	/** One JSON API call. Rejects with `HerdrError`. */
 	request<T>(method: string, params: unknown): Promise<T>;
-	/** Agent names already in use in this workspace, for uniqueness. */
+	/** Agent names herdr already uses session-wide, for uniqueness (M20). */
 	takenAgentNames(): Set<string>;
 	/** Vault folder name, for the `{vault}` placeholder. */
 	vaultName(): string;
@@ -239,8 +255,9 @@ export class HerdrActions {
 	 * Creates a tab, waits for its pane to exist, then starts an agent in it
 	 * (PRD M20). `tab.create` already returns `root_pane`, but the pane is only
 	 * usable once herdr lists it, so the id from the reply is confirmed against
-	 * `pane.list` before `agent.start` — otherwise the call races the shell and
-	 * comes back `agent_pane_unavailable`.
+	 * `pane.list` first. That still does not mean the pane sits at a prompt, so
+	 * the start itself is retried on the two "not ready yet" codes for
+	 * {@link AGENT_START_RETRY_MS} — see the comment in the retry loop.
 	 */
 	async startAgentHere(folderAbsPath: string): Promise<StartedAgent | null> {
 		const workspaceId = this.host.workspaceId();
@@ -275,27 +292,41 @@ export class HerdrActions {
 			vault: this.host.vaultName(),
 		}, taken);
 
-		for (let attempt = 0; attempt < 2; attempt++) {
+		const readyDeadline = this.host.now() + AGENT_START_RETRY_MS;
+		let renamed = false;
+		for (;;) {
 			try {
 				await this.host.request('agent.start', { name, kind, pane_id: paneId });
 				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
 				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId);
 				return { tabId, paneId, name, kind };
 			} catch (error) {
-				// Another client can take the name between our check and the call.
-				if (error instanceof HerdrError && error.code === 'agent_name_taken' && attempt === 0) {
-					taken.add(name);
-					name = buildAgentName(settings.agentNamePattern || '{folder}', {
-						folder: label,
-						vault: this.host.vaultName(),
-					}, taken);
-					continue;
+				if (error instanceof HerdrError) {
+					// Another client can take the name between our check and the call.
+					if (error.code === 'agent_name_taken' && !renamed) {
+						renamed = true;
+						taken.add(name);
+						name = buildAgentName(settings.agentNamePattern || '{folder}', {
+							folder: label,
+							vault: this.host.vaultName(),
+						}, taken);
+						continue;
+					}
+					// The listed pane is not the same thing as a pane at a prompt, and
+					// herdr has no "wait until interactive" call: `agent.start`'s own
+					// `timeout_ms` only bounds agent *detection* after the command has
+					// been typed, and `pane.wait_for_output` would need a prompt regex
+					// per shell. herdr's CLI solves it by retrying the start itself
+					// while the shell initialises, so this does the same.
+					if (PANE_NOT_READY_CODES.has(error.code) && this.host.now() < readyDeadline) {
+						await this.host.sleep(AGENT_START_POLL_MS);
+						continue;
+					}
 				}
 				this.reportFailure('start an agent', error);
 				return null;
 			}
 		}
-		return null;
 	}
 
 	/** Focuses a pane in herdr; the one source of truth for "seen" (PRD M9). */
@@ -335,13 +366,23 @@ export class HerdrActions {
 		}
 	}
 
-	/** True when there is a workspace to act in; otherwise it explains why not. */
+	/**
+	 * True when the action can run: a workspace to act in, and a path root that
+	 * belongs to the machine herdr runs on. Otherwise it explains why not.
+	 */
 	private guard(workspaceId: string | null): workspaceId is string {
-		if (workspaceId) return true;
-		this.host.notice(
-			'Herdr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
-		);
-		return false;
+		if (!workspaceId) {
+			this.host.notice(
+				'Herdr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
+			);
+			return false;
+		}
+		const issue = remoteVaultPathIssue(this.host.settings());
+		if (issue) {
+			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
+			return false;
+		}
+		return true;
 	}
 
 	private reportFailure(what: string, error: unknown): void {

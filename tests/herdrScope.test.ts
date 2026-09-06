@@ -209,6 +209,39 @@ describe('WorkspaceScope.prime', () => {
 	});
 });
 
+describe('WorkspaceScope.setAgentNames (M8, M20)', () => {
+	it('fills in names from agent.list and repaints only the rows that changed', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2' })],
+		);
+		const rec = record(scope);
+		scope.setAgentNames([
+			{ pane_id: 'w4:p1', name: 'vault-maintenance' },
+			// Another workspace's agent still counts for name uniqueness.
+			{ pane_id: 'w9:p1', name: 'blekksprut' },
+		] as never);
+		expect(scope.get('w4:p1')?.name).toBe('vault-maintenance');
+		expect(scope.get('w4:p2')?.name).toBe('');
+		expect(rec.changed.map((entry) => entry.paneId)).toEqual(['w4:p1']);
+		expect(scope.agentNames()).toEqual(new Set(['vault-maintenance', 'blekksprut']));
+
+		// Idempotent: the same list again is not a repaint.
+		const rec2 = record(scope);
+		scope.setAgentNames([{ pane_id: 'w4:p1', name: 'vault-maintenance' }] as never);
+		expect(rec2.changed).toHaveLength(0);
+	});
+
+	it('keeps names across a re-prime', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		const workspaces = [workspace('w4', 'hvelv')];
+		scope.setAgentNames([{ pane_id: 'w4:p1', name: 'notes' }] as never);
+		scope.prime(workspaces, [pane({ pane_id: 'w4:p1' })]);
+		expect(scope.get('w4:p1')?.name).toBe('notes');
+	});
+});
+
 describe('WorkspaceScope.ingest', () => {
 	function primed(): { scope: WorkspaceScope; rec: Recorded } {
 		const scope = new WorkspaceScope({ vaultPath: VAULT });
