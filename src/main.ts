@@ -20,8 +20,9 @@ import {
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
-import { discoverHerdr, type DiscoveryResult } from './herdr/binary';
+import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
+import { ConnectionCoordinator } from './connection';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
@@ -45,11 +46,48 @@ const RECONNECT_DEBOUNCE_MS = 800;
 
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
+	/**
+	 * Owns every connection attempt: discovery, tunnel, client, scope and
+	 * priming (issue #57). `client`, `scope` and `tunnel` below read from the
+	 * published connection; a retired or superseded attempt never shows here.
+	 */
+	private readonly connection = new ConnectionCoordinator<HerdrClient, WorkspaceScope, SshTunnel>(
+		{
+			discover: () =>
+				discoverHerdr({
+					override: this.settings.herdrBinary,
+					extraPath: this.settings.extraPath,
+					socketOverride: this.settings.socketPath,
+				}),
+			remoteEnabled: () => this.settings.remote.enabled,
+			createTunnel: (onSocket) => this.createTunnel(onSocket),
+			createClient: (socketPath) => this.createClient(socketPath),
+			createScope: () => this.createScope(),
+			subscriptions: SCOPE_SUBSCRIPTIONS,
+			notice: (message) => {
+				new Notice(message);
+			},
+			setError: (message) => {
+				this.connectError = message;
+			},
+			onReplaced: () => {
+				for (const listener of [...this.scopeListeners]) listener();
+				this.updateStatusBar();
+			},
+			onPrimed: () => this.updateStatusBar(),
+		},
+	);
 	/** Null until the herdr binary and socket have been discovered. */
-	client: HerdrClient | null = null;
-	scope: WorkspaceScope | null = null;
+	get client(): HerdrClient | null {
+		return this.connection.current?.client ?? null;
+	}
+	get scope(): WorkspaceScope | null {
+		return this.connection.current?.scope ?? null;
+	}
 	/** Non-null only while a remote profile is enabled (PRD S5). */
-	tunnel: SshTunnel | null = null;
+	get tunnel(): SshTunnel | null {
+		return this.connection.current?.tunnel ?? null;
+	}
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
@@ -61,9 +99,6 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private readonly scopeListeners = new Set<() => void>();
 
-	private discovery: DiscoveryResult | null = null;
-	/** One prime at a time; a reconnect can land while the first is in flight. */
-	private priming = false;
 	/** Pending coalesced `agent.list`, 0 when none. */
 	private agentNameTimer = 0;
 	/** Pending reconnect after a connection setting changed, 0 when none. */
@@ -131,15 +166,12 @@ export default class HerdrPlugin extends Plugin {
 		// The explorer buttons are not registered on the plugin, because the
 		// setting has to release them too; `disable()` is the one teardown.
 		this.explorerButtons.disable();
-		this.client?.dispose();
-		this.client = null;
-		this.scope = null;
+		// Invalidates every attempt before any teardown is awaited: a connect
+		// still waiting on discovery or a ping finds itself stale afterwards.
+		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
+		// here on its own; `onunload` is synchronous.
+		this.connection.dispose();
 		this.scopeListeners.clear();
-		// `stop()` is async (SIGTERM, then SIGKILL, then the socket file) but
-		// `onunload` is not; the tunnel owns its own teardown from here.
-		const tunnel = this.tunnel;
-		this.tunnel = null;
-		void tunnel?.stop();
 		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
 		this.agentNameTimer = 0;
 		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
@@ -204,7 +236,7 @@ export default class HerdrPlugin extends Plugin {
 	 * The terminal view turns this into a spawn argv (`terminalArgvPrefix`).
 	 */
 	herdrBinaryPath(): string {
-		return this.discovery?.binary?.path ?? this.settings.herdrBinary.trim();
+		return this.connection.discovery?.binary?.path ?? this.settings.herdrBinary.trim();
 	}
 
 	/**
@@ -536,11 +568,7 @@ export default class HerdrPlugin extends Plugin {
 		}
 		await workspace.revealLeaf(leaf);
 	}
-	/**
-	 * Finds herdr, opens the JSON API connection and primes the workspace scope.
-	 * Read-only: `ping`, `workspace.list`, `pane.list` and `events.subscribe`.
-	 * Never throws; failures land in the settings status.
-	 */
+
 	/**
 	 * A connection setting changed (socket, binary, PATH, workspace, or any
 	 * remote field). Typing in a text field fires per keystroke, so the
@@ -562,49 +590,22 @@ export default class HerdrPlugin extends Plugin {
 	 * terminals already spawned locally.
 	 */
 	async reconnect(): Promise<void> {
-		const client = this.client;
-		this.client = null;
-		client?.dispose();
-		const tunnel = this.tunnel;
-		this.tunnel = null;
-		await tunnel?.stop();
-		this.scope = null;
 		this.mismatch = null;
-		this.discovery = null;
-		this.updateStatusBar();
-		await this.connect();
+		await this.connection.connect();
 	}
 
+	/**
+	 * Finds herdr, opens the JSON API connection and primes the workspace scope.
+	 * Read-only: `ping`, `session.snapshot`, `pane.list` and `events.subscribe`.
+	 * Never throws; failures land in the settings status. Overlapping calls are
+	 * serialised by the coordinator: only the newest attempt publishes.
+	 */
 	private async connect(): Promise<void> {
-		this.connectError = null;
-		const discovery = await discoverHerdr({
-			override: this.settings.herdrBinary,
-			extraPath: this.settings.extraPath,
-			socketOverride: this.settings.socketPath,
-		});
-		this.discovery = discovery;
-		const remoteProfile = this.settings.remote;
-		// A remote profile needs `ssh`, not a local herdr, so a missing local
-		// binary only stops the local path.
-		if (!discovery.binary && !remoteProfile.enabled) {
-			new Notice(`Herdr: ${discovery.error ?? 'herdr binary not found'}`);
-			return;
-		}
+		await this.connection.connect();
+	}
 
-		// Remote: the API socket is the local end of an SSH forward (PRD S5).
-		// Terminals do not use it; they run the CLI over `ssh -T` (PRD S17).
-		let socketPath = discovery.socketPath;
-		if (remoteProfile.enabled) {
-			try {
-				socketPath = await this.startTunnel();
-			} catch (error) {
-				this.connectError = (error as Error).message;
-				new Notice(`Herdr: ${this.connectError}`);
-				return;
-			}
-		}
-
-		const client = new HerdrClient({
+	private createClient(socketPath: string): HerdrClient {
+		return new HerdrClient({
 			socketPath,
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
@@ -614,18 +615,20 @@ export default class HerdrPlugin extends Plugin {
 				new Notice(unsupportedMethodMessage(method));
 			},
 		});
-		this.client = client;
+	}
 
+	/**
+	 * The scope for one connection, with everything downstream hung off its
+	 * events, never off the raw stream: the scope has already collapsed the
+	 * ~10 pane.updated per second (N4).
+	 */
+	private createScope(): WorkspaceScope {
+		const remoteProfile = this.settings.remote;
 		const scope = new WorkspaceScope({
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
 		});
-		this.scope = scope;
-		for (const listener of [...this.scopeListeners]) listener();
-
-		// Everything downstream hangs off scope events, never off the raw stream:
-		// the scope has already collapsed the ~10 pane.updated per second (N4).
 		scope.on('changed', (_paneId, prev, next) => {
 			this.notifier.onChanged(prev, next);
 			this.updateStatusBar();
@@ -645,60 +648,7 @@ export default class HerdrPlugin extends Plugin {
 			this.updateStatusBar();
 			this.refreshAgentNames();
 		});
-
-		// The one place the scope is loaded: the event stream's `connected` edge,
-		// which fires on the first subscribe ack and again after every reconnect.
-		// Listing only there means nothing is missed between the two (PRD M4) and
-		// that panes closed during an outage do not stay listed forever.
-		client.on('connected', () => {
-			this.connectError = null;
-			void this.primeScope();
-		});
-		client.on('disconnected', (error) => {
-			if (error) this.connectError = error.message;
-		});
-
-		try {
-			await client.ping();
-			client.on('*', (event) => scope.ingest(event));
-			client.subscribe([...SCOPE_SUBSCRIPTIONS]);
-		} catch (error) {
-			this.connectError = (error as Error).message;
-			new Notice(`Herdr: ${this.connectError}`);
-		}
-	}
-
-	/**
-	 * Loads workspaces, panes and agent names into the scope.
-	 *
-	 * `session.snapshot` carries all three in one round trip (PRD section 7); a
-	 * server that does not know the method falls back to the three list calls
-	 * (PRD M3). Runs from the event stream's `connected` edge — the first ack and
-	 * every reconnect — and `prime` diffs rather than resets, so a re-prime is
-	 * invisible unless something actually changed while the stream was down.
-	 */
-	private async primeScope(): Promise<void> {
-		const client = this.client;
-		const scope = this.scope;
-		if (!client || !scope || this.priming) return;
-		this.priming = true;
-		try {
-			const snapshot = await client.snapshot();
-			// Names first: `prime` reads them when it builds the pane states.
-			if (snapshot) {
-				scope.setAgentNames(snapshot.agents ?? []);
-				scope.prime(snapshot.workspaces ?? [], snapshot.panes ?? []);
-			} else {
-				scope.setAgentNames(await client.listAgents());
-				scope.prime(await client.listWorkspaces(), await client.listPanes());
-			}
-			this.connectError = null;
-		} catch (error) {
-			this.connectError = (error as Error).message;
-		} finally {
-			this.priming = false;
-		}
-		this.updateStatusBar();
+		return scope;
 	}
 
 	/**
@@ -723,36 +673,34 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Opens the SSH forward for the remote profile and returns its local socket.
-	 * The client is pointed at that socket instead of the discovered one; the
-	 * tunnel keeps itself alive with backoff after a drop.
+	 * The SSH forward for the remote profile (PRD S5). The connection points its
+	 * client at the forward's local socket instead of the discovered one; the
+	 * tunnel keeps itself alive with backoff after a drop and reports the socket
+	 * through `onSocket` after every reconnect.
 	 */
-	private async startTunnel(): Promise<string> {
+	private createTunnel(onSocket: (localSocketPath: string) => void): SshTunnel {
 		const remote = this.settings.remote;
 		const host = remote.host.trim();
 		if (host.length === 0) {
 			throw new Error('the remote profile has no SSH host');
 		}
-		const tunnel = new SshTunnel({
+		return new SshTunnel({
 			host,
 			remoteSocketPath: remote.remoteSocketPath.trim(),
 			onStatus: (status) => {
-				// The local path never changes, so this only matters after a
-				// reconnect: the client picks the fresh socket up on the next call.
-				if (status.state === 'connected') this.client?.setSocketPath(status.localSocketPath);
+				if (status.state === 'connected') onSocket(status.localSocketPath);
 			},
 		});
-		this.tunnel = tunnel;
-		return await tunnel.start();
 	}
 
 	/** State the settings tab's status block describes (rendered in settings.ts). */
 	private connectionStatus(): ConnectionStatus {
 		const scope = this.scope;
 		const tunnel = this.tunnel;
+		const discovery = this.connection.discovery;
 		return {
-			discovery: this.discovery,
-			socketPath: this.client?.socket ?? this.discovery?.socketPath ?? '',
+			discovery,
+			socketPath: this.client?.socket ?? discovery?.socketPath ?? '',
 			tunnel: tunnel
 				? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' }
 				: null,
