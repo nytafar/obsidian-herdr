@@ -440,6 +440,8 @@ export class TerminalView extends ItemView {
 	private visibility: VisibilityTracker | null = null;
 	/** True while the renderer and the session are given up for a hidden leaf. */
 	private suspended = false;
+	/** The last start failed before the plugin had found herdr; retried on connect. */
+	private awaitingConnection = false;
 	/** Scrollback carried across a suspend, as plain text. Null when there is none. */
 	private snapshot: string[] | null = null;
 	/** Guards against an old start finishing after a newer one began. */
@@ -508,6 +510,11 @@ export class TerminalView extends ItemView {
 		});
 
 		this.registerDomEvent(this.hostEl, 'wheel', (event) => this.onWheel(event));
+		this.register(
+			this.plugin.onScopeReplaced(() => {
+				if (this.awaitingConnection) void this.start();
+			}),
+		);
 		// A theme switch changes every colour the renderer was handed (PRD S18).
 		this.registerEvent(
 			// Optional on the interface: a renderer without it keeps its colours.
@@ -673,11 +680,18 @@ export class TerminalView extends ItemView {
 			// — terminals never go through the forwarded API socket (PRD S17).
 			command = terminalArgvPrefix(this.plugin.settings, this.plugin.herdrBinaryPath());
 		} catch (error) {
-			this.closedReason = (error as Error).message;
+			// A restored tab opens before `connect()` has discovered the binary
+			// (discovery is async); the plugin announces the connection through
+			// `onScopeReplaced`, which retries this start once.
+			this.awaitingConnection = !this.plugin.client;
+			this.closedReason = this.awaitingConnection
+				? 'waiting for herdr'
+				: (error as Error).message;
 			this.exited = true;
 			this.renderStatus();
 			return;
 		}
+		this.awaitingConnection = false;
 
 		const fit = renderer.fit();
 		const cols = fit.cols > 0 ? fit.cols : FALLBACK_COLS;
