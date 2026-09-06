@@ -22,6 +22,8 @@
 
 import { connect, type Socket } from 'node:net';
 import { homedir } from 'node:os';
+
+import { LineSplitter } from './lineSplitter';
 import {
 	HERDR_PROTOCOL,
 	type AgentInfo,
@@ -153,52 +155,6 @@ export function expandHome(path: string): string {
 	if (path === '~') return homedir();
 	if (path.startsWith('~/')) return `${homedir()}/${path.slice(2)}`;
 	return path;
-}
-
-/** Splits a byte stream into NDJSON lines with a bounded pending buffer. */
-class LineSplitter {
-	private pending: Buffer[] = [];
-	private pendingBytes = 0;
-
-	constructor(private readonly maxLineBytes: number) {}
-
-	push(chunk: Buffer): string[] {
-		const lines: string[] = [];
-		let offset = 0;
-		let newline = chunk.indexOf(0x0a, offset);
-		while (newline !== -1) {
-			lines.push(this.take(chunk.subarray(offset, newline)));
-			offset = newline + 1;
-			newline = chunk.indexOf(0x0a, offset);
-		}
-		if (offset < chunk.length) {
-			const rest = chunk.subarray(offset);
-			this.pending.push(rest);
-			this.pendingBytes += rest.length;
-			if (this.pendingBytes > this.maxLineBytes) {
-				this.reset();
-				throw new HerdrError(CLIENT_ERROR_CODES.protocol, 'herdr sent an oversized line');
-			}
-		}
-		return lines;
-	}
-
-	private take(tail: Buffer): string {
-		if (this.pending.length === 0) return stripCr(tail.toString('utf8'));
-		this.pending.push(tail);
-		const line = Buffer.concat(this.pending).toString('utf8');
-		this.reset();
-		return stripCr(line);
-	}
-
-	reset(): void {
-		this.pending = [];
-		this.pendingBytes = 0;
-	}
-}
-
-function stripCr(line: string): string {
-	return line.endsWith('\r') ? line.slice(0, -1) : line;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -372,11 +328,16 @@ export class HerdrClient {
 				socket.write(line);
 			});
 			socket.on('data', (chunk: Buffer) => {
-				let lines: string[];
-				try {
-					lines = splitter.push(chunk);
-				} catch (error) {
-					finish(error as Error);
+				let oversizedError: HerdrError | null = null;
+				const lines = splitter.push(chunk, (bytes) => {
+					oversizedError = new HerdrError(
+						CLIENT_ERROR_CODES.protocol,
+						`herdr sent an oversized line (${bytes} bytes)`,
+						method,
+					);
+				});
+				if (oversizedError) {
+					finish(oversizedError);
 					return;
 				}
 				// Match the first line back, not the id: parse errors echo `id: ""`.
@@ -590,11 +551,16 @@ export class HerdrClient {
 		});
 
 		socket.on('data', (chunk: Buffer) => {
-			let lines: string[];
-			try {
-				lines = splitter.push(chunk);
-			} catch (error) {
-				this.emitError(error as Error);
+			let oversizedError: HerdrError | null = null;
+			const lines = splitter.push(chunk, (bytes) => {
+				oversizedError = new HerdrError(
+					CLIENT_ERROR_CODES.protocol,
+					`herdr sent an oversized line (${bytes} bytes)`,
+					'events.subscribe',
+				);
+			});
+			if (oversizedError) {
+				this.emitError(oversizedError);
 				socket.destroy();
 				return;
 			}
