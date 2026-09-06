@@ -35,10 +35,10 @@ import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel }
 
 // Re-exported so `main.ts` and the existing tests keep importing the list view's
 // helpers from the list view, while the code itself lives in the pure module.
+export { cacheBadge } from '../herdr/cacheBadge';
 export {
 	agentDisplayName,
 	buildRows,
-	cacheBadge,
 	countStatuses,
 	pathLabel,
 	relativeCwd,

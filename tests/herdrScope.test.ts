@@ -400,6 +400,41 @@ describe('WorkspaceScope.ingest', () => {
 		expect(scope.get('w4:p1')?.tokens).toEqual({ cache_ok: '30m', cache_sort: '001808' });
 	});
 
+	it('stays quiet while only cache_sort ticks, and keeps the newest map (N4)', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: '003587' } }),
+			}),
+		);
+		expect(rec.changed).toHaveLength(1);
+
+		// A second of herdr's own churn: the badge still says 31m, so no row moves.
+		for (const sort of ['003586', '003585', '003584']) {
+			scope.ingest(
+				event('pane_updated', {
+					pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: sort } }),
+				}),
+			);
+		}
+		expect(rec.changed).toHaveLength(1);
+		// Silent, but not stale: the row model reads `tokens` off this state.
+		expect(scope.get('w4:p1')?.tokens).toEqual({ cache_ok: '31m', cache_sort: '003584' });
+
+		// Anything a row does show still gets through, cache tokens and all.
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({
+					pane_id: 'w4:p1',
+					label: 'renamed',
+					tokens: { cache_ok: '31m', cache_sort: '003583' },
+				}),
+			}),
+		);
+		expect(rec.changed).toHaveLength(2);
+		expect(relevantDiff(rec.changed[1]!.prev, rec.changed[1]!.next)).toEqual(['label']);
+	});
+
 	it('adds a new agent pane and ignores a new shell pane (M7)', () => {
 		const { scope, rec } = primed();
 		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p2' }) }));

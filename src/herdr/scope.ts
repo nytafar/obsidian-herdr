@@ -18,6 +18,7 @@
  * stays unit-testable and reusable from the remote profile.
  */
 
+import { sameCacheBadge } from './cacheBadge';
 import type { HerdrEvent } from './client';
 import type { AgentInfo, AgentStatus, PaneInfo, WorkspaceInfo } from './types.gen';
 
@@ -64,11 +65,13 @@ export interface PaneState {
 	cwd: string;
 	focused: boolean;
 	/**
-	 * herdr's per-pane token map, passed through unread except by the row model
+	 * herdr's per-pane token map, kept whole and read only for the cache badge
 	 * (issue #23). A herdr plugin publishes the prompt-cache countdown into it as
 	 * `cache_ok` / `cache_warn` / `cache_crit` plus `cache_sort`; unknown keys are
 	 * kept, since anything may publish here. Empty for a pane with no tokens,
-	 * which is any harness the plugin does not track.
+	 * which is any harness the plugin does not track. Always the freshest map
+	 * herdr sent, whether or not the change was worth an event — see
+	 * {@link relevantDiff}.
 	 */
 	tokens: Record<string, string>;
 	/**
@@ -122,13 +125,6 @@ const RELEVANT: (keyof PaneState)[] = [
 	'focused',
 	'tokens',
 ];
-
-/** Shallow record equality; `tokens` is the only object field of a pane state. */
-function sameTokens(a: Record<string, string>, b: Record<string, string>): boolean {
-	const keys = Object.keys(a);
-	if (keys.length !== Object.keys(b).length) return false;
-	return keys.every((key) => a[key] === b[key]);
-}
 
 function basename(path: string): string {
 	const trimmed = path.replace(/\/+$/, '');
@@ -206,10 +202,19 @@ export function toPaneState(pane: PaneInfo, name = ''): PaneState | null {
 	};
 }
 
-/** Fields of `next` that differ from `prev` and matter to a view. */
+/**
+ * Fields of `next` that differ from `prev` and matter to a view.
+ *
+ * `tokens` is compared through the badge it produces, not key by key. The herdr
+ * plugin that publishes the prompt-cache countdown also publishes `cache_sort`,
+ * a seconds counter, so a map comparison would call every pane with a cache
+ * "changed" once a second and rebuild the whole sidebar list at 1 Hz — the churn
+ * PRD N4 exists to stop. The badge says minutes, so it moves at most once a
+ * minute; the newer map is still stored on the pane either way.
+ */
 export function relevantDiff(prev: PaneState, next: PaneState): (keyof PaneState)[] {
 	return RELEVANT.filter((field) =>
-		field === 'tokens' ? !sameTokens(prev.tokens, next.tokens) : prev[field] !== next[field],
+		field === 'tokens' ? !sameCacheBadge(prev.tokens, next.tokens) : prev[field] !== next[field],
 	);
 }
 
