@@ -10,6 +10,8 @@ export default defineConfig(
 		'version-bump.mjs',
 		// Build-time script, not plugin code, and not in tsconfig's project.
 		'scripts/*.mjs',
+		// Standalone audit reproductions, outside the plugin TypeScript project.
+		'docs/reviews/**/*.mjs',
 		// Generated from `herdr api schema --json`; `npm run gen:types` owns it.
 		'src/herdr/types.gen.ts',
 		'versions.json',

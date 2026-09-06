@@ -4,6 +4,8 @@ Your coding agents run persistently in [herdr](https://github.com/ogulcancelik/h
 a terminal workspace that keeps them alive across sessions. This plugin brings the
 ones that belong to your vault into Obsidian:
 
+![The agent list in the left sidebar, a live Claude Code terminal as the centre tab, and the note the agent is writing open beside it.](images/screenshot.webp)
+
 - **Agent list** in the sidebar: every agent of the matching herdr workspace, with
   its status, name, what it is doing, and its prompt-cache countdown. Sort by
   urgency or name, group by folder or by herdr tab. It updates live.
