@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import {
+	addIcon,
 	FileSystemAdapter,
 	Menu,
 	Notice,
@@ -23,6 +24,7 @@ import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
+import { registerKindIcons } from './views/kindIcons';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 import { decidePlacement } from './terminalPlacement';
 
@@ -79,6 +81,9 @@ export default class HerdrPlugin extends Plugin {
 			),
 		);
 
+		// Agent kind marks must exist before the first row is drawn (issue #19);
+		// `addIcon` is global and idempotent, so once at load is enough.
+		registerKindIcons(addIcon);
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerCommands();

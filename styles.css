@@ -138,6 +138,40 @@
 	color: var(--text-muted);
 }
 
+/* Agent kind marks (issue #19) ---------------------------------------------
+   The icon says which harness a row runs, so the row's text can be the agent's
+   own name. Marks registered with `addIcon` are fill-based, while Obsidian's
+   `.svg-icon` rule is written for Lucide's stroked icons and sets
+   `fill: none; stroke: currentColor`; a CSS rule beats the SVG's own
+   presentation attributes, so the fill has to be restored here. Only for our
+   own marks: the `bot` fallback is Lucide and must keep its stroke. */
+
+.herdr-agent-kind {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	margin-top: var(--size-2-1);
+	color: var(--text-muted);
+}
+
+/* `svg`, not `.svg-icon`: the size and the fill must hold whatever classes
+   Obsidian gives a custom icon, or a mark would render black in a dark theme. */
+.herdr-agent-kind svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.herdr-agent-kind.mod-brand svg {
+	fill: currentColor;
+	stroke: none;
+}
+
+/* Lettered fallback badges: the frame is a path, the letter is SVG text. */
+.herdr-agent-kind.mod-brand svg text {
+	font-size: 44px;
+	font-weight: var(--font-bold);
+}
+
 /* Status glyphs: one dot per agent status, coloured by the theme's palette. */
 
 .herdr-status-glyph {

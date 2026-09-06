@@ -44,6 +44,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		extraPath: '',
 		defaultAttachMode: 'control',
 		terminalPlacement: 'split-right',
+		agentListRowClick: 'terminal',
 		...overrides,
 	};
 }

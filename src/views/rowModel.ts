@@ -334,3 +334,57 @@ export function buildRows(
 		.sort((a, b) => a.urgency - b.urgency || a.group.label.localeCompare(b.group.label))
 		.map((entry) => entry.group);
 }
+
+/**
+ * The two things a row can do (PRD M9, M13; issue #21): open the pane as a
+ * terminal view in Obsidian, or focus it in the herdr TUI. One sits on the row
+ * body and the other on the icon button, and a setting decides which is which.
+ */
+export type RowClickAction = 'terminal' | 'focus';
+
+/** Narrows a value from the DOM or from `data.json`, neither of them trusted. */
+export function isRowClickAction(value: unknown): value is RowClickAction {
+	return value === 'terminal' || value === 'focus';
+}
+
+/** How the pair is split across a row, and what the icon button then says. */
+export interface RowActions {
+	/** What clicking (or pressing Enter on) the row body does. */
+	body: RowClickAction;
+	/** What the icon button does: always the other half of the pair. */
+	button: RowClickAction;
+	/** Lucide icon for the button, following its action. */
+	buttonIcon: string;
+	/** Tooltip and `aria-label` for the button; sentence case, like all UI. */
+	buttonLabel: string;
+}
+
+const ACTION_ICON: Record<RowClickAction, string> = {
+	terminal: 'square-terminal',
+	// An arrow leaving the corner: this jumps out of Obsidian and into herdr.
+	focus: 'arrow-up-right',
+};
+
+const ACTION_LABEL: Record<RowClickAction, string> = {
+	terminal: 'Open terminal',
+	focus: 'Focus in herdr',
+};
+
+/**
+ * Splits the pair according to the setting. The default is `terminal` on the
+ * body: opening the terminal is the common move, and before issue #21 it was the
+ * one hidden behind the small icon.
+ *
+ * An unrecognised value falls back to that default rather than throwing — this
+ * reads a stored setting, and a hand-edited `data.json` should not break a row.
+ */
+export function rowActions(rowClick: RowClickAction): RowActions {
+	const body: RowClickAction = rowClick === 'focus' ? 'focus' : 'terminal';
+	const button: RowClickAction = body === 'terminal' ? 'focus' : 'terminal';
+	return {
+		body,
+		button,
+		buttonIcon: ACTION_ICON[button],
+		buttonLabel: ACTION_LABEL[button],
+	};
+}
