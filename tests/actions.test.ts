@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	AGENT_NAME_RE,
+	AGENT_START_RETRY_MS,
 	HerdrActions,
 	buildAgentName,
 	folderName,
@@ -335,6 +336,37 @@ describe('HerdrActions.startAgentHere', () => {
 		const started = await f.actions.startAgentHere(`${VAULT}/notes`);
 		expect(started?.name).toBe('notes-2');
 		expect(attempts).toBe(2);
+	});
+
+	it('retries the start while the new pane is still reaching a shell prompt (M20)', async () => {
+		let attempts = 0;
+		const f = fake({
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': () =>
+					++attempts < 3
+						? new HerdrError('agent_pane_busy', 'agent target pane w4:p9 is not an available shell')
+						: {},
+			},
+		});
+		const started = await f.actions.startAgentHere(`${VAULT}/notes`);
+		expect(started?.paneId).toBe('w4:p9');
+		expect(attempts).toBe(3);
+	});
+
+	it('gives up on a pane that never reaches a prompt, and says why', async () => {
+		const f = fake({
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': () => new HerdrError('agent_pane_unavailable', 'no live terminal'),
+			},
+		});
+		expect(await f.actions.startAgentHere(`${VAULT}/notes`)).toBeNull();
+		expect(f.notices.at(-1)).toContain('agent_pane_unavailable');
+		// The retry window is bounded; the fake clock only moves when we sleep.
+		expect(f.clock.now).toBeGreaterThanOrEqual(AGENT_START_RETRY_MS);
 	});
 
 	it('does not open the terminal when the setting is off', async () => {
