@@ -163,7 +163,7 @@ export class AgentListView extends ItemView {
 			);
 		}
 		this.register(() => {
-			if (this.pendingRender) window.clearTimeout(this.pendingRender);
+			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
 			this.pendingRender = 0;
 		});
 
@@ -176,13 +176,16 @@ export class AgentListView extends ItemView {
 		this.contentEl.empty();
 	}
 
-	/** Coalesces a burst of scope events into a single repaint. */
+	/**
+	 * Coalesces a burst of scope events into one repaint per animation frame, on
+	 * the window this view lives in so a popout sidebar still gets frames.
+	 */
 	private scheduleRender(): void {
 		if (this.pendingRender) return;
-		this.pendingRender = window.setTimeout(() => {
+		this.pendingRender = this.containerEl.win.requestAnimationFrame(() => {
 			this.pendingRender = 0;
 			this.render();
-		}, 0);
+		});
 	}
 
 	/** Rebuilds the rows. Cheap: a scoped workspace holds tens of panes, not thousands. */
