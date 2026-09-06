@@ -11,7 +11,8 @@
 		"lint": "eslint .",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"gen:types": "node scripts/gen-types.mjs"
+		"gen:types": "node scripts/gen-types.mjs",
+		"install-dev": "node scripts/install-dev.mjs"
 	},
 	"keywords": [
 		"obsidian",

@@ -35,8 +35,14 @@ herdr integration contract; do not re-derive it, extend it with new verified fac
 
 ## Dev loop
 
-- Dev vault `/Users/lasse/Vaults/hvelv` is Lasse's live vault. This repo is
-  symlinked at `.obsidian/plugins/herdr`. Hot-Reload watches for `main.js` or
+- Dev vault `/Users/lasse/Vaults/hvelv` is Lasse's live vault. Install with
+  `npm run install-dev -- ~/Vaults/hvelv`, which symlinks **only** `main.js`,
+  `manifest.json` and `styles.css`.
+- **Never symlink the repository root into `.obsidian/plugins/`.** Obsidian
+  enumerates plugin folders at startup, and the repo carries `node_modules` and
+  `.git`, about 37,000 files. Doing so hangs the vault on "Loading vault..."
+  indefinitely while other vaults open normally. Cost us a debugging round on
+  2026-09-06. Hot-Reload watches for `main.js` or
   `styles.css` changes when a `.hotreload` file exists in the plugin folder.
 - `npm run dev` for watch builds, `npm run build` before committing.
 - Do not touch the installed `ghostty-terminal` plugin in that vault.
