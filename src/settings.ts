@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
 import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
+import type { RowClickAction } from './views/rowModel';
 
 /** Agent kinds herdr can start. Source of truth is `agent.start --help`. */
 export const AGENT_KINDS = [
@@ -84,6 +85,11 @@ export interface HerdrSettings {
 	defaultAttachMode: AttachMode;
 	/** Where a terminal opens when the active note is inside the agent's cwd. */
 	terminalPlacement: TerminalPlacement;
+	/**
+	 * What clicking the body of an agent row does (issue #21). The row's icon
+	 * button always does the other one, so this setting swaps the pair.
+	 */
+	agentListRowClick: RowClickAction;
 }
 
 export const DEFAULT_SETTINGS: HerdrSettings = {
@@ -110,6 +116,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	extraPath: '',
 	defaultAttachMode: 'control',
 	terminalPlacement: 'split-right',
+	agentListRowClick: 'terminal',
 };
 
 /**
@@ -444,6 +451,22 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.openTerminalAfterStart)
 					.onChange(async (value) => {
 						settings.openTerminalAfterStart = value;
+						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Clicking an agent row')
+			.setDesc(
+				'What a click on the row itself does. The icon button on the row always does the other one, and its tooltip says which.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('terminal', 'Opens the terminal in Obsidian')
+					.addOption('focus', 'Focuses the pane in herdr')
+					.setValue(settings.agentListRowClick)
+					.onChange(async (value) => {
+						settings.agentListRowClick = value as RowClickAction;
 						await this.save();
 					}),
 			);

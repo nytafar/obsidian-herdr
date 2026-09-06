@@ -1,11 +1,12 @@
 /**
  * Agent list sidebar view (PRD M8, M9, M10, N1, N4; T4).
  *
- * One row per agent pane of the scoped workspace, grouped by herdr tab:
- * status glyph, agent name, stripped terminal title, and the cwd relative to the
- * vault. Clicking a row focuses that pane in herdr (`pane.focus`), which is the
- * one source of truth for "seen" (PRD M9); the icon button opens the pane as a
- * terminal view in Obsidian.
+ * One row per agent pane of the scoped workspace, grouped by herdr tab: status
+ * glyph, harness mark, agent name, stripped terminal title, and the cwd relative
+ * to the vault. A row carries two one-click actions — open the pane as a
+ * terminal view in Obsidian (PRD M13) and focus it in herdr (`pane.focus`, the
+ * one source of truth for "seen", PRD M9). The row body gets the first and the
+ * icon button the second, and a setting swaps them (issue #21).
  *
  * This file owns DOM and events only. What a row *says* — grouping, ordering,
  * display-name fallbacks, path and status labels — lives in `rowModel.ts`, which
@@ -29,7 +30,7 @@ import type HerdrPlugin from '../main';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindLabel } from './kindIcons';
-import { buildRows, type RowGroup, type RowModel } from './rowModel';
+import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
 
 // Re-exported so `main.ts` and the existing tests keep importing the list view's
 // helpers from the list view, while the code itself lives in the pure module.
@@ -222,39 +223,58 @@ export class AgentListView extends ItemView {
 		for (const badge of model.badges) line.createSpan({ cls: 'herdr-agent-badge', text: badge });
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
+		// The row body and the button hold one action each, and which is which is
+		// a setting (issue #21). The button records its own action in the dataset,
+		// so a click is dispatched by what was drawn — and promised in the tooltip
+		// — rather than by a setting that may have changed since the last repaint.
+		const actions = rowActions(this.plugin.settings.agentListRowClick);
 		const button = row.createEl('button', {
 			cls: 'clickable-icon herdr-row-action',
 			attr: { type: 'button' },
 		});
-		button.dataset.herdrAction = 'terminal';
-		setIcon(button, 'square-terminal');
-		setTooltip(button, 'Open terminal');
-		button.setAttribute('aria-label', 'Open terminal');
+		button.dataset.herdrAction = actions.button;
+		setIcon(button, actions.buttonIcon);
+		setTooltip(button, actions.buttonLabel);
+		button.setAttribute('aria-label', actions.buttonLabel);
 	}
 
 	private onClick(event: MouseEvent): void {
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) return;
+		if (!(target instanceof Element)) return;
 		const row = target.closest<HTMLElement>('[data-pane-id]');
 		const paneId = row?.dataset.paneId;
 		if (!paneId) return;
 		event.preventDefault();
-		if (target.closest('[data-herdr-action="terminal"]')) {
-			void this.plugin.openTerminal(paneId);
-			return;
-		}
-		void this.plugin.actions.focusPane(paneId);
+		this.runRowAction(target, paneId);
 	}
 
+	/** Keyboard mirrors the pointer, including which half of the pair fires. */
 	private onKeyDown(event: KeyboardEvent): void {
 		if (event.key !== 'Enter' && event.key !== ' ') return;
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) return;
+		if (!(target instanceof Element)) return;
 		const row = target.closest<HTMLElement>('[data-pane-id]');
 		const paneId = row?.dataset.paneId;
 		if (!paneId) return;
+		// Also stops the browser turning Enter on the button into a second click.
 		event.preventDefault();
-		if (target.closest('[data-herdr-action="terminal"]')) void this.plugin.openTerminal(paneId);
+		this.runRowAction(target, paneId);
+	}
+
+	/**
+	 * Runs the action the clicked element carries: the icon button's own, when
+	 * the event came from it, and the row body's otherwise (issue #21).
+	 *
+	 * `Element`, not `HTMLElement`: a click that lands on the button's Lucide
+	 * glyph has an `SVGPathElement` as its target, and an `HTMLElement` guard
+	 * would drop exactly the clicks this issue is about.
+	 */
+	private runRowAction(target: Element, paneId: string): void {
+		const drawn = target.closest<HTMLElement>('[data-herdr-action]')?.dataset.herdrAction;
+		const action = isRowClickAction(drawn)
+			? drawn
+			: rowActions(this.plugin.settings.agentListRowClick).body;
+		if (action === 'terminal') void this.plugin.openTerminal(paneId);
 		else void this.plugin.actions.focusPane(paneId);
 	}
 
