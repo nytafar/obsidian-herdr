@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { InputRouter, type WheelToScroll } from '../../src/views/input/inputRouter';
+import {
+	HERDR_MOD_ALT,
+	HERDR_MOD_CTRL,
+	HERDR_MOD_SHIFT,
+	HERDR_MOD_SUPER,
+} from '../../src/views/input/mouseEncoder';
 import { DEFAULT_MODE_STATE } from '../../src/views/input/modeTracker';
 import { LEGACY_LINE_BREAK } from '../../src/views/input/keyEncoder';
 
@@ -68,32 +74,54 @@ describe('mode observation', () => {
 });
 
 describe('routeKey', () => {
-	it('encodes nothing with the shipped options (#17)', () => {
-		const instance = router();
-		feed(instance, '\x1b[>1u');
-		expect(instance.routeKey(keyEvent)).toBeNull();
+	it('sends shift+enter as the legacy line break with the shipped options (#18)', () => {
+		expect(router().routeKey(keyEvent)).toBe(LEGACY_LINE_BREAK);
 	});
 
-	it('honours the options #18 will pass', () => {
-		const instance = router({ key: { shiftEnterLineBreak: true, kittyModifiedKeys: false } });
-		expect(instance.routeKey(keyEvent)).toBe(LEGACY_LINE_BREAK);
+	it('sends alt+enter the same way, and leaves plain enter to the renderer', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBe(
+			LEGACY_LINE_BREAK,
+		);
 		expect(instance.routeKey({ ...keyEvent, shiftKey: false })).toBeNull();
+	});
+
+	it('leaves ctrl+enter, cmd+enter and ordinary typing to the renderer', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, ctrlKey: true })).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, metaKey: true })).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, key: 'a' })).toBeNull();
+	});
+
+	it('prefers the kitty encoding if a pane ever reports the protocol', () => {
+		const instance = router();
+		feed(instance, '\x1b[>1u');
+		expect(instance.routeKey(keyEvent)).toBe('\x1b[13;2u');
+	});
+
+	it('can be switched off, and then encodes nothing at all', () => {
+		const instance = router({ key: { shiftEnterLineBreak: false, kittyModifiedKeys: false } });
+		feed(instance, '\x1b[>1u');
+		expect(instance.routeKey(keyEvent)).toBeNull();
+		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBeNull();
 	});
 });
 
 describe('routeWheel', () => {
-	it('routes to terminal.scroll for a pane with no mouse reporting', () => {
+	it('always asks for terminal.scroll: herdr owns the report/scroll fork', () => {
 		expect(router().routeWheel({ deltaY: 120, deltaMode: 0, rows: 24 })).toEqual({
 			kind: 'scroll',
 			direction: 'down',
 			lines: 5,
 			source: 'wheel',
+			modifiers: 0,
 		});
 		expect(router().routeWheel({ deltaY: -48, deltaMode: 0, rows: 24 })).toEqual({
 			kind: 'scroll',
 			direction: 'up',
 			lines: 2,
 			source: 'wheel',
+			modifiers: 0,
 		});
 	});
 
@@ -101,20 +129,40 @@ describe('routeWheel', () => {
 		expect(router().routeWheel({ deltaY: 0, deltaMode: 0, rows: 24 })).toBeNull();
 	});
 
-	it('still scrolls a mouse-reporting pane when no cell position is known', () => {
-		const instance = router();
-		feed(instance, '\x1b[?1002h\x1b[?1006h');
-		expect(instance.routeWheel({ deltaY: 24, deltaMode: 0, rows: 24 })).toEqual({
+	it('carries the cell under the pointer, so the report does not land on (0, 0)', () => {
+		expect(
+			router().routeWheel({
+				deltaY: 24,
+				deltaMode: 0,
+				rows: 24,
+				position: { column: 10, row: 4 },
+			}),
+		).toEqual({
 			kind: 'scroll',
 			direction: 'down',
 			lines: 1,
 			source: 'wheel',
+			column: 10,
+			row: 4,
+			modifiers: 0,
 		});
 	});
 
-	it('reports the wheel to a mouse-reporting pane once #25 supplies the cell', () => {
+	it('carries herdr modifier bits, not xterm ones', () => {
+		const withMods = (mods: Partial<Parameters<InputRouter['routeWheel']>[0]>): number =>
+			router().routeWheel({ deltaY: 24, deltaMode: 0, rows: 24, ...mods })?.modifiers ?? -1;
+		expect(withMods({ shiftKey: true })).toBe(HERDR_MOD_SHIFT);
+		expect(withMods({ ctrlKey: true })).toBe(HERDR_MOD_CTRL);
+		expect(withMods({ altKey: true })).toBe(HERDR_MOD_ALT);
+		expect(withMods({ metaKey: true })).toBe(HERDR_MOD_SUPER);
+		expect(withMods({ ctrlKey: true, shiftKey: true })).toBe(HERDR_MOD_CTRL | HERDR_MOD_SHIFT);
+	});
+
+	it('does not encode a report itself, even for a pane seen enabling the mouse', () => {
+		// herdr's apply_scroll would then send a second report for the same notch.
 		const instance = router();
 		feed(instance, '\x1b[?1002h\x1b[?1006h');
+		expect(instance.mouseReporting).toBe(true);
 		expect(
 			instance.routeWheel({
 				deltaY: -100,
@@ -123,15 +171,15 @@ describe('routeWheel', () => {
 				position: { column: 10, row: 4 },
 				ctrlKey: true,
 			}),
-		).toEqual({ kind: 'input', data: '\x1b[<80;11;5M' });
-	});
-
-	it('keeps scrolling a pane that never asked for the mouse', () => {
-		const instance = router();
-		feed(instance, '\x1b[?1006h');
-		expect(
-			instance.routeWheel({ deltaY: 24, deltaMode: 0, rows: 24, position: { column: 0, row: 0 } }),
-		).toMatchObject({ kind: 'scroll' });
+		).toEqual({
+			kind: 'scroll',
+			direction: 'up',
+			lines: 4,
+			source: 'wheel',
+			column: 10,
+			row: 4,
+			modifiers: HERDR_MOD_CTRL,
+		});
 	});
 });
 

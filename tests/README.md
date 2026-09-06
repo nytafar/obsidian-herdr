@@ -22,7 +22,7 @@ panes-per-tab cap (`clampPanesPerTab`). The
 terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
-(`resolveFont`, `computeFit`, `cssVar`, `parsePx`). Terminal placement
+(`resolveFont`, `computeFit`, `cellFromPoint`, `cssVar`, `parsePx`). Terminal placement
 (`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
 split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
 The file explorer's folder hover button (`src/explorerButtons.ts`, #30) splits
@@ -36,26 +36,41 @@ The input layer (`src/views/input/`, #17) is pure by construction — no DOM, no
 `obsidian`, no bridge — so `tests/input/` covers all of it: the mode tracker
 against real escape sequences including ones split across frames, the kitty and
 legacy key encodings, the SGR mouse report builders, and the router's
-scroll-or-report fork. Two of those suites assert the ticket's own acceptance
-criterion, that with the shipped options `routeKey` returns null for every key
-and every wheel notch still becomes `terminal.scroll`; if #18 or #25 flips an
-option, those expectations are what has to change with it.
+wheel payload. The router suite pins the shipped policy: shift+enter and
+alt+enter are `ESC CR` (#18), plain enter and every other key are the renderer's,
+and a wheel notch is always a `terminal.scroll` carrying the cell and herdr's
+crossterm modifier bits rather than an SGR report the plugin built (#25).
 
 ## Smoking shift+enter, mouse and scroll (#18, #25, #33)
 
-Nothing in the input layer is switched on, so there is nothing to smoke yet. When
-one of those tickets turns an option on, the live check is:
+**Neither #18 nor #25 has been checked against a live pane.** The unit tests pin
+the bytes and the payload; only a real attach can say whether the harness on the
+other end reads them the way we expect. The check, in the dev vault, on a pane
+that is yours:
 
-1. `npm run build`, then in the dev vault open an attached Claude pane.
+1. `npm run build`, then open an attached Claude pane in control mode.
 2. Shift+enter must add a line to the composer without submitting; plain enter
-   must still submit. Try the same in a non-Claude harness.
+   must still submit. Alt+enter behaves like shift+enter. Repeat in a non-Claude
+   harness (Codex, Gemini CLI, or plain `bash` where `ESC CR` should be inert).
 3. Confirm what the pane actually received before trusting the UI: the bridge is
    the only writer, so `console.debug` at `TerminalView.onKeyEvent` shows the
    exact bytes. Do not use control mode on someone else's pane to test this.
+4. Wheel: over the canvas, not just the padding, a notch must reach herdr. In a
+   mouse-reporting TUI (`htop`, `less`, a fullscreen editor) the wheel must move
+   that application's own view, and the cell it reports must follow the pointer —
+   `console.debug` in `sendWheel` shows the `column`/`row` sent. In a plain shell
+   pane the herdr viewport moves instead, which also moves the herdr TUI.
+5. Selection must still work: drag across text in a plain pane and copy it.
+   Clicks are deliberately left to ghostty-web (see below), so a mouse-reporting
+   TUI will *not* respond to clicks yet.
 
 Read `notes/herdr-terminal-bridge.md` first: herdr does not relay mode-setting
-sequences in its frames, so the tracker is in its defaults for every live pane
-and the encoder has to guess which protocol the pane negotiated.
+sequences in its frames, so the tracker is in its defaults for every live pane.
+That is why the key encoder has to guess the protocol (it sends the legacy
+`ESC CR`), why herdr and not the plugin encodes the wheel, and why clicks are not
+routed at all — gating them without a mode signal would cost text selection in
+every plain pane. Exposing `ServerMessage::MouseCapture` over the session
+protocol is the herdr-side change that unblocks the click half of #25.
 
 ## Smoking the renderer inside Obsidian
 

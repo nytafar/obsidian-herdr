@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	HERDR_MOD_ALT,
+	HERDR_MOD_CTRL,
+	HERDR_MOD_SHIFT,
+	HERDR_MOD_SUPER,
 	SGR_BUTTON_WHEEL_DOWN,
 	SGR_BUTTON_WHEEL_UP,
 	encodeMouseReport,
 	encodeSgrMouse,
 	encodeSgrWheel,
 	encodeWheelReport,
+	herdrModifierBits,
 	mouseModifierBits,
 	sgrButtonCode,
 } from '../../src/views/input/mouseEncoder';
@@ -103,5 +108,41 @@ describe('gating on the pane modes', () => {
 			}),
 		).toBe('\x1b[<6;3;4M');
 		expect(encodeWheelReport(reporting, 'up', { column: 2, row: 3 })).toBe('\x1b[<64;3;4M');
+	});
+});
+
+describe('herdrModifierBits', () => {
+	// crossterm 0.29 KeyModifiers, which is what herdr's apply_scroll truncates
+	// the `modifiers` field of terminal.scroll into.
+	it('numbers the bits the way crossterm does', () => {
+		expect(HERDR_MOD_SHIFT).toBe(1);
+		expect(HERDR_MOD_CTRL).toBe(2);
+		expect(HERDR_MOD_ALT).toBe(4);
+		expect(HERDR_MOD_SUPER).toBe(8);
+	});
+
+	it('is zero for no modifiers and for nothing at all', () => {
+		expect(herdrModifierBits(undefined)).toBe(0);
+		expect(herdrModifierBits({})).toBe(0);
+		expect(herdrModifierBits({ shiftKey: false, ctrlKey: false })).toBe(0);
+	});
+
+	it('maps each DOM flag to its crossterm bit', () => {
+		expect(herdrModifierBits({ shiftKey: true })).toBe(1);
+		expect(herdrModifierBits({ ctrlKey: true })).toBe(2);
+		expect(herdrModifierBits({ altKey: true })).toBe(4);
+		expect(herdrModifierBits({ metaKey: true })).toBe(8);
+		expect(
+			herdrModifierBits({ shiftKey: true, ctrlKey: true, altKey: true, metaKey: true }),
+		).toBe(15);
+	});
+
+	it('does not use the xterm bits, which mean other modifiers', () => {
+		// Sending SGR_MOD_CTRL (16) where crossterm expects 2 would arrive as
+		// HYPER; ctrl+wheel would stop being ctrl+wheel.
+		expect(herdrModifierBits({ ctrlKey: true })).not.toBe(mouseModifierBits({ ctrlKey: true }));
+		expect(herdrModifierBits({ shiftKey: true })).not.toBe(
+			mouseModifierBits({ shiftKey: true }),
+		);
 	});
 });

@@ -12,6 +12,12 @@
 /** Removes a listener registered with `onData` / `onResize`. Idempotent. */
 export type Unsubscribe = () => void;
 
+/** A 0-based cell in the grid. Same shape as `CellPosition` in `views/input/`. */
+export interface CellCoordinates {
+	column: number;
+	row: number;
+}
+
 /** Result of a fit: the grid the container can hold, plus the measured cell box. */
 export interface FitResult {
 	cols: number;
@@ -79,6 +85,16 @@ export interface TerminalRenderer {
 	 * handled the notch and the renderer must not scroll its own viewport.
 	 */
 	onWheelEvent?(cb: (event: WheelEvent) => boolean): Unsubscribe;
+	/**
+	 * The 0-based cell under a point in client (viewport) coordinates, e.g. a
+	 * mouse event's `clientX`/`clientY`. Undefined when the terminal has not been
+	 * measured yet, or when the point is outside the grid.
+	 *
+	 * #25 needs it because herdr encodes wheel reports server-side and wants the
+	 * cell in `terminal.scroll`'s `column`/`row`; without it every report lands on
+	 * (0, 0). Optional: a renderer without it simply reports no position.
+	 */
+	cellAt?(clientX: number, clientY: number): CellCoordinates | undefined;
 	focus(): void;
 	/**
 	 * Re-apply colours and fonts (PRD S18, issue #26).
@@ -185,6 +201,51 @@ export function computeFit(input: FitInput): FitResult | undefined {
 		rows: Math.max(MIN_ROWS, Math.floor(usableHeight / cellHeightPx)),
 		cellWidthPx,
 		cellHeightPx,
+	};
+}
+
+/** Geometry for `cellFromPoint`, all of it in CSS pixels. */
+export interface CellHitInput {
+	/** Event coordinates, i.e. `WheelEvent.clientX` / `clientY`. */
+	clientX: number;
+	clientY: number;
+	/** Bounding box of the terminal surface, i.e. `getBoundingClientRect()`. */
+	left: number;
+	top: number;
+	/** Padding inside that box, when the box is the container and not the canvas. */
+	paddingLeft?: number;
+	paddingTop?: number;
+	cellWidthPx: number;
+	cellHeightPx: number;
+	/** Grid size, used to clamp: a point past the last column is the last column. */
+	cols: number;
+	rows: number;
+}
+
+/**
+ * The 0-based cell under a client-space point.
+ *
+ * Every input is in **CSS pixels**: `getBoundingClientRect()` is, and so are
+ * ghostty-web's cell metrics — its canvas is sized `cols * metrics.width` in
+ * style pixels and only its backing store is multiplied by the device pixel
+ * ratio. Scaling anything here by `devicePixelRatio` would therefore halve the
+ * reported column on a retina display, which is why the test suite pins it.
+ *
+ * A point outside the grid is clamped to the nearest cell, which is what
+ * ghostty-web's own `pixelToCell` does: a notch on the container's padding
+ * belongs to the edge cell, not to (0, 0). Undefined only when nothing is
+ * measurable yet — a hidden leaf, or a terminal that has not mounted.
+ */
+export function cellFromPoint(input: CellHitInput): CellCoordinates | undefined {
+	const { cellWidthPx, cellHeightPx, cols, rows } = input;
+	if (!isPositive(cellWidthPx) || !isPositive(cellHeightPx)) return undefined;
+	if (!isPositive(cols) || !isPositive(rows)) return undefined;
+	const x = input.clientX - input.left - (input.paddingLeft ?? 0);
+	const y = input.clientY - input.top - (input.paddingTop ?? 0);
+	if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+	return {
+		column: clamp(Math.floor(x / cellWidthPx), 0, Math.floor(cols) - 1),
+		row: clamp(Math.floor(y / cellHeightPx), 0, Math.floor(rows) - 1),
 	};
 }
 

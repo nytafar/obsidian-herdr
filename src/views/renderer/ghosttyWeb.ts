@@ -15,10 +15,12 @@
  */
 import { FitAddon, init, Terminal, type ITheme } from 'ghostty-web';
 import {
+	cellFromPoint,
 	computeFit,
 	cssVar,
 	parsePx,
 	resolveFont,
+	type CellCoordinates,
 	type FitResult,
 	type RendererOptions,
 	type ResolvedFont,
@@ -219,6 +221,37 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		}
 		this.resize(proposal.cols, proposal.rows);
 		return proposal;
+	}
+
+	/**
+	 * `TerminalRenderer.cellAt`. Measures against the canvas when there is one —
+	 * it is the grid box itself, so no padding has to be subtracted — and falls
+	 * back to the container, whose padding then does. Both rects and the cell
+	 * metrics are CSS pixels; see `cellFromPoint`.
+	 */
+	cellAt(clientX: number, clientY: number): CellCoordinates | undefined {
+		const terminal = this.terminal;
+		if (this.disposed || !terminal) return undefined;
+		const metrics = terminal.renderer?.getMetrics();
+		if (!metrics) return undefined;
+		const canvas = terminal.renderer?.getCanvas();
+		const el = canvas ?? terminal.element ?? this.container;
+		if (!el) return undefined;
+		const rect = el.getBoundingClientRect();
+		const view = el.ownerDocument.defaultView;
+		const style = canvas ? undefined : view?.getComputedStyle(el);
+		return cellFromPoint({
+			clientX,
+			clientY,
+			left: rect.left,
+			top: rect.top,
+			paddingLeft: parsePx(style?.paddingLeft) ?? 0,
+			paddingTop: parsePx(style?.paddingTop) ?? 0,
+			cellWidthPx: metrics.width,
+			cellHeightPx: metrics.height,
+			cols: terminal.cols,
+			rows: terminal.rows,
+		});
 	}
 
 	onData(cb: DataListener): Unsubscribe {

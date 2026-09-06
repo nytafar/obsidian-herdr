@@ -3,12 +3,10 @@
  * plus the tracked modes and returns the bytes to send, or `null` meaning "not
  * ours — let the renderer's own encoder handle this key".
  *
- * **Nothing here is switched on yet.** `DEFAULT_KEY_ENCODING_OPTIONS` disables
- * every rule, so `encodeKey` returns `null` for every key and typing goes down
- * exactly the path it went down before this file existed. #18 (shift+enter
- * inserts a line break) is what flips `shiftEnterLineBreak` to true; the
- * machinery and its tests exist so that ticket is a one-line policy change plus
- * a live check against a pane.
+ * **This module has no policy of its own.** `DEFAULT_KEY_ENCODING_OPTIONS`
+ * disables every rule, so `encodeKey` returns `null` for every key unless the
+ * caller asks for one. `InputRouter` is where the plugin's policy lives, and it
+ * switches `shiftEnterLineBreak` on (#18).
  *
  * Two encodings, because a pane negotiates one or the other:
  *
@@ -20,10 +18,12 @@
  *   writes into iTerm2 and VS Code is `ESC` followed by `CR`, i.e. what a
  *   terminal sends for alt+enter, so that is what we fall back to.
  *
- * Caveat for #18: `TerminalModeTracker` cannot see kitty flags today, because
- * herdr does not relay mode sequences in its frames (see `modeTracker.ts`). So
- * the kitty branch is reachable only once that signal exists; the legacy
- * fallback is what a live pane will actually receive.
+ * `TerminalModeTracker` cannot see kitty flags today, because herdr does not
+ * relay mode sequences in its frames (see `modeTracker.ts`). The kitty branch is
+ * therefore reachable only once that signal exists; `ESC CR` is what a live pane
+ * actually receives, and it is what the Ink-based harnesses (Claude Code,
+ * Codex, Gemini CLI) read as "insert a line" in their composer. That choice is
+ * #18's, recorded here so the kitty branch is not mistaken for dead code.
  */
 
 import { KITTY_DISAMBIGUATE, type TerminalModeState } from './modeTracker';
