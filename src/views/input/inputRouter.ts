@@ -11,8 +11,9 @@
  * instead of being imported: the view owns the wheel accumulator's state (#65,
  * `./wheelAccumulator.ts`) and binds its `push` in here.
  *
- * The shipped options encode one key, shift+enter (#18); everything else is
- * left to the renderer. #25 gives `routeWheel` a cell position and modifiers;
+ * The shipped options encode shift+enter (#18) and shift+tab (#18, #47);
+ * everything else is left to the renderer. `routeHostKey` is the fourth
+ * question (#47): which of Obsidian and the terminal gets a keydown. #25 gives `routeWheel` a cell position and modifiers;
  * `routeMouseButton` is still unwired, because without a mode signal a click
  * cannot be gated (see below). #33 would replace the `scroll` branch with a
  * local scrollback move.
@@ -59,6 +60,146 @@ export interface InputRouterDeps {
 
 export interface InputRouterOptions {
 	key: KeyEncodingOptions;
+	hostKeys: HostKeyPolicy;
+}
+
+/**
+ * Obsidian's own modifier vocabulary (`Modifier` in obsidian.d.ts): `Mod` is
+ * cmd on macOS and ctrl elsewhere.
+ */
+export type ChordModifier = 'Mod' | 'Ctrl' | 'Meta' | 'Alt' | 'Shift';
+
+/** One key combination, in the form Obsidian's hotkey settings use. */
+export interface KeyChord {
+	modifiers: readonly ChordModifier[];
+	/** `KeyboardEvent.key`, compared case-insensitively. */
+	key: string;
+}
+
+/**
+ * What a focused terminal does with a keydown Obsidian's keymap saw first (#47).
+ *
+ * Obsidian dispatches hotkeys from a `keydown` listener on `window` in the
+ * *capture* phase, and it never reads `defaultPrevented` — measured in the
+ * snapshot vault: Cmd+P opened the palette with `defaultPrevented: true`. No
+ * listener on the terminal host, capture or bubble, runs before that one, so
+ * a DOM listener cannot intercept anything. What can is the keymap's own
+ * scope stack: the workspace scope defers to `activeLeaf.view.scope`, and a
+ * scope handler's return value is the whole protocol —
+ *
+ *   `undefined` -> keep looking: the parent scope (the app's hotkeys) runs.
+ *   `true`      -> stop looking, touch nothing: no hotkey fires, and the DOM
+ *                  event still reaches the terminal's input element.
+ *   `false`     -> consumed: Obsidian calls `preventDefault` and
+ *                  `stopPropagation` at the window, nothing downstream sees it.
+ *
+ * The three decisions map onto those three returns, and the view holds the
+ * mapping. This module only decides.
+ */
+export type HostKeyDecision = 'host' | 'terminal' | 'drop';
+
+/**
+ * The focused-terminal policy (#47), data only so it can grow a settings page.
+ *
+ * - `escapeHatches` are Obsidian's, always, so focus in a terminal can never
+ *   trap the user: command palette, settings, quit, and a configurable list
+ *   later. They pass through untouched and are not sent to the pane.
+ * - `nativeChords` are handled by the browser or the renderer itself rather
+ *   than encoded: ghostty-web lets cmd+v and cmd+c through for the clipboard.
+ *   They belong to the terminal and Obsidian must not see them.
+ * - Everything a terminal encodes is the terminal's: plain keys, Escape, Tab,
+ *   ctrl+letter, alt/meta sequences, and whatever `routeKey` claims.
+ * - A `Mod` (cmd on macOS) combination the terminal does not encode is
+ *   dropped: not forwarded to Obsidian, not sent to the pane.
+ *
+ * `platform` decides what `Mod` means. On Linux and Windows `Mod` is ctrl, and
+ * ctrl is the terminal's, so nothing is dropped there and only the escape
+ * hatches are taken from the shell — the price of never trapping focus, and
+ * the list is the place to make that cheaper.
+ */
+export interface HostKeyPolicy {
+	escapeHatches: readonly KeyChord[];
+	nativeChords: readonly KeyChord[];
+	platform: 'macOS' | 'other';
+}
+
+/** Command palette, settings and quit. The minimum #47 requires. */
+export const DEFAULT_ESCAPE_HATCHES: readonly KeyChord[] = Object.freeze([
+	{ modifiers: ['Mod'], key: 'p' },
+	{ modifiers: ['Mod'], key: ',' },
+	{ modifiers: ['Mod'], key: 'q' },
+]);
+
+/** What ghostty-web's `handleKeyDown` leaves to the browser. */
+export const DEFAULT_NATIVE_CHORDS: readonly KeyChord[] = Object.freeze([
+	{ modifiers: ['Mod'], key: 'c' },
+	{ modifiers: ['Mod'], key: 'v' },
+]);
+
+export const DEFAULT_HOST_KEY_POLICY: HostKeyPolicy = Object.freeze({
+	escapeHatches: DEFAULT_ESCAPE_HATCHES,
+	nativeChords: DEFAULT_NATIVE_CHORDS,
+	platform: 'macOS',
+});
+
+const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'OS']);
+
+/** The event's held modifiers as Obsidian would compile them, sorted. */
+function heldModifiers(event: KeyEventLike): string {
+	const held: string[] = [];
+	if (event.ctrlKey) held.push('Ctrl');
+	if (event.metaKey) held.push('Meta');
+	if (event.altKey) held.push('Alt');
+	if (event.shiftKey) held.push('Shift');
+	return held.sort().join(',');
+}
+
+/** A chord's modifiers with `Mod` resolved for the platform, sorted. */
+function chordModifiers(chord: KeyChord, platform: HostKeyPolicy['platform']): string {
+	const mod = platform === 'macOS' ? 'Meta' : 'Ctrl';
+	return [...new Set(chord.modifiers.map((m) => (m === 'Mod' ? mod : m)))].sort().join(',');
+}
+
+/** True when the event is exactly this chord: same key, same modifier set. */
+export function matchesChord(
+	event: KeyEventLike,
+	chord: KeyChord,
+	platform: HostKeyPolicy['platform'],
+): boolean {
+	if (event.key.toLowerCase() !== chord.key.toLowerCase()) return false;
+	return heldModifiers(event) === chordModifiers(chord, platform);
+}
+
+/**
+ * The decision for one keydown, pure. `encoded` is whether the input layer
+ * claims the key itself (`routeKey` non-null) and `composing` is the element's
+ * composition flag (#49); the router passes both in.
+ */
+export function decideHostKey(
+	event: KeyEventLike,
+	encoded: boolean,
+	policy: HostKeyPolicy = DEFAULT_HOST_KEY_POLICY,
+	composing = false,
+): HostKeyDecision {
+	// Obsidian skips bare modifier presses before it consults any scope; they
+	// are listed as the terminal's so a caller never drops them by accident.
+	if (MODIFIER_KEYS.has(event.key)) return 'terminal';
+	if (policy.escapeHatches.some((chord) => matchesChord(event, chord, policy.platform))) {
+		return 'host';
+	}
+	// An input method owns a composing key. Obsidian must not fire on it, and
+	// dropping it would eat the candidate.
+	if (composing || isComposingKey(event)) return 'terminal';
+	if (encoded) return 'terminal';
+	if (policy.nativeChords.some((chord) => matchesChord(event, chord, policy.platform))) {
+		return 'terminal';
+	}
+	// Cmd is the one modifier no terminal encodes. On macOS ctrl+letter is the
+	// shell's (Obsidian binds nothing to bare ctrl there) and alt is meta, so
+	// both stay the terminal's. Elsewhere `Mod` is ctrl, and ctrl belongs to
+	// the shell, so nothing is dropped.
+	if (event.metaKey && policy.platform === 'macOS') return 'drop';
+	return 'terminal';
 }
 
 /**
@@ -72,11 +213,21 @@ export interface InputRouterOptions {
  * Code's own `/terminal-setup` writes into iTerm2 and VS Code. `CSI 13;2u` is
  * still emitted instead when the tracker ever does see kitty flags.
  *
+ * `shiftTabBacktab` is on for #18/#47: Claude Code cycles modes on shift+tab
+ * and ghostty-web sends a plain tab for it, so the router claims the key and
+ * sends `CSI Z`. Claiming it also makes the renderer call `preventDefault`,
+ * which is what keeps the browser from moving focus out of the terminal.
+ *
  * `kittyModifiedKeys` stays off: with no mode signal it would encode every
  * modified key on a guess, and guessing wrong breaks ordinary typing.
  */
 export const DEFAULT_INPUT_ROUTER_OPTIONS: InputRouterOptions = Object.freeze({
-	key: Object.freeze({ ...DEFAULT_KEY_ENCODING_OPTIONS, shiftEnterLineBreak: true }),
+	key: Object.freeze({
+		...DEFAULT_KEY_ENCODING_OPTIONS,
+		shiftEnterLineBreak: true,
+		shiftTabBacktab: true,
+	}),
+	hostKeys: DEFAULT_HOST_KEY_POLICY,
 });
 
 /** A wheel notch, with the modifier flags the event carried (#25). */
@@ -169,6 +320,20 @@ export class InputRouter {
 		// the Enter that ends a composition on some input methods.
 		if (this.composing || isComposingKey(event)) return null;
 		return encodeKey(event, this.tracker.state, this.options.key);
+	}
+
+	/**
+	 * The focused-terminal policy for a keydown Obsidian's keymap is about to
+	 * dispatch (#47): see `decideHostKey`. Asked from the view's `Scope`
+	 * handler, before the renderer sees the event.
+	 */
+	routeHostKey(event: KeyEventLike): HostKeyDecision {
+		return decideHostKey(
+			event,
+			this.routeKey(event) !== null,
+			this.options.hostKeys,
+			this.composing,
+		);
 	}
 
 	/**

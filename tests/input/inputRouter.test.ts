@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { InputRouter, type WheelToScroll } from '../../src/views/input/inputRouter';
+import {
+	DEFAULT_HOST_KEY_POLICY,
+	decideHostKey,
+	InputRouter,
+	matchesChord,
+	type HostKeyPolicy,
+	type WheelToScroll,
+} from '../../src/views/input/inputRouter';
 import {
 	HERDR_MOD_ALT,
 	HERDR_MOD_CTRL,
@@ -8,7 +15,11 @@ import {
 	HERDR_MOD_SUPER,
 } from '../../src/views/input/mouseEncoder';
 import { DEFAULT_MODE_STATE } from '../../src/views/input/modeTracker';
-import { LEGACY_LINE_BREAK } from '../../src/views/input/keyEncoder';
+import {
+	LEGACY_BACKTAB,
+	LEGACY_LINE_BREAK,
+	type KeyEventLike,
+} from '../../src/views/input/keyEncoder';
 
 const encoder = new TextEncoder();
 
@@ -100,10 +111,162 @@ describe('routeKey', () => {
 	});
 
 	it('can be switched off, and then encodes nothing at all', () => {
-		const instance = router({ key: { shiftEnterLineBreak: false, kittyModifiedKeys: false } });
+		const instance = router({
+			key: { shiftEnterLineBreak: false, shiftTabBacktab: false, kittyModifiedKeys: false },
+		});
 		feed(instance, '\x1b[>1u');
 		expect(instance.routeKey(keyEvent)).toBeNull();
 		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBeNull();
+	});
+});
+
+describe('routeKey shift+tab (#18, #47)', () => {
+	const tab = { ...keyEvent, key: 'Tab' };
+
+	it('sends CSI Z with the shipped options', () => {
+		expect(router().routeKey(tab)).toBe(LEGACY_BACKTAB);
+	});
+
+	it('leaves plain tab and modified tabs to the renderer', () => {
+		const instance = router();
+		expect(instance.routeKey({ ...tab, shiftKey: false })).toBeNull();
+		expect(instance.routeKey({ ...tab, ctrlKey: true })).toBeNull();
+		expect(instance.routeKey({ ...tab, metaKey: true })).toBeNull();
+	});
+
+	it('prefers the kitty encoding if a pane ever reports the protocol', () => {
+		const instance = router();
+		feed(instance, '\x1b[>1u');
+		expect(instance.routeKey(tab)).toBe('\x1b[9;2u');
+	});
+});
+
+function key(overrides: Partial<KeyEventLike> & { key: string }): KeyEventLike {
+	return { shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...overrides };
+}
+
+const linux: HostKeyPolicy = { ...DEFAULT_HOST_KEY_POLICY, platform: 'other' };
+
+describe('matchesChord', () => {
+	it('resolves Mod to cmd on macOS and ctrl elsewhere', () => {
+		const chord = { modifiers: ['Mod' as const], key: 'p' };
+		expect(matchesChord(key({ key: 'p', metaKey: true }), chord, 'macOS')).toBe(true);
+		expect(matchesChord(key({ key: 'p', ctrlKey: true }), chord, 'macOS')).toBe(false);
+		expect(matchesChord(key({ key: 'p', ctrlKey: true }), chord, 'other')).toBe(true);
+		expect(matchesChord(key({ key: 'p', metaKey: true }), chord, 'other')).toBe(false);
+	});
+
+	it('needs exactly the chord modifiers, no more and no fewer', () => {
+		const chord = { modifiers: ['Mod' as const], key: 'p' };
+		expect(matchesChord(key({ key: 'P', metaKey: true, shiftKey: true }), chord, 'macOS')).toBe(false);
+		expect(matchesChord(key({ key: 'p' }), chord, 'macOS')).toBe(false);
+	});
+
+	it('compares the key case-insensitively and takes explicit modifiers', () => {
+		const chord = { modifiers: ['Mod' as const, 'Shift' as const], key: 'P' };
+		expect(matchesChord(key({ key: 'P', metaKey: true, shiftKey: true }), chord, 'macOS')).toBe(true);
+		expect(matchesChord(key({ key: 'p', metaKey: true, shiftKey: true }), chord, 'macOS')).toBe(true);
+	});
+});
+
+describe('decideHostKey (#47)', () => {
+	it('lets the escape hatches through untouched: palette, settings, quit', () => {
+		expect(decideHostKey(key({ key: 'p', metaKey: true }), false)).toBe('host');
+		expect(decideHostKey(key({ key: ',', metaKey: true }), false)).toBe('host');
+		expect(decideHostKey(key({ key: 'q', metaKey: true }), false)).toBe('host');
+	});
+
+	it('an escape hatch wins even over a key the encoder would claim', () => {
+		expect(decideHostKey(key({ key: 'p', metaKey: true }), true)).toBe('host');
+	});
+
+	it('keeps keys the input layer encodes for the terminal', () => {
+		expect(decideHostKey(key({ key: 'Enter', shiftKey: true }), true)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'Tab', shiftKey: true }), true)).toBe('terminal');
+	});
+
+	it('keeps ctrl+letter for the shell on macOS: ctrl+c interrupts the agent', () => {
+		expect(decideHostKey(key({ key: 'c', ctrlKey: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'r', ctrlKey: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'l', ctrlKey: true }), false)).toBe('terminal');
+	});
+
+	it('keeps alt (meta) shell navigation for the terminal', () => {
+		expect(decideHostKey(key({ key: 'b', altKey: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'f', altKey: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'Backspace', altKey: true }), false)).toBe('terminal');
+	});
+
+	it('keeps plain typing, Tab, Escape and the arrows for the terminal', () => {
+		for (const k of ['a', 'Enter', 'Tab', 'Escape', 'ArrowUp', ' ', 'Backspace']) {
+			expect(decideHostKey(key({ key: k }), false), k).toBe('terminal');
+		}
+		expect(decideHostKey(key({ key: 'A', shiftKey: true }), false)).toBe('terminal');
+	});
+
+	it('leaves clipboard chords to the browser, not to Obsidian', () => {
+		expect(decideHostKey(key({ key: 'c', metaKey: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'v', metaKey: true }), false)).toBe('terminal');
+	});
+
+	it('drops every other cmd combination: quick switcher, new note, split', () => {
+		expect(decideHostKey(key({ key: 'o', metaKey: true }), false)).toBe('drop');
+		expect(decideHostKey(key({ key: 'n', metaKey: true }), false)).toBe('drop');
+		expect(decideHostKey(key({ key: 'P', metaKey: true, shiftKey: true }), false)).toBe('drop');
+		expect(decideHostKey(key({ key: 'e', metaKey: true, altKey: true }), false)).toBe('drop');
+	});
+
+	it('never drops a bare modifier press', () => {
+		for (const k of ['Meta', 'Control', 'Alt', 'Shift']) {
+			expect(decideHostKey(key({ key: k, metaKey: k === 'Meta' }), false), k).toBe('terminal');
+		}
+	});
+
+	it('leaves a composing key to the input method, whatever the chord', () => {
+		expect(decideHostKey(key({ key: 'Enter', isComposing: true }), false)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'o', metaKey: true, keyCode: 229 }), false)).toBe('terminal');
+	});
+
+	it('on other platforms Mod is ctrl: only the hatches leave the shell, nothing is dropped', () => {
+		expect(decideHostKey(key({ key: 'p', ctrlKey: true }), false, linux)).toBe('host');
+		expect(decideHostKey(key({ key: 'c', ctrlKey: true }), false, linux)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'o', ctrlKey: true }), false, linux)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'o', metaKey: true }), false, linux)).toBe('terminal');
+		expect(decideHostKey(key({ key: 'p', metaKey: true }), false, linux)).toBe('terminal');
+	});
+
+	it('takes a configured hatch list', () => {
+		const policy: HostKeyPolicy = {
+			...DEFAULT_HOST_KEY_POLICY,
+			escapeHatches: [{ modifiers: ['Mod', 'Shift'], key: 'f' }],
+		};
+		expect(decideHostKey(key({ key: 'F', metaKey: true, shiftKey: true }), false, policy)).toBe('host');
+		expect(decideHostKey(key({ key: 'p', metaKey: true }), false, policy)).toBe('drop');
+	});
+});
+
+describe('routeHostKey', () => {
+	it('combines the encoder claim with the policy', () => {
+		const instance = router();
+		expect(instance.routeHostKey(key({ key: 'Tab', shiftKey: true }))).toBe('terminal');
+		expect(instance.routeHostKey(key({ key: 'p', metaKey: true }))).toBe('host');
+		expect(instance.routeHostKey(key({ key: 'o', metaKey: true }))).toBe('drop');
+		expect(instance.routeHostKey(key({ key: 'c', ctrlKey: true }))).toBe('terminal');
+	});
+
+	it('takes the platform from the options', () => {
+		const instance = router({ hostKeys: linux });
+		expect(instance.routeHostKey(key({ key: 'o', ctrlKey: true }))).toBe('terminal');
+		expect(instance.routeHostKey(key({ key: 'p', ctrlKey: true }))).toBe('host');
+	});
+
+	it('routes nothing to Obsidian and drops nothing while the element composes (#49)', () => {
+		const instance = router();
+		instance.setComposing(true);
+		expect(instance.routeHostKey(key({ key: 'Enter' }))).toBe('terminal');
+		expect(instance.routeHostKey(key({ key: 'o', metaKey: true }))).toBe('terminal');
+		instance.setComposing(false);
+		expect(instance.routeHostKey(key({ key: 'o', metaKey: true }))).toBe('drop');
 	});
 });
 

@@ -6,7 +6,7 @@
  * **This module has no policy of its own.** `DEFAULT_KEY_ENCODING_OPTIONS`
  * disables every rule, so `encodeKey` returns `null` for every key unless the
  * caller asks for one. `InputRouter` is where the plugin's policy lives, and it
- * switches `shiftEnterLineBreak` on (#18).
+ * switches `shiftEnterLineBreak` (#18) and `shiftTabBacktab` (#18, #47) on.
  *
  * Two encodings, because a pane negotiates one or the other:
  *
@@ -73,12 +73,24 @@ export const KITTY_MOD_SUPER = 8;
 /** What alt+enter sends on a legacy terminal, and what Claude Code accepts. */
 export const LEGACY_LINE_BREAK = '\x1b\r';
 
+/**
+ * `CSI Z`, the backtab every terminal sends for shift+tab (#18, #47). Neither
+ * renderer sends it: ghostty-web folds shift into the plain `\t` case, so
+ * Claude Code never saw the key it cycles modes with.
+ */
+export const LEGACY_BACKTAB = '\x1b[Z';
+
 export interface KeyEncodingOptions {
 	/**
 	 * #18: shift+enter (and alt+enter) become a line break instead of a submit.
 	 * Off here so this refactor is invisible.
 	 */
 	shiftEnterLineBreak: boolean;
+	/**
+	 * #18/#47: shift+tab becomes `CSI Z` (backtab) instead of the renderer's
+	 * plain tab. Off here for the same reason.
+	 */
+	shiftTabBacktab: boolean;
 	/**
 	 * Encode every modified key with kitty `CSI u` when the pane negotiated the
 	 * kitty protocol. Off until something can observe those flags.
@@ -88,6 +100,7 @@ export interface KeyEncodingOptions {
 
 export const DEFAULT_KEY_ENCODING_OPTIONS: KeyEncodingOptions = Object.freeze({
 	shiftEnterLineBreak: false,
+	shiftTabBacktab: false,
 	kittyModifiedKeys: false,
 });
 
@@ -170,10 +183,23 @@ export function encodeKey(
 	if (options.shiftEnterLineBreak && isLineBreakEnter(event)) {
 		return kittyActive(state) ? (encodeKittyKey(event) ?? LEGACY_LINE_BREAK) : LEGACY_LINE_BREAK;
 	}
+	if (options.shiftTabBacktab && isBacktab(event)) {
+		return kittyActive(state) ? (encodeKittyKey(event) ?? LEGACY_BACKTAB) : LEGACY_BACKTAB;
+	}
 	if (options.kittyModifiedKeys && kittyActive(state)) {
 		return encodeKittyKey(event);
 	}
 	return null;
+}
+
+/**
+ * Shift+tab and nothing else: plain tab stays the renderer's `\t`, and a tab
+ * with ctrl, alt or cmd held is not a backtab.
+ */
+function isBacktab(event: KeyEventLike): boolean {
+	if (event.key !== 'Tab') return false;
+	if (event.ctrlKey || event.altKey || event.metaKey) return false;
+	return event.shiftKey;
 }
 
 /**
