@@ -337,3 +337,45 @@ describe('obsidianTheme: the code palette', () => {
 		expect(theme.background).toBe(DARK_VARS['--background-primary']);
 	});
 });
+
+describe('obsidianTheme: cursor and selection', () => {
+	it('takes the cursor from the interactive accent and its glyph from on-accent', () => {
+		const theme = obsidianTheme(
+			reader({
+				...DARK_VARS,
+				'--interactive-accent': '#8a5cf6',
+				'--text-on-accent': '#ffffff',
+			}),
+		);
+		expect(theme.cursor).toBe('#8a5cf6');
+		expect(theme.cursorAccent).toBe('#ffffff');
+	});
+
+	it('falls back to the text accent and the background', () => {
+		const theme = obsidianTheme(reader(DARK_VARS));
+		expect(theme.cursor).toBe(DARK_VARS['--text-accent']);
+		expect(theme.cursorAccent).toBe(DARK_VARS['--background-primary']);
+	});
+
+	it('keeps a translucent selection translucent and sets no text colour', () => {
+		const theme = obsidianTheme(reader(DARK_VARS));
+		expect(theme.selectionBackground).toBe('rgba(0, 122, 255, 0.25)');
+		expect(theme.selectionForeground).toBeUndefined();
+	});
+
+	it('sets a selection text colour only when the selection is opaque', () => {
+		const theme = obsidianTheme(
+			reader({ ...DARK_VARS, '--text-selection': '#264f78' }),
+		);
+		expect(theme.selectionBackground).toBe('#264f78');
+		expect(theme.selectionForeground).toBe(DARK_VARS['--text-normal']);
+	});
+
+	it('leaves both selection keys unset when the variable is missing', () => {
+		const vars = { ...DARK_VARS };
+		delete vars['--text-selection'];
+		const theme = obsidianTheme(reader(vars));
+		expect(theme.selectionBackground).toBeUndefined();
+		expect(theme.selectionForeground).toBeUndefined();
+	});
+});

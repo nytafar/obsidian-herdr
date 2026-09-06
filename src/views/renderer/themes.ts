@@ -398,6 +398,13 @@ export function parseColor(value: string | undefined): Rgb | undefined {
 	return { r: clamp255(r), g: clamp255(g), b: clamp255(b), a: Math.max(0, Math.min(1, a)) };
 }
 
+/** `rgba()` when the colour is translucent, `#rrggbb` when it is not. */
+function toCss(color: Rgb): string {
+	if (color.a >= 1) return toHex(color);
+	const round = (n: number): number => clamp255(n);
+	return `rgba(${round(color.r)}, ${round(color.g)}, ${round(color.b)}, ${Number(color.a.toFixed(3))})`;
+}
+
 function toHex(color: Rgb): string {
 	const hex = (n: number): string => clamp255(n).toString(16).padStart(2, '0');
 	return `#${hex(color.r)}${hex(color.g)}${hex(color.b)}`;
@@ -563,10 +570,23 @@ export function obsidianTheme(
 
 	set('foreground', readColor(read, '--text-normal'));
 	set('background', readColor(read, '--background-primary'));
-	set('cursor', readColor(read, '--text-accent'));
-	set('cursorAccent', readColor(read, '--background-primary'));
-	set('selectionBackground', readColor(read, '--text-selection'));
-	set('selectionForeground', readColor(read, '--text-normal'));
+	// `--interactive-accent` is what Obsidian paints active UI with; `--text-accent`
+	// is link text, which is the same hue but tuned for reading, not for a block.
+	set('cursor', readColor(read, '--interactive-accent', '--text-accent', '--color-accent'));
+	// The glyph drawn inside a block cursor: whatever the vault puts on an accent.
+	set('cursorAccent', readColor(read, '--text-on-accent', '--background-primary'));
+
+	const selection = readColor(read, '--text-selection');
+	if (selection) {
+		// Alpha is load-bearing here and must survive: most themes make the
+		// selection a translucent wash so the glyphs underneath still show. Both
+		// engines take a CSS colour string, so hand the wash back as `rgba()`
+		// rather than flattening it to a hex.
+		theme.selectionBackground = toCss(selection);
+		// Forcing a selection text colour under a translucent wash fights the
+		// wash instead of helping it, so only an opaque selection gets one (#50).
+		if (selection.a >= 1) set('selectionForeground', readColor(read, '--text-normal'));
+	}
 
 	const scale = dark ? DARK_BASE_SCALE : LIGHT_BASE_SCALE;
 	set('black', readColor(read, ...scale.black));
