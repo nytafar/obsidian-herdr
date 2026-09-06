@@ -790,7 +790,18 @@ export class TerminalView extends ItemView {
 		const lines = this.snapshot;
 		this.snapshot = null;
 		if (!lines || lines.length === 0) return;
-		renderer.write(new TextEncoder().encode(`${lines.join('\r\n')}\r\n`));
+		// One write per line, not one write for the lot: writing the whole
+		// snapshot as a single buffer into a freshly fitted ghostty-web terminal
+		// trapped inside the WASM ("memory access out of bounds", reproduced on a
+		// 102x46 grid with 46 lines), while the same bytes written line by line
+		// never did. And a replay must never fail the mount: history is a
+		// nicety, the reattach is not.
+		const encoder = new TextEncoder();
+		try {
+			for (const line of lines) renderer.write(encoder.encode(`${line}\r\n`));
+		} catch (error) {
+			console.warn('herdr: could not restore scrollback after reveal', error);
+		}
 	}
 
 	/** Keystrokes. Observers never write to the pane (PRD S16). */
