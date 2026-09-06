@@ -256,6 +256,19 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Repaints every open terminal with the current colour theme (issue #26). The
+	 * settings tab calls this after the theme dropdown changes, so open terminals
+	 * switch palette without being reopened. Deferred leaves are skipped: they read
+	 * the setting when they mount.
+	 */
+	refreshTerminals(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) view.applyTheme(this.settings.terminalTheme);
+		}
+	}
+
 	/** Runs `listener` whenever `scope` is replaced. Returns the unsubscribe. */
 	onScopeReplaced(listener: () => void): () => void {
 		this.scopeListeners.add(listener);

@@ -3,6 +3,13 @@ import type HerdrPlugin from './main';
 import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
 import type { RowClickAction } from './views/rowModel';
+import {
+	DEFAULT_TERMINAL_THEME,
+	TERMINAL_THEMES,
+	TERMINAL_THEME_LABELS,
+	normalizeThemeName,
+	type TerminalThemeName,
+} from './views/renderer/themes';
 
 /** Agent kinds herdr can start. Source of truth is `agent.start --help`. */
 export const AGENT_KINDS = [
@@ -89,6 +96,12 @@ export interface HerdrSettings {
 	agentNamePattern: string;
 	/** Terminal font family. Empty follows the Obsidian monospace font. */
 	terminalFontFamily: string;
+	/**
+	 * Terminal colour theme (issue #26). `obsidian`, the default, follows the
+	 * vault's CSS variables; the other names are built-in palettes. See
+	 * `views/renderer/themes.ts`.
+	 */
+	terminalTheme: TerminalThemeName;
 	/** Terminal font size in pixels. 0 follows the Obsidian monospace size. */
 	terminalFontSize: number;
 	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
@@ -164,6 +177,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	defaultAgentKind: 'claude',
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
+	terminalTheme: DEFAULT_TERMINAL_THEME,
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
@@ -599,6 +613,24 @@ export class HerdrSettingTab extends PluginSettingTab {
 						await this.save();
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName('Theme')
+			.setDesc(
+				'Colours for the terminal view. Follow Obsidian takes them from the vault’s theme and follows it when you switch; the others are fixed palettes. Open terminals repaint immediately.',
+			)
+			.addDropdown((dropdown) => {
+				for (const name of TERMINAL_THEMES) {
+					dropdown.addOption(name, TERMINAL_THEME_LABELS[name]);
+				}
+				dropdown
+					.setValue(normalizeThemeName(settings.terminalTheme))
+					.onChange(async (value) => {
+						settings.terminalTheme = normalizeThemeName(value);
+						await this.save();
+						this.plugin.refreshTerminals();
+					});
+			});
 
 		new Setting(containerEl)
 			.setName('Font family')
