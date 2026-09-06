@@ -12,6 +12,8 @@ import {
 	statusLine,
 	terminalTabTitle,
 	HIDE_GRACE_MS,
+	hostKeyPolicyApplies,
+	keymapReturn,
 	VisibilityTracker,
 	summariseStderr,
 	TERMINAL_VIEW_TYPE,
@@ -538,5 +540,34 @@ describe('planThemeUpdate (issue #53)', () => {
 			'opened',
 			'suspended',
 		]);
+	});
+});
+
+describe('keymapReturn (#47)', () => {
+	it('maps the three decisions onto the Scope handler protocol', () => {
+		// undefined: fall through to the app scope, so the hotkey fires.
+		expect(keymapReturn('host')).toBeUndefined();
+		// true: stop looking, touch nothing, the event still reaches the terminal.
+		expect(keymapReturn('terminal')).toBe(true);
+		// false: Obsidian prevents and stops it at the window.
+		expect(keymapReturn('drop')).toBe(false);
+	});
+});
+
+describe('hostKeyPolicyApplies (#47)', () => {
+	it('applies to a focused control-mode terminal only', () => {
+		expect(hostKeyPolicyApplies({ mode: 'control', focusInside: true })).toBe(true);
+	});
+
+	it('leaves every key to Obsidian for an observer, whatever has focus', () => {
+		expect(hostKeyPolicyApplies({ mode: 'observe', focusInside: true })).toBe(false);
+	});
+
+	it('leaves every key to Obsidian when the leaf is active but the terminal is not focused', () => {
+		expect(hostKeyPolicyApplies({ mode: 'control', focusInside: false })).toBe(false);
+	});
+
+	it('does nothing without a session', () => {
+		expect(hostKeyPolicyApplies({ mode: null, focusInside: true })).toBe(false);
 	});
 });

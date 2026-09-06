@@ -18,11 +18,20 @@
  * reveal, before the first frame.
  *
  * Keys and wheel notches go through `InputRouter` (`./input/`, #17) on the way:
- * shift+enter becomes a line break (#18) and every wheel notch becomes a
- * `terminal.scroll` carrying the cell under the pointer, which herdr turns into
- * a mouse report for an application that asked for one (#25). Clicks are still
- * the renderer's, so text selection keeps working; gating them needs a mode
- * signal herdr does not send (notes/herdr-terminal-bridge.md, #33).
+ * shift+enter becomes a line break (#18), shift+tab a backtab (#47) and every
+ * wheel notch becomes a `terminal.scroll` carrying the cell under the pointer,
+ * which herdr turns into a mouse report for an application that asked for one
+ * (#25). Clicks are still the renderer's, so text selection keeps working;
+ * gating them needs a mode signal herdr does not send
+ * (notes/herdr-terminal-bridge.md, #33).
+ *
+ * Obsidian's hotkeys are kept out of a focused control-mode terminal through
+ * the view's own `Scope` (#47). Obsidian's keymap listens for `keydown` on
+ * `window` in the capture phase and ignores `defaultPrevented`, so no DOM
+ * listener of ours can run first; the workspace scope, however, defers to the
+ * active leaf's `view.scope`, and `onHostKey` answers from there. It never
+ * sends bytes: a key it keeps for the terminal still reaches the renderer's
+ * input element and goes down the usual `onKeyEvent` / `onData` path.
  *
  * Attach mode comes from `settings.defaultAttachMode`: control attaches with
  * `--takeover` (PRD M15, the herdr TUI pane then follows Obsidian's size), observe
@@ -40,7 +49,16 @@
  * hand (recipe in `tests/README.md`).
  */
 
-import { ItemView, Notice, setIcon, setTooltip, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
+import {
+	ItemView,
+	Notice,
+	Platform,
+	Scope,
+	setIcon,
+	setTooltip,
+	type ViewStateResult,
+	type WorkspaceLeaf,
+} from 'obsidian';
 import type HerdrPlugin from '../main';
 import { cursorOptions, scrollbackBytes, type AttachMode } from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
@@ -53,7 +71,11 @@ import { createRenderer } from './renderer/create';
 import { agentDisplayName } from './rowModel';
 import type { PaneState } from '../herdr/scope';
 import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
-import { InputRouter } from './input/inputRouter';
+import {
+	DEFAULT_HOST_KEY_POLICY,
+	InputRouter,
+	type HostKeyDecision,
+} from './input/inputRouter';
 import { pickModifiers } from './input/mouseEncoder';
 import { WheelAccumulator } from './input/wheelAccumulator';
 
@@ -432,6 +454,35 @@ export function summariseStderr(lines: readonly string[]): string | null {
 	return lines.length > 1 ? `${clipped} (+${lines.length - 1} more)` : clipped;
 }
 
+/**
+ * A `Scope` handler's return is its whole protocol (see `HostKeyDecision`):
+ * `undefined` keeps looking in the parent scope, `true` stops without touching
+ * the event, `false` makes Obsidian prevent and stop it at the window.
+ */
+export function keymapReturn(decision: HostKeyDecision): boolean | undefined {
+	switch (decision) {
+		case 'host':
+			return undefined;
+		case 'terminal':
+			return true;
+		case 'drop':
+			return false;
+	}
+}
+
+/**
+ * Whether the policy applies at all (#47): only to a control-mode terminal
+ * whose input element has the focus. An observe-mode pane never takes input,
+ * and a terminal leaf that is active but not focused — the user clicked its
+ * header — must leave every key to Obsidian, or Cmd+O would vanish into nothing.
+ */
+export function hostKeyPolicyApplies(input: {
+	mode: TerminalSessionMode | null;
+	focusInside: boolean;
+}): boolean {
+	return input.mode === 'control' && input.focusInside;
+}
+
 /** What a theme change costs on the renderer a view currently holds (#53). */
 export type ThemeUpdatePlan = 'defer' | 'in-place' | 'rebuild-renderer';
 
@@ -509,11 +560,16 @@ export class TerminalView extends ItemView {
 	 * renderer's measured cell height as the divisor.
 	 */
 	private readonly wheel = new WheelAccumulator();
-	private readonly input = new InputRouter({
-		// Bound rather than passed directly: the accumulator is stateful, and the
-		// router only ever asks the same three-argument question.
-		wheelToScroll: (deltaY, deltaMode, rows) => this.wheel.push(deltaY, deltaMode, rows),
-	});
+	private readonly input = new InputRouter(
+		{
+			// Bound rather than passed directly: the accumulator is stateful, and the
+			// router only ever asks the same three-argument question.
+			wheelToScroll: (deltaY, deltaMode, rows) => this.wheel.push(deltaY, deltaMode, rows),
+		},
+		{
+			hostKeys: { ...DEFAULT_HOST_KEY_POLICY, platform: Platform.isMacOS ? 'macOS' : 'other' },
+		},
+	);
 	/** Pending coalescing frame for held wheel lines; 0 when none. */
 	private wheelFrame = 0;
 	/** Whether the last emission reached herdr, i.e. whether to consume a notch. */
@@ -537,6 +593,12 @@ export class TerminalView extends ItemView {
 		super(leaf);
 		this.plugin = plugin;
 		this.mode = plugin.settings.defaultAttachMode;
+		// #47: consulted by the workspace scope while this leaf is active, ahead
+		// of the app's hotkeys, which are its parent and run on `undefined`. One
+		// catch-all handler; the policy itself is the router's. Obsidian pushes
+		// and pops it with the active leaf, so there is nothing to tear down.
+		this.scope = new Scope(this.app.scope);
+		this.scope.register(null, null, (event) => this.onHostKey(event));
 	}
 
 	getViewType(): string {
@@ -1138,11 +1200,12 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * Keys the input layer encodes itself (#17, #18). True means "consumed": the
-	 * renderer swallows the event and emits nothing through `onData`, so a key we
-	 * send is never also sent by ghostty-web's own encoder. Today that is
-	 * shift+enter and alt+enter; every other key returns false and is typed
-	 * exactly as before.
+	 * Keys the input layer encodes itself (#17, #18, #47). True means "consumed":
+	 * the renderer swallows the event and emits nothing through `onData`, so a
+	 * key we send is never also sent by ghostty-web's own encoder, and the
+	 * renderer's `preventDefault` keeps shift+tab from moving focus. Today that
+	 * is shift+enter, alt+enter and shift+tab; every other key returns false and
+	 * is typed exactly as before.
 	 */
 	private onKeyEvent(event: KeyboardEvent): boolean {
 		const session = this.session;
@@ -1154,6 +1217,25 @@ export class TerminalView extends ItemView {
 		if (data === null) return false;
 		session.input(data);
 		return true;
+	}
+
+	/**
+	 * Obsidian's keymap asking what to do with a keydown (#47). Answers only for
+	 * a focused control-mode terminal; everything else is `undefined`, i.e.
+	 * Obsidian's business as before. Keyup is not asked: the keymap listens to
+	 * keydown alone.
+	 */
+	private onHostKey(event: KeyboardEvent): boolean | undefined {
+		if (event.type !== 'keydown') return undefined;
+		const host = this.hostEl;
+		if (!host) return undefined;
+		const active = host.ownerDocument.activeElement;
+		const applies = hostKeyPolicyApplies({
+			mode: this.session?.mode ?? null,
+			focusInside: active !== null && host.contains(active),
+		});
+		if (!applies) return undefined;
+		return keymapReturn(this.input.routeHostKey(event));
 	}
 
 	/**
