@@ -20,10 +20,11 @@
  * `removed` / `workspaceResolved` events, and even those are coalesced into one
  * repaint per frame.
  *
- * The header above the rows holds one `clickable-icon` button, which opens the
- * sort and group-by menu (issue #41); what that menu contains is `listMenu.ts`,
- * pure and tested, and choosing an entry writes the same settings the settings
- * tab does and repaints every open list.
+ * The toolbar under the rows holds three `clickable-icon` buttons (issues #41,
+ * #44): the sort and group-by menu, "start agent in the vault", and a quick
+ * settings menu. What the two menus contain is `listMenu.ts` and
+ * `quickSettings.ts`, both pure and tested; choosing an entry writes the same
+ * settings the settings tab writes and repaints every open list.
  *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
@@ -38,6 +39,7 @@ import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
+import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
 import { asElement } from './dom';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -81,8 +83,8 @@ export class AgentListView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('herdr-agent-list');
-		this.renderHeader(container);
 		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
+		this.renderToolbar(container);
 
 		// One delegated listener beats one per row: rows are rebuilt on every
 		// scope event, and per-row registrations would pile up on the component.
@@ -101,20 +103,77 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
-	 * The one control above the rows (issue #41): a header button that opens the
-	 * sort and group-by menu, the way the file explorer exposes its sort order.
-	 * Built once in `onOpen`, outside `listEl`, so a repaint never touches it.
+	 * The row of controls under the rows (issues #41, #44): sort and group, start
+	 * an agent at the vault root, and the quick settings menu. Built once in
+	 * `onOpen`, outside `listEl`, so a repaint never touches it.
+	 *
+	 * Below the list rather than above it, and without a title: the view already
+	 * carries "Herdr agents" in its tab, and a toolbar at the bottom keeps the
+	 * first row of agents at the top of the pane where the eye starts.
 	 */
-	private renderHeader(container: HTMLElement): void {
-		const header = container.createDiv({ cls: 'herdr-list-header' });
-		const button = header.createEl('button', {
+	private renderToolbar(container: HTMLElement): void {
+		const bar = container.createDiv({ cls: 'herdr-list-toolbar' });
+		this.toolbarButton(bar, 'arrow-down-up', 'Sort and group', (event) =>
+			this.openListMenu(event),
+		);
+		this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
+			// The same flow as the folder menu, at the vault root: it honours the
+			// share-a-tab setting (issue #29) and reports its own failures.
+			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
+		});
+		this.toolbarButton(bar, 'settings-2', 'Quick settings', (event) =>
+			this.openQuickSettings(event),
+		);
+	}
+
+	/** One `clickable-icon` button in the toolbar, labelled for pointer and reader. */
+	private toolbarButton(
+		bar: HTMLElement,
+		icon: string,
+		label: string,
+		onClick: (event: MouseEvent) => void,
+	): void {
+		const button = bar.createEl('button', {
 			cls: 'clickable-icon herdr-list-menu-button',
 			attr: { type: 'button' },
 		});
-		setIcon(button, 'arrow-down-up');
-		setTooltip(button, 'Sort and group');
-		button.setAttribute('aria-label', 'Sort and group');
-		this.registerDomEvent(button, 'click', (event) => this.openListMenu(event));
+		setIcon(button, icon);
+		setTooltip(button, label);
+		button.setAttribute('aria-label', label);
+		this.registerDomEvent(button, 'click', onClick);
+	}
+
+	/**
+	 * The quick settings menu (issue #44): the handful of choices that change how
+	 * the list and its terminals behave, one click from the list instead of a
+	 * window away. The settings tab still explains them and owns everything else.
+	 */
+	private openQuickSettings(event: MouseEvent): void {
+		const menu = new Menu();
+		let section = '';
+		for (const item of quickSettingsItems(this.plugin.settings)) {
+			if (item.section !== section) {
+				if (section !== '') menu.addSeparator();
+				section = item.section;
+				menu.addItem((entry) => entry.setTitle(section).setIsLabel(true));
+			}
+			menu.addItem((entry) =>
+				entry
+					.setTitle(item.label)
+					.setChecked(item.checked)
+					.onClick(() => void this.applyQuickSetting(item)),
+			);
+		}
+		menu.showAtMouseEvent(event);
+	}
+
+	/** Writes one quick setting, saves it, and lets its owner react. */
+	private async applyQuickSetting(item: QuickSettingsItem): Promise<void> {
+		item.apply(this.plugin.settings);
+		await this.plugin.saveSettings();
+		// The explorer buttons are attached, not rendered, so they need telling.
+		if (item.effect === 'folder-button') this.plugin.refreshFolderHoverButton();
+		this.plugin.refreshAgentList();
 	}
 
 	/**
