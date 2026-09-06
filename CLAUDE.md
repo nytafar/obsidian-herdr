@@ -42,3 +42,56 @@ herdr integration contract; do not re-derive it, extend it with new verified fac
 - Do not touch the installed `ghostty-terminal` plugin in that vault.
 - Sanity-check the terminal seam without Obsidian:
   `herdr terminal session observe <pane_id> --cols 80 --rows 24 </dev/null | head -1`
+
+## Where things are
+
+- `../PRD.md` — v1 decisions and, in section 7, the **verified herdr contract**.
+  Authoritative. Extend it with new verified facts; do not re-derive it.
+- `../notes/` — verified API facts gathered by an exploration pass: herdr's JSON
+  API and event shapes, the terminal bridge contract, Obsidian API signatures
+  with line numbers, ghostty-web, Electron/node access, and the memory
+  diagnosis. Read these instead of re-exploring.
+- `../RESEARCH.md` — historical. Its fork recommendation was overturned.
+- **Issue #32** — the v0.2 roadmap: build order, what blocks what, and why.
+  The single source for what to work on next.
+- `AGENTS.md` — generic Obsidian plugin conventions from the sample template.
+
+## How work gets done here
+
+The loop that worked for v1, worth repeating. The `/implement-spec` skill
+describes the general shape; what follows is what this repo specifically learned.
+
+**Orchestrator holds the graph, subagents hold the code.** Read the roadmap
+issue, work the frontier of unblocked issues, dispatch one `implementer`
+subagent per unit of work with `isolation: "worktree"`, then merge its branch
+yourself. Agents never push; the orchestrator merges, builds, tests and pushes.
+
+**Use the `implementer` agent type.** It is defined in `.claude/agents/` here,
+in the container, and in `~/.claude/agents/`. It is deliberately lean: Bash,
+Read, Edit, Write only, no exploration surface. A general-purpose agent starts
+tens of thousands of tokens heavier for no benefit. Custom agent types are
+loaded at session start, so if you add one mid-session it will not resolve.
+
+**Batch related issues into one branch.** Three list-view issues in one branch
+beat three branches racing on the same render path. Split only where the files
+genuinely do not overlap.
+
+**Pass pointers, not content.** Give an agent the issue number to run
+`gh issue view` on, the PRD path, and the specific note files. Do not paste
+requirements into the prompt; they go stale and cost context twice.
+
+**Expect conflicts in exactly two places.** `src/main.ts`, which every feature
+touches, so tell agents to keep their footprint there small; conflicts are
+almost always unions, resolved by keeping both sides. And `package-lock.json`,
+which any `npm install` regenerates; resolve by regenerating once after merging.
+
+**Review in two axes before merging a large branch.** One read-only agent
+against the documented standards, one against the spec, in parallel, then hand
+every finding to a single fix-up implementer. The spec axis caught that the
+agent list would have displayed "claude" on every row; the standards axis caught
+a literal NUL byte that made a whole file invisible to `git diff`.
+
+**Verification before every commit:** `npm run build`, `npm test`, and
+`npx eslint src tests` with zero errors. Use that path, not `npx eslint .`,
+which walks agent worktrees under `.claude/` and reports their findings as
+yours.
