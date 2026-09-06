@@ -291,7 +291,10 @@ export class AgentListView extends ItemView {
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		// The row body and the button hold one action each, and which is which is
-		// a setting (issue #21). The button records its own action in the dataset,
+		// a setting (issue #21). The button is drawn on every row but only shown on
+		// hover or focus (issue #42), which is `styles.css` alone: it stays in the
+		// tab order and in the layout, so nothing here changes with the pointer.
+		// The button records its own action in the dataset,
 		// so a click is dispatched by what was drawn — and promised in the tooltip
 		// — rather than by a setting that may have changed since the last repaint.
 		const actions = rowActions(this.plugin.settings.agentListRowClick);
