@@ -148,6 +148,22 @@
 	color: var(--text-faint);
 }
 
+/* The pin marker (issue #35): a small muted pin after the name on a row that
+   is pinned to the top of its group. Fixed size, never shrinks, and self-aligned
+   so the baseline of the line stays where the text put it. */
+
+.herdr-agent-pin {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-self: center;
+	color: var(--text-faint);
+}
+
+.herdr-agent-pin svg {
+	width: var(--font-ui-smaller);
+	height: var(--font-ui-smaller);
+}
+
 /* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23).
    It sits between the kind mark and the name (issue #40), and never shrinks:
    a countdown that says "31" instead of "31m" would be worse than none. */

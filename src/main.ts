@@ -14,6 +14,7 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	HerdrSettingTab,
+	normalizePinnedPanes,
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
 	renderConnectionStatus,
@@ -269,6 +270,9 @@ export default class HerdrPlugin extends Plugin {
 					...stored?.notifications?.done,
 				},
 			},
+			// A hand-edited or older `data.json` must not put a non-list in a row's
+			// sort (issue #35).
+			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
 		};
 	}
 

@@ -303,6 +303,13 @@ export interface StartedAgent {
 	kind: string;
 }
 
+/** What {@link HerdrActions.renameAgent} managed to do, and with which call. */
+export interface RenameOutcome {
+	method: 'agent.rename' | 'pane.rename';
+	/** The name as sent: trimmed, otherwise as typed. */
+	name: string;
+}
+
 /** The three folder actions (PRD M19, M20), one method each. */
 export class HerdrActions {
 	constructor(private readonly host: ActionHost) {}
@@ -443,6 +450,59 @@ export class HerdrActions {
 				this.reportFailure('start an agent', error);
 				return null;
 			}
+		}
+	}
+
+	/**
+	 * Closes a pane in herdr (`pane.close`, issue #35). This kills whatever runs
+	 * in it, agent included, so the caller asks first; this method only sends.
+	 */
+	async closePane(paneId: string): Promise<boolean> {
+		try {
+			await this.host.request('pane.close', { pane_id: paneId });
+			return true;
+		} catch (error) {
+			this.reportFailure('close the pane', error);
+			return false;
+		}
+	}
+
+	/**
+	 * Renames the agent in a pane (issue #35). `agent.rename` takes the pane id
+	 * as `target` and sets the agent label — the name the list shows. On a herdr
+	 * without it, the pane label (`pane.rename`) is the closest thing there is,
+	 * so that is the fallback, and only for that one error: an unsupported
+	 * method is an ordinary error (CLAUDE.md), not a reason to give up or to
+	 * paper over a genuine refusal such as `agent_name_taken`.
+	 *
+	 * The name is sent as typed, apart from trimming: herdr owns the naming rule
+	 * and answers `invalid_agent_name` when it minds, which the user then sees.
+	 * An empty name is refused here, since both calls read it as "clear".
+	 */
+	async renameAgent(paneId: string, name: string): Promise<RenameOutcome | null> {
+		const trimmed = name.trim();
+		if (!trimmed) {
+			this.host.notice('Herdr: the name cannot be empty.');
+			return null;
+		}
+		try {
+			await this.host.request('agent.rename', { target: paneId, name: trimmed });
+			return { method: 'agent.rename', name: trimmed };
+		} catch (error) {
+			if (!(error instanceof HerdrError && error.isUnsupportedMethod)) {
+				this.reportFailure('rename the agent', error);
+				return null;
+			}
+		}
+		try {
+			await this.host.request('pane.rename', { pane_id: paneId, label: trimmed });
+			this.host.notice(
+				'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
+			);
+			return { method: 'pane.rename', name: trimmed };
+		} catch (error) {
+			this.reportFailure('rename the pane', error);
+			return null;
 		}
 	}
 

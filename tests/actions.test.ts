@@ -56,6 +56,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalTab: 'per-agent',
 		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
+		pinnedPanes: {},
 		...overrides,
 	};
 }
@@ -628,5 +629,88 @@ describe('HerdrActions.startAgentHere splitting an existing tab (issue #29)', ()
 		const started = await f.actions.startAgentHere(NOTES);
 		expect(started?.paneId).toBe('w4:p2');
 		expect(call).toBe(2);
+	});
+});
+
+describe('closePane (issue #35)', () => {
+	it('sends pane.close with the pane id', async () => {
+		const f = fake({ responses: { 'pane.close': {} } });
+		expect(await f.actions.closePane('w4:p3')).toBe(true);
+		expect(f.calls).toEqual([{ method: 'pane.close', params: { pane_id: 'w4:p3' } }]);
+		expect(f.notices).toEqual([]);
+	});
+
+	it('reports a refusal as an ordinary error and returns false', async () => {
+		const f = fake({
+			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
+		});
+		expect(await f.actions.closePane('w4:p3')).toBe(false);
+		expect(f.notices).toEqual([
+			'Herdr: could not close the pane. pane w4:p3 not found (pane_not_found)',
+		]);
+	});
+});
+
+describe('renameAgent (issue #35)', () => {
+	const unsupported = new HerdrError(
+		'invalid_request',
+		'unknown variant `agent.rename`, expected one of `agent.list`',
+	);
+
+	it('renames through agent.rename with the pane id as target', async () => {
+		const f = fake({ responses: { 'agent.rename': {} } });
+		expect(await f.actions.renameAgent('w4:p3', '  notes-2 ')).toEqual({
+			method: 'agent.rename',
+			name: 'notes-2',
+		});
+		expect(f.calls).toEqual([
+			{ method: 'agent.rename', params: { target: 'w4:p3', name: 'notes-2' } },
+		]);
+		expect(f.notices).toEqual([]);
+	});
+
+	it('falls back to pane.rename only when agent.rename is unsupported', async () => {
+		const f = fake({ responses: { 'agent.rename': unsupported, 'pane.rename': {} } });
+		expect(await f.actions.renameAgent('w4:p3', 'notes-2')).toEqual({
+			method: 'pane.rename',
+			name: 'notes-2',
+		});
+		expect(f.calls.map((call) => call.method)).toEqual(['agent.rename', 'pane.rename']);
+		expect(f.calls[1]?.params).toEqual({ pane_id: 'w4:p3', label: 'notes-2' });
+		expect(f.notices).toEqual([
+			'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
+		]);
+	});
+
+	it('does not fall back on a genuine refusal', async () => {
+		const f = fake({
+			responses: {
+				'agent.rename': new HerdrError('agent_name_taken', 'name in use'),
+				'pane.rename': {},
+			},
+		});
+		expect(await f.actions.renameAgent('w4:p3', 'notes')).toBeNull();
+		expect(f.calls.map((call) => call.method)).toEqual(['agent.rename']);
+		expect(f.notices).toEqual([
+			'Herdr: could not rename the agent. name in use (agent_name_taken)',
+		]);
+	});
+
+	it('reports when the fallback fails too', async () => {
+		const f = fake({
+			responses: {
+				'agent.rename': unsupported,
+				'pane.rename': new HerdrError('pane_not_found', 'gone'),
+			},
+		});
+		expect(await f.actions.renameAgent('w4:p3', 'notes')).toBeNull();
+		expect(f.notices).toEqual(['Herdr: could not rename the pane. gone (pane_not_found)']);
+	});
+
+	it('refuses an empty name without touching the wire', async () => {
+		const f = fake({ responses: { 'agent.rename': {} } });
+		expect(await f.actions.renameAgent('w4:p3', '   ')).toBeNull();
+		expect(f.calls).toEqual([]);
+		expect(f.notices).toEqual(['Herdr: the name cannot be empty.']);
 	});
 });

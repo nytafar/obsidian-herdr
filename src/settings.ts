@@ -229,6 +229,62 @@ export interface HerdrSettings {
 	 * button always does the other one, so this setting swaps the pair.
 	 */
 	agentListRowClick: RowClickAction;
+	/**
+	 * Rows pinned to the top of their group in the agent list (issue #35), as
+	 * pane ids keyed by the endpoint id they belong to (`connection.ts`). Pane
+	 * ids are only meaningful on the herdr that issued them, so a local pin
+	 * never touches a remote row. Client-side only: herdr knows nothing of it.
+	 */
+	pinnedPanes: Record<string, string[]>;
+}
+
+/**
+ * Whatever `data.json` holds turned into a pin map: string keys to lists of
+ * unique, non-empty string pane ids. Anything else is dropped rather than
+ * trusted, the same contract as the other normalisers here.
+ */
+export function normalizePinnedPanes(value: unknown): Record<string, string[]> {
+	const result: Record<string, string[]> = {};
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+	for (const [endpointId, ids] of Object.entries(value as Record<string, unknown>)) {
+		if (!Array.isArray(ids)) continue;
+		const clean = [...new Set(ids.filter((id): id is string => typeof id === 'string' && id !== ''))];
+		if (clean.length > 0) result[endpointId] = clean;
+	}
+	return result;
+}
+
+/** Pane ids pinned on one endpoint, in the order they were pinned. Never null. */
+export function pinnedPaneIds(settings: Pick<HerdrSettings, 'pinnedPanes'>, endpointId: string): string[] {
+	return settings.pinnedPanes?.[endpointId] ?? [];
+}
+
+/** True when the pane is pinned on that endpoint. */
+export function isPanePinned(
+	settings: Pick<HerdrSettings, 'pinnedPanes'>,
+	endpointId: string,
+	paneId: string,
+): boolean {
+	return pinnedPaneIds(settings, endpointId).includes(paneId);
+}
+
+/**
+ * Pins or unpins one pane on one endpoint, in place, and says whether it is
+ * pinned afterwards. An endpoint left with no pins loses its key, so the stored
+ * map does not accumulate empty lists for hosts that were tried once.
+ */
+export function togglePanePin(
+	settings: Pick<HerdrSettings, 'pinnedPanes'>,
+	endpointId: string,
+	paneId: string,
+): boolean {
+	const current = pinnedPaneIds(settings, endpointId);
+	const pinned = !current.includes(paneId);
+	const next = pinned ? [...current, paneId] : current.filter((id) => id !== paneId);
+	settings.pinnedPanes = { ...settings.pinnedPanes };
+	if (next.length > 0) settings.pinnedPanes[endpointId] = next;
+	else delete settings.pinnedPanes[endpointId];
+	return pinned;
 }
 
 /**
@@ -333,6 +389,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalTab: DEFAULT_TERMINAL_TAB,
 	terminalTitleSource: DEFAULT_TERMINAL_TITLE_SOURCE,
 	agentListRowClick: 'terminal',
+	pinnedPanes: {},
 };
 
 /**
