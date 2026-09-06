@@ -268,6 +268,12 @@ export class HerdrClient {
 
 	private nextId = 1;
 	private disposed = false;
+	/**
+	 * Aborts for requests still waiting on a socket. `dispose()` runs them so a
+	 * cancelled request rejects at once instead of surviving until its answer
+	 * or timeout and updating status that no longer belongs to it (issue #57).
+	 */
+	private readonly pendingRequests = new Set<() => void>();
 
 	private stream: Socket | null = null;
 	private streamState: EventStreamState = 'idle';
@@ -346,9 +352,15 @@ export class HerdrClient {
 				);
 			}, this.requestTimeoutMs);
 
+			const abort = () =>
+				finish(new HerdrError(CLIENT_ERROR_CODES.disposed, 'herdr client is disposed', method));
+			const pending = this.pendingRequests;
+			pending.add(abort);
+
 			function finish(error: Error | null, result?: T): void {
 				if (settled) return;
 				settled = true;
+				pending.delete(abort);
 				clearTimer(timer);
 				socket.destroy();
 				if (error) reject(error);
@@ -544,12 +556,17 @@ export class HerdrClient {
 		this.closeStream(null);
 	}
 
-	/** Closes the event stream and refuses further requests. */
+	/**
+	 * Closes the event stream, rejects every pending request with
+	 * `client_disposed` and refuses further ones.
+	 */
 	dispose(): void {
 		this.disposed = true;
 		this.subscriptions = [];
 		this.closeStream(null);
 		this.handlers.clear();
+		for (const abort of [...this.pendingRequests]) abort();
+		this.pendingRequests.clear();
 	}
 
 	private openStream(): void {

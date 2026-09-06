@@ -260,6 +260,27 @@ describe('HerdrClient.request', () => {
 		client.dispose();
 		await expect(client.ping()).rejects.toMatchObject({ code: CLIENT_ERROR_CODES.disposed });
 	});
+
+	it('rejects requests still in flight when disposed, before their timeout (#57)', async () => {
+		const server = await startServer({ hang: true });
+		const client = makeClient(server, { requestTimeoutMs: 10_000 });
+		const pending = client.ping();
+		const snapshot = client.snapshot();
+		await waitFor(() => server.requests.length === 2);
+		const started = Date.now();
+		client.dispose();
+		await expect(pending).rejects.toMatchObject({ code: CLIENT_ERROR_CODES.disposed });
+		await expect(snapshot).rejects.toMatchObject({ code: CLIENT_ERROR_CODES.disposed });
+		expect(Date.now() - started).toBeLessThan(1000);
+	});
+
+	it('is unaffected by a request that settled before dispose', async () => {
+		const server = await startServer();
+		const client = makeClient(server);
+		await client.ping();
+		client.dispose();
+		await expect(client.ping()).rejects.toMatchObject({ code: CLIENT_ERROR_CODES.disposed });
+	});
 });
 
 describe('HerdrClient.ping protocol handling (M3)', () => {
