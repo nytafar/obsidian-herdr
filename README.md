@@ -1,282 +1,121 @@
 # Herdr for Obsidian
 
-See, reach and start your [herdr](https://github.com/ogulcancelik/herdr) agents from
-inside Obsidian. The plugin finds the herdr workspace that matches your vault and
-brings it into the app:
+Your coding agents run persistently in [herdr](https://github.com/ogulcancelik/herdr),
+a terminal workspace that keeps them alive across sessions. This plugin brings the
+ones that belong to your vault into Obsidian:
 
-- **Agent list** in the sidebar: every agent pane of that workspace, grouped by
-  herdr tab, with a status dot, the agent name, its terminal title and its cwd
-  relative to the vault. It updates live.
-- **Notifications** when an agent becomes blocked (it wants you) or is done, with
-  a status bar count of both.
-- **Terminal tabs**: open any agent's live terminal as an Obsidian tab, type in
-  it, scroll it, or watch it read-only.
-- **Folder actions**: new herdr tab, split, or start an agent at the folder of a
-  note — from the file explorer context menu or the command palette.
-- **Remote herdr** over SSH: the same list, actions and terminals against herdr
-  on another machine.
+- **Agent list** in the sidebar: every agent of the matching herdr workspace, with
+  its status, name, what it is doing, and its prompt-cache countdown. Sort by
+  urgency or name, group by folder or by herdr tab. It updates live.
+- **Terminals** as Obsidian tabs: open any agent's live terminal, type in it, or
+  watch it read-only. Open it beside the note you are working on, or reuse one tab.
+- **Notifications** when an agent stops and wants you, or finishes, with a status
+  bar count.
+- **Start agents from folders**: a hover button and a context-menu entry on any
+  folder in the file explorer start an agent there, in the right herdr tab.
+- **Remote herdr** over SSH: the same list, actions and terminals against herdr on
+  another machine, as long as that machine has a synced mirror of the vault.
 
 Nothing here changes how herdr behaves for anyone using it outside Obsidian. All
 the workspace filtering happens on the plugin side.
 
+## Supported agent CLIs
+
+The plugin starts and recognises every agent kind herdr 0.8 can start: **Claude
+Code**, **Codex**, **Gemini CLI**, **OpenCode**, **Pi**, **Cursor**, **Amp**,
+**GitHub Copilot CLI**, **Kimi**, **Droid** and **Grok**. Each has an icon in the
+list; a kind the plugin does not know yet gets a neutral one. Anything herdr can
+attach to also shows up, whatever started it.
+
 ## Requirements
 
-- Obsidian **desktop** 1.7.2 or newer. The plugin is `isDesktopOnly`; there is no
-  mobile build.
-- macOS or Linux. Windows hosts are not supported.
+- Obsidian **desktop** 1.7.2 or newer. No mobile build.
+- macOS or Linux.
 - **herdr 0.8.0 or newer, already running.** The plugin never starts, stops or
   updates a herdr server; it attaches to the one you have.
-- For the remote profile: `ssh` on this machine and key-based login to the remote
-  host that does not prompt.
+- For the remote profile: `ssh` on this machine, key-based login that does not
+  prompt, and a copy of the vault on the remote host kept in sync by whatever you
+  already use (Obsidian Sync, Self-hosted LiveSync, Syncthing, git).
 
 ## Install
 
 Until the plugin is in the community list, install it with
-[BRAT](https://github.com/TfTHacker/obsidian42-brat):
+[BRAT](https://github.com/TfTHacker/obsidian42-brat): add
+`nytafar/obsidian-herdr` as a beta plugin, then enable **Herdr** under Community
+plugins. Manual install works too: put `main.js`, `manifest.json` and
+`styles.css` from a [release](https://github.com/nytafar/obsidian-herdr/releases)
+into `<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
 
-1. Install and enable **BRAT** from Community plugins.
-2. BRAT → *Add beta plugin* → `nytafar/obsidian-herdr` → choose the latest
-   release.
-3. Enable **Herdr** in Community plugins.
+## Five-minute setup
 
-Manual install works too: download `main.js`, `manifest.json` and `styles.css`
-from a [release](https://github.com/nytafar/obsidian-herdr/releases) into
-`<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
+1. Open **Settings → Herdr**. The status block at the top says which herdr binary
+   was found, which socket answers, the server version, and which workspace
+   matched your vault. Every setup problem shows up there first.
+2. **Binary not found?** Obsidian launched from the Dock has no login `PATH`. Put
+   the output of `which herdr` into **Herdr binary**. **Extra PATH entries** does
+   the same for the tools your agents need.
+3. **No workspace matched?** The plugin picks the herdr workspace whose label
+   equals the vault folder name, else the one with the most panes inside the vault
+   path. Label a workspace like your vault, or pin **Workspace ID**.
+4. Run **Herdr: Show herdr agents** from the command palette. The list opens in
+   the left sidebar and stays wherever you drag it.
 
-## Setup
+Only panes that run an agent are listed; plain shells stay invisible.
 
-Open **Settings → Herdr**. The top of the tab is a live status block: which
-binary was found and how, which socket is in use, the server's version and
-protocol, and which workspace matched your vault. Read it first — every setup
-problem below shows up there.
+## Using it
 
-### Socket
+**The list.** Each row is one agent: a kind icon coloured by status (orange
+blocked, green done, grey working or idle), the agent's name, its current task
+from the terminal title, a prompt-cache countdown while one is running, and its
+folder. The header button sets sort (herdr's own priority order, or alphabetical)
+and grouping (herdr tab, working directory, or none). Clicking a row opens the
+agent's terminal; the button that appears on hover jumps to the pane in the herdr
+TUI. A setting swaps the two.
 
-**Socket path** is the Unix socket of the running herdr server, by default
-`~/.config/herdr/herdr.sock`. Leave it alone unless you start herdr with a custom
-socket. The plugin also asks `herdr status server --json` where the socket is and
-uses that answer when it can.
+**Terminals.** A terminal tab attaches to the agent's pane in one of two modes,
+switchable with the eye button:
 
-### Binary path and the Dock caveat
+- **Control** (default): you type, you scroll, and the herdr pane follows the
+  Obsidian tab's size while the tab is visible. herdr allows one controller per
+  pane, so attaching takes over. A control tab left hidden for thirty seconds
+  hands control back to herdr and takes it again when you return.
+- **Observe**: read-only, never resizes, any number of watchers.
 
-The plugin needs the `herdr` executable for two things: probing the server and
-spawning terminal bridges. It looks in this order:
+Shift+Enter inserts a line break in the agent's composer instead of submitting.
+Scrolling moves the pane's own scrollback in herdr, so what you see is what the
+TUI sees. Text selection works as usual; mouse clicks are not forwarded to the
+agent yet.
 
-1. the **Herdr binary** setting, if set;
-2. `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`;
-3. any directory in **Extra PATH entries**;
-4. a `PATH` obtained by asking your login shell.
+By default a terminal opens beside the note when the note lies in the agent's
+folder, otherwise as a tab; **Terminal placement** and **Terminal tab** change
+that, including a mode that reuses one tab for whichever agent you pick.
+Colours follow Obsidian or one of eight built-in palettes. Two terminal engines
+are available; see [docs/settings.md](docs/settings.md) for when to switch.
 
-**The Dock caveat**: an Obsidian launched from the macOS Dock (or from a desktop
-launcher on Linux) does not inherit your login shell's `PATH`. If the status
-block says the binary was not found, or terminals fail to start with
-`spawn herdr ENOENT`, put the absolute path into **Herdr binary** — `which herdr`
-in a terminal prints it. **Extra PATH entries** is the same fix for the tools
-your *agents* need: those directories are prepended to `PATH` for every process
-the plugin spawns.
+**Starting agents.** Hover a folder in the file explorer for the herdr button, or
+right-click it: **Start agent here** creates the pane and starts an agent of the
+default kind, named from the pattern in settings. A second agent in the same
+folder splits that folder's herdr tab rather than opening another, up to a cap;
+turn **Share a herdr tab** off to give every agent its own tab, the way herdr is
+navigated. The same actions are in the command palette for the active note's
+folder.
 
-### Workspace resolution
+**Notifications.** Only two transitions interrupt you: an agent becoming
+**blocked** (it wants you) and becoming **done**. Each can raise an in-app notice
+and, while Obsidian is unfocused, a system notification. A pane whose terminal
+you have open never notifies. Focusing the pane in herdr is what marks it seen.
 
-Everything the plugin shows is filtered to exactly one herdr workspace, resolved
-in this order:
+## Settings, remote use, troubleshooting
 
-1. the **Workspace ID** setting, if set (ids are opaque and differ between
-   servers, so only pin one when the rules below pick wrong);
-2. the workspace whose **label equals the vault folder name** (case-insensitive
-   as a second pass);
-3. the workspace with the most panes whose **cwd is inside the vault path** (the
-   remote vault path when a remote profile is on).
-
-If none matches, the list says "No herdr workspace matches this vault yet" and
-the settings status says the same. Creating a herdr workspace labelled like your
-vault folder is the simplest fix. Only panes that have an agent are ever listed;
-plain shell panes stay invisible.
-
-## Remote herdr over SSH
-
-Turn on **Use a remote herdr** and fill in:
-
-- **SSH host** — `user@host` or an alias from `~/.ssh/config`. Login must succeed
-  without a passphrase prompt; the plugin runs `ssh` non-interactively.
-- **Remote socket path** — the herdr server's socket on the remote host,
-  usually `~/.config/herdr/herdr.sock`.
-- **Remote herdr binary** — an **absolute** path such as
-  `/home/you/.local/bin/herdr`. Non-interactive SSH has a minimal `PATH`, and
-  `~/.local/bin` is typically not on it, so a bare `herdr` will not be found.
-- **Remote vault path** — where this same vault lives on the remote host. Folder
-  actions translate note paths against it, and it is also what the cwd rule of
-  workspace resolution matches against. **Required** while the remote profile is
-  on: without it a local path would be sent to the remote host, so the folder
-  actions refuse and the settings status says so.
-
-Two things worth knowing about how this works:
-
-- The JSON API is reached through a forwarded socket:
-  `ssh -N -L /tmp/herdr-<hash>.sock:<remote socket> host`. The local end is short
-  on purpose — macOS caps socket paths near 104 bytes and a long one is rejected
-  outright. A stale local socket file is removed before every attempt, and a
-  dropped link reconnects with backoff; the settings status shows the state.
-- **The tilde caveat**: `ssh -L local:~/x` does *not* expand `~` on the remote
-  side. The forward binds happily and then every connection through it dies
-  silently. The plugin therefore asks the remote host for `$HOME` and expands the
-  path itself — so a `~` in **Remote socket path** is safe here, even though it
-  is not safe if you type that `ssh` command yourself.
-- **Terminals do not use the forward.** herdr's terminal bridge talks to a
-  *different* socket inside the CLI process, so remote terminals run the CLI on
-  the far side: `ssh -T <host> <remote binary> terminal session control|observe …`.
-  That is why the remote binary path matters even when the tunnel is healthy.
-  `-T` is deliberate: the bridge is newline-delimited JSON over pipes, not a PTY.
-
-## Terminals: control mode and its cost
-
-Opening an agent's terminal attaches to that herdr pane. Two modes, switchable
-per view with the eye button in the tab header and set as a default under
-**Terminal → Attach mode**:
-
-- **Control** (default) — you can type and scroll, and the pane is yours. herdr
-  allows one controller per terminal, so attaching takes control over
-  (`--takeover`). **While the view is attached, the herdr TUI pane follows the
-  Obsidian view's size**: resizing or splitting the Obsidian tab resizes the pane
-  in the herdr TUI a moment later. That is the documented cost of control mode,
-  not a bug. Closing the view releases the terminal and hands ownership back.
-- **Observe** — read-only. Typing does not reach the pane and the pane is never
-  resized, so the herdr TUI is left completely alone. Any number of observers can
-  watch the same pane at once. Use it when someone (or you, in the TUI) is
-  working in that pane and the size must not move.
-
-Other terminal behaviour:
-
-- One tab per pane. Opening the same agent again reveals the existing tab instead
-  of spawning a second bridge. Closing the tab ends the bridge process.
-- The status strip at the bottom reads `Controlling this pane.` or
-  `Observing (read-only).`, and turns into the reason when the session ends —
-  for example `Session closed: terminal attach taken over. Reconnect to attach
-  again.` when another client takes control. The refresh button reconnects.
-- Colours and font follow the Obsidian theme's CSS variables. **Font family** and
-  **Font size** override them; leave them empty / at 0 to follow Obsidian.
-- Open terminal tabs are restored on restart, for the same pane and mode.
-
-## Notifications
-
-The plugin reacts to agent *status transitions*, never to raw pane updates, and
-only two transitions are considered worth interrupting you: into **blocked** (an
-agent stopped and wants you) and into **done** (an agent finished a turn).
-`working`, `idle` and `unknown` are noise and are ignored.
-
-Escalation, all of it per transition in settings:
-
-- **Status bar** — `N blocked · M done` for this vault's workspace. Clicking it
-  reveals the agent list.
-- **Notice** — an in-app notice, `Herdr: <agent> needs you` / `is done`.
-- **System notification** — only while the Obsidian window is *unfocused*.
-  Clicking it brings the agent list up. macOS and Linux both need Obsidian to be
-  allowed to send notifications; the first attempt asks. Defaults: on for
-  blocked, off for done.
-
-Two rules that keep this quiet: a pane that just notified is muted for 2 seconds
-(agents flap blocked → working → blocked), and a pane whose terminal is open in
-Obsidian never notifies, because you are already looking at it.
-
-Focusing a pane is what marks it seen — in herdr, not in the plugin. Clicking a
-row does exactly that.
-
-## Commands and menus
-
-Command palette:
-
-| Command | What it does |
-|---|---|
-| **Herdr: Show herdr agents** | Opens/reveals the agent list. First time it is created as a split in the left sidebar; after that it stays wherever you dragged it. |
-| **Herdr: New tab here** | `tab.create` in the scoped workspace at the active note's folder, labelled with the folder name. |
-| **Herdr: Split here** | Splits the focused herdr pane with that folder as cwd. |
-| **Herdr: Start agent here** | Creates the tab, waits for its pane to reach a shell prompt, then starts an agent of the configured kind and name pattern in it. Reports the result as a notice, and opens the terminal when *Open terminal after starting an agent* is on. |
-
-The last three are hidden when no note is open, since there is no folder to act
-on.
-
-Right-clicking a folder **or** a note in the file explorer adds the same three
-actions — **Herdr: new tab here**, **Herdr: split here**, **Herdr: start agent
-here** — acting on the folder (for a note, its parent). With several items
-selected, the first one's folder is used.
-
-In the agent list, clicking a row focuses that pane in herdr; the terminal button
-on the row opens it as a tab.
-
-Agent kind (`claude`, `codex`, `gemini`, `opencode`, `pi`, `cursor`, `amp`,
-`copilot`, `kimi`, `droid`, `grok`) and the name pattern are settings. The
-pattern understands `{folder}`, `{vault}` and `{n}`, where `{n}` is a counter
-that avoids colliding with agent names already taken (read from `agent.list`, so
-names taken by agents outside this vault count too).
-
-Starting an agent races the new pane's shell: herdr answers `agent_pane_busy`
-until a prompt is up, so the start is retried for two seconds, exactly like
-herdr's own `herdr agent start`.
-
-## Troubleshooting
-
-**"Herdr binary not found" / terminals never start.** Obsidian was probably
-launched from the Dock and has no login `PATH`. Set **Herdr binary** to the
-absolute path from `which herdr`. See the Dock caveat above.
-
-**"Server: not reachable".** herdr is not running, or it listens on a different
-socket. Check `herdr status server --json` in a terminal and copy its socket path
-into **Socket path**.
-
-**"No herdr workspace matches this vault yet".** Neither the label nor the cwd
-rule matched. Label a herdr workspace like the vault folder, open a pane whose
-cwd is inside the vault, or pin **Workspace ID**.
-
-**"Protocol mismatch".** The running herdr speaks a different protocol number
-than the plugin was generated against. This is a warning only — the plugin never
-refuses to connect, ignores fields it does not know, and disables just the single
-action whose method is missing.
-
-**The agent list is empty but herdr shows panes.** Only panes with an agent are
-listed; shell panes are deliberately invisible.
-
-**The herdr TUI pane keeps resizing.** That is control mode. Switch the view to
-observe with the eye button, or set **Attach mode** to observe.
-
-**Remote: the tunnel connects but nothing answers.** Almost always the tilde
-problem or a wrong remote socket path. Verify with
-`ssh <host> <remote binary> status server --json` and copy the socket it prints.
-
-**Remote: terminals fail while the list works.** The forwarded socket does not
-carry terminals. Check **Remote herdr binary** is an absolute path that exists on
-the remote host.
-
-**A leftover `herdr terminal session` process.** Closing the tab should end it;
-`pgrep -fa 'terminal session'` should show one process per open terminal tab and
-none afterwards.
-
-## Development
-
-```bash
-npm install
-npm run dev     # watch build to main.js
-npm run build   # type-check + production build
-npm test        # vitest, no herdr and no network
-npm run lint    # eslint, including the Obsidian plugin rules
-```
-
-Symlink the repo into a vault at `.obsidian/plugins/herdr` and use the
-[Hot-Reload](https://github.com/pjeby/hot-reload) plugin to pick up rebuilds.
-`tests/README.md` documents what is unit tested and the manual smoke recipes for
-the parts that need a canvas or a live herdr (renderer, terminal view, remote
-profile). Releases are built by `.github/workflows/release.yml` on a `v*` tag and
-ship exactly `main.js`, `manifest.json` and `styles.css`.
-
-## How it talks to herdr
-
-- **Workspace state and actions**: herdr's JSON API over the Unix socket. That
-  server answers one request per connection, so every call opens its own
-  connection; only `events.subscribe` holds a long-lived one, and it reconnects
-  with backoff when the server restarts. Reads used: `ping`, `workspace.list`,
-  `pane.list`, `events.subscribe`. Writes only on your action: `pane.focus`,
-  `tab.create`, `pane.split`, `agent.start`.
-- **Pane terminals**: `herdr terminal session control|observe <pane> --cols N
-  --rows M`, spawned as a child process speaking newline-delimited JSON on both
-  pipes. Not a PTY, and not the API socket.
+- [docs/settings.md](docs/settings.md), every setting on one line, with units.
+- [docs/remote.md](docs/remote.md), the SSH profile, the vault mirror it needs,
+  and its two caveats.
+- [docs/troubleshooting.md](docs/troubleshooting.md), the messages you may see
+  and what they mean.
+- [docs/architecture.md](docs/architecture.md), how the plugin talks to herdr and
+  what that seam can and cannot do.
+- [docs/development.md](docs/development.md), building, testing and installing
+  into a vault without hanging it.
 
 ## License
 
