@@ -85,12 +85,21 @@
 	align-items: baseline;
 	gap: var(--size-4-1);
 	min-width: 0;
+	/* The name and the title are the only things allowed to run out of room, and
+	   they end in an ellipsis rather than under the action button (issue #40). */
+	overflow: hidden;
 }
 
 .herdr-agent-name {
 	color: var(--text-normal);
 	font-size: var(--font-ui-small);
 	font-weight: var(--font-medium);
+	/* Shrinkable, so a long name truncates instead of pushing the badge or the
+	   button out of the row; `min-width: 0` is what lets a flex item do that. */
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
@@ -98,6 +107,8 @@
 .herdr-agent-cwd {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+	flex: 0 1 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -108,7 +119,9 @@
 	color: var(--text-faint);
 }
 
-/* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23). */
+/* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23).
+   It sits between the kind mark and the name (issue #40), and never shrinks:
+   a countdown that says "31" instead of "31m" would be worse than none. */
 
 .herdr-agent-badge {
 	flex: 0 0 auto;

@@ -221,11 +221,14 @@ export class AgentListView extends ItemView {
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
-		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
-		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
+		// The row reads mark, countdown, name (issue #40). The badge comes first
+		// because it is fixed width and the name is not: after the name it was the
+		// part a long title pushed out of the row, under the action button.
 		for (const badge of model.badges) {
 			line.createSpan({ cls: `herdr-agent-badge mod-${badge.tone}`, text: badge.text });
 		}
+		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
+		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		// The row body and the button hold one action each, and which is which is

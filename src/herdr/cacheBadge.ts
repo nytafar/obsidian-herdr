@@ -18,7 +18,7 @@
 /** How a badge is coloured: green while there is time, amber, then red. */
 export type BadgeTone = 'ok' | 'warn' | 'crit';
 
-/** One short marker at the end of a row's first line. */
+/** One short marker on a row's first line, between the kind mark and the name. */
 export interface RowBadge {
 	text: string;
 	tone: BadgeTone;

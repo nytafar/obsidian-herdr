@@ -72,7 +72,7 @@ export interface RowModel {
 	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
 	focused: boolean;
-	/** Short trailing markers, in display order. The cache countdown today. */
+	/** Short markers drawn before the name, in display order. The cache countdown today. */
 	badges: RowBadge[];
 }
 
