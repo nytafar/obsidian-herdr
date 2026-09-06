@@ -55,11 +55,11 @@ import {
 import {
 	followsObsidian,
 	normalizeThemeName,
+	obsidianFontWeights,
+	obsidianTheme,
 	resolveTheme,
-	THEME_COLOR_KEYS,
 	type TerminalTheme,
 	type TerminalThemeName,
-	type ThemeColorKey,
 } from './themes';
 import {
 	applyUnicodeWidths,
@@ -98,36 +98,6 @@ type ResizeListener = (size: { cols: number; rows: number }) => void;
 /** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
 type KeyListener = (event: KeyboardEvent) => boolean;
 type WheelListener = (event: WheelEvent) => boolean;
-
-/**
- * Obsidian variable → theme key for the `obsidian` theme, which is the default.
- * Identical to the ghostty-web renderer's table on purpose: switching engine must
- * not change a single colour. Missing variables are left unset.
- */
-const THEME_VARS: Record<ThemeColorKey, string> = {
-	foreground: '--text-normal',
-	background: '--background-primary',
-	cursor: '--text-accent',
-	cursorAccent: '--background-primary',
-	selectionBackground: '--text-selection',
-	selectionForeground: '--text-normal',
-	black: '--color-base-30',
-	red: '--color-red',
-	green: '--color-green',
-	yellow: '--color-yellow',
-	blue: '--color-blue',
-	magenta: '--color-purple',
-	cyan: '--color-cyan',
-	white: '--color-base-70',
-	brightBlack: '--color-base-50',
-	brightRed: '--color-red',
-	brightGreen: '--color-green',
-	brightYellow: '--color-orange',
-	brightBlue: '--color-blue',
-	brightMagenta: '--color-pink',
-	brightCyan: '--color-cyan',
-	brightWhite: '--color-base-100',
-};
 
 /**
  * Same ceiling as the ghostty-web renderer's, and for the same reason: a
@@ -236,6 +206,9 @@ export class XtermJsRenderer implements TerminalRenderer {
 			...UNICODE_TERMINAL_OPTIONS,
 			fontFamily: font.fontFamily,
 			fontSize: font.fontSize,
+			// Bold from `--bold-weight` (#50). xterm.js is the only engine with a
+			// weight option; see `obsidianFontWeights` for what neither takes.
+			...obsidianFontWeights(this.readVars(el)),
 			theme: this.currentTheme(el),
 			// Lines, not bytes — see `scrollbackLines`.
 			...(scrollback === undefined ? {} : { scrollback }),
@@ -497,6 +470,13 @@ export class XtermJsRenderer implements TerminalRenderer {
 		}
 		this.terminal.options.fontFamily = font.fontFamily;
 		this.terminal.options.fontSize = font.fontSize;
+		const weights = obsidianFontWeights(this.readVars(el));
+		// Undefined would be written through as a change, so only set what the
+		// vault actually defines and leave xterm's own default otherwise.
+		if (weights.fontWeight !== undefined) this.terminal.options.fontWeight = weights.fontWeight;
+		if (weights.fontWeightBold !== undefined) {
+			this.terminal.options.fontWeightBold = weights.fontWeightBold;
+		}
 		this.fit();
 	}
 
@@ -597,15 +577,11 @@ export class XtermJsRenderer implements TerminalRenderer {
 	}
 
 	private readObsidianTheme(el: HTMLElement): TerminalTheme {
-		// A palette needs none of this, and reading 22 CSS variables is not free.
+		// A palette needs none of this, and reading the CSS variables is not free.
 		if (!followsObsidian(this.themeName)) return {};
-		const read = this.readVars(el);
-		const theme: TerminalTheme = {};
-		for (const key of THEME_COLOR_KEYS) {
-			const value = read(THEME_VARS[key]);
-			if (value) theme[key] = value;
-		}
-		return theme;
+		return obsidianTheme(this.readVars(el), {
+			dark: el.ownerDocument.body.classList.contains('theme-dark'),
+		});
 	}
 }
 

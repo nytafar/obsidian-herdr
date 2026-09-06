@@ -14,6 +14,19 @@
  * where a scheme leaves a slot undefined (bright variants, selection colours). If
  * a colour looks wrong, fix the table; nothing else depends on the exact values.
  *
+ * Issue #50 deepened the `obsidian` mapping, which now lives at the bottom of
+ * this file as {@link obsidianTheme}: a pure function over a CSS-variable reader
+ * that the renderers supply. Three decisions are recorded there rather than in a
+ * commit message, because they are the kind that get re-litigated:
+ *
+ *  - bright ANSI colours are **derived**, not read, by a fixed mix toward the
+ *    extreme furthest from the background ({@link BRIGHT_MIX});
+ *  - the four grey slots read an appearance-dependent chain of base steps,
+ *    because Obsidian's base scale inverts between light and dark;
+ *  - the `--code-*` palette wins over the generic hues for the six slots whose
+ *    meaning matches, but only where the theme differentiated it. See
+ *    `CODE_FOR_SLOT` for what is taken and what is deliberately left.
+ *
  * Stretch goal from #26, deliberately not in this cut: reading the user's real
  * Ghostty config (`~/.config/ghostty/config`, `theme = …` plus `palette = N=#rrggbb`
  * overrides) and offering it as another name. That would plug in as one more
@@ -292,4 +305,383 @@ export function resolveTheme(
 	const resolved = normalizeThemeName(name);
 	if (resolved === 'obsidian') return fromObsidian;
 	return paletteTheme(PALETTES[resolved]);
+}
+
+/* -------------------------------------------------------------------------- */
+/* The `obsidian` theme: Obsidian's CSS variables mapped onto the ANSI slots.   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the renderer hands CSS variables in. `getComputedStyle(body)
+ * .getPropertyValue(name)` trimmed, with the empty string turned into
+ * `undefined`, so this file never sees a DOM and tests can feed a plain record.
+ */
+export type CssVarReader = (name: string) => string | undefined;
+
+/** What the mapping needs beyond the variables themselves. */
+export interface ObsidianThemeContext {
+	/**
+	 * Whether the vault is in dark mode. The renderer reads
+	 * `body.classList.contains('theme-dark')`; when it is left undefined the
+	 * mapping falls back to the luminance of `--background-primary`.
+	 */
+	dark?: boolean;
+}
+
+interface Rgb {
+	r: number;
+	g: number;
+	b: number;
+	/** 0-1; 1 for every notation that carries no alpha. */
+	a: number;
+}
+
+const HEX3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i;
+const HEX6 = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i;
+/** `rgb(1 2 3)`, `rgb(1,2,3)`, `rgba(1,2,3,.5)` and the bare `1, 2, 3` triplet. */
+const RGB_FUNC = /^rgba?\s*\(([^)]*)\)$/i;
+const BARE_TRIPLET = /^\d+\s*[, ]\s*\d+\s*[, ]\s*\d+$/;
+
+function clamp255(n: number): number {
+	return Math.max(0, Math.min(255, Math.round(n)));
+}
+
+/**
+ * A CSS colour as numbers, or undefined when the notation is one this file does
+ * not read (`hsl()`, `color()`, named colours). Undefined always means "leave the
+ * slot to its fallback", never "black".
+ */
+export function parseColor(value: string | undefined): Rgb | undefined {
+	if (!value) return undefined;
+	const text = value.trim();
+	if (!text) return undefined;
+
+	const hex6 = HEX6.exec(text);
+	if (hex6) {
+		const byte = (h: string | undefined): number => parseInt(h ?? '00', 16);
+		return {
+			r: byte(hex6[1]),
+			g: byte(hex6[2]),
+			b: byte(hex6[3]),
+			a: hex6[4] === undefined ? 1 : byte(hex6[4]) / 255,
+		};
+	}
+	const hex3 = HEX3.exec(text);
+	if (hex3) {
+		const dup = (h: string | undefined): number => parseInt((h ?? '0').repeat(2), 16);
+		return {
+			r: dup(hex3[1]),
+			g: dup(hex3[2]),
+			b: dup(hex3[3]),
+			a: hex3[4] === undefined ? 1 : dup(hex3[4]) / 255,
+		};
+	}
+
+	const func = RGB_FUNC.exec(text);
+	const body = func ? (func[1] ?? '') : BARE_TRIPLET.test(text) ? text : undefined;
+	if (body === undefined) return undefined;
+	const parts = body
+		.replace(/\//g, ' ')
+		.split(/[\s,]+/)
+		.filter((p) => p.length > 0);
+	if (parts.length < 3) return undefined;
+	const [r, g, b] = parts.map((p) => Number.parseFloat(p));
+	if (r === undefined || g === undefined || b === undefined) return undefined;
+	if (![r, g, b].every((n) => Number.isFinite(n))) return undefined;
+	let a = 1;
+	const raw = parts[3];
+	if (raw !== undefined) {
+		const n = Number.parseFloat(raw);
+		if (!Number.isFinite(n)) return undefined;
+		a = raw.endsWith('%') ? n / 100 : n;
+	}
+	return { r: clamp255(r), g: clamp255(g), b: clamp255(b), a: Math.max(0, Math.min(1, a)) };
+}
+
+/** `rgba()` when the colour is translucent, `#rrggbb` when it is not. */
+function toCss(color: Rgb): string {
+	if (color.a >= 1) return toHex(color);
+	const round = (n: number): number => clamp255(n);
+	return `rgba(${round(color.r)}, ${round(color.g)}, ${round(color.b)}, ${Number(color.a.toFixed(3))})`;
+}
+
+function toHex(color: Rgb): string {
+	const hex = (n: number): string => clamp255(n).toString(16).padStart(2, '0');
+	return `#${hex(color.r)}${hex(color.g)}${hex(color.b)}`;
+}
+
+/** Relative luminance, the sRGB approximation. 0 is black, 1 is white. */
+export function luminance(color: Rgb): number {
+	return (0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b) / 255;
+}
+
+/**
+ * The lightening step for the bright ANSI variants: mix 30 % of the target
+ * extreme into the base colour. "Bright" means *further from the background*, so
+ * on a dark vault the target is white and on a light vault it is black; a bright
+ * red on paper that is 30 % nearer white would be less legible than the normal
+ * one, which is exactly the collapse this replaces.
+ *
+ * The step is fixed rather than perceptual on purpose: it is reproducible, it is
+ * enough to be visible at 30 %, and it cannot silently produce the input.
+ */
+export const BRIGHT_MIX = 0.3;
+
+function mix(color: Rgb, target: number, amount: number): Rgb {
+	return {
+		r: color.r + (target - color.r) * amount,
+		g: color.g + (target - color.g) * amount,
+		b: color.b + (target - color.b) * amount,
+		a: color.a,
+	};
+}
+
+/**
+ * The bright counterpart of `color`. Mixes {@link BRIGHT_MIX} toward white on a
+ * dark background and toward black on a light one, and if the base is already at
+ * that extreme (pure white in dark mode) it steps the other way, so the returned
+ * colour is never equal to the input.
+ */
+export function brighten(color: Rgb, dark: boolean): Rgb {
+	const target = dark ? 255 : 0;
+	const stepped = mix(color, target, BRIGHT_MIX);
+	if (toHex(stepped) !== toHex(color)) return stepped;
+	return mix(color, dark ? 0 : 255, BRIGHT_MIX);
+}
+
+/** The hues Obsidian publishes, each with a `--color-<hue>-rgb` companion. */
+type Hue = 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'purple' | 'pink';
+
+/** ANSI slot → hue. Magenta is Obsidian's purple; ANSI has no orange slot. */
+const HUE_FOR_SLOT: Record<
+	'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan',
+	Hue
+> = {
+	red: 'red',
+	green: 'green',
+	yellow: 'yellow',
+	blue: 'blue',
+	magenta: 'purple',
+	cyan: 'cyan',
+};
+
+/**
+ * ANSI slot → the `--code-*` variable that reads better than the generic hue.
+ *
+ * The decision (#50): a theme author tunes the code palette for monospace
+ * content, which is what a terminal is, so where the two disagree the code
+ * palette wins — but only for the slots whose meaning genuinely matches, and
+ * only when the theme differentiated the variable at all (see `codeColor`).
+ *
+ * Taken: string → green, keyword → magenta, function → blue, property → cyan,
+ * value → yellow, important → red, comment → brightBlack.
+ * Left alone: `--code-operator`, `--code-punctuation`, `--code-tag` (no ANSI
+ * slot means what they mean, and they are usually the plain foreground);
+ * `--code-normal` (that is `--text-normal`, already the foreground); and
+ * `--code-background`, because the terminal is a pane in the vault, not a code
+ * block inside a note, so its background must stay `--background-primary` or it
+ * stops matching the surrounding UI.
+ */
+const CODE_FOR_SLOT: Record<keyof typeof HUE_FOR_SLOT, string> = {
+	red: '--code-important',
+	green: '--code-string',
+	yellow: '--code-value',
+	blue: '--code-function',
+	magenta: '--code-keyword',
+	cyan: '--code-property',
+};
+
+/**
+ * A hue as numbers. `--color-<hue>-rgb` is the authoritative triplet — themes
+ * define it next to the hex so that `rgba(var(--color-red-rgb), .2)` works — and
+ * `--color-<hue>` is the fallback for a theme that only sets the hex.
+ */
+function readHue(read: CssVarReader, hue: Hue): Rgb | undefined {
+	return parseColor(read(`--color-${hue}-rgb`)) ?? parseColor(read(`--color-${hue}`));
+}
+
+/** First variable in `names` that parses as a colour. */
+function readColor(read: CssVarReader, ...names: string[]): Rgb | undefined {
+	for (const name of names) {
+		const parsed = parseColor(read(name));
+		if (parsed) return parsed;
+	}
+	return undefined;
+}
+
+/**
+ * The grey ramp, per appearance. Obsidian's twelve base steps run light-to-dark
+ * in a light vault and dark-to-light in a dark one, so one fixed choice cannot
+ * serve both: `--color-base-30` is a near-white in a light theme and a dark grey
+ * in a dark one. These pick the same *perceptual* positions in either — black
+ * just off the background, bright white at the far end — using the finer steps
+ * (25, 35, 40, 60, 70) rather than only the coarse ones.
+ *
+ * Each entry is a fallback chain, because a theme that predates the finer steps
+ * may define only 00/10/20/…; the last name in each is one of those.
+ */
+interface BaseScale {
+	black: string[];
+	brightBlack: string[];
+	white: string[];
+	brightWhite: string[];
+}
+
+const DARK_BASE_SCALE: BaseScale = {
+	black: ['--color-base-25', '--color-base-20', '--color-base-30'],
+	brightBlack: ['--color-base-40', '--color-base-35', '--color-base-50'],
+	white: ['--color-base-70', '--color-base-60'],
+	brightWhite: ['--color-base-100'],
+};
+
+const LIGHT_BASE_SCALE: BaseScale = {
+	black: ['--color-base-100'],
+	brightBlack: ['--color-base-60', '--color-base-70'],
+	white: ['--color-base-35', '--color-base-40', '--color-base-30'],
+	brightWhite: ['--color-base-00', '--color-base-05', '--color-base-10'],
+};
+
+/** Whether the vault is dark: the explicit flag, else the background's luminance. */
+function isDarkTheme(read: CssVarReader, context: ObsidianThemeContext): boolean {
+	if (context.dark !== undefined) return context.dark;
+	const background = readColor(read, '--background-primary');
+	// No parsable background at all: dark is Obsidian's own default appearance.
+	return background === undefined ? true : luminance(background) < 0.5;
+}
+
+/**
+ * Obsidian's CSS variables as terminal colours — the `obsidian` theme, the
+ * default and the only one computed rather than tabulated.
+ *
+ * Pure by construction: `read` is the only way in, so the renderers keep the DOM
+ * and this file stays unit-testable. A slot whose variables are all missing or
+ * unparsable is left unset, exactly as the pre-#50 table did, and the renderer
+ * library falls back to its own default for it.
+ */
+export function obsidianTheme(
+	read: CssVarReader,
+	context: ObsidianThemeContext = {},
+): TerminalTheme {
+	const dark = isDarkTheme(read, context);
+	const theme: TerminalTheme = {};
+	const set = (key: ThemeColorKey, color: Rgb | undefined): void => {
+		if (color) theme[key] = toHex(color);
+	};
+
+	set('foreground', readColor(read, '--text-normal'));
+	set('background', readColor(read, '--background-primary'));
+	// `--interactive-accent` is what Obsidian paints active UI with; `--text-accent`
+	// is link text, which is the same hue but tuned for reading, not for a block.
+	set('cursor', readColor(read, '--interactive-accent', '--text-accent', '--color-accent'));
+	// The glyph drawn inside a block cursor: whatever the vault puts on an accent.
+	set('cursorAccent', readColor(read, '--text-on-accent', '--background-primary'));
+
+	const selection = readColor(read, '--text-selection');
+	if (selection) {
+		// Alpha is load-bearing here and must survive: most themes make the
+		// selection a translucent wash so the glyphs underneath still show. Both
+		// engines take a CSS colour string, so hand the wash back as `rgba()`
+		// rather than flattening it to a hex.
+		theme.selectionBackground = toCss(selection);
+		// Forcing a selection text colour under a translucent wash fights the
+		// wash instead of helping it, so only an opaque selection gets one (#50).
+		if (selection.a >= 1) set('selectionForeground', readColor(read, '--text-normal'));
+	}
+
+	const scale = dark ? DARK_BASE_SCALE : LIGHT_BASE_SCALE;
+	set('black', readColor(read, ...scale.black));
+	set('brightBlack', readColor(read, ...scale.brightBlack));
+	set('white', readColor(read, ...scale.white));
+	set('brightWhite', readColor(read, ...scale.brightWhite));
+
+	const codeNormal = readColor(read, '--code-normal', '--text-normal');
+	/**
+	 * A `--code-*` colour, but only when the theme actually tuned it. Obsidian's
+	 * own default leaves most of the code palette equal to `--code-normal`, and a
+	 * slot that reads back the body text colour would turn a whole ANSI hue into
+	 * plain foreground. Undifferentiated → undefined → the generic hue wins.
+	 */
+	const codeColor = (name: string): Rgb | undefined => {
+		const color = readColor(read, name);
+		if (!color) return undefined;
+		if (codeNormal && toHex(color) === toHex(codeNormal)) return undefined;
+		return color;
+	};
+
+	for (const [slot, hue] of Object.entries(HUE_FOR_SLOT)) {
+		const codeVar = CODE_FOR_SLOT[slot as keyof typeof HUE_FOR_SLOT];
+		const base = codeColor(codeVar) ?? readHue(read, hue);
+		if (!base) continue;
+		set(slot as ThemeColorKey, base);
+		// Obsidian publishes no bright variants, so four of the eight pairs used
+		// to read the same variable and collapse (#50); derive them instead.
+		const bright = `bright${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
+		set(bright as ThemeColorKey, brighten(base, dark));
+	}
+
+	// Dim text and the brightBlack slot are the same grey in practice, and the
+	// comment colour is the one a theme author tuned for "present but recessive"
+	// against a code background. Only taken when it is differentiated and does
+	// not collide with black.
+	const comment = codeColor('--code-comment');
+	if (comment && toHex(comment) !== theme.black) set('brightBlack', comment);
+
+	return theme;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Text attributes (#50 gap 4).                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The font weights a renderer should use for plain and for bold cells, in CSS
+ * weight numbers.
+ *
+ * This is everything the two engines will take of Obsidian's attribute
+ * variables, and it is less than the variable list suggests:
+ *
+ *  - **bold** is settable, from `--bold-weight`, on xterm.js only
+ *    (`fontWeight` / `fontWeightBold`). ghostty-web's `ITerminalOptions` has no
+ *    weight option at all, so it keeps its own bold.
+ *  - **italic** is not settable on either engine: both render it as
+ *    `font-style: italic` on the cell, with no hook for `--italic-weight`, and
+ *    forcing `--italic-color` would override the ANSI colour of every italic
+ *    cell rather than complement it.
+ *  - **dim** is not settable either: xterm.js implements it by halving the
+ *    foreground alpha, which already lands between `--text-normal` and
+ *    `--text-faint` because the foreground is `--text-normal`; ghostty-web
+ *    renders it internally. `--text-faint` and `--text-muted` therefore go
+ *    unused, deliberately.
+ */
+export interface TerminalFontWeights {
+	fontWeight?: number;
+	fontWeightBold?: number;
+}
+
+const MIN_WEIGHT = 1;
+const MAX_WEIGHT = 1000;
+
+/** A CSS font weight as a number: `600`, `normal`, `bold`, or undefined. */
+function parseWeight(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const text = value.trim().toLowerCase();
+	if (text === 'normal') return 400;
+	if (text === 'bold') return 700;
+	const n = Number.parseFloat(text);
+	if (!Number.isFinite(n) || n < MIN_WEIGHT || n > MAX_WEIGHT) return undefined;
+	return Math.round(n);
+}
+
+/**
+ * Plain and bold weights from the vault own variables. A bold weight that does
+ * not actually outweigh the plain one is dropped rather than passed on: it would
+ * make bold text indistinguishable, which is worse than the engine default.
+ */
+export function obsidianFontWeights(read: CssVarReader): TerminalFontWeights {
+	const normal = parseWeight(read('--font-weight'));
+	const bold = parseWeight(read('--bold-weight'));
+	const weights: TerminalFontWeights = {};
+	if (normal !== undefined) weights.fontWeight = normal;
+	if (bold !== undefined && bold > (normal ?? 400)) weights.fontWeightBold = bold;
+	return weights;
 }

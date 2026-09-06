@@ -457,6 +457,41 @@
 	position: relative;
 }
 
+/*
+ * The viewport is a real scrollable element, so it gets a real browser
+ * scrollbar; unstyled it is the platform one, which is the only piece of chrome
+ * in the terminal that does not follow the vault (#50). These are Obsidian's own
+ * scrollbar variables, so the terminal's bar matches a note's.
+ *
+ * Both syntaxes are here on purpose: `scrollbar-width`/`scrollbar-color` is the
+ * standard one and takes the vault's colours but not its width in px, and the
+ * `-webkit-` pseudo-elements are what Electron actually honours today and take
+ * both. A browser that supports the standard one ignores the pseudo-elements.
+ */
+.herdr-terminal-host .xterm .xterm-viewport {
+	scrollbar-width: thin;
+	scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-bg);
+}
+
+.herdr-terminal-host .xterm .xterm-viewport::-webkit-scrollbar {
+	width: var(--scrollbar-width, 12px);
+	background-color: var(--scrollbar-bg);
+}
+
+.herdr-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+	background-color: var(--scrollbar-thumb-bg);
+	border-radius: var(--scrollbar-radius, 4px);
+}
+
+.herdr-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover,
+.herdr-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-thumb:active {
+	background-color: var(--scrollbar-active-thumb-bg);
+}
+
+.herdr-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-corner {
+	background-color: var(--scrollbar-bg);
+}
+
 .herdr-terminal-host .xterm .xterm-scroll-area {
 	visibility: hidden;
 }
