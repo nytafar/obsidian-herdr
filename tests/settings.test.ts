@@ -20,8 +20,12 @@ import {
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
 	normalizeTerminalTitleSource,
+	isPanePinned,
+	normalizePinnedPanes,
+	pinnedPaneIds,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
+	togglePanePin,
 	SCROLLBACK_BYTES_PER_MB,
 	scrollbackBytes,
 	type ConnectionStatus,
@@ -265,5 +269,43 @@ describe('agent list defaults (issue #20)', () => {
 	it('sorts by herdr’s priority and groups by herdr tab, which is today’s look', () => {
 		expect(DEFAULT_SETTINGS.agentListSort).toBe('priority');
 		expect(DEFAULT_SETTINGS.agentListGroupBy).toBe('tab');
+	});
+});
+
+describe('pinned panes (issue #35)', () => {
+	it('pins nothing by default', () => {
+		expect(DEFAULT_SETTINGS.pinnedPanes).toEqual({});
+		expect(pinnedPaneIds(DEFAULT_SETTINGS, 'local')).toEqual([]);
+	});
+
+	it('keeps pins per endpoint', () => {
+		const settings = { pinnedPanes: {} as Record<string, string[]> };
+		expect(togglePanePin(settings, 'local', 'w4:p1')).toBe(true);
+		expect(togglePanePin(settings, 'ssh:xl:/tmp/h.sock', 'w4:p1')).toBe(true);
+		expect(togglePanePin(settings, 'local', 'w4:p2')).toBe(true);
+		expect(pinnedPaneIds(settings, 'local')).toEqual(['w4:p1', 'w4:p2']);
+		expect(pinnedPaneIds(settings, 'ssh:xl:/tmp/h.sock')).toEqual(['w4:p1']);
+		expect(isPanePinned(settings, 'local', 'w4:p1')).toBe(true);
+		expect(isPanePinned(settings, 'ssh:other:/x', 'w4:p1')).toBe(false);
+	});
+
+	it('unpins on the second toggle and drops an endpoint left empty', () => {
+		const settings = { pinnedPanes: { local: ['w4:p1'] } };
+		expect(togglePanePin(settings, 'local', 'w4:p1')).toBe(false);
+		expect(isPanePinned(settings, 'local', 'w4:p1')).toBe(false);
+		expect(settings.pinnedPanes).toEqual({});
+	});
+
+	it('normalises whatever data.json holds', () => {
+		expect(normalizePinnedPanes(undefined)).toEqual({});
+		expect(normalizePinnedPanes('nope')).toEqual({});
+		expect(normalizePinnedPanes(['w4:p1'])).toEqual({});
+		expect(
+			normalizePinnedPanes({
+				local: ['w4:p1', 3, '', 'w4:p1', 'w4:p2'],
+				remote: 'w4:p1',
+				empty: [],
+			}),
+		).toEqual({ local: ['w4:p1', 'w4:p2'] });
 	});
 });

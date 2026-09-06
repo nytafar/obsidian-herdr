@@ -77,6 +77,8 @@ export interface RowModel {
 	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
 	focused: boolean;
+	/** True when the row is pinned to the top of its group (issue #35). */
+	pinned: boolean;
 	/** Short markers drawn before the name, in display order. The cache countdown today. */
 	badges: RowBadge[];
 }
@@ -113,12 +115,19 @@ export interface RowModelOptions {
 	 * sits outside the vault (issue #22). Empty leaves such paths absolute.
 	 */
 	homePath?: string;
+	/**
+	 * Pane ids pinned on the connected endpoint (issue #35). A pinned row sorts
+	 * above every unpinned row of its group whatever the sort; among themselves
+	 * the pinned rows follow that same sort. Empty pins nothing.
+	 */
+	pinnedPaneIds?: readonly string[];
 }
 
 const DEFAULTS: Required<RowModelOptions> = {
 	groupBy: 'tab',
 	sort: 'priority',
 	homePath: '',
+	pinnedPaneIds: [],
 };
 
 type GroupBy = Required<RowModelOptions>['groupBy'];
@@ -284,6 +293,20 @@ const COMPARE: Record<SortBy, (a: PaneState, b: PaneState) => number> = {
 		a.paneId.localeCompare(b.paneId),
 };
 
+/**
+ * The comparator with the pin tier on top (issue #35): pinned before unpinned,
+ * then the chosen sort. Group-local by construction, because `buildRows` sorts
+ * once and then deals the rows into their groups in that order.
+ */
+function withPinTier(
+	compare: (a: PaneState, b: PaneState) => number,
+	pinned: ReadonlySet<string>,
+): (a: PaneState, b: PaneState) => number {
+	if (pinned.size === 0) return compare;
+	return (a, b) =>
+		Number(pinned.has(b.paneId)) - Number(pinned.has(a.paneId)) || compare(a, b);
+}
+
 /** Every badge a row shows, in display order. Only the cache countdown today. */
 function badges(pane: PaneState): RowBadge[] {
 	const cache = cacheBadge(pane.tokens);
@@ -296,12 +319,14 @@ function badges(pane: PaneState): RowBadge[] {
  * @param showPath false leaves `pathLabel` empty (issue #39). Grouping by folder
  *   puts that very path in the group header, and a row that repeats its own
  *   heading says nothing; every other grouping keeps the line.
+ * @param pinned whether the row is pinned (issue #35); `buildRows` decides.
  */
 export function toRow(
 	pane: PaneState,
 	vaultPath: string,
 	homePath = '',
 	showPath = true,
+	pinned = false,
 ): RowModel {
 	const displayName = agentDisplayName(pane);
 	return {
@@ -314,6 +339,7 @@ export function toRow(
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
+		pinned,
 		badges: badges(pane),
 	};
 }
@@ -331,13 +357,14 @@ export function buildRows(
 	vaultPath: string,
 	options: RowModelOptions = {},
 ): RowGroup[] {
-	const { groupBy, sort, homePath } = { ...DEFAULTS, ...options };
+	const { groupBy, sort, homePath, pinnedPaneIds } = { ...DEFAULTS, ...options };
+	const pinned = new Set(pinnedPaneIds);
 	const grouping = GROUPS[groupBy] ?? GROUPS.tab;
 	// Grouping by folder already names the folder above the rows (issue #39).
 	const showPath = groupBy !== 'folder';
 	const context: GroupContext = { tabLabels, vaultPath, homePath };
 	// One sort up front fixes the row order inside every group.
-	const ordered = [...panes].sort(COMPARE[sort] ?? COMPARE.priority);
+	const ordered = [...panes].sort(withPinTier(COMPARE[sort] ?? COMPARE.priority, pinned));
 
 	const groups = new Map<string, { group: RowGroup; urgency: number }>();
 	for (const pane of ordered) {
@@ -360,7 +387,9 @@ export function buildRows(
 			// nothing about how urgent the group is.
 			entry.urgency = urgency;
 		}
-		entry.group.rows.push(toRow(pane, vaultPath, homePath, showPath));
+		entry.group.rows.push(
+			toRow(pane, vaultPath, homePath, showPath, pinned.has(pane.paneId)),
+		);
 	}
 
 	return [...groups.values()]

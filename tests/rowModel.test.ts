@@ -274,6 +274,7 @@ describe('toRow', () => {
 			status: 'blocked',
 			statusLabel: 'Blocked',
 			focused: true,
+			pinned: false,
 			badges: [],
 		});
 	});
@@ -610,5 +611,53 @@ describe('buildRows', () => {
 		const panes = [pane('p1', 'w4:t1', 'idle'), pane('p2', 'w4:t1', 'blocked')];
 		buildRows(panes, new Map(), VAULT);
 		expect(panes.map((entry) => entry.paneId)).toEqual(['p1', 'p2']);
+	});
+});
+
+describe('pinned rows (issue #35)', () => {
+	const panes = [
+		pane('p1', 'w4:t1', 'idle', { name: 'zed' }),
+		pane('p2', 'w4:t1', 'blocked', { name: 'bob' }),
+		pane('p3', 'w4:t1', 'done', { name: 'amy' }),
+		pane('p4', 'w4:t2', 'blocked', { name: 'cal' }),
+	];
+
+	it('puts a pinned row first in its group, ahead of the priority order', () => {
+		const rows = flatten(
+			buildRows(panes, new Map(), VAULT, { pinnedPaneIds: ['p1'] }),
+		);
+		// t1 is still the more urgent group (it holds a blocked row), and inside
+		// it the idle pinned row now leads.
+		expect(rows.map((row) => row.paneId)).toEqual(['p1', 'p2', 'p3', 'p4']);
+		expect(rows.map((row) => row.pinned)).toEqual([true, false, false, false]);
+	});
+
+	it('is group-local: a pin never lifts a row into another group', () => {
+		const groups = buildRows(panes, new Map(), VAULT, { pinnedPaneIds: ['p4'] });
+		expect(groups.map((group) => group.rows.map((row) => row.paneId))).toEqual([
+			['p2', 'p3', 'p1'],
+			['p4'],
+		]);
+	});
+
+	it('keeps the chosen sort among the pinned rows themselves', () => {
+		const alphabetical = flatten(
+			buildRows(panes, new Map(), VAULT, {
+				sort: 'alphabetical',
+				pinnedPaneIds: ['p1', 'p2'],
+			}),
+		);
+		expect(alphabetical.map((row) => row.paneId)).toEqual(['p2', 'p1', 'p3', 'p4']);
+		const priority = flatten(
+			buildRows(panes, new Map(), VAULT, { pinnedPaneIds: ['p1', 'p3'] }),
+		);
+		expect(priority.map((row) => row.paneId)).toEqual(['p3', 'p1', 'p2', 'p4']);
+	});
+
+	it('ignores pins for panes that are not listed and pins nothing by default', () => {
+		const rows = flatten(buildRows(panes, new Map(), VAULT, { pinnedPaneIds: ['gone'] }));
+		expect(rows.map((row) => row.paneId)).toEqual(['p2', 'p3', 'p1', 'p4']);
+		expect(rows.every((row) => !row.pinned)).toBe(true);
+		expect(toRow(panes[0]!, VAULT).pinned).toBe(false);
 	});
 });
