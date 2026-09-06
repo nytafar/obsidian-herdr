@@ -64,10 +64,15 @@ export interface RowModel {
 	 */
 	title: string;
 	/**
-	 * The cwd as shown: vault-relative inside the vault, `~/…` under the home
-	 * directory, absolute otherwise (issue #22).
+	 * The cwd as shown: vault-relative inside the vault, and outside it the last
+	 * two segments of the `~/…` or absolute form (issues #22, #46).
 	 */
 	pathLabel: string;
+	/**
+	 * The full path behind an abridged `pathLabel`, empty when nothing was cut.
+	 * The view hangs it off the path element as `title` and `aria-label`.
+	 */
+	pathTooltip: string;
 	status: AgentStatus;
 	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
@@ -84,6 +89,8 @@ export interface RowModel {
 export interface RowGroup {
 	key: string;
 	label: string;
+	/** Full path behind an abridged folder label; empty for every other grouping. */
+	tooltip: string;
 	rows: RowModel[];
 }
 
@@ -150,7 +157,7 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
 }
 
 /**
- * The cwd as a row shows it (issue #22): vault-relative inside the vault, then
+ * The unabridged cwd label (issue #22): vault-relative inside the vault, then
  * `~/…` when it sits under the user's home, and absolute when it is neither.
  * The home directory itself is `~`, and the vault root stays empty — repeating
  * the vault name on every row says nothing.
@@ -159,7 +166,7 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
  * (`main.ts` picks which one). The vault wins over the home, because a vault
  * inside the home would otherwise lose its short relative paths.
  */
-export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
+export function fullPathLabel(cwd: string, vaultPath: string, homePath = ''): string {
 	if (!cwd) return '';
 	const root = trimTrailingSlashes(vaultPath);
 	if (root && isUnder(cwd, root)) return relativeCwd(cwd, root);
@@ -167,6 +174,44 @@ export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string
 	if (!home || !isUnder(cwd, home)) return cwd;
 	const rest = cwd.slice(home.length).replace(/^\/+/, '');
 	return rest ? `~/${rest}` : '~';
+}
+
+/**
+ * How many trailing segments a shortened outside-the-vault label keeps. Two is
+ * enough to tell `Vaults/hvelv` from `Vaults/notes` and still fits the sidebar.
+ */
+const OUTSIDE_SEGMENTS = 2;
+
+/**
+ * The cwd as a row shows it (issues #22, #46): vault-relative inside the vault —
+ * the vault root itself stays empty — and, outside it, only the last two
+ * segments of the {@link fullPathLabel}, with the full label offered as the
+ * tooltip by {@link pathTooltip}.
+ *
+ * Every agent in a snapshot vault runs against the same foreign root, so the
+ * long form repeated `~/Vaults/hvelv` on every row and said nothing. A label
+ * already at two segments or fewer is left exactly as it was, keeping `/opt/x`,
+ * `~/code` and `~` whole rather than trading a leading slash for nothing.
+ */
+export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
+	const label = fullPathLabel(cwd, vaultPath, homePath);
+	const root = trimTrailingSlashes(vaultPath);
+	// Inside the vault the label is already relative to something the reader
+	// knows; only foreign roots are worth cutting.
+	if (root && cwd && isUnder(cwd, root)) return label;
+	const segments = label.split('/').filter((segment) => segment !== '');
+	if (segments.length <= OUTSIDE_SEGMENTS) return label;
+	return segments.slice(-OUTSIDE_SEGMENTS).join('/');
+}
+
+/**
+ * The full path behind a shortened {@link pathLabel}, or the empty string when
+ * nothing was cut. The view puts it on `title` and `aria-label`, so a row never
+ * hides which of two similarly named roots it is in.
+ */
+export function pathTooltip(cwd: string, vaultPath: string, homePath = ''): string {
+	const full = fullPathLabel(cwd, vaultPath, homePath);
+	return full === pathLabel(cwd, vaultPath, homePath) ? '' : full;
 }
 
 function statusRank(status: AgentStatus): number {
@@ -177,6 +222,8 @@ function statusRank(status: AgentStatus): number {
 interface Grouping {
 	key: (pane: PaneState) => string;
 	label: (pane: PaneState, ctx: GroupContext) => string;
+	/** Full path behind an abridged label, empty when there is nothing to add. */
+	tooltip?: (pane: PaneState, ctx: GroupContext) => string;
 }
 
 /** What a grouping needs besides the pane to name its heading. */
@@ -209,6 +256,9 @@ const GROUPS: Record<GroupBy, Grouping> = {
 				pane.cwd
 			);
 		},
+		// Abridged the same way a row is (issue #46), so it needs the same tooltip.
+		tooltip: (pane, ctx) =>
+			pane.cwd ? pathTooltip(pane.cwd, ctx.vaultPath, ctx.homePath) : '',
 	},
 	none: { key: () => '', label: () => '' },
 };
@@ -260,6 +310,7 @@ export function toRow(
 		displayName,
 		title: pane.title && pane.title !== displayName ? pane.title : '',
 		pathLabel: showPath ? pathLabel(pane.cwd, vaultPath, homePath) : '',
+		pathTooltip: showPath ? pathTooltip(pane.cwd, vaultPath, homePath) : '',
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
@@ -295,7 +346,12 @@ export function buildRows(
 		let entry = groups.get(key);
 		if (!entry) {
 			entry = {
-				group: { key, label: grouping.label(pane, context), rows: [] },
+				group: {
+					key,
+					label: grouping.label(pane, context),
+					tooltip: grouping.tooltip?.(pane, context) ?? '',
+					rows: [],
+				},
 				urgency,
 			};
 			groups.set(key, entry);

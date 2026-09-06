@@ -3,7 +3,9 @@ import {
 	agentDisplayName,
 	buildRows,
 	countStatuses,
+	fullPathLabel,
 	pathLabel,
+	pathTooltip,
 	relativeCwd,
 	toRow,
 	type RowModel,
@@ -66,38 +68,105 @@ describe('relativeCwd', () => {
 	});
 });
 
-describe('pathLabel (issue #22)', () => {
+describe('fullPathLabel (issue #22)', () => {
 	const HOME = '/Users/lasse';
 
 	it('keeps a path inside the vault vault-relative', () => {
-		expect(pathLabel(`${VAULT}/projects/herdr`, VAULT, HOME)).toBe('projects/herdr');
-		expect(pathLabel(VAULT, VAULT, HOME)).toBe('');
+		expect(fullPathLabel(`${VAULT}/projects/herdr`, VAULT, HOME)).toBe('projects/herdr');
+		expect(fullPathLabel(VAULT, VAULT, HOME)).toBe('');
 	});
 
 	it('shortens a path under the home but outside the vault', () => {
-		expect(pathLabel('/Users/lasse/code/herdr', VAULT, HOME)).toBe('~/code/herdr');
-		expect(pathLabel(HOME, VAULT, HOME)).toBe('~');
+		expect(fullPathLabel('/Users/lasse/code/herdr', VAULT, HOME)).toBe('~/code/herdr');
+		expect(fullPathLabel(HOME, VAULT, HOME)).toBe('~');
 	});
 
 	it('tolerates trailing slashes on both roots', () => {
-		expect(pathLabel('/Users/lasse/code/herdr', `${VAULT}/`, `${HOME}/`)).toBe('~/code/herdr');
-		expect(pathLabel(`${VAULT}/notes`, `${VAULT}//`, HOME)).toBe('notes');
+		expect(fullPathLabel('/Users/lasse/code/herdr', `${VAULT}/`, `${HOME}/`)).toBe(
+			'~/code/herdr',
+		);
+		expect(fullPathLabel(`${VAULT}/notes`, `${VAULT}//`, HOME)).toBe('notes');
 	});
 
 	it('leaves a path outside both absolute', () => {
-		expect(pathLabel('/opt/thing', VAULT, HOME)).toBe('/opt/thing');
+		expect(fullPathLabel('/opt/thing', VAULT, HOME)).toBe('/opt/thing');
 		// A home that is a string prefix but not a parent directory.
-		expect(pathLabel('/Users/lasseX/code', VAULT, HOME)).toBe('/Users/lasseX/code');
+		expect(fullPathLabel('/Users/lasseX/code', VAULT, HOME)).toBe('/Users/lasseX/code');
 	});
 
 	it('falls back to the absolute path without a home', () => {
-		expect(pathLabel('/Users/lasse/code/herdr', VAULT)).toBe('/Users/lasse/code/herdr');
-		expect(pathLabel('/Users/lasse/code/herdr', VAULT, '   ')).toBe('/Users/lasse/code/herdr');
-		expect(pathLabel('', VAULT, HOME)).toBe('');
+		expect(fullPathLabel('/Users/lasse/code/herdr', VAULT)).toBe('/Users/lasse/code/herdr');
+		expect(fullPathLabel('/Users/lasse/code/herdr', VAULT, '   ')).toBe(
+			'/Users/lasse/code/herdr',
+		);
+		expect(fullPathLabel('', VAULT, HOME)).toBe('');
 	});
 
 	it('prefers the vault when the vault sits inside the home', () => {
-		expect(pathLabel(`${VAULT}/notes`, VAULT, HOME)).toBe('notes');
+		expect(fullPathLabel(`${VAULT}/notes`, VAULT, HOME)).toBe('notes');
+	});
+});
+
+describe('pathLabel and pathTooltip (issue #46)', () => {
+	const HOME = '/Users/lasse';
+
+	it('leaves a path inside the vault untouched and untooltipped', () => {
+		expect(pathLabel(`${VAULT}/projects/herdr/src`, VAULT, HOME)).toBe('projects/herdr/src');
+		expect(pathTooltip(`${VAULT}/projects/herdr/src`, VAULT, HOME)).toBe('');
+	});
+
+	it('keeps the vault root empty', () => {
+		expect(pathLabel(VAULT, VAULT, HOME)).toBe('');
+		expect(pathTooltip(VAULT, VAULT, HOME)).toBe('');
+		expect(pathLabel('', VAULT, HOME)).toBe('');
+		expect(pathTooltip('', VAULT, HOME)).toBe('');
+	});
+
+	it('cuts a home-relative path outside the vault to its last two segments', () => {
+		// The case from the issue: every snapshot-vault row said the same `~/Vaults/…` root.
+		expect(pathLabel('/Users/lasse/Vaults/live', VAULT, HOME)).toBe('Vaults/live');
+		expect(pathTooltip('/Users/lasse/Vaults/live', VAULT, HOME)).toBe('~/Vaults/live');
+	});
+
+	it('cuts an absolute path outside both roots the same way', () => {
+		expect(pathLabel('/srv/work/projects/herdr', VAULT, HOME)).toBe('projects/herdr');
+		expect(pathTooltip('/srv/work/projects/herdr', VAULT, HOME)).toBe(
+			'/srv/work/projects/herdr',
+		);
+	});
+
+	it('leaves a label already at two segments or fewer whole', () => {
+		expect(pathLabel('/opt/thing', VAULT, HOME)).toBe('/opt/thing');
+		expect(pathTooltip('/opt/thing', VAULT, HOME)).toBe('');
+		expect(pathLabel('/Users/lasse/code', VAULT, HOME)).toBe('~/code');
+		expect(pathTooltip('/Users/lasse/code', VAULT, HOME)).toBe('');
+		expect(pathLabel(HOME, VAULT, HOME)).toBe('~');
+		expect(pathTooltip(HOME, VAULT, HOME)).toBe('');
+	});
+
+	it('abridges a folder group header and hands the view the full path', () => {
+		const groups = buildRows(
+			[pane('p1', 'w4:t1', 'idle', { cwd: '/Users/lasse/Vaults/live' })],
+			new Map(),
+			VAULT,
+			{ groupBy: 'folder', homePath: HOME },
+		);
+		expect(groups[0]?.label).toBe('Vaults/live');
+		expect(groups[0]?.tooltip).toBe('~/Vaults/live');
+		// Grouping by folder still leaves the row's own path line empty (#39).
+		expect(groups[0]?.rows[0]?.pathLabel).toBe('');
+		expect(groups[0]?.rows[0]?.pathTooltip).toBe('');
+	});
+
+	it('gives a tab group no tooltip at all', () => {
+		const groups = buildRows(
+			[pane('p1', 'w4:t1', 'idle', { cwd: '/Users/lasse/Vaults/live' })],
+			new Map([['w4:t1', 'notes']]),
+			VAULT,
+			{ homePath: HOME },
+		);
+		expect(groups[0]?.tooltip).toBe('');
+		expect(groups[0]?.rows[0]?.pathTooltip).toBe('~/Vaults/live');
 	});
 });
 
@@ -201,6 +270,7 @@ describe('toRow', () => {
 			displayName: 'vault-maintenance',
 			title: 'Refactor scope',
 			pathLabel: 'projects/herdr',
+			pathTooltip: '',
 			status: 'blocked',
 			statusLabel: 'Blocked',
 			focused: true,
@@ -364,7 +434,7 @@ describe('buildRows', () => {
 			{ homePath: '/Users/lasse' },
 		);
 		expect(groups[0]?.rows.map((row) => row.pathLabel)).toEqual([
-			'~/code/herdr',
+			'code/herdr',
 			'notes',
 			'/opt/thing',
 		]);
@@ -472,10 +542,10 @@ describe('buildRows', () => {
 			{ groupBy: 'folder', homePath: '/Users/lasse' },
 		);
 		// The blocked folder leads; the two idle ones tie and fall back to their
-		// labels, where a locale compare looks past the leading tilde.
+		// labels, both of them abridged to two segments (issue #46).
 		expect(groups.map((group) => group.label)).toEqual([
 			'projects/herdr',
-			'~/code/herdr',
+			'code/herdr',
 			'hvelv',
 		]);
 		expect(groups[0]?.rows.map((row) => row.paneId)).toEqual(['p2', 'p1']);
@@ -495,16 +565,15 @@ describe('buildRows', () => {
 		const grouped = buildRows(panes, new Map(), VAULT, { ...options, groupBy: 'folder' });
 		expect(flatten(grouped).map((row) => row.pathLabel)).toEqual(['', '']);
 		// The headers still carry the folders, so nothing is lost. Both groups are
-		// idle, so they tie and fall back to a locale compare of their labels,
-		// which looks past the leading tilde.
-		expect(grouped.map((group) => group.label)).toEqual(['~/code/herdr', 'projects/herdr']);
+		// idle, so they tie and fall back to a locale compare of their labels.
+		expect(grouped.map((group) => group.label)).toEqual(['code/herdr', 'projects/herdr']);
 
 		// Every other grouping keeps the line: nothing else names the folder.
 		for (const groupBy of ['tab', 'none'] as const) {
 			const rows = flatten(buildRows(panes, new Map(), VAULT, { ...options, groupBy }));
 			expect(rows.map((row) => row.pathLabel).sort()).toEqual([
+				'code/herdr',
 				'projects/herdr',
-				'~/code/herdr',
 			]);
 		}
 	});

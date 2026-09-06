@@ -252,7 +252,14 @@ export class AgentListView extends ItemView {
 	private renderGroup(parent: HTMLElement, group: RowGroup): void {
 		const groupEl = parent.createDiv({ cls: 'herdr-tab-group' });
 		// An empty label is grouping "none": one group, no header at all.
-		if (group.label) groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
+		if (group.label) {
+			const label = groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
+			// An abridged folder heading (issue #46) keeps the full path within reach.
+			if (group.tooltip) {
+				setTooltip(label, group.tooltip);
+				label.setAttribute('aria-label', group.tooltip);
+			}
+		}
 		for (const row of group.rows) this.renderRow(groupEl, row);
 	}
 
@@ -289,7 +296,15 @@ export class AgentListView extends ItemView {
 		}
 		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
 		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
-		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
+		if (model.pathLabel) {
+			const cwd = text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
+			// Only set when the label was cut short (issue #46); otherwise the
+			// tooltip would repeat what the row already says.
+			if (model.pathTooltip) {
+				setTooltip(cwd, model.pathTooltip);
+				cwd.setAttribute('aria-label', model.pathTooltip);
+			}
+		}
 
 		// The row body and the button hold one action each, and which is which is
 		// a setting (issue #21). The button is drawn on every row but only shown on
