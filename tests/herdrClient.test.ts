@@ -346,6 +346,23 @@ describe('HerdrClient events', () => {
 		expect(seen[0]?.event).toBe('pane_focused');
 	});
 
+	it('reports an oversized push line as a protocol error and destroys the stream socket (#60)', async () => {
+		// Exercise the wiring end-to-end (framing lives in lineSplitter.test.ts):
+		// a record over the 32 MiB event budget must surface as a HerdrError with
+		// the protocol code, not throw out of the socket handler.
+		const server = await startServer();
+		const client = makeClient(server, { backoffMs: 10, maxBackoffMs: 20 });
+		const errors: HerdrError[] = [];
+		client.on('error', (error: Error) => errors.push(error as HerdrError));
+		client.subscribe([{ type: 'pane.updated' }]);
+		await waitFor(() => server.subscriberCount === 1);
+
+		server.pushRaw('x'.repeat(33 * 1024 * 1024));
+		await waitFor(() => errors.length === 1, 15_000);
+		expect(errors[0]?.code).toBe(CLIENT_ERROR_CODES.protocol);
+		expect(errors[0]?.message).toMatch(/oversized/);
+	}, 20_000);
+
 	it('reconnects with backoff and re-sends every subscription (M4)', async () => {
 		const server = await startServer();
 		const client = makeClient(server, { backoffMs: 20, maxBackoffMs: 40 });

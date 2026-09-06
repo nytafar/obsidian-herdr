@@ -19,6 +19,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { LineSplitter as SharedLineSplitter } from '../herdr/lineSplitter';
 import { clearTimer, setTimer } from '../timers';
 
 /** herdr caps a frame payload at 32 MiB; base64 inflates that by 4/3. */
@@ -105,67 +106,20 @@ type AnyListener = (...args: unknown[]) => void;
 
 /**
  * Splits a byte stream into NDJSON lines without quadratic re-concatenation and
- * without letting an unterminated line grow without bound.
+ * without letting an unterminated (or completed) oversized line grow, or
+ * decode, without bound. Framing itself lives in the shared
+ * `../herdr/lineSplitter`; this re-export keeps the bridge's default budget
+ * and its own overflow message, and stays the name callers already import.
  */
-export class LineSplitter {
-	private pending: Buffer[] = [];
-	private pendingBytes = 0;
-
-	constructor(private readonly maxLineBytes: number = MAX_LINE_BYTES) {}
-
-	/**
-	 * @returns complete lines (without the newline), trailing `\r` stripped.
-	 * @throws if a single line exceeds the budget; the splitter then resets so the
-	 *   stream can resynchronise on the next newline.
-	 */
-	push(chunk: Buffer): string[] {
-		const lines: string[] = [];
-		let offset = 0;
-		let newline = chunk.indexOf(0x0a, offset);
-		while (newline !== -1) {
-			const tail = chunk.subarray(offset, newline);
-			lines.push(this.take(tail));
-			offset = newline + 1;
-			newline = chunk.indexOf(0x0a, offset);
-		}
-		if (offset < chunk.length) {
-			const rest = chunk.subarray(offset);
-			this.pending.push(rest);
-			this.pendingBytes += rest.length;
-			if (this.pendingBytes > this.maxLineBytes) {
-				const overflow = this.pendingBytes;
-				this.reset();
-				throw new Error(
-					`terminal bridge line exceeded ${this.maxLineBytes} bytes (${overflow}); dropped`,
-				);
-			}
-		}
-		return lines;
+export class LineSplitter extends SharedLineSplitter {
+	constructor(maxLineBytes: number = MAX_LINE_BYTES) {
+		super(maxLineBytes);
 	}
+}
 
-	/** Whatever is buffered after the stream ends, if it is not empty. */
-	flush(): string | null {
-		if (this.pendingBytes === 0) return null;
-		const line = this.take(Buffer.alloc(0));
-		return line.length > 0 ? line : null;
-	}
-
-	reset(): void {
-		this.pending = [];
-		this.pendingBytes = 0;
-	}
-
-	private take(tail: Buffer): string {
-		let line: string;
-		if (this.pendingBytes === 0) {
-			line = tail.toString('utf8');
-		} else {
-			this.pending.push(tail);
-			line = Buffer.concat(this.pending, this.pendingBytes + tail.length).toString('utf8');
-		}
-		this.reset();
-		return line.endsWith('\r') ? line.slice(0, -1) : line;
-	}
+/** Builds the bridge's own overflow error message for a rejected record. */
+function oversizedLineError(maxLineBytes: number, byteLength: number): Error {
+	return new Error(`terminal bridge line exceeded ${maxLineBytes} bytes (${byteLength}); dropped`);
 }
 
 /** Builds the argv the bridge spawns. Exported so callers can log or test it. */
@@ -424,24 +378,16 @@ export class TerminalSession {
 	}
 
 	private onStdout(chunk: Buffer): void {
-		let lines: string[];
-		try {
-			lines = this.stdoutSplitter.push(chunk);
-		} catch (err) {
-			this.emit('error', asError(err));
-			return;
-		}
+		const lines = this.stdoutSplitter.push(chunk, (byteLength) => {
+			this.emit('error', oversizedLineError(this.stdoutSplitter.maxLineBytes, byteLength));
+		});
 		for (const line of lines) this.handleLine(line);
 	}
 
 	private onStderr(chunk: Buffer): void {
-		let lines: string[];
-		try {
-			lines = this.stderrSplitter.push(chunk);
-		} catch (err) {
-			this.emit('error', asError(err));
-			return;
-		}
+		const lines = this.stderrSplitter.push(chunk, (byteLength) => {
+			this.emit('error', oversizedLineError(this.stderrSplitter.maxLineBytes, byteLength));
+		});
 		// herdr logs plain text here; surface it, never try to parse it.
 		for (const line of lines) {
 			if (line.trim().length > 0) this.emit('stderr', line);
