@@ -17,9 +17,12 @@
  * scrollback is carried across as plain text and written into the new terminal on
  * reveal, before the first frame.
  *
- * Keys and wheel notches go through `InputRouter` (`./input/`, #17) on the way,
- * which is where shift+enter (#18), mouse reports (#25) and local scrollback
- * (#33) will hook in. It changes nothing until one of them switches it on.
+ * Keys and wheel notches go through `InputRouter` (`./input/`, #17) on the way:
+ * shift+enter becomes a line break (#18) and every wheel notch becomes a
+ * `terminal.scroll` carrying the cell under the pointer, which herdr turns into
+ * a mouse report for an application that asked for one (#25). Clicks are still
+ * the renderer's, so text selection keeps working; gating them needs a mode
+ * signal herdr does not send (notes/herdr-terminal-bridge.md, #33).
  *
  * Attach mode comes from `settings.defaultAttachMode`: control attaches with
  * `--takeover` (PRD M15, the herdr TUI pane then follows Obsidian's size), observe
@@ -47,7 +50,7 @@ import {
 	type TerminalSessionMode,
 } from '../bridge/terminalSession';
 import { createRenderer } from './renderer/create';
-import type { TerminalRenderer } from './renderer/TerminalRenderer';
+import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
 import { InputRouter } from './input/inputRouter';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
@@ -452,10 +455,17 @@ export class TerminalView extends ItemView {
 	/**
 	 * Keyboard/mouse/scroll encoding (#17, `src/views/input/`). It watches frames
 	 * for the modes the pane's application sets and decides what a key or a wheel
-	 * notch becomes. With today's options it encodes nothing and routes every
-	 * wheel to `terminal.scroll`, exactly as before; #18/#25/#33 turn it on.
+	 * notch becomes: shift+enter is ours (#18), every wheel notch becomes a
+	 * `terminal.scroll` with the cell under the pointer (#25), everything else is
+	 * left to the renderer.
 	 */
 	private readonly input = new InputRouter({ wheelToScroll });
+	/**
+	 * True once the renderer intercepts the wheel, so `onWheel` stands down. Only
+	 * meaningful while a renderer exists: a suspended view (#15) has none, and the
+	 * host element's own listener is all there is again.
+	 */
+	private wheelIntercepted = false;
 	private flushHandle = 0;
 	private perf: PerfCounter | null = null;
 
@@ -800,6 +810,10 @@ export class TerminalView extends ItemView {
 				// them, so shift+enter can be sent as a line break. Optional on the
 				// interface; a renderer without it keeps its own encoding.
 				renderer.onKeyEvent?.((event) => this.onKeyEvent(event));
+				// #25: and every wheel notch, including the ones over the canvas
+				// that the host element's own listener never sees.
+				this.wheelIntercepted = renderer.onWheelEvent !== undefined;
+				renderer.onWheelEvent?.((event) => this.onWheelEvent(event));
 			});
 		}
 		try {
@@ -863,25 +877,73 @@ export class TerminalView extends ItemView {
 		return true;
 	}
 
+	/**
+	 * The wheel, intercepted before ghostty-web scrolls its own buffer (#25).
+	 * True consumes the notch, which is what makes the wheel work over the canvas
+	 * at all: ghostty-web registers its `wheel` listener on the host element in
+	 * the capture phase and calls `stopPropagation()`, so `onWheel` below never
+	 * sees an event whose target is the canvas, and the local buffer it scrolls
+	 * instead holds one screen — herdr's frames reposition cells and never
+	 * scroll (notes/herdr-terminal-bridge.md).
+	 *
+	 * False when nothing was sent — no session, an observer (which may not
+	 * scroll), or a delta that rounds to nothing — so a terminal holding replayed
+	 * scrollback still scrolls locally.
+	 */
+	private onWheelEvent(event: WheelEvent): boolean {
+		return this.sendWheel(event);
+	}
+
+	/**
+	 * Wheel events that reach the host element itself. A renderer with
+	 * `onWheelEvent` sees every notch first, including this one, so this listener
+	 * would report it twice; it is the fallback for a renderer without that hook.
+	 */
 	private onWheel(event: WheelEvent): void {
+		if (this.wheelIntercepted && this.renderer) return;
+		this.sendWheel(event);
+	}
+
+	/**
+	 * Turns a notch into `terminal.scroll`. herdr forks it server-side into an SGR
+	 * wheel report, an alternate-scroll key or a viewport move, using the cell and
+	 * the modifier bits we pass; the client never encodes the wheel itself, or the
+	 * pane would get every notch twice (PRD section 7, `apply_scroll`).
+	 *
+	 * Returns true when the notch actually went to herdr, i.e. when the renderer
+	 * must not also act on it.
+	 */
+	private sendWheel(event: WheelEvent): boolean {
 		const session = this.session;
-		if (!session) return;
-		// #17: a pane whose application enabled mouse reporting gets a wheel
-		// report; every other pane gets today's `terminal.scroll`.
+		if (!session) return false;
+		const position = this.cellAt(event);
 		const route = this.input.routeWheel({
 			deltaY: event.deltaY,
 			deltaMode: event.deltaMode,
 			rows: session.size.rows,
+			// Undefined before the renderer has been measured; herdr then reports
+			// on cell (0, 0), which is better than not scrolling at all.
+			...(position === undefined ? {} : { position }),
 			shiftKey: event.shiftKey,
 			altKey: event.altKey,
 			ctrlKey: event.ctrlKey,
+			metaKey: event.metaKey,
 		});
-		if (!route) return;
-		if (route.kind === 'input') {
-			if (session.mode === 'control') session.input(route.data);
-			return;
-		}
-		session.scroll(route.direction, route.lines, { source: route.source });
+		if (!route) return false;
+		// False from an observer (`scroll` is control-only, PRD section 7) or from
+		// a session whose bridge has exited: the notch was not sent, so the
+		// renderer may as well scroll whatever it holds locally.
+		return session.scroll(route.direction, route.lines, {
+			source: route.source,
+			...(route.column === undefined ? {} : { column: route.column }),
+			...(route.row === undefined ? {} : { row: route.row }),
+			modifiers: route.modifiers,
+		});
+	}
+
+	/** The cell under a mouse event, when the renderer can measure one. */
+	private cellAt(event: WheelEvent): CellCoordinates | undefined {
+		return this.renderer?.cellAt?.(event.clientX, event.clientY);
 	}
 
 	/** Re-fits the renderer and tells herdr about the new grid (control only). */

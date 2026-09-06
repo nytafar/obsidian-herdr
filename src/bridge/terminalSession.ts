@@ -63,10 +63,23 @@ export interface FrameMeta {
 	full: boolean;
 }
 
+/**
+ * herdr forks a scroll server-side (`server/pane_input.rs::apply_scroll`): a
+ * pane whose application enabled mouse reporting gets an SGR wheel report built
+ * from these fields, one wanting alternate scroll gets `ESC[A`/`ESC[B`, and any
+ * other pane has its viewport moved. So the client must not encode the wheel
+ * itself; it only says where the pointer was.
+ */
 export interface ScrollOptions {
 	source?: ScrollSource;
+	/** 0-based cell; herdr adds the 1 the wire format wants. Defaults to 0. */
 	column?: number;
 	row?: number;
+	/**
+	 * crossterm `KeyModifiers` bits — shift 1, ctrl 2, alt 4, super 8 — not the
+	 * xterm bits an SGR report carries. `herdrModifierBits` in
+	 * `views/input/mouseEncoder.ts` builds it; unknown bits are truncated away.
+	 */
 	modifiers?: number;
 }
 

@@ -49,6 +49,36 @@ export interface MouseModifiers {
 	shiftKey?: boolean;
 	altKey?: boolean;
 	ctrlKey?: boolean;
+	/** Command on macOS, Windows key elsewhere. Only herdr's bitfield carries it. */
+	metaKey?: boolean;
+}
+
+/**
+ * herdr's `modifiers` field on `terminal.scroll` is a **crossterm
+ * `KeyModifiers`** bitfield, not the xterm one: `apply_scroll` reads it with
+ * `KeyModifiers::from_bits_truncate(modifiers)` (`server/pane_input.rs`) before
+ * handing it to its own SGR encoder, and crossterm 0.29 numbers the bits
+ * SHIFT 1, CONTROL 2, ALT 4, SUPER 8, HYPER 16, META 32 (`crossterm/src/event.rs`).
+ *
+ * Note how thoroughly this differs from `SGR_MOD_*` below, which are the bits
+ * xterm ORs into the button number (shift 4, alt 8, ctrl 16): sending one where
+ * the other is expected turns a ctrl+wheel into a shift+wheel. Unknown bits are
+ * truncated away by herdr, so anything above SUPER is simply not sent.
+ */
+export const HERDR_MOD_SHIFT = 1;
+export const HERDR_MOD_CTRL = 2;
+export const HERDR_MOD_ALT = 4;
+export const HERDR_MOD_SUPER = 8;
+
+/** The crossterm bitfield for a DOM event's modifier flags. */
+export function herdrModifierBits(modifiers: MouseModifiers | undefined): number {
+	if (!modifiers) return 0;
+	let bits = 0;
+	if (modifiers.shiftKey) bits |= HERDR_MOD_SHIFT;
+	if (modifiers.ctrlKey) bits |= HERDR_MOD_CTRL;
+	if (modifiers.altKey) bits |= HERDR_MOD_ALT;
+	if (modifiers.metaKey) bits |= HERDR_MOD_SUPER;
+	return bits;
 }
 
 export function mouseModifierBits(modifiers: MouseModifiers | undefined): number {

@@ -4,7 +4,7 @@
  *
  *   frame bytes -> `observeFrame`  : which modes is the pane's application in?
  *   key event   -> `routeKey`      : do we encode this key, or the renderer?
- *   wheel event -> `routeWheel`    : mouse report to the pane, or a scroll?
+ *   wheel event -> `routeWheel`    : what `terminal.scroll` should carry.
  *
  * Everything it needs is injected or pure, so it is unit tested without a DOM,
  * a renderer or a herdr. `wheelToScroll` comes in through the constructor
@@ -26,7 +26,7 @@ import {
 } from './keyEncoder';
 import {
 	encodeMouseReport,
-	encodeWheelReport,
+	herdrModifierBits,
 	type CellPosition,
 	type MouseButton,
 	type MouseModifiers,
@@ -79,28 +79,34 @@ export interface WheelInput {
 	deltaMode: number;
 	/** Grid height, for turning a page delta into lines. */
 	rows: number;
-	/** Cell under the pointer. Absent until #25 measures it; then reports use it. */
+	/** 0-based cell under the pointer, from the renderer's `cellAt` (#25). */
 	position?: CellPosition;
 	shiftKey?: boolean;
 	altKey?: boolean;
 	ctrlKey?: boolean;
+	metaKey?: boolean;
 }
 
-/** Send these bytes to the pane through `terminal.input`. */
-export interface WheelInputRoute {
-	kind: 'input';
-	data: string;
-}
-
-/** Send `terminal.scroll`; herdr moves the pane's viewport. */
+/**
+ * Send `terminal.scroll`. herdr decides what it means: with mouse reporting on
+ * it becomes an SGR wheel report at `column`/`row` with `modifiers`, with
+ * alternate scroll an `ESC[A`/`ESC[B`, otherwise a move of the pane's viewport
+ * (`server/pane_input.rs::apply_scroll`). The client never encodes the wheel
+ * itself — exactly one side may, and herdr is the side that knows the modes.
+ */
 export interface WheelScrollRoute {
 	kind: 'scroll';
 	direction: ScrollDirection;
 	lines: number;
 	source: 'wheel';
+	/** 0-based cell under the pointer. Absent when nothing could be measured. */
+	column?: number;
+	row?: number;
+	/** crossterm bitfield; see `herdrModifierBits`. */
+	modifiers: number;
 }
 
-export type WheelRoute = WheelInputRoute | WheelScrollRoute | null;
+export type WheelRoute = WheelScrollRoute | null;
 
 export interface MouseButtonInput {
 	button: MouseButton;
@@ -158,35 +164,48 @@ export class InputRouter {
 	}
 
 	/**
-	 * The scroll/report fork. A pane whose application enabled mouse reporting
-	 * gets an SGR wheel report as ordinary input; every other pane gets today's
-	 * `terminal.scroll`.
+	 * A wheel notch (#25). Always `terminal.scroll`, now carrying the cell under
+	 * the pointer and the modifier bits herdr's `apply_scroll` wants, because
+	 * herdr performs the report/scroll fork server-side and is the only side that
+	 * can: no mode signal reaches this client, so the tracker cannot tell a
+	 * mouse-reporting pane from a plain one (see `modeTracker.ts`). Without
+	 * `column`/`row` every server-side report would land on cell (0, 0).
 	 *
-	 * Note for #25/#33: herdr performs the same fork server-side when it receives
-	 * `terminal.scroll` (`server/pane_input.rs::apply_scroll` encodes the wheel
-	 * report itself, using the optional `column`/`row`/`modifiers` of the scroll
-	 * command). Whichever side ends up owning it, exactly one of them may — two
-	 * would report the notch twice.
+	 * Null for a delta that rounds to nothing, which lets the renderer keep the
+	 * notch — the only case where its own local scroll is still wanted.
 	 */
 	routeWheel(input: WheelInput): WheelRoute {
 		const scroll = this.wheelToScroll(input.deltaY, input.deltaMode, input.rows);
 		if (!scroll) return null;
-		const position = input.position;
-		if (position) {
-			const report = encodeWheelReport(this.tracker.state, scroll.direction, position, {
+		return {
+			kind: 'scroll',
+			direction: scroll.direction,
+			lines: scroll.lines,
+			source: 'wheel',
+			...(input.position === undefined
+				? {}
+				: { column: input.position.column, row: input.position.row }),
+			modifiers: herdrModifierBits({
 				...(input.shiftKey === undefined ? {} : { shiftKey: input.shiftKey }),
 				...(input.altKey === undefined ? {} : { altKey: input.altKey }),
 				...(input.ctrlKey === undefined ? {} : { ctrlKey: input.ctrlKey }),
-			});
-			// One report per notch: a three-line scroll is still one wheel event.
-			if (report !== null) return { kind: 'input', data: report };
-		}
-		return { kind: 'scroll', direction: scroll.direction, lines: scroll.lines, source: 'wheel' };
+				...(input.metaKey === undefined ? {} : { metaKey: input.metaKey }),
+			}),
+		};
 	}
 
 	/**
-	 * A click, for #25. Null means "leave it alone": the pane wants no reports,
-	 * so the renderer's own selection handling keeps working.
+	 * A click. **Not wired to the view, and #25 deliberately left it that way**:
+	 * gating a click needs to know whether the pane's application asked for mouse
+	 * reporting, that signal never reaches this client (herdr sends
+	 * `ServerMessage::MouseCapture` only to control-mode clients and the CLI
+	 * bridge drops it), and guessing would cost text selection in every plain
+	 * pane — the regression #25's acceptance criteria forbid. So clicks stay with
+	 * the renderer, and this waits for herdr to expose mouse capture over the
+	 * session protocol.
+	 *
+	 * Null means "leave it alone", which is what the tracker's defaults always
+	 * say today.
 	 */
 	routeMouseButton(input: MouseButtonInput): string | null {
 		const modifiers: MouseModifiers = {
