@@ -19,6 +19,8 @@ describe('agentListView module surface', () => {
 		expect(view.countStatuses).toBe(rowModel.countStatuses);
 		expect(view.agentDisplayName).toBe(rowModel.agentDisplayName);
 		expect(view.relativeCwd).toBe(rowModel.relativeCwd);
+		expect(view.pathLabel).toBe(rowModel.pathLabel);
+		expect(view.cacheBadge).toBe(rowModel.cacheBadge);
 		expect(view.buildRows).toBe(rowModel.buildRows);
 		expect(view.STATUS_LABEL).toBe(rowModel.STATUS_LABEL);
 		expect(view.STATUS_ORDER).toBe(rowModel.STATUS_ORDER);
