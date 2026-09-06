@@ -30,7 +30,11 @@ export interface RendererOptions {
 	fontFamily?: string;
 	/** Font size in px. Undefined/0 → Obsidian's computed monospace size. */
 	fontSize?: number;
-	/** Scrollback lines. Undefined → renderer default. */
+	/**
+	 * Scrollback budget in **bytes**, not lines: ghostty-web hands this straight to
+	 * libghostty-vt's page list, where roughly 600 lines fit in a megabyte and `0`
+	 * means unlimited (notes/memory.md). Undefined → renderer default.
+	 */
 	scrollback?: number;
 	/** Observe mode (PRD S16) sets this so keystrokes never reach the pane. */
 	disableStdin?: boolean;
@@ -57,6 +61,17 @@ export interface TerminalRenderer {
 	 * view's `css-change` handler does nothing.
 	 */
 	refreshTheme?(): void;
+	/**
+	 * Scrollback plus screen as plain text, oldest line first, trailing blank lines
+	 * trimmed. The terminal view takes one of these before it disposes a hidden
+	 * terminal (#15) and writes it back into the fresh one on reveal, so history
+	 * stays reachable by scrolling up.
+	 *
+	 * **Colours, styles and cursor position are not preserved** — this is text, not
+	 * a VT state dump, and restoring it is a plain write. Optional: a renderer that
+	 * cannot produce one simply starts empty after a hide/reveal cycle.
+	 */
+	snapshotLines?(): string[];
 	dispose(): void;
 }
 

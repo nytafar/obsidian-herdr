@@ -55,6 +55,13 @@ const THEME_VARS: Record<keyof ITheme, string> = {
 	brightWhite: '--color-base-100',
 };
 
+/**
+ * Ceiling on a `snapshotLines()` result. A 64 MB scrollback budget holds ~38 000
+ * lines; keeping all of them as JS strings while the view is hidden would trade
+ * one kind of memory for another, so only the newest ones survive a hide.
+ */
+export const MAX_SNAPSHOT_LINES = 10_000;
+
 export class GhosttyWebRenderer implements TerminalRenderer {
 	private readonly options: RendererOptions;
 	private terminal: Terminal | undefined;
@@ -224,6 +231,31 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		this.terminal.options.fontFamily = font.fontFamily;
 		this.terminal.options.fontSize = font.fontSize;
 		this.fit();
+	}
+
+	/**
+	 * `TerminalRenderer.snapshotLines`. `buffer.active` indexes scrollback first and
+	 * the screen after it (`length` = scrollback + rows), so one pass over it is the
+	 * whole history; on the alternate screen it is just the visible grid, which is
+	 * all that screen ever holds.
+	 *
+	 * Plain text only: `translateToString` drops every colour and attribute. That is
+	 * the accepted cost of freeing a hidden terminal's WASM state (notes/memory.md).
+	 */
+	snapshotLines(): string[] {
+		const terminal = this.terminal;
+		if (this.disposed || !terminal) return [];
+		const buffer = terminal.buffer.active;
+		const total = Math.max(0, Math.min(buffer.length, MAX_SNAPSHOT_LINES));
+		// Keep the newest lines: a large budget can hold tens of thousands, and the
+		// snapshot lives on the JS heap while the view is hidden.
+		const from = Math.max(0, buffer.length - total);
+		const lines: string[] = [];
+		for (let y = from; y < buffer.length; y++) {
+			lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+		}
+		while (lines.length > 0 && (lines.at(-1) ?? '').trim().length === 0) lines.pop();
+		return lines;
 	}
 
 	dispose(): void {

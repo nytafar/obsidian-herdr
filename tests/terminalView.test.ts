@@ -11,6 +11,8 @@ import {
 	spawnEnv,
 	stateMatchesPane,
 	statusLine,
+	HIDE_GRACE_MS,
+	VisibilityTracker,
 	summariseStderr,
 	TERMINAL_VIEW_TYPE,
 	wheelToScroll,
@@ -355,5 +357,128 @@ describe('PerfCounter (#24)', () => {
 		counter.frame(10);
 		expect(lines).toHaveLength(2);
 		expect(lines[1]).toBe('herdr perf w1:p1 observe: 1.0 frames/s, 10.0 bytes/s, 0.0 repaints/s');
+	});
+});
+
+describe('VisibilityTracker (#15 item 1)', () => {
+	/** A fake timer table: `run()` fires whatever is still scheduled. */
+	function timers(): DebounceTimers & { run(): void; scheduled(): number } {
+		const pending = new Map<number, () => void>();
+		let next = 1;
+		return {
+			setTimeout: (cb) => {
+				const handle = next++;
+				pending.set(handle, cb);
+				return handle;
+			},
+			clearTimeout: (handle) => {
+				pending.delete(handle);
+			},
+			run: () => {
+				for (const [handle, cb] of [...pending]) {
+					pending.delete(handle);
+					cb();
+				}
+			},
+			scheduled: () => pending.size,
+		};
+	}
+
+	function tracker(): {
+		t: VisibilityTracker;
+		clock: ReturnType<typeof timers>;
+		expiries: number;
+	} {
+		const clock = timers();
+		const state = { expiries: 0 };
+		const t = new VisibilityTracker(HIDE_GRACE_MS, () => state.expiries++, clock);
+		return {
+			t,
+			clock,
+			get expiries() {
+				return state.expiries;
+			},
+		};
+	}
+
+	it('starts shown and arms the grace period on the first hidden measurement', () => {
+		const h = tracker();
+		expect(h.t.hidden).toBe(false);
+		expect(h.t.update(true)).toBeNull();
+		expect(h.clock.scheduled()).toBe(0);
+
+		expect(h.t.update(false)).toBe('hidden');
+		expect(h.t.hidden).toBe(true);
+		expect(h.t.pending).toBe(true);
+	});
+
+	it('disposes only after the grace period, and only once', () => {
+		const h = tracker();
+		h.t.update(false);
+		expect(h.expiries).toBe(0);
+		h.clock.run();
+		expect(h.expiries).toBe(1);
+		expect(h.t.pending).toBe(false);
+		h.clock.run();
+		expect(h.expiries).toBe(1);
+	});
+
+	it('does not push the deadline out while it stays hidden', () => {
+		const h = tracker();
+		h.t.update(false);
+		expect(h.t.update(false)).toBeNull();
+		expect(h.t.update(false)).toBeNull();
+		expect(h.clock.scheduled()).toBe(1);
+		h.clock.run();
+		expect(h.expiries).toBe(1);
+	});
+
+	it('a reveal inside the grace period cancels it and reports the transition once', () => {
+		const h = tracker();
+		h.t.update(false);
+		expect(h.t.update(true)).toBe('revealed');
+		expect(h.t.hidden).toBe(false);
+		expect(h.clock.scheduled()).toBe(0);
+		// A second shown measurement is not a transition: no remount.
+		expect(h.t.update(true)).toBeNull();
+		h.clock.run();
+		expect(h.expiries).toBe(0);
+	});
+
+	it('re-arms after a reconnect that happens while still hidden', () => {
+		const h = tracker();
+		h.t.update(false);
+		h.clock.run();
+		expect(h.expiries).toBe(1);
+		// What the view does at the end of `start()`.
+		h.t.arm();
+		expect(h.t.pending).toBe(true);
+		h.clock.run();
+		expect(h.expiries).toBe(2);
+	});
+
+	it('never arms while the host is shown, however often arm() is called', () => {
+		const h = tracker();
+		h.t.arm();
+		h.t.arm();
+		expect(h.clock.scheduled()).toBe(0);
+		h.t.update(false);
+		h.t.arm();
+		h.t.arm();
+		expect(h.clock.scheduled()).toBe(1);
+	});
+
+	it('cancel is idempotent and stops a pending disposal (onClose)', () => {
+		const h = tracker();
+		h.t.update(false);
+		h.t.cancel();
+		h.t.cancel();
+		expect(h.t.pending).toBe(false);
+		h.clock.run();
+		expect(h.expiries).toBe(0);
+	});
+
+	it('grace period is long enough to survive tab flipping', () => {
+		expect(HIDE_GRACE_MS).toBeGreaterThanOrEqual(10_000);
 	});
 });

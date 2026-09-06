@@ -76,6 +76,8 @@ export interface HerdrSettings {
 	terminalFontFamily: string;
 	/** Terminal font size in pixels. 0 follows the Obsidian monospace size. */
 	terminalFontSize: number;
+	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
+	terminalScrollbackMb: number;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/** Directories appended to PATH when spawning herdr, colon separated. */
@@ -84,6 +86,39 @@ export interface HerdrSettings {
 	defaultAttachMode: AttachMode;
 	/** Where a terminal opens when the active note is inside the agent's cwd. */
 	terminalPlacement: TerminalPlacement;
+}
+
+/**
+ * Scrollback budget bounds, in megabytes per open terminal.
+ *
+ * ghostty-web's `scrollback` option is a **byte** budget for libghostty-vt's page
+ * list, not a line count: measured headlessly, 10 MB holds ~5 961 lines, so
+ * roughly 600 lines per megabyte, and the memory is taken from the one WebAssembly
+ * memory every terminal in the window shares — which grows but never shrinks
+ * (notes/memory.md). Hence a small default and a hard ceiling: 64 MB across a few
+ * open terminals is already a quarter of a gigabyte that Obsidian keeps until it
+ * restarts. `0` is never allowed through; it means "unlimited" and grew past 1 GB
+ * in the measurement.
+ */
+export const MIN_SCROLLBACK_MB = 1;
+export const MAX_SCROLLBACK_MB = 64;
+export const DEFAULT_SCROLLBACK_MB = 10;
+/** Bytes per megabyte for the budget. Decimal, because the setting is user-facing. */
+export const SCROLLBACK_BYTES_PER_MB = 1_000_000;
+
+/**
+ * Whatever `data.json` holds (hand-edited, from an older version, or missing)
+ * turned into an integer number of megabytes inside the supported range.
+ */
+export function clampScrollbackMb(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SCROLLBACK_MB;
+	const whole = Math.round(value);
+	return Math.min(MAX_SCROLLBACK_MB, Math.max(MIN_SCROLLBACK_MB, whole));
+}
+
+/** The byte budget handed to the renderer for one terminal. */
+export function scrollbackBytes(settings: HerdrSettings): number {
+	return clampScrollbackMb(settings.terminalScrollbackMb) * SCROLLBACK_BYTES_PER_MB;
 }
 
 export const DEFAULT_SETTINGS: HerdrSettings = {
@@ -106,6 +141,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
 	terminalFontSize: 0,
+	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
 	extraPath: '',
 	defaultAttachMode: 'control',
@@ -494,6 +530,22 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.terminalFontFamily)
 					.onChange(async (value) => {
 						settings.terminalFontFamily = value;
+						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Scrollback memory budget')
+			.setDesc(
+				'Megabytes of scrollback each open terminal keeps. This is a memory budget, not a line count: roughly 600 lines per megabyte. The memory is shared by every open terminal and is only given back when Obsidian restarts.',
+			)
+			.addSlider((slider) =>
+				slider
+					.setLimits(MIN_SCROLLBACK_MB, MAX_SCROLLBACK_MB, 1)
+					.setValue(clampScrollbackMb(settings.terminalScrollbackMb))
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						settings.terminalScrollbackMb = clampScrollbackMb(value);
 						await this.save();
 					}),
 			);
