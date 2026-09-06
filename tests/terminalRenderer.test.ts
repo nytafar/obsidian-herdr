@@ -1,18 +1,50 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	cellFromPoint,
 	computeFit,
 	cssVar,
+	DEFAULT_TERMINAL_ENGINE,
 	FALLBACK_FONT_FAMILY,
 	FALLBACK_FONT_SIZE,
+	isTerminalEngine,
 	MIN_COLS,
 	MIN_ROWS,
+	normalizeEngineName,
 	parsePx,
 	resolveFont,
 	SCROLLBAR_RESERVE_PX,
+	TERMINAL_ENGINES,
+	TERMINAL_ENGINE_LABELS,
 	type CellHitInput,
 	type FitInput,
+	type RendererOptions,
 } from '../src/views/renderer/TerminalRenderer';
+import {
+	LINES_PER_SCROLLBACK_MB,
+	MAX_SCROLLBACK_LINES,
+	MIN_SCROLLBACK_LINES,
+	scrollbackLines,
+} from '../src/views/renderer/xtermJs';
+import { createRenderer } from '../src/views/renderer/create';
+
+// Both engines are mocked: `createRenderer` is being tested for which class it
+// picks, and the real ones need a browser (ghostty-web's WASM loader, xterm's
+// UMD preamble both want `self`). Importing `xtermJs` itself is safe because it
+// only imports xterm.js lazily, inside `mount()`.
+vi.mock('../src/views/renderer/ghosttyWeb', () => ({
+	GhosttyWebRenderer: class FakeGhostty {
+		constructor(public readonly options: RendererOptions) {}
+	},
+}));
+vi.mock('../src/views/renderer/xtermJs', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../src/views/renderer/xtermJs')>();
+	return {
+		...actual,
+		XtermJsRenderer: class FakeXterm {
+			constructor(public readonly options: RendererOptions) {}
+		},
+	};
+});
 
 // Only the DOM-free helpers are unit tested; the ghostty-web renderer itself
 // needs a canvas plus the WASM. See tests/README.md for the in-Obsidian smoke.
@@ -198,5 +230,79 @@ describe('cellFromPoint', () => {
 		expect(cellFromPoint({ ...grid, cellHeightPx: Number.NaN })).toBeUndefined();
 		expect(cellFromPoint({ ...grid, cols: 0, rows: 0 })).toBeUndefined();
 		expect(cellFromPoint({ ...grid, clientX: Number.NaN })).toBeUndefined();
+	});
+});
+
+describe('engine names', () => {
+	it('offers ghostty-web and xterm.js, ghostty-web first and by default', () => {
+		expect([...TERMINAL_ENGINES]).toEqual(['ghostty-web', 'xterm.js']);
+		expect(DEFAULT_TERMINAL_ENGINE).toBe('ghostty-web');
+	});
+
+	it('gives every engine a distinct, non-empty dropdown label', () => {
+		// Sentence case is the guideline; `xterm.js` is a brand that is written
+		// lower case, so the assertion is distinctness, not capitalisation.
+		const labels = TERMINAL_ENGINES.map((name) => TERMINAL_ENGINE_LABELS[name]);
+		expect(labels.every((label) => label.trim().length > 0)).toBe(true);
+		expect(new Set(labels).size).toBe(labels.length);
+	});
+
+	it('normalises anything unknown to the default, never throwing', () => {
+		expect(normalizeEngineName('xterm.js')).toBe('xterm.js');
+		expect(normalizeEngineName('ghostty-web')).toBe('ghostty-web');
+		expect(normalizeEngineName('xterm')).toBe(DEFAULT_TERMINAL_ENGINE);
+		expect(normalizeEngineName(undefined)).toBe(DEFAULT_TERMINAL_ENGINE);
+		expect(normalizeEngineName(7)).toBe(DEFAULT_TERMINAL_ENGINE);
+		expect(normalizeEngineName(null)).toBe(DEFAULT_TERMINAL_ENGINE);
+		expect(isTerminalEngine('xterm.js')).toBe(true);
+		expect(isTerminalEngine('kitty')).toBe(false);
+	});
+});
+
+describe('createRenderer', () => {
+	it('builds the engine the options name', () => {
+		expect(createRenderer({ engine: 'ghostty-web' }).constructor.name).toBe(
+			'FakeGhostty',
+		);
+		expect(createRenderer({ engine: 'xterm.js' }).constructor.name).toBe(
+			'FakeXterm',
+		);
+	});
+
+	it('falls back to ghostty-web with no engine or an unknown one', () => {
+		expect(createRenderer().constructor.name).toBe('FakeGhostty');
+		expect(createRenderer({}).constructor.name).toBe('FakeGhostty');
+		expect(
+			createRenderer({ engine: 'kitty' as never }).constructor.name,
+		).toBe('FakeGhostty');
+	});
+
+	it('passes the options through untouched', () => {
+		const options: RendererOptions = { engine: 'xterm.js', fontSize: 13 };
+		const renderer = createRenderer(options) as unknown as {
+			options: RendererOptions;
+		};
+		expect(renderer.options).toBe(options);
+	});
+});
+
+describe('scrollbackLines', () => {
+	// The setting is a byte budget because ghostty-web's option is; xterm.js
+	// counts lines, so one setting has to mean the same history in both.
+	it('converts the byte budget at the measured 600 lines per megabyte', () => {
+		expect(scrollbackLines(10_000_000)).toBe(10 * LINES_PER_SCROLLBACK_MB);
+		expect(scrollbackLines(1_000_000)).toBe(LINES_PER_SCROLLBACK_MB);
+	});
+
+	it('clamps, so a hand-edited budget cannot ask for a gigabyte of lines', () => {
+		expect(scrollbackLines(1)).toBe(MIN_SCROLLBACK_LINES);
+		expect(scrollbackLines(10_000_000_000)).toBe(MAX_SCROLLBACK_LINES);
+	});
+
+	it('leaves xterm to its own default for a missing or unusable budget', () => {
+		expect(scrollbackLines(undefined)).toBeUndefined();
+		expect(scrollbackLines(0)).toBeUndefined();
+		expect(scrollbackLines(-1)).toBeUndefined();
+		expect(scrollbackLines(Number.NaN)).toBeUndefined();
 	});
 });
