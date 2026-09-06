@@ -47,7 +47,11 @@ is pinned, but a bump could move the literal. `tests/bundle.test.ts` builds into
 a temp directory and checks the round trip against
 `node_modules/ghostty-web/dist/ghostty-vt.wasm`; the release workflow greps
 `main.js` for the shim's `herdr:wasm-brotli` marker and for the absence of plain
-base64 wasm.
+base64 wasm. The same test also pins `main.js`'s total size: `MAIN_JS_BASELINE_BYTES`
+records the 644 292 bytes we shipped right after #63, and `MAIN_JS_CEILING_BYTES`
+is about 15% above that; the test fails if the built bundle exceeds the ceiling
+so a size regression shows up in diff review rather than only as a red test
+(issue #64). A deliberate size change updates both constants in the same commit.
 
 ## Tests and smoke recipes
 

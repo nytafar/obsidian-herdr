@@ -44,6 +44,22 @@ const { BROTLI_MARKER, buildOptions, rewriteGhosttyWeb } = buildConfig as unknow
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GHOSTTY_WASM = path.join(ROOT, 'node_modules/ghostty-web/dist/ghostty-vt.wasm');
 
+/**
+ * `main.js` on 2026-09-06, right after #63 (Brotli-compressing the inlined
+ * ghostty wasm) landed. This is the bundle we actually intend to ship, not the
+ * pre-#63 one, so it is the number a size regression should be measured
+ * against (issue #64).
+ */
+const MAIN_JS_BASELINE_BYTES = 644_292;
+
+/**
+ * About 15% above the baseline, rounded. Leaves room for ordinary feature
+ * work without hiding a regression: an unexpectedly large dependency, an
+ * accidental second copy of something already embedded, or a base64 fallback
+ * creeping back in.
+ */
+const MAIN_JS_CEILING_BYTES = 740_000;
+
 /** The base64 of the wasm magic number `\0asm\1\0\0\0`, i.e. an unencoded wasm. */
 const WASM_BASE64_HEAD = 'AGFzbQEAAAA';
 
@@ -89,6 +105,17 @@ describe('the production bundle', () => {
 	it('no longer carries the wasm as base64', () => {
 		expect(bundle).not.toContain(WASM_BASE64_HEAD);
 		expect(bundle).not.toContain('data:application/wasm;base64');
+	});
+
+	it('stays under the size ceiling', () => {
+		const size = Buffer.byteLength(bundle, 'utf8');
+		expect(
+			size,
+			`main.js is ${size} bytes, over the ${MAIN_JS_CEILING_BYTES} byte ceiling ` +
+				`(baseline ${MAIN_JS_BASELINE_BYTES}, set 2026-09-06 after #63). If this ` +
+				'growth is a deliberate size change, update MAIN_JS_BASELINE_BYTES and ' +
+				'MAIN_JS_CEILING_BYTES together in tests/bundle.test.ts, in the same commit.',
+		).toBeLessThanOrEqual(MAIN_JS_CEILING_BYTES);
 	});
 
 	it('decodes to exactly the ghostty-vt.wasm on disk', async () => {
