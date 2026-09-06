@@ -224,9 +224,16 @@ export default class HerdrPlugin extends Plugin {
 
 		let leaf = existing;
 		if (target === 'switch') {
-			// The first terminal leaf in layout order, so repeated opens keep
-			// landing in the same place rather than walking across the workspace.
-			const reused = open.at(0);
+			// The terminal the user is looking at, else the first loaded one.
+			// A deferred leaf is never switched: Obsidian would have to load its
+			// view first, and the tab the user last used is the one they expect
+			// to change (seen live: the first leaf in layout order was a
+			// deferred, restored tab, and the switch landed nowhere useful).
+			const active = workspace.activeLeaf;
+			const reused =
+				(active && open.includes(active) && !active.isDeferred ? active : undefined) ??
+				open.find((candidate) => !candidate.isDeferred) ??
+				open.at(0);
 			if (reused) {
 				await reused.setViewState({
 					type: TERMINAL_VIEW_TYPE,
