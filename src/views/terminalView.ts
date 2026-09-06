@@ -52,6 +52,7 @@ import {
 import { createRenderer } from './renderer/create';
 import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
 import { InputRouter } from './input/inputRouter';
+import { pickModifiers } from './input/mouseEncoder';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -962,10 +963,7 @@ export class TerminalView extends ItemView {
 			// Undefined before the renderer has been measured; herdr then reports
 			// on cell (0, 0), which is better than not scrolling at all.
 			...(position === undefined ? {} : { position }),
-			shiftKey: event.shiftKey,
-			altKey: event.altKey,
-			ctrlKey: event.ctrlKey,
-			metaKey: event.metaKey,
+			...pickModifiers(event),
 		});
 		if (!route) return false;
 		// False from an observer (`scroll` is control-only, PRD section 7) or from
