@@ -14,6 +14,19 @@
  * where a scheme leaves a slot undefined (bright variants, selection colours). If
  * a colour looks wrong, fix the table; nothing else depends on the exact values.
  *
+ * Issue #50 deepened the `obsidian` mapping, which now lives at the bottom of
+ * this file as {@link obsidianTheme}: a pure function over a CSS-variable reader
+ * that the renderers supply. Three decisions are recorded there rather than in a
+ * commit message, because they are the kind that get re-litigated:
+ *
+ *  - bright ANSI colours are **derived**, not read, by a fixed mix toward the
+ *    extreme furthest from the background ({@link BRIGHT_MIX});
+ *  - the four grey slots read an appearance-dependent chain of base steps,
+ *    because Obsidian's base scale inverts between light and dark;
+ *  - the `--code-*` palette wins over the generic hues for the six slots whose
+ *    meaning matches, but only where the theme differentiated it. See
+ *    `CODE_FOR_SLOT` for what is taken and what is deliberately left.
+ *
  * Stretch goal from #26, deliberately not in this cut: reading the user's real
  * Ghostty config (`~/.config/ghostty/config`, `theme = …` plus `palette = N=#rrggbb`
  * overrides) and offering it as another name. That would plug in as one more
@@ -446,6 +459,32 @@ const HUE_FOR_SLOT: Record<
 };
 
 /**
+ * ANSI slot → the `--code-*` variable that reads better than the generic hue.
+ *
+ * The decision (#50): a theme author tunes the code palette for monospace
+ * content, which is what a terminal is, so where the two disagree the code
+ * palette wins — but only for the slots whose meaning genuinely matches, and
+ * only when the theme differentiated the variable at all (see `codeColor`).
+ *
+ * Taken: string → green, keyword → magenta, function → blue, property → cyan,
+ * value → yellow, important → red, comment → brightBlack.
+ * Left alone: `--code-operator`, `--code-punctuation`, `--code-tag` (no ANSI
+ * slot means what they mean, and they are usually the plain foreground);
+ * `--code-normal` (that is `--text-normal`, already the foreground); and
+ * `--code-background`, because the terminal is a pane in the vault, not a code
+ * block inside a note, so its background must stay `--background-primary` or it
+ * stops matching the surrounding UI.
+ */
+const CODE_FOR_SLOT: Record<keyof typeof HUE_FOR_SLOT, string> = {
+	red: '--code-important',
+	green: '--code-string',
+	yellow: '--code-value',
+	blue: '--code-function',
+	magenta: '--code-keyword',
+	cyan: '--code-property',
+};
+
+/**
  * A hue as numbers. `--color-<hue>-rgb` is the authoritative triplet — themes
  * define it next to the hex so that `rgba(var(--color-red-rgb), .2)` works — and
  * `--color-<hue>` is the fallback for a theme that only sets the hex.
@@ -535,8 +574,23 @@ export function obsidianTheme(
 	set('white', readColor(read, ...scale.white));
 	set('brightWhite', readColor(read, ...scale.brightWhite));
 
+	const codeNormal = readColor(read, '--code-normal', '--text-normal');
+	/**
+	 * A `--code-*` colour, but only when the theme actually tuned it. Obsidian's
+	 * own default leaves most of the code palette equal to `--code-normal`, and a
+	 * slot that reads back the body text colour would turn a whole ANSI hue into
+	 * plain foreground. Undifferentiated → undefined → the generic hue wins.
+	 */
+	const codeColor = (name: string): Rgb | undefined => {
+		const color = readColor(read, name);
+		if (!color) return undefined;
+		if (codeNormal && toHex(color) === toHex(codeNormal)) return undefined;
+		return color;
+	};
+
 	for (const [slot, hue] of Object.entries(HUE_FOR_SLOT)) {
-		const base = readHue(read, hue);
+		const codeVar = CODE_FOR_SLOT[slot as keyof typeof HUE_FOR_SLOT];
+		const base = codeColor(codeVar) ?? readHue(read, hue);
 		if (!base) continue;
 		set(slot as ThemeColorKey, base);
 		// Obsidian publishes no bright variants, so four of the eight pairs used
@@ -544,6 +598,13 @@ export function obsidianTheme(
 		const bright = `bright${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
 		set(bright as ThemeColorKey, brighten(base, dark));
 	}
+
+	// Dim text and the brightBlack slot are the same grey in practice, and the
+	// comment colour is the one a theme author tuned for "present but recessive"
+	// against a code background. Only taken when it is differentiated and does
+	// not collide with black.
+	const comment = codeColor('--code-comment');
+	if (comment && toHex(comment) !== theme.black) set('brightBlack', comment);
 
 	return theme;
 }

@@ -274,3 +274,66 @@ describe('obsidianTheme: the base scale', () => {
 		expect(theme.brightBlack).toBe(DARK_VARS['--color-base-35']);
 	});
 });
+
+/** A theme that tuned its code palette, as most community themes do. */
+const CODE_VARS: Record<string, string> = {
+	...DARK_VARS,
+	'--code-normal': '#dadada',
+	'--code-comment': '#7f8c98',
+	'--code-string': '#7ee787',
+	'--code-keyword': '#ff7bd5',
+	'--code-function': '#79c0ff',
+	'--code-property': '#56d4dd',
+	'--code-value': '#ffd866',
+	'--code-important': '#ff6b6b',
+};
+
+describe('obsidianTheme: the code palette', () => {
+	it('takes the code colours for the slots whose meaning matches', () => {
+		const theme = obsidianTheme(reader(CODE_VARS), { dark: true });
+		expect(theme.green).toBe(CODE_VARS['--code-string']);
+		expect(theme.magenta).toBe(CODE_VARS['--code-keyword']);
+		expect(theme.blue).toBe(CODE_VARS['--code-function']);
+		expect(theme.cyan).toBe(CODE_VARS['--code-property']);
+		expect(theme.yellow).toBe(CODE_VARS['--code-value']);
+		expect(theme.red).toBe(CODE_VARS['--code-important']);
+		expect(theme.brightBlack).toBe(CODE_VARS['--code-comment']);
+	});
+
+	it('derives the bright variants from the code colours too', () => {
+		const theme = obsidianTheme(reader(CODE_VARS), { dark: true });
+		expect(theme.brightGreen).not.toBe(theme.green);
+		expect(luminance(parseColor(theme.brightGreen)!)).toBeGreaterThan(
+			luminance(parseColor(theme.green)!),
+		);
+	});
+
+	it('ignores a code palette the theme never differentiated', () => {
+		const flat: Record<string, string> = { ...DARK_VARS };
+		for (const name of [
+			'--code-normal',
+			'--code-comment',
+			'--code-string',
+			'--code-keyword',
+			'--code-function',
+			'--code-property',
+			'--code-value',
+			'--code-important',
+		]) {
+			flat[name] = '#dadada';
+		}
+		const theme = obsidianTheme(reader(flat), { dark: true });
+		expect(theme.green).toBe(obsidianTheme(reader(DARK_VARS), { dark: true }).green);
+		expect(theme.brightBlack).toBe(
+			obsidianTheme(reader(DARK_VARS), { dark: true }).brightBlack,
+		);
+	});
+
+	it('keeps the terminal background out of --code-background', () => {
+		const theme = obsidianTheme(
+			reader({ ...CODE_VARS, '--code-background': '#000000' }),
+			{ dark: true },
+		);
+		expect(theme.background).toBe(DARK_VARS['--background-primary']);
+	});
+});
