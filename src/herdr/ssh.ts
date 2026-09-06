@@ -244,6 +244,8 @@ export class SshTunnel {
 	private everConnected = false;
 	/** Set once the remote `~` has been expanded; avoids a second ssh call. */
 	private resolvedRemotePath: string | null = null;
+	/** Remote `$HOME`, learned while expanding a `~` socket path (issue #22). */
+	private resolvedHome = '';
 
 	constructor(options: SshTunnelOptions) {
 		this.options = options;
@@ -272,6 +274,16 @@ export class SshTunnel {
 			error: this.error,
 			attempts: this.attempts,
 		};
+	}
+
+	/**
+	 * The remote user's home directory, or empty when it was never needed — a
+	 * configured socket path that is already absolute costs no round trip, so
+	 * there is nothing to reuse and callers keep showing absolute paths
+	 * (issue #22). Never resolved on its own account: one ssh call per tunnel.
+	 */
+	get remoteHome(): string {
+		return this.resolvedHome;
 	}
 
 	/** One line for the settings status block and the list header. */
@@ -463,8 +475,9 @@ export class SshTunnel {
 			this.options.host,
 			'printf %s "$HOME"',
 		]);
-		const resolved =
-			home.length > 0 ? `${home.replace(/\/+$/, '')}${configured.slice(1)}` : configured;
+		const trimmedHome = home.replace(/\/+$/, '');
+		if (trimmedHome.length > 0) this.resolvedHome = trimmedHome;
+		const resolved = trimmedHome.length > 0 ? `${trimmedHome}${configured.slice(1)}` : configured;
 		this.resolvedRemotePath = resolved;
 		return resolved;
 	}

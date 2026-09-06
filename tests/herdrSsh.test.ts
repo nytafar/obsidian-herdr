@@ -224,6 +224,8 @@ describe('SshTunnel.start', () => {
 			`${tunnel.localSocketPath}:/home/lasse/.config/herdr/herdr.sock`,
 		);
 		expect(tunnel.status.remoteSocketPath).toBe('/home/lasse/.config/herdr/herdr.sock');
+		// The row model shortens remote cwds with this (issue #22).
+		expect(tunnel.remoteHome).toBe('/home/lasse');
 
 		await tunnel.stop();
 	});
@@ -233,6 +235,8 @@ describe('SshTunnel.start', () => {
 		const tunnel = new SshTunnel({ host: HOST, remoteSocketPath: REMOTE_SOCKET, deps: h.deps });
 		await tunnel.start();
 		expect(h.runs).toEqual([]);
+		// Nothing was resolved, so there is no remote home to reuse (issue #22).
+		expect(tunnel.remoteHome).toBe('');
 		await tunnel.stop();
 	});
 

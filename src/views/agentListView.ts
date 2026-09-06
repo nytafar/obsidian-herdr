@@ -1,7 +1,8 @@
 /**
  * Agent list sidebar view (PRD M8, M9, M10, N1, N4; T4).
  *
- * One row per agent pane of the scoped workspace, grouped by herdr tab:
+ * One row per agent pane of the scoped workspace, grouped by herdr tab, by
+ * working directory or not at all (issue #20):
  * status glyph, agent name, stripped terminal title, and the cwd relative to the
  * vault. Clicking a row focuses that pane in herdr (`pane.focus`), which is the
  * one source of truth for "seen" (PRD M9); the icon button opens the pane as a
@@ -35,12 +36,14 @@ import { buildRows, type RowGroup, type RowModel } from './rowModel';
 export {
 	agentDisplayName,
 	buildRows,
+	cacheBadge,
 	countStatuses,
+	pathLabel,
 	relativeCwd,
 	STATUS_LABEL,
 	STATUS_ORDER,
 } from './rowModel';
-export type { RowGroup, RowModel, RowModelOptions } from './rowModel';
+export type { RowBadge, RowGroup, RowModel, RowModelOptions } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -141,6 +144,15 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
+	 * Repaints on the next frame. Called by the plugin when a setting the row
+	 * model reads has changed (issue #20); the render path re-reads the settings
+	 * itself, so nothing has to be passed in.
+	 */
+	refresh(): void {
+		this.scheduleRender();
+	}
+
+	/**
 	 * Coalesces a burst of scope events into one repaint per animation frame, on
 	 * the window this view lives in so a popout sidebar still gets frames.
 	 */
@@ -178,13 +190,21 @@ export class AgentListView extends ItemView {
 			return;
 		}
 
-		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath());
+		// Settings are read here, once per repaint, so changing the sort or the
+		// grouping reorders the list on the next render and never reconnects.
+		const settings = this.plugin.settings;
+		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath(), {
+			groupBy: settings.agentListGroupBy,
+			sort: settings.agentListSort,
+			homePath: this.plugin.herdrHomePath(),
+		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
 
 	private renderGroup(parent: HTMLElement, group: RowGroup): void {
 		const groupEl = parent.createDiv({ cls: 'herdr-tab-group' });
-		groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
+		// An empty label is grouping "none": one group, no header at all.
+		if (group.label) groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
 		for (const row of group.rows) this.renderRow(groupEl, row);
 	}
 
@@ -205,7 +225,9 @@ export class AgentListView extends ItemView {
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
 		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
 		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
-		for (const badge of model.badges) line.createSpan({ cls: 'herdr-agent-badge', text: badge });
+		for (const badge of model.badges) {
+			line.createSpan({ cls: `herdr-agent-badge mod-${badge.tone}`, text: badge.text });
+		}
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		const button = row.createEl('button', {

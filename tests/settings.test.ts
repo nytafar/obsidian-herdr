@@ -150,3 +150,10 @@ describe('terminalPlacement (issue #28)', () => {
 		expect(DEFAULT_SETTINGS.terminalPlacement).toBe('split-right');
 	});
 });
+
+describe('agent list defaults (issue #20)', () => {
+	it('sorts by herdr’s priority and groups by herdr tab, which is today’s look', () => {
+		expect(DEFAULT_SETTINGS.agentListSort).toBe('priority');
+		expect(DEFAULT_SETTINGS.agentListGroupBy).toBe('tab');
+	});
+});

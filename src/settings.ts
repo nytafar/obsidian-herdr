@@ -29,6 +29,20 @@ export type AttachMode = 'control' | 'observe';
  */
 export type TerminalPlacement = 'split-right' | 'split-left' | 'tab';
 
+/**
+ * Row order in the agent list (issue #20). `priority` is herdr's own attention
+ * order, so the sidebar and a herdr TUI set to `agent_panel_sort = "priority"`
+ * agree; `alphabetical` is by the name a row displays.
+ */
+export type AgentListSort = 'priority' | 'alphabetical';
+
+/**
+ * What the agent list groups rows under (issue #20). `tab` is the herdr tab and
+ * the v1 behaviour; `folder` keeps one project's agents together even when herdr
+ * has spread them over two tabs; `none` is a flat list.
+ */
+export type AgentListGroupBy = 'tab' | 'folder' | 'none';
+
 /** Status transitions the plugin notifies about. Others are noise (PRD M12). */
 export type NotifiedTransition = 'blocked' | 'done';
 
@@ -82,6 +96,10 @@ export interface HerdrSettings {
 	openTerminalAfterStart: boolean;
 	/** Directories appended to PATH when spawning herdr, colon separated. */
 	extraPath: string;
+	/** Row order inside each group of the agent list. */
+	agentListSort: AgentListSort;
+	/** What the agent list groups its rows under. */
+	agentListGroupBy: AgentListGroupBy;
 	/** Attach mode used when opening a terminal view. */
 	defaultAttachMode: AttachMode;
 	/** Where a terminal opens when the active note is inside the agent's cwd. */
@@ -144,6 +162,8 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
 	extraPath: '',
+	agentListSort: 'priority',
+	agentListGroupBy: 'tab',
 	defaultAttachMode: 'control',
 	terminalPlacement: 'split-right',
 };
@@ -481,6 +501,43 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.openTerminalAfterStart = value;
 						await this.save();
+					}),
+			);
+
+		new Setting(containerEl).setName('Agent list').setHeading();
+
+		new Setting(containerEl)
+			.setName('Sort')
+			.setDesc(
+				'Row order inside each group. Priority is herdr’s own: blocked first, then finished but unseen, then working, then idle, with the most recent change first among equals.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('priority', 'Priority (same as herdr)')
+					.addOption('alphabetical', 'Alphabetical by name')
+					.setValue(settings.agentListSort)
+					.onChange(async (value) => {
+						settings.agentListSort = value as AgentListSort;
+						await this.save();
+						this.plugin.refreshAgentList();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Group by')
+			.setDesc(
+				'What rows are grouped under. Folder keeps a project’s agents together when herdr has spread them over several tabs.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('tab', 'Herdr tab')
+					.addOption('folder', 'Working directory')
+					.addOption('none', 'Nothing, one flat list')
+					.setValue(settings.agentListGroupBy)
+					.onChange(async (value) => {
+						settings.agentListGroupBy = value as AgentListGroupBy;
+						await this.save();
+						this.plugin.refreshAgentList();
 					}),
 			);
 

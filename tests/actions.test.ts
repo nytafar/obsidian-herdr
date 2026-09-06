@@ -21,6 +21,8 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		socketPath: '~/.config/herdr/herdr.sock',
 		herdrBinary: '',
 		workspaceId: '',
+		agentListSort: 'priority',
+		agentListGroupBy: 'tab',
 		remote: {
 			enabled: false,
 			host: '',

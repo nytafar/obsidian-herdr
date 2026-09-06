@@ -85,6 +85,21 @@ describe('toPaneState (M7)', () => {
 		expect(state).toMatchObject({ paneId: 'w4:p1', agent: 'claude', title: 'Document skills' });
 	});
 
+	it('keeps the token map, dropping non-string values (issue #23)', () => {
+		expect(
+			toPaneState(
+				pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: '001868' } }),
+			)?.tokens,
+		).toEqual({ cache_ok: '31m', cache_sort: '001868' });
+		// No `tokens` at all is what a non-Claude pane looks like.
+		expect(toPaneState(pane({ pane_id: 'w4:p1' }))?.tokens).toEqual({});
+		expect(
+			toPaneState(
+				pane({ pane_id: 'w4:p1', tokens: { cache_ok: null } as unknown as undefined }),
+			)?.tokens,
+		).toEqual({});
+	});
+
 	it('falls back to foreground_cwd when cwd is absent', () => {
 		expect(
 			toPaneState(pane({ pane_id: 'w4:p1', cwd: null, foreground_cwd: '/tmp/x' }))?.cwd,
@@ -209,6 +224,26 @@ describe('WorkspaceScope.prime', () => {
 	});
 });
 
+describe('WorkspaceScope.prime statusChangedSeq (issue #20)', () => {
+	it('starts every primed pane at zero and stamps a status that moved meanwhile', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2' })],
+		);
+		expect(scope.list().map((state) => state.statusChangedSeq)).toEqual([0, 0]);
+
+		// A reconnect re-primes: the pane whose status moved while we were away
+		// sorts ahead of the one that did not.
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2', agent_status: 'blocked' })],
+		);
+		expect(scope.get('w4:p1')?.statusChangedSeq).toBe(0);
+		expect(scope.get('w4:p2')?.statusChangedSeq).toBeGreaterThan(0);
+	});
+});
+
 describe('WorkspaceScope.setAgentNames (M8, M20)', () => {
 	it('fills in names from agent.list and repaints only the rows that changed', () => {
 		const scope = new WorkspaceScope({ vaultPath: VAULT });
@@ -302,6 +337,67 @@ describe('WorkspaceScope.ingest', () => {
 			['label', 'tabId'],
 			['tabId', 'cwd'],
 		]);
+	});
+
+	it('stamps statusChangedSeq on every status change, newest highest (#20)', () => {
+		const { scope } = primed();
+		expect(scope.get('w4:p1')?.statusChangedSeq).toBe(0);
+
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'working' }) }),
+		);
+		const first = scope.get('w4:p1')?.statusChangedSeq ?? 0;
+		expect(first).toBeGreaterThan(0);
+
+		// A repaint-worthy change that is not the status leaves the stamp alone.
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({
+					pane_id: 'w4:p1',
+					agent_status: 'working',
+					terminal_title_stripped: 'Refactor scope',
+				}),
+			}),
+		);
+		expect(scope.get('w4:p1')?.statusChangedSeq).toBe(first);
+
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'blocked' }) }),
+		);
+		expect(scope.get('w4:p1')?.statusChangedSeq).toBeGreaterThan(first);
+	});
+
+	it('stamps a pane that appears later ahead of the primed ones (#20)', () => {
+		const { scope } = primed();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p2' }) }));
+		expect(scope.get('w4:p2')?.statusChangedSeq).toBeGreaterThan(
+			scope.get('w4:p1')?.statusChangedSeq ?? 0,
+		);
+	});
+
+	it('emits changed when the cache tokens tick (issue #23)', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: '001868' } }),
+			}),
+		);
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '30m', cache_sort: '001808' } }),
+			}),
+		);
+		// The same map again is not a change, however often herdr repeats it.
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '30m', cache_sort: '001808' } }),
+			}),
+		);
+		expect(rec.changed.map((entry) => relevantDiff(entry.prev, entry.next))).toEqual([
+			['tokens'],
+			['tokens'],
+		]);
+		expect(scope.get('w4:p1')?.tokens).toEqual({ cache_ok: '30m', cache_sort: '001808' });
 	});
 
 	it('adds a new agent pane and ignores a new shell pane (M7)', () => {

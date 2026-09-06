@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import {
 	FileSystemAdapter,
 	Menu,
@@ -159,6 +160,17 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
+	 * Home directory as seen by the machine herdr runs on (issue #22): the remote
+	 * user's home with a remote profile, this user's home otherwise. Empty when a
+	 * remote tunnel never had to expand a `~`, in which case rows outside the
+	 * vault keep their absolute paths.
+	 */
+	herdrHomePath(): string {
+		if (this.settings.remote.enabled) return this.tunnel?.remoteHome ?? '';
+		return homedir();
+	}
+
+	/**
 	 * Path of the local herdr binary, empty until discovery ran or when it failed.
 	 * The terminal view turns this into a spawn argv (`terminalArgvPrefix`).
 	 */
@@ -224,6 +236,19 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	isTerminalOpen(paneId: string): boolean {
 		return this.terminalLeaf(paneId) !== null;
+	}
+
+	/**
+	 * Repaints every open agent list (issue #20). The settings tab calls this
+	 * after a sort or grouping change, which the list reads on each render, so the
+	 * new order appears without a reconnect. No view is stored: the leaves are
+	 * looked up and a deferred one is skipped, since it rebuilds on load anyway.
+	 */
+	refreshAgentList(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(AGENT_LIST_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof AgentListView) view.refresh();
+		}
 	}
 
 	/** Runs `listener` whenever `scope` is replaced. Returns the unsubscribe. */

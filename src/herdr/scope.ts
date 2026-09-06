@@ -63,6 +63,23 @@ export interface PaneState {
 	label: string;
 	cwd: string;
 	focused: boolean;
+	/**
+	 * herdr's per-pane token map, passed through unread except by the row model
+	 * (issue #23). A herdr plugin publishes the prompt-cache countdown into it as
+	 * `cache_ok` / `cache_warn` / `cache_crit` plus `cache_sort`; unknown keys are
+	 * kept, since anything may publish here. Empty for a pane with no tokens,
+	 * which is any harness the plugin does not track.
+	 */
+	tokens: Record<string, string>;
+	/**
+	 * Monotonic stamp of the last `agentStatus` change, higher meaning more
+	 * recent (issue #20). herdr breaks its own priority ordering on
+	 * `last_agent_state_change_seq`, which `pane.list` does not carry, so the
+	 * scope counts transitions itself. Panes are stamped 0 until they move, which
+	 * includes everything a `prime` first saw, so a fresh list falls back to the
+	 * row model's name tie-break. Never a wall clock.
+	 */
+	statusChangedSeq: number;
 }
 
 export interface ScopeEventMap {
@@ -103,7 +120,15 @@ const RELEVANT: (keyof PaneState)[] = [
 	'cwd',
 	'agent',
 	'focused',
+	'tokens',
 ];
+
+/** Shallow record equality; `tokens` is the only object field of a pane state. */
+function sameTokens(a: Record<string, string>, b: Record<string, string>): boolean {
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => a[key] === b[key]);
+}
 
 function basename(path: string): string {
 	const trimmed = path.replace(/\/+$/, '');
@@ -130,6 +155,20 @@ export function isUnder(cwd: string, root: string): boolean {
 export function stripTitleSpinner(title: string): string {
 	const stripped = title.replace(/^[^\p{L}\p{N}]+/u, '').trim();
 	return stripped.length > 0 ? stripped : title.trim();
+}
+
+/**
+ * The pane's token map with the string values kept and everything else dropped.
+ * herdr types the values as `string`, but this arrives over JSON from a plugin,
+ * so a stray null or number is ignored rather than rendered (issue #23).
+ */
+function tokensOf(tokens: unknown): Record<string, string> {
+	if (typeof tokens !== 'object' || tokens === null || Array.isArray(tokens)) return {};
+	const result: Record<string, string> = {};
+	for (const [key, value] of Object.entries(tokens as Record<string, unknown>)) {
+		if (typeof value === 'string') result[key] = value;
+	}
+	return result;
 }
 
 /** Reads a `PaneInfo` off an event payload, tolerating unknown shapes. */
@@ -162,12 +201,16 @@ export function toPaneState(pane: PaneInfo, name = ''): PaneState | null {
 		label: pane.label ?? '',
 		cwd: pane.cwd ?? pane.foreground_cwd ?? '',
 		focused: pane.focused === true,
+		tokens: tokensOf(pane.tokens),
+		statusChangedSeq: 0,
 	};
 }
 
 /** Fields of `next` that differ from `prev` and matter to a view. */
 export function relevantDiff(prev: PaneState, next: PaneState): (keyof PaneState)[] {
-	return RELEVANT.filter((field) => prev[field] !== next[field]);
+	return RELEVANT.filter((field) =>
+		field === 'tokens' ? !sameTokens(prev.tokens, next.tokens) : prev[field] !== next[field],
+	);
 }
 
 /**
@@ -237,6 +280,8 @@ export class WorkspaceScope {
 	 * collision check needs them all (PRD M20).
 	 */
 	private names = new Map<string, string>();
+	/** Counter behind `PaneState.statusChangedSeq`; only ever increases. */
+	private statusSeq = 0;
 	private resolvedId: string | null = null;
 	private resolutionMethod: ResolutionMethod = 'none';
 	/** Handler tuples differ per event, so the table is untyped and `on` re-narrows. */
@@ -356,12 +401,17 @@ export class WorkspaceScope {
 				this.emit('removed', previous);
 			}
 		}
-		for (const [paneId, state] of next) {
+		for (const [paneId, fresh] of next) {
 			const previous = this.panes.get(paneId);
 			if (!previous) {
-				this.panes.set(paneId, state);
-				this.emit('added', state);
-			} else if (relevantDiff(previous, state).length > 0) {
+				this.panes.set(paneId, fresh);
+				this.emit('added', fresh);
+				continue;
+			}
+			// A pane the first prime saw keeps seq 0; a re-prime after a reconnect
+			// still stamps a status that moved while the connection was down.
+			const state = this.stamp(fresh, previous);
+			if (relevantDiff(previous, state).length > 0) {
 				this.panes.set(paneId, state);
 				this.emit('changed', paneId, previous, state);
 			} else {
@@ -479,22 +529,41 @@ export class WorkspaceScope {
 	private upsert(pane: PaneInfo): void {
 		const previous = this.panes.get(pane.pane_id);
 		const inScope = this.resolvedId !== null && pane.workspace_id === this.resolvedId;
-		const state = inScope ? toPaneState(pane, this.names.get(pane.pane_id) ?? '') : null;
+		const fresh = inScope ? toPaneState(pane, this.names.get(pane.pane_id) ?? '') : null;
 
-		if (!state) {
+		if (!fresh) {
 			// Moved out of scope, or the agent was released: it leaves the list.
 			if (previous) this.drop(pane.pane_id);
 			return;
 		}
 		if (!previous) {
-			this.panes.set(pane.pane_id, state);
-			this.emit('added', state);
+			// An agent that appears while we are watching is newer than anything the
+			// prime found, so it takes the freshest stamp rather than 0.
+			const added = { ...fresh, statusChangedSeq: ++this.statusSeq };
+			this.panes.set(pane.pane_id, added);
+			this.emit('added', added);
 			return;
 		}
+		const state = this.stamp(fresh, previous);
 		const diff = relevantDiff(previous, state);
 		this.panes.set(pane.pane_id, state);
 		// The storm of pane_updated that only bumps `revision` stops here (N4).
 		if (diff.length > 0) this.emit('changed', pane.pane_id, previous, state);
+	}
+
+	/**
+	 * Carries `statusChangedSeq` from the pane's last state, bumping it when the
+	 * status actually moved. `toPaneState` cannot do this: the counter belongs to
+	 * the scope, not to a single `PaneInfo`.
+	 */
+	private stamp(next: PaneState, previous: PaneState): PaneState {
+		return {
+			...next,
+			statusChangedSeq:
+				previous.agentStatus === next.agentStatus
+					? previous.statusChangedSeq
+					: ++this.statusSeq,
+		};
 	}
 
 	private drop(paneId: string): void {

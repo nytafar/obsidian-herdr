@@ -108,6 +108,31 @@
 	color: var(--text-faint);
 }
 
+/* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23). */
+
+.herdr-agent-badge {
+	flex: 0 0 auto;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.herdr-agent-badge.mod-ok {
+	color: var(--color-green);
+}
+
+.herdr-agent-badge.mod-warn {
+	color: var(--color-orange);
+}
+
+.herdr-agent-badge.mod-crit {
+	color: var(--color-red);
+}
+
 .herdr-row-action {
 	flex: 0 0 auto;
 	color: var(--text-muted);
