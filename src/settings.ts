@@ -108,6 +108,11 @@ export interface HerdrSettings {
 	terminalScrollbackMb: number;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
+	/**
+	 * How many agent panes "Start agent here" puts in one herdr tab before it
+	 * opens another tab. See {@link clampPanesPerTab}.
+	 */
+	panesPerTab: number;
 	/** Directories appended to PATH when spawning herdr, colon separated. */
 	extraPath: string;
 	/** Row order inside each group of the agent list. */
@@ -153,6 +158,30 @@ export function clampScrollbackMb(value: unknown): number {
 	return Math.min(MAX_SCROLLBACK_MB, Math.max(MIN_SCROLLBACK_MB, whole));
 }
 
+/**
+ * Bounds for the panes-per-tab cap (issue #29).
+ *
+ * The cap is a layout preference, not a grouping one: a folder's agents stay one
+ * group in the agent list however herdr spread them, as long as the list groups
+ * by folder (issue #20). One means "never split, always a new tab" — the
+ * behaviour before this setting existed. Four is where a herdr tab stops being
+ * readable at a normal window width, so nothing above it is offered.
+ */
+export const MIN_PANES_PER_TAB = 1;
+export const MAX_PANES_PER_TAB = 4;
+export const DEFAULT_PANES_PER_TAB = 2;
+
+/**
+ * Whatever `data.json` holds turned into a whole number of panes inside the
+ * supported range. Anything that is not a finite number falls back to the
+ * default, the same contract as {@link clampScrollbackMb}.
+ */
+export function clampPanesPerTab(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PANES_PER_TAB;
+	const whole = Math.round(value);
+	return Math.min(MAX_PANES_PER_TAB, Math.max(MIN_PANES_PER_TAB, whole));
+}
+
 /** The byte budget handed to the renderer for one terminal. */
 export function scrollbackBytes(settings: HerdrSettings): number {
 	return clampScrollbackMb(settings.terminalScrollbackMb) * SCROLLBACK_BYTES_PER_MB;
@@ -181,6 +210,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
+	panesPerTab: DEFAULT_PANES_PER_TAB,
 	extraPath: '',
 	agentListSort: 'priority',
 	agentListGroupBy: 'tab',
@@ -521,6 +551,22 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.openTerminalAfterStart)
 					.onChange(async (value) => {
 						settings.openTerminalAfterStart = value;
+						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Panes per herdr tab')
+			.setDesc(
+				'How many agents "Start agent here" puts in one herdr tab before it opens another. A second agent in the same folder splits that folder’s tab; set this to 1 to always get a new tab. Group the agent list by folder to keep a folder’s agents together whichever tab they landed in.',
+			)
+			.addSlider((slider) =>
+				slider
+					.setLimits(MIN_PANES_PER_TAB, MAX_PANES_PER_TAB, 1)
+					.setValue(clampPanesPerTab(settings.panesPerTab))
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						settings.panesPerTab = clampPanesPerTab(value);
 						await this.save();
 					}),
 			);
