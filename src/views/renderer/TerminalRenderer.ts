@@ -61,6 +61,17 @@ export interface TerminalRenderer {
 	 * view's `css-change` handler does nothing.
 	 */
 	refreshTheme?(): void;
+	/**
+	 * Scrollback plus screen as plain text, oldest line first, trailing blank lines
+	 * trimmed. The terminal view takes one of these before it disposes a hidden
+	 * terminal (#15) and writes it back into the fresh one on reveal, so history
+	 * stays reachable by scrolling up.
+	 *
+	 * **Colours, styles and cursor position are not preserved** — this is text, not
+	 * a VT state dump, and restoring it is a plain write. Optional: a renderer that
+	 * cannot produce one simply starts empty after a hide/reveal cycle.
+	 */
+	snapshotLines?(): string[];
 	dispose(): void;
 }
 

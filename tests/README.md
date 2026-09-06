@@ -9,9 +9,13 @@ Only DOM-free logic is unit tested: the pure helpers of the agent list
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
 aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
 `obsidian.d.ts`. The terminal view is unit tested the same way: only its exported
-decisions (`parseTerminalState`, `attachFor`, `debounce`, `wheelToScroll`,
-`spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a canvas and a live
-herdr. The terminal renderer
+decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
+`wheelToScroll`, `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
+canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
+machine with injected timers, so the decision to free a hidden terminal is tested
+without a DOM; what a measurement *is* (a host with no box) is not. The settings
+side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`). The
+terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
 (`resolveFont`, `computeFit`, `cssVar`, `parsePx`).
@@ -107,6 +111,22 @@ herdr pane. The unit tests stop at the exported decisions.
    (`css-change` -> `refreshTheme`).
 8. Restart Obsidian with a terminal tab open: the tab comes back for the same
    pane and mode, because `getState`/`setState` persist `{paneId, mode}`.
+9. Hidden-leaf suspension (#15, `HIDE_GRACE_MS` = 30 s): open a terminal, switch
+   to another tab in the same tab group and wait half a minute. `pgrep -fa
+   'terminal session'` then shows **no** bridge for that pane and, in control
+   mode, herdr's own pane is usable again — the takeover was handed back. Come
+   back to the tab: the scrollback is still there (as plain text, colours are
+   gone by design) and a fresh full frame paints over the live state within a
+   moment. Flipping tabs quickly must change nothing: 30 s of hiding is the
+   trigger, not a tab switch. In devtools' Memory tab, "Collect garbage" then a
+   heap snapshot after the suspension should show zero `Terminal`,
+   `CanvasRenderer` and `HTMLCanvasElement` instances for that view, and the
+   performance monitor's frame rate should drop — the ghostty repaint loop only
+   stops when the renderer is disposed.
+10. Scrollback budget: with "Scrollback memory budget" at 10 MB a terminal keeps
+   roughly 6 000 lines (about 600 lines per megabyte, measured — the option is a
+   byte budget, not a line count). Raising it to 64 MB and opening several
+   terminals is the worst case the ceiling exists for.
 
 Read-only bridge check without Obsidian (observe only — never control against a
 pane someone is using):

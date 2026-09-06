@@ -10,6 +10,13 @@
  *   ResizeObserver   -> renderer.fit -> session.resize   (control mode only)
  *   wheel            -> session.scroll
  *
+ * A leaf that stays hidden (Obsidian gives an inactive tab `display: none`) is
+ * suspended after `HIDE_GRACE_MS`: the session is released back to herdr and the
+ * renderer disposed, which is the only way to stop ghostty-web's 60 fps repaint
+ * loop and to hand its WASM terminal and canvas back (#15, notes/memory.md). The
+ * scrollback is carried across as plain text and written into the new terminal on
+ * reveal, before the first frame.
+ *
  * Attach mode comes from `settings.defaultAttachMode`: control attaches with
  * `--takeover` (PRD M15, the herdr TUI pane then follows Obsidian's size), observe
  * is read-only (PRD S16) and never sends input or resizes. The header actions
@@ -116,6 +123,83 @@ export function debounce(fn: () => void, ms: number, timers: DebounceTimers): De
 			},
 		},
 	);
+}
+
+/**
+ * How long a terminal's leaf must stay hidden before the view gives its renderer
+ * and its bridge session back (#15). Long enough that flipping between two tabs
+ * costs nothing, short enough that a terminal left in a background tab stops
+ * burning a WASM terminal, a dpr-scaled canvas and a 60 fps repaint loop.
+ */
+export const HIDE_GRACE_MS = 30_000;
+
+/** What a measurement did to the tracker's state. */
+export type VisibilityChange = 'hidden' | 'revealed' | null;
+
+/**
+ * The hide/reveal decision, with no DOM in it: the view feeds it measurements
+ * ("does the host still have a box?") and it decides when the grace period has
+ * run out. Timers are injected, like `debounce`, so `tests/terminalView.test.ts`
+ * can run the whole state machine without a browser.
+ *
+ * Obsidian gives an inactive tab's content `display: none`, so a hidden leaf
+ * measures 0x0 — that, plus `layout-change` and `onResize`, is how the view
+ * finds out. Only transitions matter: a stream of "still hidden" measurements
+ * must not keep pushing the deadline out.
+ */
+export class VisibilityTracker {
+	private hiddenNow = false;
+	private handle: number | null = null;
+
+	constructor(
+		private readonly graceMs: number,
+		/** Called once, `graceMs` after the host went away, if it is still away. */
+		private readonly onGraceExpired: () => void,
+		private readonly timers: DebounceTimers,
+	) {}
+
+	get hidden(): boolean {
+		return this.hiddenNow;
+	}
+
+	/** True while a grace period is running. */
+	get pending(): boolean {
+		return this.handle !== null;
+	}
+
+	/** Feeds one measurement. Returns the transition it caused, or null. */
+	update(visible: boolean): VisibilityChange {
+		if (visible) {
+			if (!this.hiddenNow) return null;
+			this.hiddenNow = false;
+			this.cancel();
+			return 'revealed';
+		}
+		if (this.hiddenNow) return null;
+		this.hiddenNow = true;
+		this.arm();
+		return 'hidden';
+	}
+
+	/**
+	 * Starts the grace period when the host is hidden and nothing is pending. The
+	 * view calls this after a (re)start too: a reconnect while hidden mounts a new
+	 * renderer that nothing would otherwise come back to free.
+	 */
+	arm(): void {
+		if (!this.hiddenNow || this.handle !== null) return;
+		this.handle = this.timers.setTimeout(() => {
+			this.handle = null;
+			this.onGraceExpired();
+		}, this.graceMs);
+	}
+
+	/** Drops a pending grace period. Idempotent; always called from `onClose`. */
+	cancel(): void {
+		if (this.handle === null) return;
+		this.timers.clearTimeout(this.handle);
+		this.handle = null;
+	}
 }
 
 /**
@@ -347,6 +431,12 @@ export class TerminalView extends ItemView {
 	private stderr: string[] = [];
 	private resizeObserver: ResizeObserver | null = null;
 	private scheduleResize: Debounced | null = null;
+	/** Hide/reveal state machine; null before `onOpen` and after `onClose`. */
+	private visibility: VisibilityTracker | null = null;
+	/** True while the renderer and the session are given up for a hidden leaf. */
+	private suspended = false;
+	/** Scrollback carried across a suspend, as plain text. Null when there is none. */
+	private snapshot: string[] | null = null;
 	/** Guards against an old start finishing after a newer one began. */
 	private generation = 0;
 	private opened = false;
@@ -418,7 +508,20 @@ export class TerminalView extends ItemView {
 		});
 		this.register(() => this.scheduleResize?.cancel());
 
-		const observer = new ResizeObserver(() => this.scheduleResize?.());
+		this.visibility = new VisibilityTracker(HIDE_GRACE_MS, () => void this.suspend(), {
+			setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+			clearTimeout: (handle) => window.clearTimeout(handle),
+		});
+		this.register(() => this.visibility?.cancel());
+		// A tab that goes to the background has its content hidden rather than
+		// resized, so both of these are really "measure the host again".
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.checkVisibility()));
+		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.checkVisibility()));
+
+		const observer = new ResizeObserver(() => {
+			this.checkVisibility();
+			this.scheduleResize?.();
+		});
 		observer.observe(this.hostEl);
 		this.resizeObserver = observer;
 		this.register(() => {
@@ -433,6 +536,10 @@ export class TerminalView extends ItemView {
 	protected override async onClose(): Promise<void> {
 		this.opened = false;
 		this.generation++;
+		this.visibility?.cancel();
+		this.visibility = null;
+		this.snapshot = null;
+		this.suspended = false;
 		this.cancelFlush();
 		this.frames.clear();
 		this.perf = null;
@@ -448,7 +555,75 @@ export class TerminalView extends ItemView {
 
 	/** Obsidian's own resize hook; the observer covers the rest. */
 	override onResize(): void {
+		this.checkVisibility();
 		this.scheduleResize?.();
+	}
+
+	/**
+	 * One measurement into the tracker. A hidden leaf's content has `display: none`
+	 * and therefore no box at all, so a zero measurement means hidden and anything
+	 * else means shown. Cheap enough to call from every resize and layout change.
+	 */
+	private checkVisibility(): void {
+		const host = this.hostEl;
+		const tracker = this.visibility;
+		if (!host || !tracker) return;
+		const visible = host.clientWidth > 0 && host.clientHeight > 0;
+		if (tracker.update(visible) === 'revealed') void this.resume();
+	}
+
+	/**
+	 * The leaf has been hidden for the whole grace period: hand everything back.
+	 * Releasing the session tells herdr the terminal is free again (a control-mode
+	 * view gives up its takeover), and disposing the renderer is what actually
+	 * stops ghostty-web's repaint loop and frees its canvas.
+	 */
+	private async suspend(): Promise<void> {
+		if (!this.opened || this.suspended) return;
+		// Belt and braces: a measurement can be missed (a layout change nobody
+		// reported), so never suspend a host that has a box right now.
+		const host = this.hostEl;
+		if (host && host.clientWidth > 0 && host.clientHeight > 0) {
+			this.visibility?.update(true);
+			return;
+		}
+		if (!this.renderer && !this.session) {
+			this.suspended = true;
+			return;
+		}
+		// Invalidates any `start()` still in flight: it re-checks the generation
+		// before it builds a session, so nothing can be spawned behind our back.
+		const generation = ++this.generation;
+		// Set before the await, so a reveal arriving while the child goes down sees
+		// a suspended view and restarts it (which bumps the generation again).
+		this.suspended = true;
+		this.cancelFlush();
+		this.frames.clear();
+		this.perf = null;
+		await this.stopSession();
+		// A reconnect or a reveal raced us; it owns the view now, it has already
+		// cleared `suspended`, and the renderer it kept must stay.
+		if (generation !== this.generation) return;
+		const renderer = this.renderer;
+		if (renderer) {
+			// Text only: colours, styles and cursor position do not survive this
+			// (see `TerminalRenderer.snapshotLines`). Accepted — the alternative is
+			// keeping ~5.4 MB of WASM plus a dpr-scaled canvas for a tab nobody is
+			// looking at.
+			this.snapshot = renderer.snapshotLines?.() ?? null;
+			renderer.dispose();
+		}
+		this.renderer = null;
+		this.rendererReady = null;
+		this.hostEl?.empty();
+	}
+
+	/** The leaf is back: mount a fresh renderer, replay the snapshot, reattach. */
+	private async resume(): Promise<void> {
+		if (!this.opened || !this.suspended) return;
+		this.suspended = false;
+		if (!this.paneId) return;
+		await this.start();
 	}
 
 	/**
@@ -460,6 +635,9 @@ export class TerminalView extends ItemView {
 		const host = this.hostEl;
 		if (!paneId || !host) return;
 		const generation = ++this.generation;
+		// Whatever the reason for this start — reconnect, mode toggle, reveal — the
+		// view is live again from here on.
+		this.suspended = false;
 		await this.stopSession();
 		if (generation !== this.generation) return;
 
@@ -541,6 +719,9 @@ export class TerminalView extends ItemView {
 			session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
 			renderer.focus();
 		}
+		// Reconnecting a leaf that is still hidden starts a fresh grace period;
+		// without this the tracker sits in its hidden state with no timer.
+		this.visibility?.arm();
 		this.renderStatus();
 	}
 
@@ -585,6 +766,7 @@ export class TerminalView extends ItemView {
 			this.renderer = renderer;
 			this.rendererReady = renderer.mount(host).then(() => {
 				renderer.onData((data) => this.onData(data));
+				this.replaySnapshot(renderer);
 			});
 		}
 		try {
@@ -597,6 +779,18 @@ export class TerminalView extends ItemView {
 			return null;
 		}
 		return this.renderer;
+	}
+
+	/**
+	 * Writes back what a suspended terminal held, before the new session's first
+	 * frame lands, so scrolling up still reaches the history. Plain text: the
+	 * trailing newline leaves herdr's repaint a clean line to start on.
+	 */
+	private replaySnapshot(renderer: TerminalRenderer): void {
+		const lines = this.snapshot;
+		this.snapshot = null;
+		if (!lines || lines.length === 0) return;
+		renderer.write(new TextEncoder().encode(`${lines.join('\r\n')}\r\n`));
 	}
 
 	/** Keystrokes. Observers never write to the pane (PRD S16). */
