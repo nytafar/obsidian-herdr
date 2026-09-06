@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import * as view from '../src/views/agentListView';
 import { quickSettingsItems, type QuickSettings } from '../src/views/quickSettings';
+import { DEFAULT_SETTINGS } from '../src/settings';
 
 describe('agentListView module surface', () => {
 	it('exports the view type id', () => {
@@ -92,5 +93,29 @@ describe('quickSettingsItems (issue #44)', () => {
 		expect(withEffect.map((item) => [item.label, item.effect])).toEqual([
 			['Folder hover button', 'folder-button'],
 		]);
+	});
+});
+
+describe('endpointToggle (issue #54)', () => {
+	const withRemote = (enabled: boolean, host = 'lasse@xl') => ({
+		remote: { ...DEFAULT_SETTINGS.remote, host, enabled },
+	});
+
+	it('is hidden unless a remote host is configured', () => {
+		expect(view.endpointToggle(withRemote(false, '')).shown).toBe(false);
+		expect(view.endpointToggle(withRemote(true, '  ')).shown).toBe(false);
+		expect(view.endpointToggle(withRemote(false)).shown).toBe(true);
+	});
+
+	it('pictures where the list points and names the other side', () => {
+		const local = view.endpointToggle(withRemote(false));
+		expect(local.remote).toBe(false);
+		expect(local.icon).toBe('laptop');
+		expect(local.label).toBe('Switch to remote herdr (lasse@xl)');
+
+		const remote = view.endpointToggle(withRemote(true, ' lasse@xl '));
+		expect(remote.remote).toBe(true);
+		expect(remote.icon).toBe('server');
+		expect(remote.label).toBe('Switch to local herdr');
 	});
 });
