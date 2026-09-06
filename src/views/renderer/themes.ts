@@ -463,6 +463,38 @@ function readColor(read: CssVarReader, ...names: string[]): Rgb | undefined {
 	return undefined;
 }
 
+/**
+ * The grey ramp, per appearance. Obsidian's twelve base steps run light-to-dark
+ * in a light vault and dark-to-light in a dark one, so one fixed choice cannot
+ * serve both: `--color-base-30` is a near-white in a light theme and a dark grey
+ * in a dark one. These pick the same *perceptual* positions in either — black
+ * just off the background, bright white at the far end — using the finer steps
+ * (25, 35, 40, 60, 70) rather than only the coarse ones.
+ *
+ * Each entry is a fallback chain, because a theme that predates the finer steps
+ * may define only 00/10/20/…; the last name in each is one of those.
+ */
+interface BaseScale {
+	black: string[];
+	brightBlack: string[];
+	white: string[];
+	brightWhite: string[];
+}
+
+const DARK_BASE_SCALE: BaseScale = {
+	black: ['--color-base-25', '--color-base-20', '--color-base-30'],
+	brightBlack: ['--color-base-40', '--color-base-35', '--color-base-50'],
+	white: ['--color-base-70', '--color-base-60'],
+	brightWhite: ['--color-base-100'],
+};
+
+const LIGHT_BASE_SCALE: BaseScale = {
+	black: ['--color-base-100'],
+	brightBlack: ['--color-base-60', '--color-base-70'],
+	white: ['--color-base-35', '--color-base-40', '--color-base-30'],
+	brightWhite: ['--color-base-00', '--color-base-05', '--color-base-10'],
+};
+
 /** Whether the vault is dark: the explicit flag, else the background's luminance. */
 function isDarkTheme(read: CssVarReader, context: ObsidianThemeContext): boolean {
 	if (context.dark !== undefined) return context.dark;
@@ -497,10 +529,11 @@ export function obsidianTheme(
 	set('selectionBackground', readColor(read, '--text-selection'));
 	set('selectionForeground', readColor(read, '--text-normal'));
 
-	set('black', readColor(read, '--color-base-30'));
-	set('brightBlack', readColor(read, '--color-base-50'));
-	set('white', readColor(read, '--color-base-70'));
-	set('brightWhite', readColor(read, '--color-base-100'));
+	const scale = dark ? DARK_BASE_SCALE : LIGHT_BASE_SCALE;
+	set('black', readColor(read, ...scale.black));
+	set('brightBlack', readColor(read, ...scale.brightBlack));
+	set('white', readColor(read, ...scale.white));
+	set('brightWhite', readColor(read, ...scale.brightWhite));
 
 	for (const [slot, hue] of Object.entries(HUE_FOR_SLOT)) {
 		const base = readHue(read, hue);

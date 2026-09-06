@@ -192,7 +192,7 @@ describe('obsidianTheme: ANSI pairs', () => {
 		for (const vars of [DARK_VARS, LIGHT_VARS]) {
 			const theme = obsidianTheme(reader(vars)) as Record<string, string>;
 			for (const slot of ANSI_PAIRS) {
-				const bright = `bright${slot[0].toUpperCase()}${slot.slice(1)}`;
+				const bright = `bright${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
 				expect(theme[slot], slot).toMatch(/^#[0-9a-f]{6}$/);
 				expect(theme[bright], bright).toMatch(/^#[0-9a-f]{6}$/);
 				expect(theme[bright], `${slot} pair`).not.toBe(theme[slot]);
@@ -230,5 +230,47 @@ describe('obsidianTheme: ANSI pairs', () => {
 		expect(theme.red).toBeUndefined();
 		expect(theme.foreground).toBeUndefined();
 		expect(obsidianTheme(reader({ '--color-green-rgb': 'not a colour' })).green).toBeUndefined();
+	});
+});
+
+describe('obsidianTheme: the base scale', () => {
+	it('flips with the appearance, so black stays near the background', () => {
+		const dark = obsidianTheme(reader(DARK_VARS), { dark: true });
+		const light = obsidianTheme(reader(LIGHT_VARS), { dark: false });
+		// Dark vault: black is the dark end, bright white the light end.
+		expect(luminance(parseColor(dark.black)!)).toBeLessThan(
+			luminance(parseColor(dark.brightWhite)!),
+		);
+		// Light vault: the same slots, and the scale has inverted under them.
+		expect(luminance(parseColor(light.black)!)).toBeLessThan(
+			luminance(parseColor(light.brightWhite)!),
+		);
+		expect(light.black).toBe(LIGHT_VARS['--color-base-100']);
+		expect(light.brightWhite).toBe(LIGHT_VARS['--color-base-00']);
+		expect(dark.black).toBe(DARK_VARS['--color-base-25']);
+		expect(dark.brightWhite).toBe(DARK_VARS['--color-base-100']);
+	});
+
+	it('uses the finer steps and keeps the four greys apart', () => {
+		for (const vars of [DARK_VARS, LIGHT_VARS]) {
+			const theme = obsidianTheme(reader(vars));
+			const greys = [theme.black, theme.brightBlack, theme.white, theme.brightWhite];
+			expect(new Set(greys).size).toBe(4);
+		}
+		expect(obsidianTheme(reader(DARK_VARS)).brightBlack).toBe(
+			DARK_VARS['--color-base-40'],
+		);
+		expect(obsidianTheme(reader(LIGHT_VARS)).white).toBe(
+			LIGHT_VARS['--color-base-35'],
+		);
+	});
+
+	it('falls back down the chain when a step is missing', () => {
+		const vars = { ...DARK_VARS };
+		delete vars['--color-base-25'];
+		delete vars['--color-base-40'];
+		const theme = obsidianTheme(reader(vars), { dark: true });
+		expect(theme.black).toBe(DARK_VARS['--color-base-20'] ?? DARK_VARS['--color-base-30']);
+		expect(theme.brightBlack).toBe(DARK_VARS['--color-base-35']);
 	});
 });
