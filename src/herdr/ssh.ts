@@ -36,13 +36,7 @@ import { rm } from 'node:fs/promises';
 import { connect } from 'node:net';
 import type { HerdrSettings } from '../settings';
 
-/**
- * Timers taken from `globalThis`, bound: this module also runs under plain node
- * in the unit tests, where there is no `window` to time on. Bound because a DOM
- * `setTimeout` called detached from its global throws "Illegal invocation".
- */
-const setTimer = globalThis.setTimeout.bind(globalThis);
-const clearTimer = globalThis.clearTimeout.bind(globalThis);
+import { clearTimer, setTimer } from '../timers';
 
 /** macOS caps `sun_path` around 104 bytes; stay clear of it. */
 export const MAX_LOCAL_SOCKET_PATH = 100;

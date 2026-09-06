@@ -30,14 +30,7 @@ import {
 	type WorkspaceInfo,
 } from './types.gen';
 
-/**
- * Timers taken from `globalThis`, bound: this is a process-side module that also
- * runs under plain node in the unit tests, where there is no `window`. Bound
- * because a DOM `setTimeout` called detached from its global throws
- * "Illegal invocation". Same shape as `src/herdr/ssh.ts`.
- */
-const setTimer = globalThis.setTimeout.bind(globalThis);
-const clearTimer = globalThis.clearTimeout.bind(globalThis);
+import { clearTimer, setTimer } from '../timers';
 
 /** Request line cap on the server side; keep well under it. */
 export const MAX_REQUEST_BYTES = 1024 * 1024;

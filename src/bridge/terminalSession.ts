@@ -19,14 +19,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
-/**
- * Timers taken from `globalThis`, bound: this is a process-side module that also
- * runs under plain node in the unit tests, where there is no `window`. Bound
- * because a DOM `setTimeout` called detached from its global throws
- * "Illegal invocation". Same shape as `src/herdr/ssh.ts`.
- */
-const setTimer = globalThis.setTimeout.bind(globalThis);
-const clearTimer = globalThis.clearTimeout.bind(globalThis);
+import { clearTimer, setTimer } from '../timers';
 
 /** herdr caps a frame payload at 32 MiB; base64 inflates that by 4/3. */
 export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
