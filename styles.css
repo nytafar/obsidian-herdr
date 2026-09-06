@@ -26,6 +26,20 @@
 	padding: var(--size-4-2);
 }
 
+/* One control above the rows: the sort and group-by menu (issue #41). Right
+   aligned and muted, like the file explorer's own header icons, so it reads as
+   chrome rather than as the first row of the list. */
+.herdr-list-header {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	margin-bottom: var(--size-2-2);
+}
+
+.herdr-list-menu-button {
+	color: var(--text-muted);
+}
+
 .herdr-agent-list-body {
 	display: flex;
 	flex-direction: column;

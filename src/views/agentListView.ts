@@ -20,17 +20,23 @@
  * `removed` / `workspaceResolved` events, and even those are coalesced into one
  * repaint per frame.
  *
+ * The header above the rows holds one `clickable-icon` button, which opens the
+ * sort and group-by menu (issue #41); what that menu contains is `listMenu.ts`,
+ * pure and tested, and choosing an entry writes the same settings the settings
+ * tab does and repaints every open list.
+ *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
  * listener per row, and no stored view reference anywhere else — `main.ts` finds
  * this view with `getLeavesOfType`.
  */
 
-import { ItemView, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
+import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
+import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -74,6 +80,7 @@ export class AgentListView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('herdr-agent-list');
+		this.renderHeader(container);
 		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 
 		// One delegated listener beats one per row: rows are rebuilt on every
@@ -90,6 +97,58 @@ export class AgentListView extends ItemView {
 			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
 			this.pendingRender = 0;
 		});
+	}
+
+	/**
+	 * The one control above the rows (issue #41): a header button that opens the
+	 * sort and group-by menu, the way the file explorer exposes its sort order.
+	 * Built once in `onOpen`, outside `listEl`, so a repaint never touches it.
+	 */
+	private renderHeader(container: HTMLElement): void {
+		const header = container.createDiv({ cls: 'herdr-list-header' });
+		const button = header.createEl('button', {
+			cls: 'clickable-icon herdr-list-menu-button',
+			attr: { type: 'button' },
+		});
+		setIcon(button, 'arrow-down-up');
+		setTooltip(button, 'Sort and group');
+		button.setAttribute('aria-label', 'Sort and group');
+		this.registerDomEvent(button, 'click', (event) => this.openListMenu(event));
+	}
+
+	/**
+	 * Opens the sort and group-by menu at the pointer. Enter on the button counts:
+	 * the browser turns it into a click, and the menu then takes the keyboard.
+	 */
+	private openListMenu(event: MouseEvent): void {
+		const menu = new Menu();
+		let section: ListMenuSection | null = null;
+		for (const item of listMenuItems(this.plugin.settings)) {
+			if (item.section !== section) {
+				if (section !== null) menu.addSeparator();
+				section = item.section;
+				const heading = SECTION_LABEL[section];
+				menu.addItem((entry) => entry.setTitle(heading).setIsLabel(true));
+			}
+			menu.addItem((entry) =>
+				entry
+					.setTitle(item.label)
+					.setChecked(item.checked)
+					.onClick(() => void this.applyMenuChoice(item)),
+			);
+		}
+		menu.showAtMouseEvent(event);
+	}
+
+	/**
+	 * Writes one menu choice: the same settings the settings tab writes, saved the
+	 * same way, and then every open list repaints — this one included, which is
+	 * why it goes through the plugin rather than calling `refresh()` here.
+	 */
+	private async applyMenuChoice(item: ListMenuItem): Promise<void> {
+		item.apply(this.plugin.settings);
+		await this.plugin.saveSettings();
+		this.plugin.refreshAgentList();
 	}
 
 	protected override async onClose(): Promise<void> {
