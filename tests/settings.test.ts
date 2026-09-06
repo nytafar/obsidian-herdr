@@ -108,3 +108,9 @@ describe('renderConnectionStatus', () => {
 		});
 	});
 });
+
+describe('terminalPlacement (issue #28)', () => {
+	it('defaults to splitting to the right', () => {
+		expect(DEFAULT_SETTINGS.terminalPlacement).toBe('split-right');
+	});
+});
