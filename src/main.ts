@@ -443,6 +443,14 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/** Retitles every open terminal after the title setting changed (issue #43). */
+	refreshTerminalTitles(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) view.refreshTitle();
+		}
+	}
+
 	/**
 	 * Rebuilds every open terminal on the engine the settings now name (issue
 	 * #27). Unlike a theme change, this cannot be applied in place: the renderer

@@ -60,7 +60,13 @@ import {
 	type WorkspaceLeaf,
 } from 'obsidian';
 import type HerdrPlugin from '../main';
-import { cursorOptions, scrollbackBytes, type AttachMode } from '../settings';
+import {
+	cursorOptions,
+	normalizeTerminalTitleSource,
+	scrollbackBytes,
+	type AttachMode,
+	type TerminalTitleSource,
+} from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
 import { endpointLabel, LOCAL_ENDPOINT_ID, type Endpoint } from '../connection';
 import {
@@ -148,10 +154,37 @@ export function stateMatchesPane(raw: unknown, paneId: string, endpointId: strin
  * there — is titled with nothing rather than a fixed "Herdr terminal" (issue
  * #37): the icon already says which plugin owns the tab, and a constant in the
  * view header was the one place the header disagreed with the tab.
+ *
+ * With the *herdr tab label* source (issue #43) the title is the label of the
+ * herdr tab the pane runs in, read from the shared cache and passed in here so
+ * this stays pure. With sharing off (issue #29) a herdr tab is exactly one
+ * agent, so the label alone names it. While sharing is on and the tab holds
+ * more than one agent pane, the agent name is appended, or two terminals would
+ * carry the same title. A label the cache does not have yet, or a herdr without
+ * `tab.list`, falls back to the agent name.
  */
-export function terminalTabTitle(pane: PaneState | undefined, paneId: string): string {
-	if (pane) return agentDisplayName(pane);
-	return paneId;
+export function terminalTabTitle(
+	pane: PaneState | undefined,
+	paneId: string,
+	title?: TitleContext,
+): string {
+	if (!pane) return paneId;
+	const name = agentDisplayName(pane);
+	if (!title || title.source !== 'tab') return name;
+	const label = title.tabLabel?.trim();
+	if (!label) return name;
+	return title.sharing && title.agentsInTab > 1 ? `${label} — ${name}` : label;
+}
+
+/** What {@link terminalTabTitle} needs beyond the pane to apply the setting. */
+export interface TitleContext {
+	source: TerminalTitleSource;
+	/** The herdr tab's label from the cache, or undefined until it is known. */
+	tabLabel: string | undefined;
+	/** `settings.splitIntoFolderTab`: whether a tab may hold two agents at all. */
+	sharing: boolean;
+	/** Agent panes the scope lists in the pane's tab, this one included. */
+	agentsInTab: number;
 }
 
 /**
@@ -633,16 +666,45 @@ export class TerminalView extends ItemView {
 		return TERMINAL_VIEW_TYPE;
 	}
 
-	/** Agent name of the pane, falling back to the pane id (PRD M13, issue #36). */
+	/**
+	 * Agent name of the pane, or the herdr tab label when the setting says so
+	 * (PRD M13, issues #36, #43), falling back to the pane id.
+	 */
 	getDisplayText(): string {
 		// Only the pinned endpoint's scope may name this pane: the other herdr's
 		// `w4:p1` is a different agent (issue #54). While the list is connected
 		// elsewhere the last title that scope gave stays, rather than the id.
-		const pane = this.paneId
-			? this.plugin.scopeFor(this.endpointId)?.get(this.paneId)
-			: undefined;
-		if (pane) this.lastTitle = terminalTabTitle(pane, this.paneId);
+		const scope = this.paneId ? this.plugin.scopeFor(this.endpointId) : null;
+		const pane = scope?.get(this.paneId);
+		if (pane) this.lastTitle = terminalTabTitle(pane, this.paneId, this.titleContext(pane));
 		return this.lastTitle || terminalTabTitle(pane, this.paneId);
+	}
+
+	/**
+	 * The setting and the cached label for the pane's tab. Reads only: the cache
+	 * is asked to fetch from `bindScope`, never from a title read, which Obsidian
+	 * calls on every header repaint.
+	 */
+	private titleContext(pane: PaneState): TitleContext {
+		const settings = this.plugin.settings;
+		const source = normalizeTerminalTitleSource(settings.terminalTitleSource);
+		if (source !== 'tab') return { source, tabLabel: undefined, sharing: false, agentsInTab: 1 };
+		const scope = this.plugin.scopeFor(this.endpointId);
+		const agentsInTab = scope
+			? scope.list().filter((other) => other.tabId === pane.tabId).length
+			: 1;
+		return {
+			source,
+			tabLabel: this.plugin.tabLabelsFor(this.endpointId)?.get(pane.tabId),
+			sharing: settings.splitIntoFolderTab,
+			agentsInTab,
+		};
+	}
+
+	/** Re-reads the title after the title setting changed (issue #43). */
+	refreshTitle(): void {
+		this.plugin.tabLabelsFor(this.endpointId)?.ensure();
+		this.scheduleHeader();
 	}
 
 	override getIcon(): string {
@@ -806,16 +868,33 @@ export class TerminalView extends ItemView {
 		for (const off of this.unbindScope.splice(0)) off();
 		const scope = this.plugin.scopeFor(this.endpointId);
 		if (!scope) return;
+		// The tab label comes from the shared cache (issue #43); this is where the
+		// view asks it to cover the pane's tab, so `getDisplayText` never does.
+		const labels = this.plugin.tabLabelsFor(this.endpointId);
 		this.unbindScope.push(
 			// `added` is the interesting one: a pane opened from the file pane is
 			// shown before `agent.list` has answered, so its name arrives late.
+			// A pane joining this pane's tab matters too: it changes the count that
+			// decides whether the agent name is appended to the tab label.
 			scope.on('added', (pane) => {
-				if (pane.paneId === this.paneId) this.scheduleHeader();
+				if (pane.paneId === this.paneId) {
+					labels?.ensure(pane.tabId);
+					this.scheduleHeader();
+				} else if (pane.tabId === scope.get(this.paneId)?.tabId) {
+					this.scheduleHeader();
+				}
 			}),
 			scope.on('changed', (paneId) => {
 				if (paneId === this.paneId) this.scheduleHeader();
 			}),
+			scope.on('removed', (pane) => {
+				if (pane.tabId === scope.get(this.paneId)?.tabId) this.scheduleHeader();
+			}),
 		);
+		if (labels) {
+			this.unbindScope.push(labels.subscribe(() => this.scheduleHeader()));
+			labels.ensure(scope.get(this.paneId)?.tabId);
+		}
 		this.scheduleHeader();
 	}
 

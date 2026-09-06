@@ -90,6 +90,26 @@ export function normalizeTerminalTab(value: unknown): TerminalTabMode {
 }
 
 /**
+ * What titles a terminal tab (issue #43). `agent` is the agent's display name,
+ * the behaviour since #36. `tab` is the herdr tab label, which reads the same
+ * as herdr's own tab bar; while a tab is shared by two agents (issue #29) the
+ * agent name is appended so the two terminals stay distinguishable.
+ */
+export type TerminalTitleSource = 'agent' | 'tab';
+
+/** The agent name, as before the setting existed. */
+export const DEFAULT_TERMINAL_TITLE_SOURCE: TerminalTitleSource = 'agent';
+
+const TERMINAL_TITLE_SOURCES: readonly TerminalTitleSource[] = ['agent', 'tab'];
+
+/** `data.json` turned into a title source; same contract as the normalisers above. */
+export function normalizeTerminalTitleSource(value: unknown): TerminalTitleSource {
+	return TERMINAL_TITLE_SOURCES.includes(value as TerminalTitleSource)
+		? (value as TerminalTitleSource)
+		: DEFAULT_TERMINAL_TITLE_SOURCE;
+}
+
+/**
  * Row order in the agent list (issue #20). `priority` is herdr's own attention
  * order, so the sidebar and a herdr TUI set to `agent_panel_sort = "priority"`
  * agree; `alphabetical` is by the name a row displays.
@@ -202,6 +222,8 @@ export interface HerdrSettings {
 	terminalPlacement: TerminalPlacement;
 	/** One terminal tab per agent, or one tab that switches pane (issue #38). */
 	terminalTab: TerminalTabMode;
+	/** What titles a terminal tab: the agent name or the herdr tab label (issue #43). */
+	terminalTitleSource: TerminalTitleSource;
 	/**
 	 * What clicking the body of an agent row does (issue #21). The row's icon
 	 * button always does the other one, so this setting swaps the pair.
@@ -309,6 +331,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	defaultAttachMode: 'control',
 	terminalPlacement: DEFAULT_TERMINAL_PLACEMENT,
 	terminalTab: DEFAULT_TERMINAL_TAB,
+	terminalTitleSource: DEFAULT_TERMINAL_TITLE_SOURCE,
 	agentListRowClick: 'terminal',
 };
 
@@ -801,6 +824,23 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalTab = normalizeTerminalTab(value);
 						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Terminal tab title')
+			.setDesc(
+				'What names a terminal tab. Agent name is the name the agent list shows. Herdr tab label is the label of the herdr tab the agent runs in, as in herdr’s own tab bar; while a tab is shared by two agents the agent name is appended. Open terminals retitle at once.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('agent', 'Agent name')
+					.addOption('tab', 'Herdr tab label')
+					.setValue(normalizeTerminalTitleSource(settings.terminalTitleSource))
+					.onChange(async (value) => {
+						settings.terminalTitleSource = normalizeTerminalTitleSource(value);
+						await this.save();
+						this.plugin.refreshTerminalTitles();
 					}),
 			);
 
