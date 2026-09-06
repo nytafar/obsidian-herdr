@@ -69,7 +69,7 @@ interface Harness {
 	children: FakeChild[];
 	spawns: { file: string; args: string[] }[];
 	removed: string[];
-	runs: { file: string; args: string[] }[];
+	runs: { file: string; args: string[]; signal: AbortSignal; timeoutMs: number }[];
 	/** Flipped to make the probe succeed. */
 	listening: boolean;
 	/** Spawn ordinals (1-based) whose probe never succeeds. */
@@ -99,8 +99,8 @@ function harness(
 		removeFile: async (path) => {
 			state.removed.push(path);
 		},
-		run: async (file, args) => {
-			state.runs.push({ file, args });
+		run: async (file, args, { signal, timeoutMs }) => {
+			state.runs.push({ file, args, signal, timeoutMs });
 			return options.home ?? '/home/lasse';
 		},
 	};
@@ -136,6 +136,16 @@ describe('localSocketPathFor (S5)', () => {
 		);
 		expect(localSocketPathFor(HOST, REMOTE_SOCKET)).not.toBe(
 			localSocketPathFor(HOST, '/run/herdr.sock'),
+		);
+	});
+
+	it('gives every tunnel instance its own path for identical settings (#59)', () => {
+		const a = new SshTunnel({ host: HOST, remoteSocketPath: REMOTE_SOCKET });
+		const b = new SshTunnel({ host: HOST, remoteSocketPath: REMOTE_SOCKET });
+		expect(a.localSocketPath).not.toBe(b.localSocketPath);
+		expect(a.localSocketPath).toMatch(/^\/tmp\/herdr-[0-9a-f]{8}\.sock$/);
+		expect(localSocketPathFor(HOST, REMOTE_SOCKET, '/tmp', 'x')).not.toBe(
+			localSocketPathFor(HOST, REMOTE_SOCKET, '/tmp', 'y'),
 		);
 	});
 
@@ -220,6 +230,9 @@ describe('SshTunnel.start', () => {
 		await tunnel.start();
 
 		expect(h.runs).toHaveLength(1);
+		// The lookup is bounded and cancellable (#59).
+		expect(h.runs[0]?.timeoutMs).toBeGreaterThan(0);
+		expect(h.runs[0]?.signal.aborted).toBe(false);
 		expect(h.spawns[0]?.args).toContain(
 			`${tunnel.localSocketPath}:/home/lasse/.config/herdr/herdr.sock`,
 		);
@@ -368,6 +381,207 @@ describe('SshTunnel reconnect and stop', () => {
 	});
 });
 
+describe('SshTunnel ownership (#59)', () => {
+	it('stop during remote HOME resolution spawns nothing and leaves stopped', async () => {
+		const h = harness();
+		const home = deferred<string>();
+		let lookup: AbortSignal | null = null;
+		h.deps.run = (_file, _args, { signal }) => {
+			lookup = signal;
+			// The real dep resolves '' once the signal kills the child.
+			signal.addEventListener('abort', () => home.resolve(''));
+			return home.promise;
+		};
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: '~/.config/herdr/herdr.sock',
+			homeTimeoutMs: 50,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+
+		const starting = tunnel.start();
+		await delay(5);
+		await tunnel.stop();
+		// The lookup child is killed rather than left to finish on its own.
+		expect((lookup as AbortSignal | null)?.aborted).toBe(true);
+
+		await expect(starting).rejects.toThrow(/stopped while connecting/);
+		expect(h.spawns).toHaveLength(0);
+		expect(tunnel.remoteHome).toBe('');
+		expect(h.children).toHaveLength(0);
+		expect(tunnel.status.state).toBe('stopped');
+		expect(h.removed.at(-1)).toBe(tunnel.localSocketPath);
+	});
+
+	it('stop during the pre-spawn unlink spawns nothing', async () => {
+		const h = harness();
+		const unlink = deferred<void>();
+		let removals = 0;
+		h.deps.removeFile = async (path) => {
+			h.removed.push(path);
+			removals += 1;
+			// The first removal is the one before the spawn; hold it.
+			if (removals === 1) await unlink.promise;
+		};
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+
+		const starting = tunnel.start();
+		await delay(5);
+		expect(tunnel.status.state).toBe('starting');
+		await tunnel.stop();
+		unlink.resolve();
+
+		await expect(starting).rejects.toThrow(/stopped while connecting/);
+		expect(h.spawns).toHaveLength(0);
+		expect(tunnel.status.state).toBe('stopped');
+	});
+
+	it('stop during the probe kills the child and never reports connected', async () => {
+		const h = harness();
+		const probe = deferred<boolean>();
+		h.deps.probe = () => probe.promise;
+		const states: TunnelStatus['state'][] = [];
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			killGraceMs: 1,
+			deps: h.deps,
+			onStatus: (status) => states.push(status.state),
+		});
+
+		const starting = tunnel.start();
+		await waitFor(() => h.children.length === 1);
+		await tunnel.stop();
+		probe.resolve(true);
+
+		await expect(starting).rejects.toThrow(/stopped while connecting/);
+		expect(h.children[0]?.signals).toEqual(['SIGTERM']);
+		expect(states).not.toContain('connected');
+		expect(tunnel.status.state).toBe('stopped');
+		expect(h.removed.at(-1)).toBe(tunnel.localSocketPath);
+	});
+
+	it('an attempt whose child was never handed to stop still reaps it', async () => {
+		// stop() lands between spawn and the probe, but before the exit handler
+		// has any say: the attempt itself must kill the child it created.
+		const h = harness();
+		const probe = deferred<boolean>();
+		h.deps.probe = () => probe.promise;
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+		const starting = tunnel.start();
+		await waitFor(() => h.children.length === 1);
+		// A second start supersedes the first without a stop in between.
+		h.deps.probe = async () => true;
+		const restarted = tunnel.start();
+		probe.resolve(true);
+
+		await expect(starting).rejects.toThrow(/stopped while connecting/);
+		await restarted;
+		expect(h.children).toHaveLength(2);
+		expect(h.children[0]?.signals).toEqual(['SIGTERM']);
+		expect(tunnel.status.state).toBe('connected');
+		await tunnel.stop();
+	});
+
+	it('two tunnels with identical settings start and stop without touching each other', async () => {
+		// A Map stands in for /tmp: spawn binds, removeFile unlinks, probe checks.
+		const sockets = new Map<string, string>();
+		const make = (owner: string): { tunnel: SshTunnel; children: FakeChild[] } => {
+			const children: FakeChild[] = [];
+			const tunnel = new SshTunnel({
+				host: HOST,
+				remoteSocketPath: REMOTE_SOCKET,
+				killGraceMs: 1,
+				deps: {
+					run: async () => '',
+					removeFile: async (path) => {
+						sockets.delete(path);
+					},
+					probe: async (path) => sockets.has(path),
+					spawn: (_file, args) => {
+						const spec = args[args.indexOf('-L') + 1] ?? '';
+						sockets.set(spec.slice(0, spec.indexOf(':')), owner);
+						const child = new FakeChild();
+						children.push(child);
+						return child;
+					},
+				},
+			});
+			return { tunnel, children };
+		};
+		const a = make('vault A');
+		const b = make('vault B');
+		await a.tunnel.start();
+		await b.tunnel.start();
+
+		expect(a.tunnel.localSocketPath).not.toBe(b.tunnel.localSocketPath);
+		expect(sockets.get(a.tunnel.localSocketPath)).toBe('vault A');
+		expect(sockets.get(b.tunnel.localSocketPath)).toBe('vault B');
+
+		await a.tunnel.stop();
+		expect(sockets.has(a.tunnel.localSocketPath)).toBe(false);
+		expect(sockets.get(b.tunnel.localSocketPath)).toBe('vault B');
+		expect(b.children[0]?.signals).toEqual([]);
+		expect(b.tunnel.status.state).toBe('connected');
+
+		await b.tunnel.stop();
+		expect(sockets.size).toBe(0);
+	});
+
+	it('retries reuse the instance path, not a fresh one', async () => {
+		const h = harness();
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			backoffMs: 5,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+		const path = tunnel.localSocketPath;
+		await tunnel.start();
+		h.children[0]?.exit(255);
+		await waitFor(() => h.spawns.length === 2 && tunnel.status.state === 'connected');
+		for (const spawn of h.spawns) expect(spawn.args).toContain(`${path}:${REMOTE_SOCKET}`);
+		expect(new Set(h.removed)).toEqual(new Set([path]));
+		await tunnel.stop();
+	});
+
+	it('stop while a reconnect is mid-flight does not leave a child behind', async () => {
+		const h = harness();
+		const probe = deferred<boolean>();
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			backoffMs: 5,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+		await tunnel.start();
+		h.deps.probe = () => probe.promise;
+		h.children[0]?.exit(255);
+		await waitFor(() => h.children.length === 2);
+
+		await tunnel.stop();
+		probe.resolve(true);
+		await delay(20);
+
+		expect(h.children[1]?.signals).toEqual(['SIGTERM']);
+		expect(h.spawns).toHaveLength(2);
+		expect(tunnel.status.state).toBe('stopped');
+	});
+});
+
 describe('terminalArgvPrefix (S17)', () => {
 	it('uses the local binary when the remote profile is off', () => {
 		expect(terminalArgvPrefix(settings({ enabled: false }), '/opt/homebrew/bin/herdr')).toEqual([
@@ -400,6 +614,14 @@ describe('terminalArgvPrefix (S17)', () => {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+	let resolve: (value: T) => void = () => undefined;
+	const promise = new Promise<T>((r) => {
+		resolve = r;
+	});
+	return { promise, resolve };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {

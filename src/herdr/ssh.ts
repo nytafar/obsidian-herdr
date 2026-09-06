@@ -16,8 +16,10 @@
  * Gotchas encoded here, each measured:
  *   - Unix socket paths are capped around 104 bytes on macOS; a long local path
  *     is rejected outright with "Bad local forwarding specification". The local
- *     end is `/tmp/herdr-<8 hex>.sock` (24 chars), derived from host plus remote
- *     path so two profiles never collide.
+ *     end is `/tmp/herdr-<8 hex>.sock` (24 chars), derived from host, remote
+ *     path and a per-instance nonce: two vaults with identical remote settings
+ *     each own their own file, so one stopping never unlinks the other's live
+ *     socket (issue #59). One instance keeps its path across its own retries.
  *   - A stale local socket file makes the bind fail. It is removed before every
  *     spawn and after every stop.
  *   - `ssh -L local:~/x` does **not** expand the tilde: the forward binds, and
@@ -31,7 +33,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { connect } from 'node:net';
 import type { HerdrSettings } from '../settings';
@@ -47,6 +49,8 @@ const DEFAULT_PROBE_TIMEOUT_MS = 2000;
 const DEFAULT_BACKOFF_MS = 1000;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const DEFAULT_KILL_GRACE_MS = 2000;
+/** Ceiling on the one-shot `ssh host printf $HOME` used to expand a tilde. */
+const DEFAULT_HOME_TIMEOUT_MS = 15_000;
 /** Keep only the tail of ssh's stderr; it is for the settings status line. */
 const MAX_STDERR_CHARS = 2000;
 
@@ -91,8 +95,15 @@ export type ProbeSocket = (path: string, timeoutMs: number) => Promise<boolean>;
 /** Removes the local socket file. Must not throw when it is absent. */
 export type RemoveFile = (path: string) => Promise<void>;
 
-/** Runs a command and resolves with its stdout, trimmed. Empty on failure. */
-export type RunCommand = (file: string, args: string[]) => Promise<string>;
+/**
+ * Runs a command and resolves with its stdout, trimmed. Empty on failure,
+ * on abort and on timeout; the child must be gone by the time it resolves.
+ */
+export type RunCommand = (
+	file: string,
+	args: string[],
+	options: { signal: AbortSignal; timeoutMs: number },
+) => Promise<string>;
 
 export interface SshTunnelDeps {
 	spawn: SpawnTunnel;
@@ -106,7 +117,11 @@ export interface SshTunnelOptions {
 	host: string;
 	/** Socket of the herdr server on the remote host. A leading `~` is expanded. */
 	remoteSocketPath: string;
-	/** Override for the derived `/tmp/herdr-<hash>.sock`. */
+	/**
+	 * Override for the derived `/tmp/herdr-<hash>.sock`. Two tunnels given the
+	 * same explicit path will unlink each other's socket; leave it derived
+	 * unless the caller owns the collision.
+	 */
 	localSocketPath?: string;
 	/** `ssh` executable. Defaults to whatever is on PATH. */
 	sshBinary?: string;
@@ -121,6 +136,8 @@ export interface SshTunnelOptions {
 	maxBackoffMs?: number;
 	/** How long SIGTERM is given before SIGKILL. */
 	killGraceMs?: number;
+	/** Ceiling on the remote `$HOME` lookup that expands a `~` socket path. */
+	homeTimeoutMs?: number;
 	/** Reconnect after the ssh child exits on its own. Default true. */
 	reconnect?: boolean;
 	env?: NodeJS.ProcessEnv;
@@ -132,13 +149,25 @@ export interface SshTunnelOptions {
 /**
  * Short, collision-free local socket path for one (host, remote socket) pair.
  * The hash keeps two profiles apart while staying far under the length cap.
+ * `instance` separates two tunnels with identical settings, one per running
+ * plugin instance (issue #59); without it the function is pure and stable.
  */
-export function localSocketPathFor(host: string, remoteSocketPath: string, dir = '/tmp'): string {
+export function localSocketPathFor(
+	host: string,
+	remoteSocketPath: string,
+	dir = '/tmp',
+	instance = '',
+): string {
 	const digest = createHash('sha256')
-		.update(`${host}\0${remoteSocketPath}`)
+		.update(`${host}\0${remoteSocketPath}\0${instance}`)
 		.digest('hex')
 		.slice(0, 8);
 	return `${dir.replace(/\/+$/, '')}/herdr-${digest}.sock`;
+}
+
+/** Nonce that makes this tunnel's local socket path its own. */
+function instanceToken(): string {
+	return randomBytes(8).toString('hex');
 }
 
 /** Default probe: open a connection, then drop it. Nothing is written. */
@@ -172,18 +201,31 @@ export function defaultDeps(): SshTunnelDeps {
 		removeFile: async (path) => {
 			await rm(path, { force: true });
 		},
-		run: (file, args) =>
+		// `signal` and `timeout` both make Node kill the child (SIGTERM), which
+		// surfaces as `error` followed by `close`; either way this resolves
+		// once, with '' when the lookup did not finish on its own terms.
+		run: (file, args, { signal, timeoutMs }) =>
 			new Promise<string>((resolve) => {
-				const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+				if (signal.aborted) {
+					resolve('');
+					return;
+				}
+				const child = spawn(file, args, {
+					stdio: ['ignore', 'pipe', 'ignore'],
+					signal,
+					timeout: timeoutMs,
+				});
 				let out = '';
+				let failed = false;
 				child.stdout?.on('data', (chunk: unknown) => {
 					out += String(chunk);
 				});
 				child.on('error', () => {
+					failed = true;
 					resolve('');
 				});
 				child.on('close', () => {
-					resolve(out.trim());
+					resolve(failed || signal.aborted ? '' : out.trim());
 				});
 			}),
 	};
@@ -240,18 +282,30 @@ export class SshTunnel {
 	private retryTimer: ReturnType<typeof setTimer> | null = null;
 	private currentBackoff: number;
 	private stopped = false;
+	/**
+	 * Bumped by every `start()` and `stop()`. An attempt records the value it
+	 * was born with and gives up, cleaning up after itself, whenever the two
+	 * differ after an await: a `stop()` that lands mid-startup must not leave a
+	 * child that was spawned after it returned (issue #59).
+	 */
+	private generation = 0;
 	/** True once the forward has come up; makes later attempts "reconnecting". */
 	private everConnected = false;
 	/** Set once the remote `~` has been expanded; avoids a second ssh call. */
 	private resolvedRemotePath: string | null = null;
 	/** Remote `$HOME`, learned while expanding a `~` socket path (issue #22). */
 	private resolvedHome = '';
+	/** The in-flight `$HOME` lookup, so `stop()` can kill its child. */
+	private homeLookup: AbortController | null = null;
 
 	constructor(options: SshTunnelOptions) {
 		this.options = options;
 		this.deps = { ...defaultDeps(), ...options.deps };
+		// Derived once, so every retry of this instance binds the same file and
+		// never anyone else's.
 		this.localPath =
-			options.localSocketPath ?? localSocketPathFor(options.host, options.remoteSocketPath);
+			options.localSocketPath ??
+			localSocketPathFor(options.host, options.remoteSocketPath, '/tmp', instanceToken());
 		this.currentBackoff = options.backoffMs ?? DEFAULT_BACKOFF_MS;
 		if (this.localPath.length > MAX_LOCAL_SOCKET_PATH) {
 			throw new Error(
@@ -316,15 +370,20 @@ export class SshTunnel {
 		if (this.state === 'connected' && this.child) return this.localPath;
 		this.stopped = false;
 		this.error = null;
+		const generation = ++this.generation;
 		const remotePath = await this.remotePath();
-		await this.attempt(remotePath);
+		this.throwIfAborted(generation);
+		await this.attempt(remotePath, generation);
 		return this.localPath;
 	}
 
 	/** SIGTERM, then SIGKILL after the grace period, then remove the socket file. */
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.generation += 1;
 		this.clearRetry();
+		this.homeLookup?.abort();
+		this.homeLookup = null;
 		const child = this.child;
 		this.child = null;
 		if (child) await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
@@ -332,10 +391,20 @@ export class SshTunnel {
 		this.setState('stopped');
 	}
 
-	private async attempt(remotePath: string): Promise<void> {
+	/** True once a later `start()` or `stop()` has superseded this attempt. */
+	private aborted(generation: number): boolean {
+		return this.stopped || generation !== this.generation;
+	}
+
+	private throwIfAborted(generation: number): void {
+		if (this.aborted(generation)) throw new Error('tunnel was stopped while connecting');
+	}
+
+	private async attempt(remotePath: string, generation: number): Promise<void> {
 		this.attempts += 1;
 		this.setState(this.everConnected ? 'reconnecting' : 'starting');
 		await this.removeLocalSocket();
+		this.throwIfAborted(generation);
 
 		const argv = buildTunnelArgv({
 			host: this.options.host,
@@ -378,8 +447,10 @@ export class SshTunnel {
 		const interval = this.options.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;
 		const probeTimeout = this.options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 		for (;;) {
-			if (this.stopped) throw new Error('tunnel was stopped while connecting');
-			if (await this.deps.probe(this.localPath, probeTimeout)) {
+			if (this.aborted(generation)) break;
+			const listening = await this.deps.probe(this.localPath, probeTimeout);
+			if (this.aborted(generation)) break;
+			if (listening) {
 				connected = true;
 				this.everConnected = true;
 				this.attempts = 0;
@@ -393,6 +464,20 @@ export class SshTunnel {
 			await delay(interval);
 		}
 
+		// Superseded by a `stop()` or a newer `start()` while the socket was
+		// coming up: `stop()` may already have killed the child (then `exit.at`
+		// is set) or may have run before `this.child` was assigned, in which
+		// case this attempt is the only owner and must reap it. Either way the
+		// state belongs to whoever superseded us, so it is left alone.
+		if (this.aborted(generation)) {
+			if (this.child === child) this.child = null;
+			if (exit.at === null) {
+				await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+			}
+			await this.removeLocalSocket();
+			throw new Error('tunnel was stopped while connecting');
+		}
+
 		// Failed to come up: own the cleanup so no half-open ssh is left behind.
 		// The reason is taken *before* the kill, or our own SIGTERM would
 		// overwrite whatever ssh actually complained about.
@@ -402,6 +487,7 @@ export class SshTunnel {
 			await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
 		}
 		await this.removeLocalSocket();
+		if (this.aborted(generation)) throw new Error('tunnel was stopped while connecting');
 		this.setState('failed');
 		throw new Error(`ssh tunnel to ${this.options.host} failed: ${this.error}`);
 	}
@@ -439,12 +525,15 @@ export class SshTunnel {
 
 	private async reconnect(): Promise<void> {
 		if (this.stopped) return;
+		const generation = this.generation;
 		try {
-			await this.attempt(await this.remotePath());
+			const remotePath = await this.remotePath();
+			this.throwIfAborted(generation);
+			await this.attempt(remotePath, generation);
 		} catch {
 			// `attempt` already recorded the reason and set the state; the exit
 			// handler is not involved here, so re-arm the timer ourselves.
-			if (this.stopped || this.options.reconnect === false) return;
+			if (this.aborted(generation) || this.options.reconnect === false) return;
 			const wait = this.currentBackoff;
 			this.currentBackoff = Math.min(
 				this.currentBackoff * 2,
@@ -469,12 +558,26 @@ export class SshTunnel {
 			this.resolvedRemotePath = configured;
 			return configured;
 		}
-		const home = await this.deps.run(this.options.sshBinary ?? 'ssh', [
-			'-o',
-			'BatchMode=yes',
-			this.options.host,
-			'printf %s "$HOME"',
-		]);
+		// One lookup at a time: a newer start() takes over the controller and
+		// the older caller is cut off by its generation check.
+		this.homeLookup?.abort();
+		const lookup = new AbortController();
+		this.homeLookup = lookup;
+		let home: string;
+		try {
+			home = await this.deps.run(
+				this.options.sshBinary ?? 'ssh',
+				['-o', 'BatchMode=yes', this.options.host, 'printf %s "$HOME"'],
+				{
+					signal: lookup.signal,
+					timeoutMs: this.options.homeTimeoutMs ?? DEFAULT_HOME_TIMEOUT_MS,
+				},
+			);
+		} finally {
+			if (this.homeLookup === lookup) this.homeLookup = null;
+		}
+		// Cut short: cache nothing, the caller's generation check throws.
+		if (lookup.signal.aborted) return configured;
 		const trimmedHome = home.replace(/\/+$/, '');
 		if (trimmedHome.length > 0) this.resolvedHome = trimmedHome;
 		const resolved = trimmedHome.length > 0 ? `${trimmedHome}${configured.slice(1)}` : configured;
