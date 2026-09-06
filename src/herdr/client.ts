@@ -431,10 +431,16 @@ export class HerdrClient {
 		return result.panes ?? [];
 	}
 
-	/** `agent.list`. Only agents carry the user-visible name; `PaneInfo` does not. */
+	/**
+	 * `agent.list`. Only agents carry the user-visible name; `PaneInfo` does not.
+	 *
+	 * Optional (PRD M3): a server without the method says so once through
+	 * `onUnsupportedMethod` and then answers `[]` without touching the wire, so
+	 * rows fall back to titles instead of the whole prime failing.
+	 */
 	async listAgents(): Promise<AgentInfo[]> {
-		const result = await this.request<{ agents?: AgentInfo[] }>('agent.list', {});
-		return result.agents ?? [];
+		const result = await this.requestOptional<{ agents?: AgentInfo[] }>('agent.list', {});
+		return result?.agents ?? [];
 	}
 
 	/**

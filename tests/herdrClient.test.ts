@@ -10,6 +10,7 @@ import {
 	parseResponse,
 	type HerdrEvent,
 } from '../src/herdr/client';
+import { unsupportedMethodMessage } from '../src/notify';
 import { FakeApiServer, FakeError } from './fixtures/fakeApiServer';
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -188,6 +189,33 @@ describe('HerdrClient.request', () => {
 		expect(server.requests.length).toBe(before);
 		expect(unsupported).toEqual(['no.such.method']);
 		expect(client.isUnsupported('no.such.method')).toBe(true);
+	});
+
+	it('degrades agent names once when agent.list is missing (M3)', async () => {
+		// The fake server knows ping, workspace.list and pane.list only, so
+		// `agent.list` comes back as herdr's "unknown variant" invalid_request.
+		const server = await startServer();
+		const messages: string[] = [];
+		const client = new HerdrClient({
+			socketPath: server.socketPath,
+			requestTimeoutMs: 2000,
+			onUnsupportedMethod: (method) => messages.push(unsupportedMethodMessage(method)),
+		});
+		cleanups.push(() => client.dispose());
+
+		// Empty, not a rejection: a prime that falls back to the list calls still
+		// gets its workspaces and panes.
+		await expect(client.listAgents()).resolves.toEqual([]);
+		expect(messages).toEqual([
+			'Herdr: this herdr does not support agent.list; agent rows show titles instead of names.',
+		]);
+
+		// Second time: no wire traffic, no second notice, still off.
+		const before = server.requests.length;
+		await expect(client.listAgents()).resolves.toEqual([]);
+		expect(server.requests.length).toBe(before);
+		expect(messages).toHaveLength(1);
+		expect(client.isUnsupported('agent.list')).toBe(true);
 	});
 
 	it('still rejects an optional call that failed for another reason', async () => {
