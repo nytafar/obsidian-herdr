@@ -31,6 +31,7 @@ import {
 import {
 	followsObsidian,
 	normalizeThemeName,
+	obsidianTheme,
 	resolveTheme,
 	type TerminalThemeName,
 } from './themes';
@@ -40,35 +41,6 @@ type ResizeListener = (size: { cols: number; rows: number }) => void;
 /** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
 type KeyListener = (event: KeyboardEvent) => boolean;
 type WheelListener = (event: WheelEvent) => boolean;
-
-/**
- * Obsidian variable → ITheme key, used by the `obsidian` theme (issue #26), which
- * is the default. Missing variables are simply left unset.
- */
-const THEME_VARS: Record<keyof ITheme, string> = {
-	foreground: '--text-normal',
-	background: '--background-primary',
-	cursor: '--text-accent',
-	cursorAccent: '--background-primary',
-	selectionBackground: '--text-selection',
-	selectionForeground: '--text-normal',
-	black: '--color-base-30',
-	red: '--color-red',
-	green: '--color-green',
-	yellow: '--color-yellow',
-	blue: '--color-blue',
-	magenta: '--color-purple',
-	cyan: '--color-cyan',
-	white: '--color-base-70',
-	brightBlack: '--color-base-50',
-	brightRed: '--color-red',
-	brightGreen: '--color-green',
-	brightYellow: '--color-orange',
-	brightBlue: '--color-blue',
-	brightMagenta: '--color-pink',
-	brightCyan: '--color-cyan',
-	brightWhite: '--color-base-100',
-};
 
 /**
  * Ceiling on a `snapshotLines()` result. A 64 MB scrollback budget holds ~38 000
@@ -430,15 +402,11 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	}
 
 	private readObsidianTheme(el: HTMLElement): ITheme {
-		// A palette needs none of this, and reading 22 CSS variables is not free.
+		// A palette needs none of this, and reading the CSS variables is not free.
 		if (!followsObsidian(this.themeName)) return {};
-		const read = this.readVars(el);
-		const theme: ITheme = {};
-		for (const [key, varName] of Object.entries(THEME_VARS)) {
-			const value = read(varName);
-			if (value) theme[key as keyof ITheme] = value;
-		}
-		return theme;
+		return obsidianTheme(this.readVars(el), {
+			dark: el.ownerDocument.body.classList.contains('theme-dark'),
+		});
 	}
 }
 

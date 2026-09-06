@@ -293,3 +293,224 @@ export function resolveTheme(
 	if (resolved === 'obsidian') return fromObsidian;
 	return paletteTheme(PALETTES[resolved]);
 }
+
+/* -------------------------------------------------------------------------- */
+/* The `obsidian` theme: Obsidian's CSS variables mapped onto the ANSI slots.   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the renderer hands CSS variables in. `getComputedStyle(body)
+ * .getPropertyValue(name)` trimmed, with the empty string turned into
+ * `undefined`, so this file never sees a DOM and tests can feed a plain record.
+ */
+export type CssVarReader = (name: string) => string | undefined;
+
+/** What the mapping needs beyond the variables themselves. */
+export interface ObsidianThemeContext {
+	/**
+	 * Whether the vault is in dark mode. The renderer reads
+	 * `body.classList.contains('theme-dark')`; when it is left undefined the
+	 * mapping falls back to the luminance of `--background-primary`.
+	 */
+	dark?: boolean;
+}
+
+interface Rgb {
+	r: number;
+	g: number;
+	b: number;
+	/** 0-1; 1 for every notation that carries no alpha. */
+	a: number;
+}
+
+const HEX3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i;
+const HEX6 = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i;
+/** `rgb(1 2 3)`, `rgb(1,2,3)`, `rgba(1,2,3,.5)` and the bare `1, 2, 3` triplet. */
+const RGB_FUNC = /^rgba?\s*\(([^)]*)\)$/i;
+const BARE_TRIPLET = /^\d+\s*[, ]\s*\d+\s*[, ]\s*\d+$/;
+
+function clamp255(n: number): number {
+	return Math.max(0, Math.min(255, Math.round(n)));
+}
+
+/**
+ * A CSS colour as numbers, or undefined when the notation is one this file does
+ * not read (`hsl()`, `color()`, named colours). Undefined always means "leave the
+ * slot to its fallback", never "black".
+ */
+export function parseColor(value: string | undefined): Rgb | undefined {
+	if (!value) return undefined;
+	const text = value.trim();
+	if (!text) return undefined;
+
+	const hex6 = HEX6.exec(text);
+	if (hex6) {
+		const byte = (h: string | undefined): number => parseInt(h ?? '00', 16);
+		return {
+			r: byte(hex6[1]),
+			g: byte(hex6[2]),
+			b: byte(hex6[3]),
+			a: hex6[4] === undefined ? 1 : byte(hex6[4]) / 255,
+		};
+	}
+	const hex3 = HEX3.exec(text);
+	if (hex3) {
+		const dup = (h: string | undefined): number => parseInt((h ?? '0').repeat(2), 16);
+		return {
+			r: dup(hex3[1]),
+			g: dup(hex3[2]),
+			b: dup(hex3[3]),
+			a: hex3[4] === undefined ? 1 : dup(hex3[4]) / 255,
+		};
+	}
+
+	const func = RGB_FUNC.exec(text);
+	const body = func ? (func[1] ?? '') : BARE_TRIPLET.test(text) ? text : undefined;
+	if (body === undefined) return undefined;
+	const parts = body
+		.replace(/\//g, ' ')
+		.split(/[\s,]+/)
+		.filter((p) => p.length > 0);
+	if (parts.length < 3) return undefined;
+	const [r, g, b] = parts.map((p) => Number.parseFloat(p));
+	if (r === undefined || g === undefined || b === undefined) return undefined;
+	if (![r, g, b].every((n) => Number.isFinite(n))) return undefined;
+	let a = 1;
+	const raw = parts[3];
+	if (raw !== undefined) {
+		const n = Number.parseFloat(raw);
+		if (!Number.isFinite(n)) return undefined;
+		a = raw.endsWith('%') ? n / 100 : n;
+	}
+	return { r: clamp255(r), g: clamp255(g), b: clamp255(b), a: Math.max(0, Math.min(1, a)) };
+}
+
+function toHex(color: Rgb): string {
+	const hex = (n: number): string => clamp255(n).toString(16).padStart(2, '0');
+	return `#${hex(color.r)}${hex(color.g)}${hex(color.b)}`;
+}
+
+/** Relative luminance, the sRGB approximation. 0 is black, 1 is white. */
+export function luminance(color: Rgb): number {
+	return (0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b) / 255;
+}
+
+/**
+ * The lightening step for the bright ANSI variants: mix 30 % of the target
+ * extreme into the base colour. "Bright" means *further from the background*, so
+ * on a dark vault the target is white and on a light vault it is black; a bright
+ * red on paper that is 30 % nearer white would be less legible than the normal
+ * one, which is exactly the collapse this replaces.
+ *
+ * The step is fixed rather than perceptual on purpose: it is reproducible, it is
+ * enough to be visible at 30 %, and it cannot silently produce the input.
+ */
+export const BRIGHT_MIX = 0.3;
+
+function mix(color: Rgb, target: number, amount: number): Rgb {
+	return {
+		r: color.r + (target - color.r) * amount,
+		g: color.g + (target - color.g) * amount,
+		b: color.b + (target - color.b) * amount,
+		a: color.a,
+	};
+}
+
+/**
+ * The bright counterpart of `color`. Mixes {@link BRIGHT_MIX} toward white on a
+ * dark background and toward black on a light one, and if the base is already at
+ * that extreme (pure white in dark mode) it steps the other way, so the returned
+ * colour is never equal to the input.
+ */
+export function brighten(color: Rgb, dark: boolean): Rgb {
+	const target = dark ? 255 : 0;
+	const stepped = mix(color, target, BRIGHT_MIX);
+	if (toHex(stepped) !== toHex(color)) return stepped;
+	return mix(color, dark ? 0 : 255, BRIGHT_MIX);
+}
+
+/** The hues Obsidian publishes, each with a `--color-<hue>-rgb` companion. */
+type Hue = 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'purple' | 'pink';
+
+/** ANSI slot → hue. Magenta is Obsidian's purple; ANSI has no orange slot. */
+const HUE_FOR_SLOT: Record<
+	'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan',
+	Hue
+> = {
+	red: 'red',
+	green: 'green',
+	yellow: 'yellow',
+	blue: 'blue',
+	magenta: 'purple',
+	cyan: 'cyan',
+};
+
+/**
+ * A hue as numbers. `--color-<hue>-rgb` is the authoritative triplet — themes
+ * define it next to the hex so that `rgba(var(--color-red-rgb), .2)` works — and
+ * `--color-<hue>` is the fallback for a theme that only sets the hex.
+ */
+function readHue(read: CssVarReader, hue: Hue): Rgb | undefined {
+	return parseColor(read(`--color-${hue}-rgb`)) ?? parseColor(read(`--color-${hue}`));
+}
+
+/** First variable in `names` that parses as a colour. */
+function readColor(read: CssVarReader, ...names: string[]): Rgb | undefined {
+	for (const name of names) {
+		const parsed = parseColor(read(name));
+		if (parsed) return parsed;
+	}
+	return undefined;
+}
+
+/** Whether the vault is dark: the explicit flag, else the background's luminance. */
+function isDarkTheme(read: CssVarReader, context: ObsidianThemeContext): boolean {
+	if (context.dark !== undefined) return context.dark;
+	const background = readColor(read, '--background-primary');
+	// No parsable background at all: dark is Obsidian's own default appearance.
+	return background === undefined ? true : luminance(background) < 0.5;
+}
+
+/**
+ * Obsidian's CSS variables as terminal colours — the `obsidian` theme, the
+ * default and the only one computed rather than tabulated.
+ *
+ * Pure by construction: `read` is the only way in, so the renderers keep the DOM
+ * and this file stays unit-testable. A slot whose variables are all missing or
+ * unparsable is left unset, exactly as the pre-#50 table did, and the renderer
+ * library falls back to its own default for it.
+ */
+export function obsidianTheme(
+	read: CssVarReader,
+	context: ObsidianThemeContext = {},
+): TerminalTheme {
+	const dark = isDarkTheme(read, context);
+	const theme: TerminalTheme = {};
+	const set = (key: ThemeColorKey, color: Rgb | undefined): void => {
+		if (color) theme[key] = toHex(color);
+	};
+
+	set('foreground', readColor(read, '--text-normal'));
+	set('background', readColor(read, '--background-primary'));
+	set('cursor', readColor(read, '--text-accent'));
+	set('cursorAccent', readColor(read, '--background-primary'));
+	set('selectionBackground', readColor(read, '--text-selection'));
+	set('selectionForeground', readColor(read, '--text-normal'));
+
+	set('black', readColor(read, '--color-base-30'));
+	set('brightBlack', readColor(read, '--color-base-50'));
+	set('white', readColor(read, '--color-base-70'));
+	set('brightWhite', readColor(read, '--color-base-100'));
+
+	for (const [slot, hue] of Object.entries(HUE_FOR_SLOT)) {
+		const base = readHue(read, hue);
+		if (!base) continue;
+		set(slot as ThemeColorKey, base);
+		// Obsidian publishes no bright variants, so four of the eight pairs used
+		// to read the same variable and collapse (#50); derive them instead.
+		const bright = `bright${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
+		set(bright as ThemeColorKey, brighten(base, dark));
+	}
+
+	return theme;
+}

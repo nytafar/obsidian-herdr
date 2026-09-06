@@ -55,11 +55,10 @@ import {
 import {
 	followsObsidian,
 	normalizeThemeName,
+	obsidianTheme,
 	resolveTheme,
-	THEME_COLOR_KEYS,
 	type TerminalTheme,
 	type TerminalThemeName,
-	type ThemeColorKey,
 } from './themes';
 import {
 	applyUnicodeWidths,
@@ -98,36 +97,6 @@ type ResizeListener = (size: { cols: number; rows: number }) => void;
 /** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
 type KeyListener = (event: KeyboardEvent) => boolean;
 type WheelListener = (event: WheelEvent) => boolean;
-
-/**
- * Obsidian variable → theme key for the `obsidian` theme, which is the default.
- * Identical to the ghostty-web renderer's table on purpose: switching engine must
- * not change a single colour. Missing variables are left unset.
- */
-const THEME_VARS: Record<ThemeColorKey, string> = {
-	foreground: '--text-normal',
-	background: '--background-primary',
-	cursor: '--text-accent',
-	cursorAccent: '--background-primary',
-	selectionBackground: '--text-selection',
-	selectionForeground: '--text-normal',
-	black: '--color-base-30',
-	red: '--color-red',
-	green: '--color-green',
-	yellow: '--color-yellow',
-	blue: '--color-blue',
-	magenta: '--color-purple',
-	cyan: '--color-cyan',
-	white: '--color-base-70',
-	brightBlack: '--color-base-50',
-	brightRed: '--color-red',
-	brightGreen: '--color-green',
-	brightYellow: '--color-orange',
-	brightBlue: '--color-blue',
-	brightMagenta: '--color-pink',
-	brightCyan: '--color-cyan',
-	brightWhite: '--color-base-100',
-};
 
 /**
  * Same ceiling as the ghostty-web renderer's, and for the same reason: a
@@ -597,15 +566,11 @@ export class XtermJsRenderer implements TerminalRenderer {
 	}
 
 	private readObsidianTheme(el: HTMLElement): TerminalTheme {
-		// A palette needs none of this, and reading 22 CSS variables is not free.
+		// A palette needs none of this, and reading the CSS variables is not free.
 		if (!followsObsidian(this.themeName)) return {};
-		const read = this.readVars(el);
-		const theme: TerminalTheme = {};
-		for (const key of THEME_COLOR_KEYS) {
-			const value = read(THEME_VARS[key]);
-			if (value) theme[key] = value;
-		}
-		return theme;
+		return obsidianTheme(this.readVars(el), {
+			dark: el.ownerDocument.body.classList.contains('theme-dark'),
+		});
 	}
 }
 
