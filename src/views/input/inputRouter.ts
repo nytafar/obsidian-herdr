@@ -8,8 +8,8 @@
  *
  * Everything it needs is injected or pure, so it is unit tested without a DOM,
  * a renderer or a herdr. `wheelToScroll` comes in through the constructor
- * instead of being imported: it lives in `terminalView.ts`, which imports
- * `obsidian`, and nothing under `src/views/input/` may.
+ * instead of being imported: the view owns the wheel accumulator's state (#65,
+ * `./wheelAccumulator.ts`) and binds its `push` in here.
  *
  * The shipped options encode one key, shift+enter (#18); everything else is
  * left to the renderer. #25 gives `routeWheel` a cell position and modifiers;
@@ -42,7 +42,11 @@ import {
 /** Matches `ScrollDirection` in `src/bridge/terminalSession.ts`. */
 export type ScrollDirection = 'up' | 'down';
 
-/** The part of `wheelToScroll` (terminalView.ts) the router depends on. */
+/**
+ * Wheel delta -> whole lines. The view binds `WheelAccumulator.push` (#65), so
+ * this is stateful behind the router's back: pixel deltas accumulate and a
+ * sub-line delta answers null.
+ */
 export type WheelToScroll = (
 	deltaY: number,
 	deltaMode: number,
@@ -189,8 +193,8 @@ export class InputRouter {
 	 * mouse-reporting pane from a plain one (see `modeTracker.ts`). Without
 	 * `column`/`row` every server-side report would land on cell (0, 0).
 	 *
-	 * Null for a delta that rounds to nothing, which lets the renderer keep the
-	 * notch — the only case where its own local scroll is still wanted.
+	 * Null for a delta the accumulator has not turned into a whole line yet;
+	 * the view decides what that means for the renderer (#65).
 	 */
 	routeWheel(input: WheelInput): WheelRoute {
 		const scroll = this.wheelToScroll(input.deltaY, input.deltaMode, input.rows);

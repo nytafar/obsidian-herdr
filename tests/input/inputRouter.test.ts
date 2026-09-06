@@ -12,7 +12,7 @@ import { LEGACY_LINE_BREAK } from '../../src/views/input/keyEncoder';
 
 const encoder = new TextEncoder();
 
-/** The same maths `wheelToScroll` in terminalView.ts does, minus the clamping. */
+/** A stateless stand-in for the view's wheel accumulator (#65), minus clamping. */
 const wheelToScroll: WheelToScroll = (deltaY, deltaMode, rows) => {
 	if (deltaY === 0) return null;
 	const page = Math.max(1, rows);
