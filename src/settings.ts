@@ -62,6 +62,28 @@ export function normalizeTerminalPlacement(value: unknown): TerminalPlacement {
 }
 
 /**
+ * Whether each agent gets its own terminal tab (issue #38).
+ *
+ * `per-agent` is the v1 behaviour: one view, one bridge and one renderer per
+ * pane. `reuse` keeps a single terminal tab and switches the pane it shows,
+ * which costs a restart of the bridge but holds one terminal's memory instead
+ * of one per open agent (#15 measured about 5.4 MB plus a repaint loop each).
+ */
+export type TerminalTabMode = 'per-agent' | 'reuse';
+
+/** One tab per agent, as before #38 existed. */
+export const DEFAULT_TERMINAL_TAB: TerminalTabMode = 'per-agent';
+
+const TERMINAL_TABS: readonly TerminalTabMode[] = ['per-agent', 'reuse'];
+
+/** `data.json` turned into a tab mode; same contract as the normalisers above. */
+export function normalizeTerminalTab(value: unknown): TerminalTabMode {
+	return TERMINAL_TABS.includes(value as TerminalTabMode)
+		? (value as TerminalTabMode)
+		: DEFAULT_TERMINAL_TAB;
+}
+
+/**
  * Row order in the agent list (issue #20). `priority` is herdr's own attention
  * order, so the sidebar and a herdr TUI set to `agent_panel_sort = "priority"`
  * agree; `alphabetical` is by the name a row displays.
@@ -158,6 +180,8 @@ export interface HerdrSettings {
 	defaultAttachMode: AttachMode;
 	/** Where a terminal opens when the active note is inside the agent's cwd. */
 	terminalPlacement: TerminalPlacement;
+	/** One terminal tab per agent, or one tab that switches pane (issue #38). */
+	terminalTab: TerminalTabMode;
 	/**
 	 * What clicking the body of an agent row does (issue #21). The row's icon
 	 * button always does the other one, so this setting swaps the pair.
@@ -253,6 +277,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentListGroupBy: 'tab',
 	defaultAttachMode: 'control',
 	terminalPlacement: DEFAULT_TERMINAL_PLACEMENT,
+	terminalTab: DEFAULT_TERMINAL_TAB,
 	agentListRowClick: 'terminal',
 };
 
@@ -708,6 +733,22 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(normalizeTerminalPlacement(settings.terminalPlacement))
 					.onChange(async (value) => {
 						settings.terminalPlacement = normalizeTerminalPlacement(value);
+						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Terminal tab')
+			.setDesc(
+				'One terminal tab per agent, or a single tab that switches to whichever agent you open. Reusing one tab keeps a single terminal in memory instead of one per open agent — roughly five megabytes and a repaint loop each — at the cost of reconnecting the bridge on every switch.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('per-agent', 'One tab per agent')
+					.addOption('reuse', 'Reuse one tab')
+					.setValue(normalizeTerminalTab(settings.terminalTab))
+					.onChange(async (value) => {
+						settings.terminalTab = normalizeTerminalTab(value);
 						await this.save();
 					}),
 			);

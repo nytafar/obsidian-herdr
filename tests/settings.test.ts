@@ -17,6 +17,7 @@ import {
 	MIN_PANES_PER_TAB,
 	MIN_SCROLLBACK_MB,
 	normalizeTerminalPlacement,
+	normalizeTerminalTab,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
 	SCROLLBACK_BYTES_PER_MB,
@@ -169,6 +170,21 @@ describe('terminalPlacement (issue #28)', () => {
 		expect(normalizeTerminalPlacement(undefined)).toBe('split-right');
 		expect(normalizeTerminalPlacement(null)).toBe('split-right');
 		expect(normalizeTerminalPlacement(3)).toBe('split-right');
+	});
+});
+
+describe('terminalTab (issue #38)', () => {
+	it('defaults to one tab per agent, the behaviour before the setting', () => {
+		expect(DEFAULT_SETTINGS.terminalTab).toBe('per-agent');
+	});
+
+	it('passes both modes through and rejects anything else', () => {
+		expect(normalizeTerminalTab('per-agent')).toBe('per-agent');
+		expect(normalizeTerminalTab('reuse')).toBe('reuse');
+		expect(normalizeTerminalTab('single')).toBe('per-agent');
+		expect(normalizeTerminalTab(undefined)).toBe('per-agent');
+		expect(normalizeTerminalTab(null)).toBe('per-agent');
+		expect(normalizeTerminalTab(1)).toBe('per-agent');
 	});
 });
 

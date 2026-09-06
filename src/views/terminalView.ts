@@ -528,9 +528,13 @@ export class TerminalView extends ItemView {
 		await super.setState(state, result);
 		const parsed = parseTerminalState(state);
 		if (!parsed) return;
-		const changed = parsed.paneId !== this.paneId || parsed.mode !== this.mode;
+		const switchedPane = parsed.paneId !== this.paneId;
+		const changed = switchedPane || parsed.mode !== this.mode;
 		this.paneId = parsed.paneId;
 		this.mode = parsed.mode;
+		// Reuse mode (#38) points this view at another agent, and the previous
+		// agent's output belongs to the previous agent.
+		if (switchedPane) this.forgetOutput();
 		if (changed) this.refreshHeader();
 		if (changed && this.opened) await this.start();
 	}
@@ -625,6 +629,23 @@ export class TerminalView extends ItemView {
 		this.statusEl = null;
 		this.toggleActionEl = null;
 		this.contentEl.empty();
+	}
+
+	/**
+	 * Drops everything on screen that belonged to the pane this view was showing.
+	 *
+	 * Only a pane switch calls this. The renderer is kept — rebuilding it would
+	 * cost another WASM terminal — so the grid and its scrollback are cleared the
+	 * way a terminal clears them, with an erase-display for the screen and for
+	 * the scrollback. A suspended view has no renderer, and its carried-over
+	 * scrollback is dropped instead, or it would be replayed into the new pane's
+	 * terminal on reveal.
+	 */
+	private forgetOutput(): void {
+		this.snapshot = null;
+		this.cancelFlush();
+		this.frames.clear();
+		this.renderer?.write(new TextEncoder().encode('\u001b[H\u001b[2J\u001b[3J'));
 	}
 
 	/**
