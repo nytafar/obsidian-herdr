@@ -272,8 +272,14 @@ export class WorkspaceScope {
 	private options: ScopeOptions;
 	private panes = new Map<string, PaneState>();
 	private workspaces: WorkspaceInfo[] = [];
-	/** Last `pane.list`, kept so a later re-resolve can still use the cwd rule. */
-	private lastPaneList: PaneInfo[] = [];
+	/**
+	 * Every pane herdr currently has, agent or not, across all workspaces: the
+	 * last `pane.list` kept current from pane events. Resolution reads it for the
+	 * cwd rule, and a re-resolution rebuilds the scoped map from it, so it has
+	 * to be live (issue #58): a snapshot would keep resolving against panes that
+	 * are gone and never see the first in-vault pane after an unmatched prime.
+	 */
+	private inventory = new Map<string, PaneInfo>();
 	/**
 	 * pane id → agent name, for every agent herdr knows, not just the scoped
 	 * workspace: `agent.start` rejects a duplicate name session-wide, so the
@@ -369,7 +375,7 @@ export class WorkspaceScope {
 	/** Applies new settings (workspace override, vault paths) and re-resolves. */
 	configure(options: Partial<ScopeOptions>): void {
 		this.options = { ...this.options, ...options };
-		this.prime(this.workspaces, this.lastPaneList);
+		this.reconcile(true);
 	}
 
 	/**
@@ -379,15 +385,33 @@ export class WorkspaceScope {
 	 */
 	prime(workspaces: WorkspaceInfo[], panes: PaneInfo[]): void {
 		this.workspaces = workspaces;
-		this.lastPaneList = panes;
-		const { workspaceId, method } = resolveWorkspace(workspaces, panes, this.options);
+		this.inventory = new Map(panes.map((pane) => [pane.pane_id, pane]));
+		this.reconcile(true);
+	}
+
+	/**
+	 * Resolves the workspace against the current inventory and, when the
+	 * identity moved (or `rebuild` is set, as after a prime), replaces the pane
+	 * map with that workspace's agent panes in the same step. Identity and
+	 * membership never disagree in between (issue #58): a rename away leaves an
+	 * empty collection, a rename into scope shows the new workspace's panes.
+	 * Emits `added` / `removed` / `changed` for the difference, then
+	 * `workspaceResolved` once when the identity changed.
+	 */
+	private reconcile(rebuild = false): void {
+		const { workspaceId, method } = resolveWorkspace(
+			this.workspaces,
+			[...this.inventory.values()],
+			this.options,
+		);
 		const changedWorkspace = workspaceId !== this.resolvedId || method !== this.resolutionMethod;
+		if (!changedWorkspace && !rebuild) return;
 		this.resolvedId = workspaceId;
 		this.resolutionMethod = method;
 
 		const next = new Map<string, PaneState>();
 		if (workspaceId !== null) {
-			for (const pane of panes) {
+			for (const pane of this.inventory.values()) {
 				if (pane.workspace_id !== workspaceId) continue;
 				const state = toPaneState(pane, this.names.get(pane.pane_id) ?? '');
 				if (state) next.set(state.paneId, state);
@@ -434,13 +458,23 @@ export class WorkspaceScope {
 			case 'pane_updated':
 			case 'pane_moved': {
 				const pane = paneFromData(event.data);
-				if (pane) this.upsert(pane);
+				if (!pane) return;
+				// A move across workspaces can give the pane a new id; the old one
+				// must not linger in the inventory and resolve from the grave.
+				const previousId = stringField(event.data, 'previous_pane_id');
+				if (previousId && previousId !== pane.pane_id) this.forget(previousId);
+				this.inventory.set(pane.pane_id, pane);
+				// Only the cwd rule reads panes: a label or setting match cannot move.
+				if (this.resolvedByPanes()) this.reconcile();
+				this.upsert(pane);
 				return;
 			}
 			case 'pane_closed':
 			case 'pane_exited': {
 				const paneId = stringField(event.data, 'pane_id');
-				if (paneId) this.drop(paneId);
+				if (!paneId) return;
+				this.forget(paneId);
+				if (this.resolvedByPanes()) this.reconcile();
 				return;
 			}
 			case 'pane_focused': {
@@ -469,7 +503,8 @@ export class WorkspaceScope {
 			case 'workspace_updated':
 			case 'workspace_metadata_updated': {
 				const workspace = event.data.workspace;
-				if (this.mergeWorkspace(workspace) && this.resolvedId === null) this.reresolve();
+				// A label can change through an update too, not only through a rename.
+				if (this.mergeWorkspace(workspace) && this.resolutionMethod !== 'setting') this.reconcile();
 				return;
 			}
 			case 'workspace_renamed': {
@@ -479,21 +514,29 @@ export class WorkspaceScope {
 				const existing = this.workspaces.find((entry) => entry.workspace_id === workspaceId);
 				if (existing) existing.label = label;
 				// A rename can make a workspace match the vault name, or stop matching.
-				if (this.resolutionMethod !== 'setting') this.reresolve();
+				if (this.resolutionMethod !== 'setting') this.reconcile();
 				return;
 			}
 			case 'workspace_closed': {
 				const workspaceId = stringField(event.data, 'workspace_id');
 				if (!workspaceId) return;
 				this.workspaces = this.workspaces.filter((entry) => entry.workspace_id !== workspaceId);
+				// Its panes went with it; herdr does not send a pane_closed for each.
+				for (const pane of [...this.inventory.values()]) {
+					if (pane.workspace_id === workspaceId) this.forget(pane.pane_id);
+				}
 				if (workspaceId === this.resolvedId) {
-					for (const [paneId, state] of [...this.panes]) {
-						this.panes.delete(paneId);
-						this.emit('removed', state);
-					}
+					// The purge above already emptied the scoped map, so identity is
+					// all that is left to move. A fallback rule may pick another
+					// workspace right away; a setting override stays unresolved until
+					// the settings change.
+					const wasSetting = this.resolutionMethod === 'setting';
 					this.resolvedId = null;
 					this.resolutionMethod = 'none';
-					this.emit('workspaceResolved', null, 'none');
+					if (!wasSetting) this.reconcile();
+					if (this.resolvedId === null) this.emit('workspaceResolved', null, 'none');
+				} else if (this.resolvedByPanes()) {
+					this.reconcile();
 				}
 				return;
 			}
@@ -502,16 +545,9 @@ export class WorkspaceScope {
 		}
 	}
 
-	private reresolve(): void {
-		const { workspaceId, method } = resolveWorkspace(
-			this.workspaces,
-			this.lastPaneList,
-			this.options,
-		);
-		if (workspaceId === this.resolvedId && method === this.resolutionMethod) return;
-		this.resolvedId = workspaceId;
-		this.resolutionMethod = method;
-		this.emit('workspaceResolved', workspaceId, method);
+	/** True when the pane inventory decides the resolution (cwd rule or nothing). */
+	private resolvedByPanes(): boolean {
+		return this.resolutionMethod === 'cwd' || this.resolutionMethod === 'none';
 	}
 
 	private mergeWorkspace(value: unknown): boolean {
@@ -566,11 +602,18 @@ export class WorkspaceScope {
 		};
 	}
 
+	/** Takes a pane out of the scoped map, emitting `removed` if it was there. */
 	private drop(paneId: string): void {
 		const previous = this.panes.get(paneId);
 		if (!previous) return;
 		this.panes.delete(paneId);
 		this.emit('removed', previous);
+	}
+
+	/** Takes a pane out of the inventory as well as the scoped map: it is gone. */
+	private forget(paneId: string): void {
+		this.inventory.delete(paneId);
+		this.drop(paneId);
 	}
 
 	private emit<K extends keyof ScopeEventMap>(type: K, ...args: ScopeEventMap[K]): void {
