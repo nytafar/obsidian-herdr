@@ -407,6 +407,12 @@ export class HerdrSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 	}
 
+	/** For connection fields: save, then rebuild the connection from them. */
+	private async saveAndReconnect(): Promise<void> {
+		await this.plugin.saveSettings();
+		this.plugin.scheduleReconnect();
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		const settings = this.plugin.settings;
@@ -428,7 +434,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.socketPath)
 					.onChange(async (value) => {
 						settings.socketPath = value;
-						await this.save();
+						await this.saveAndReconnect();
 					}),
 			);
 
@@ -443,7 +449,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.herdrBinary)
 					.onChange(async (value) => {
 						settings.herdrBinary = value;
-						await this.save();
+						await this.saveAndReconnect();
 					}),
 			);
 
@@ -458,7 +464,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.extraPath)
 					.onChange(async (value) => {
 						settings.extraPath = value;
-						await this.save();
+						await this.saveAndReconnect();
 					}),
 			);
 
@@ -473,7 +479,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.workspaceId)
 					.onChange(async (value) => {
 						settings.workspaceId = value;
-						await this.save();
+						await this.saveAndReconnect();
 					}),
 			);
 
@@ -487,7 +493,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle.setValue(settings.remote.enabled).onChange(async (value) => {
 					settings.remote.enabled = value;
-					await this.save();
+					await this.saveAndReconnect();
 					this.display();
 				}),
 			);
@@ -504,7 +510,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 						.setValue(settings.remote.host)
 						.onChange(async (value) => {
 							settings.remote.host = value;
-							await this.save();
+							await this.saveAndReconnect();
 						}),
 				);
 
@@ -517,7 +523,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 						.setValue(settings.remote.remoteSocketPath)
 						.onChange(async (value) => {
 							settings.remote.remoteSocketPath = value;
-							await this.save();
+							await this.saveAndReconnect();
 						}),
 				);
 
@@ -532,7 +538,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 						.setValue(settings.remote.remoteBinary)
 						.onChange(async (value) => {
 							settings.remote.remoteBinary = value;
-							await this.save();
+							await this.saveAndReconnect();
 						}),
 				);
 
@@ -547,7 +553,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 						.setValue(settings.remote.remoteVaultPath)
 						.onChange(async (value) => {
 							settings.remote.remoteVaultPath = value;
-							await this.save();
+							await this.saveAndReconnect();
 						}),
 				);
 		}

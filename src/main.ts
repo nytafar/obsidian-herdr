@@ -40,6 +40,8 @@ import { ExplorerFolderButtons } from './explorerButtons';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
+/** Delay after a connection setting changes before reconnecting (typing). */
+const RECONNECT_DEBOUNCE_MS = 800;
 
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
@@ -64,6 +66,8 @@ export default class HerdrPlugin extends Plugin {
 	private priming = false;
 	/** Pending coalesced `agent.list`, 0 when none. */
 	private agentNameTimer = 0;
+	/** Pending reconnect after a connection setting changed, 0 when none. */
+	private reconnectTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
 	private connectError: string | null = null;
 	private notifier!: TransitionNotifier;
@@ -138,6 +142,8 @@ export default class HerdrPlugin extends Plugin {
 		void tunnel?.stop();
 		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
 		this.agentNameTimer = 0;
+		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = 0;
 		this.statusBarEl = null;
 	}
 
@@ -535,6 +541,40 @@ export default class HerdrPlugin extends Plugin {
 	 * Read-only: `ping`, `workspace.list`, `pane.list` and `events.subscribe`.
 	 * Never throws; failures land in the settings status.
 	 */
+	/**
+	 * A connection setting changed (socket, binary, PATH, workspace, or any
+	 * remote field). Typing in a text field fires per keystroke, so the
+	 * reconnect is coalesced; the toggle benefits from the same delay.
+	 */
+	scheduleReconnect(): void {
+		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = window.setTimeout(() => {
+			this.reconnectTimer = 0;
+			void this.reconnect();
+		}, RECONNECT_DEBOUNCE_MS);
+	}
+
+	/**
+	 * Tears the current connection down, tunnel included, and connects again
+	 * from the settings as they are now. Before this existed, switching the
+	 * remote profile off left the old tunnel and client alive until Obsidian
+	 * restarted, so the list kept showing the remote workspace while new
+	 * terminals already spawned locally.
+	 */
+	async reconnect(): Promise<void> {
+		const client = this.client;
+		this.client = null;
+		client?.dispose();
+		const tunnel = this.tunnel;
+		this.tunnel = null;
+		await tunnel?.stop();
+		this.scope = null;
+		this.mismatch = null;
+		this.discovery = null;
+		this.updateStatusBar();
+		await this.connect();
+	}
+
 	private async connect(): Promise<void> {
 		this.connectError = null;
 		const discovery = await discoverHerdr({
