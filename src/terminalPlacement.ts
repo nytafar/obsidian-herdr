@@ -12,6 +12,7 @@
  */
 
 import { normalizePosixPath } from './actions';
+import { trimTrailingSlashes } from './paths';
 import { isUnder } from './herdr/scope';
 import type { TerminalPlacement } from './settings';
 
@@ -46,7 +47,7 @@ export function decidePlacement(input: PlacementInput): PlacementDecision {
 	const vault = input.vaultPath.trim();
 	if (!relative || !cwd || !vault) return TAB;
 
-	const notePath = normalizePosixPath(`${vault.replace(/\/+$/, '')}/${relative}`);
+	const notePath = normalizePosixPath(`${trimTrailingSlashes(vault)}/${relative}`);
 	if (!isUnder(notePath, cwd)) return TAB;
 
 	return { kind: 'split', before: input.placement === 'split-left' };

@@ -13,6 +13,7 @@
  * `herdr/cacheBadge.ts`, because the scope needs the same answer.
  */
 
+import { lastPathSegment, trimTrailingSlashes } from '../paths';
 import { cacheBadge, type RowBadge } from '../herdr/cacheBadge';
 import { isUnder, type PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
@@ -143,7 +144,7 @@ export function countStatuses(panes: readonly PaneState[]): { blocked: number; d
  */
 export function relativeCwd(cwd: string, vaultPath: string): string {
 	if (!cwd) return '';
-	const root = vaultPath.replace(/\/+$/, '');
+	const root = trimTrailingSlashes(vaultPath);
 	if (!root || !isUnder(cwd, root)) return cwd;
 	return cwd.slice(root.length).replace(/^\/+/, '');
 }
@@ -160,9 +161,9 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
  */
 export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
 	if (!cwd) return '';
-	const root = vaultPath.replace(/\/+$/, '');
+	const root = trimTrailingSlashes(vaultPath);
 	if (root && isUnder(cwd, root)) return relativeCwd(cwd, root);
-	const home = homePath.replace(/\/+$/, '');
+	const home = trimTrailingSlashes(homePath);
 	if (!home || !isUnder(cwd, home)) return cwd;
 	const rest = cwd.slice(home.length).replace(/^\/+/, '');
 	return rest ? `~/${rest}` : '~';
@@ -185,13 +186,6 @@ interface GroupContext {
 	homePath: string;
 }
 
-/** Last path segment, used to name a folder group sitting at the vault root. */
-function lastSegment(path: string): string {
-	const trimmed = path.replace(/\/+$/, '');
-	const slash = trimmed.lastIndexOf('/');
-	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
-}
-
 /**
  * Which heading a pane falls under, and what that heading says. Grouping by tab
  * is PRD M8 and the default; grouping by folder keeps one project's agents
@@ -210,7 +204,9 @@ const GROUPS: Record<GroupBy, Grouping> = {
 			// The same label a row's path shows, so the two never disagree. At the
 			// vault root that is empty, where the vault's own name reads better.
 			return (
-				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) || lastSegment(ctx.vaultPath) || pane.cwd
+				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) ||
+				lastPathSegment(ctx.vaultPath) ||
+				pane.cwd
 			);
 		},
 	},

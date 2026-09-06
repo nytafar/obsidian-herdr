@@ -29,6 +29,7 @@
 import { Menu, Notice, setIcon, setTooltip, type EventRef } from 'obsidian';
 import type HerdrPlugin from './main';
 import { resolveFolderPath } from './actions';
+import { trimTrailingSlashes } from './paths';
 import { isUnder, type PaneState } from './herdr/scope';
 
 /** View type of the built-in file explorer. */
@@ -72,11 +73,6 @@ export interface FolderMenuItem {
 	readonly action: FolderMenuAction;
 }
 
-/** Trailing slashes removed, so two spellings of the same directory compare equal. */
-function trimTrailingSlash(path: string): string {
-	return path.replace(/\/+$/, '');
-}
-
 /**
  * The agent pane the "Attach" entry should open for a folder, or null when no
  * agent runs there.
@@ -92,11 +88,11 @@ export function attachablePane(
 	panes: readonly PaneState[],
 ): PaneState | null {
 	if (!folderAbsPath) return null;
-	const folder = trimTrailingSlash(folderAbsPath);
+	const folder = trimTrailingSlashes(folderAbsPath);
 	let descendant: PaneState | null = null;
 	for (const pane of panes) {
 		if (!isUnder(pane.cwd, folder)) continue;
-		if (trimTrailingSlash(pane.cwd) === folder) return pane;
+		if (trimTrailingSlashes(pane.cwd) === folder) return pane;
 		descendant ??= pane;
 	}
 	return descendant;
@@ -129,7 +125,7 @@ export function menuItemsFor(
  * for the vault root itself and a plain relative path for everything else.
  */
 export function vaultRelativeLabel(dataPath: string): string {
-	const trimmed = trimTrailingSlash(dataPath.trim().replace(/^\.\//, ''));
+	const trimmed = trimTrailingSlashes(dataPath.trim().replace(/^\.\//, ''));
 	return trimmed === '' || trimmed === '.' ? '/' : trimmed;
 }
 

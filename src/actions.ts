@@ -17,6 +17,7 @@
  * {@link ActionHost}, and the module stays unit testable against a fake client.
  */
 
+import { lastPathSegment, trimTrailingSlashes } from './paths';
 import { clampPanesPerTab, remoteVaultPathIssue, type HerdrSettings } from './settings';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
@@ -108,19 +109,16 @@ export interface PathRoots {
 export function resolveFolderPath(vaultRelativePath: string, roots: PathRoots): string {
 	const relative = vaultRelativePath.trim();
 	if (relative.startsWith('/')) return normalizePosixPath(relative);
-	const root = (roots.remoteVaultPath?.trim() || roots.basePath).replace(/\/+$/, '');
+	const root = trimTrailingSlashes(roots.remoteVaultPath?.trim() || roots.basePath);
 	if (!root) return normalizePosixPath(relative);
 	// The vault root itself comes through as '' or '/' from TFolder.isRoot().
 	if (relative === '' || relative === '/' || relative === '.') return normalizePosixPath(root);
 	return normalizePosixPath(`${root}/${relative}`);
 }
 
-/** Last path segment, used as a tab label and for `{folder}`. */
+/** Last path segment, used as a tab label and for `{folder}`. The root is `/`. */
 export function folderName(absolutePath: string): string {
-	const trimmed = absolutePath.replace(/\/+$/, '');
-	const slash = trimmed.lastIndexOf('/');
-	const name = slash === -1 ? trimmed : trimmed.slice(slash + 1);
-	return name || '/';
+	return lastPathSegment(absolutePath) || '/';
 }
 
 /**

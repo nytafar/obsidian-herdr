@@ -18,6 +18,7 @@
  * stays unit-testable and reusable from the remote profile.
  */
 
+import { lastPathSegment, trimTrailingSlashes } from '../paths';
 import { sameCacheBadge } from './cacheBadge';
 import type { HerdrEvent } from './client';
 import type { AgentInfo, AgentStatus, PaneInfo, WorkspaceInfo } from './types.gen';
@@ -126,16 +127,10 @@ const RELEVANT: (keyof PaneState)[] = [
 	'tokens',
 ];
 
-function basename(path: string): string {
-	const trimmed = path.replace(/\/+$/, '');
-	const slash = trimmed.lastIndexOf('/');
-	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
-}
-
 /** True when `cwd` is the root itself or sits below it. Not a string prefix. */
 export function isUnder(cwd: string, root: string): boolean {
 	if (!cwd || !root) return false;
-	const normalRoot = root.replace(/\/+$/, '');
+	const normalRoot = trimTrailingSlashes(root);
 	if (cwd === normalRoot) return true;
 	return cwd.startsWith(`${normalRoot}/`);
 }
@@ -232,7 +227,7 @@ export function resolveWorkspace(
 	const override = options.workspaceId?.trim();
 	if (override) return { workspaceId: override, method: 'setting' };
 
-	const name = (options.vaultName ?? basename(options.vaultPath)).trim();
+	const name = (options.vaultName ?? lastPathSegment(options.vaultPath)).trim();
 	if (name) {
 		const exact = workspaces.find((workspace) => workspace.label === name);
 		if (exact) return { workspaceId: exact.workspace_id, method: 'label' };
