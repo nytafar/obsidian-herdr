@@ -61,11 +61,16 @@ import {
 	type TerminalThemeName,
 	type ThemeColorKey,
 } from './themes';
+import {
+	applyUnicodeWidths,
+	UNICODE_TERMINAL_OPTIONS,
+} from './unicodeWidth';
 import { isHTMLElement } from '../dom';
 
 /**
- * The two libraries are loaded on first mount rather than at module scope, so a
- * vault that never leaves the default engine never evaluates them. esbuild keeps
+ * The libraries are loaded on first mount rather than at module scope, so a
+ * vault that never leaves the default engine never evaluates them. The Unicode
+ * 11 width table loads the same way, from `unicodeWidth.ts`. esbuild keeps
  * both inside `main.js` (the output is one CJS file, so a dynamic import becomes
  * a lazy `require` of a bundled module, not a second file — PRD N5); what is
  * deferred is the cost of running them, and, incidentally, the `self` reference
@@ -226,6 +231,9 @@ export class XtermJsRenderer implements TerminalRenderer {
 		const font = this.readFont(el);
 		const scrollback = scrollbackLines(this.options.scrollback);
 		const terminal = new xterm.Terminal({
+			// Wide-glyph widths; the flag and the addon travel together, see
+			// `unicodeWidth.ts`.
+			...UNICODE_TERMINAL_OPTIONS,
 			fontFamily: font.fontFamily,
 			fontSize: font.fontSize,
 			theme: this.currentTheme(el),
@@ -241,6 +249,15 @@ export class XtermJsRenderer implements TerminalRenderer {
 				? {}
 				: { cursorStyle: this.options.cursorStyle }),
 		});
+		// Before `open()` and before any pending frame is replayed: a glyph
+		// written under the built-in Unicode 6 table stays mismeasured in the
+		// buffer, and herdr's frames start arriving the moment the session opens.
+		await applyUnicodeWidths(terminal);
+		if (this.disposed) {
+			terminal.dispose();
+			return;
+		}
+
 		const fitAddon = new fit.FitAddon();
 		terminal.loadAddon(fitAddon);
 		terminal.open(el);
