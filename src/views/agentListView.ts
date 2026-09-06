@@ -33,20 +33,6 @@ import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindLabel } from './kindIcons';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
 
-// Re-exported so `main.ts` and the existing tests keep importing the list view's
-// helpers from the list view, while the code itself lives in the pure module.
-export { cacheBadge } from '../herdr/cacheBadge';
-export {
-	agentDisplayName,
-	buildRows,
-	countStatuses,
-	pathLabel,
-	relativeCwd,
-	STATUS_LABEL,
-	STATUS_ORDER,
-} from './rowModel';
-export type { RowBadge, RowGroup, RowModel, RowModelOptions } from './rowModel';
-
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
 export class AgentListView extends ItemView {
