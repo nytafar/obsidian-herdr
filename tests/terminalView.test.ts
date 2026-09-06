@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
 	attachFor,
 	debounce,
+	FrameBuffer,
+	PerfCounter,
 	FALLBACK_ROWS,
 	isRecoverable,
 	MAX_SCROLL_LINES,
@@ -288,5 +290,70 @@ describe('statusLine', () => {
 		expect(line.text).toBe('Bridge process exited. Reconnect to attach again.');
 		expect(line.warning).toBe(true);
 		expect(line.detail).toBe('herdr: connection failed');
+	});
+});
+
+describe('FrameBuffer (#24)', () => {
+	const bytes = (...values: number[]): Uint8Array => new Uint8Array(values);
+
+	it('concatenates in arrival order and empties itself', () => {
+		const buffer = new FrameBuffer();
+		buffer.push(bytes(1, 2));
+		buffer.push(bytes(3));
+		buffer.push(bytes(4, 5));
+		expect(buffer.pending).toBe(5);
+		expect(Array.from(buffer.take() ?? [])).toEqual([1, 2, 3, 4, 5]);
+		expect(buffer.pending).toBe(0);
+		expect(buffer.take()).toBeNull();
+	});
+
+	it('returns a single chunk untouched', () => {
+		const buffer = new FrameBuffer();
+		const only = bytes(7, 8);
+		buffer.push(only);
+		expect(buffer.take()).toBe(only);
+	});
+
+	it('drops everything buffered before a full frame, and keeps what follows', () => {
+		const buffer = new FrameBuffer();
+		buffer.push(bytes(1, 2));
+		buffer.push(bytes(9, 9), true);
+		buffer.push(bytes(3));
+		expect(Array.from(buffer.take() ?? [])).toEqual([9, 9, 3]);
+	});
+
+	it('lets an empty full frame supersede the buffer', () => {
+		const buffer = new FrameBuffer();
+		buffer.push(bytes(1));
+		buffer.push(bytes(), true);
+		expect(buffer.take()).toBeNull();
+	});
+
+	it('ignores empty non-full frames', () => {
+		const buffer = new FrameBuffer();
+		buffer.push(bytes(1));
+		buffer.push(bytes());
+		expect(Array.from(buffer.take() ?? [])).toEqual([1]);
+	});
+});
+
+describe('PerfCounter (#24)', () => {
+	it('reports rates once a second and then resets', () => {
+		const lines: string[] = [];
+		let now = 0;
+		const counter = new PerfCounter('w1:p1 observe', (line) => lines.push(line), () => now);
+		counter.frame(100);
+		counter.frame(100);
+		counter.repaint();
+		expect(lines).toEqual([]);
+		now = 2000;
+		counter.repaint();
+		expect(lines).toEqual([
+			'herdr perf w1:p1 observe: 1.0 frames/s, 100.0 bytes/s, 1.0 repaints/s',
+		]);
+		now = 3000;
+		counter.frame(10);
+		expect(lines).toHaveLength(2);
+		expect(lines[1]).toBe('herdr perf w1:p1 observe: 1.0 frames/s, 10.0 bytes/s, 0.0 repaints/s');
 	});
 });

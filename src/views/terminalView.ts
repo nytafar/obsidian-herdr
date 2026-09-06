@@ -5,7 +5,7 @@
  * a `TerminalRenderer` (T8), a `TerminalSession` bridge process (T7), and the
  * plumbing between them —
  *
- *   session `frame`  -> renderer.write
+ *   session `frame`  -> renderer.write   (coalesced to one write per frame)
  *   renderer `onData`-> session.input        (control mode only)
  *   ResizeObserver   -> renderer.fit -> session.resize   (control mode only)
  *   wheel            -> session.scroll
@@ -116,6 +116,115 @@ export function debounce(fn: () => void, ms: number, timers: DebounceTimers): De
 			},
 		},
 	);
+}
+
+/**
+ * Frames arrive as fast as the pane produces output; a `renderer.write` per frame
+ * is a wasm parse, a link-cache flush and a scroll-to-bottom per frame. This holds
+ * the bytes until the view flushes them once per animation frame.
+ *
+ * Two invariants, because a terminal stream is not idempotent: bytes are never
+ * reordered or dropped inside what is written, and a `full: true` frame (a
+ * complete repaint from herdr) supersedes everything buffered before it.
+ */
+export class FrameBuffer {
+	private chunks: Uint8Array[] = [];
+	private bytes = 0;
+
+	push(frame: Uint8Array, full = false): void {
+		if (full) this.clear();
+		if (frame.length === 0) return;
+		this.chunks.push(frame);
+		this.bytes += frame.length;
+	}
+
+	/** Bytes waiting to be written. */
+	get pending(): number {
+		return this.bytes;
+	}
+
+	/** Everything buffered, in arrival order, as one write. Null when empty. */
+	take(): Uint8Array | null {
+		if (this.chunks.length === 0) return null;
+		const first = this.chunks[0];
+		if (this.chunks.length === 1 && first) {
+			this.clear();
+			return first;
+		}
+		const out = new Uint8Array(this.bytes);
+		let at = 0;
+		for (const chunk of this.chunks) {
+			out.set(chunk, at);
+			at += chunk.length;
+		}
+		this.clear();
+		return out;
+	}
+
+	clear(): void {
+		this.chunks = [];
+		this.bytes = 0;
+	}
+}
+
+/**
+ * A hidden leaf gets no animation frames while the pane keeps streaming, so the
+ * buffer is flushed straight away once it grows past this. Bounded memory beats
+ * a perfect frame budget.
+ */
+export const MAX_PENDING_BYTES = 1 << 20;
+
+/** True when someone set `window.herdrPerf` in the dev console. */
+function perfEnabled(): boolean {
+	return (window as unknown as { herdrPerf?: unknown }).herdrPerf === true;
+}
+
+/** Sink for `PerfCounter`; the view passes `console.debug`. */
+export type PerfLog = (line: string) => void;
+
+/**
+ * Dev-only instrumentation (work item 3 of #24). Off unless someone sets
+ * `window.herdrPerf = true` before the view attaches; there is deliberately no
+ * command and no setting for it. Reports once a second.
+ */
+export class PerfCounter {
+	private frames = 0;
+	private bytes = 0;
+	private repaints = 0;
+	private since: number;
+
+	constructor(
+		private readonly label: string,
+		private readonly log: PerfLog,
+		private readonly now: () => number = () => Date.now(),
+	) {
+		this.since = now();
+	}
+
+	frame(bytes: number): void {
+		this.frames++;
+		this.bytes += bytes;
+		this.report();
+	}
+
+	repaint(): void {
+		this.repaints++;
+		this.report();
+	}
+
+	private report(): void {
+		const elapsed = this.now() - this.since;
+		if (elapsed < 1000) return;
+		const perSecond = (n: number): string => (n / (elapsed / 1000)).toFixed(1);
+		this.log(
+			`herdr perf ${this.label}: ${perSecond(this.frames)} frames/s, ` +
+				`${perSecond(this.bytes)} bytes/s, ${perSecond(this.repaints)} repaints/s`,
+		);
+		this.frames = 0;
+		this.bytes = 0;
+		this.repaints = 0;
+		this.since = this.now();
+	}
 }
 
 /** Pixels per scrolled line when the wheel reports `deltaMode: 0` (pixels). */
@@ -241,6 +350,10 @@ export class TerminalView extends ItemView {
 	/** Guards against an old start finishing after a newer one began. */
 	private generation = 0;
 	private opened = false;
+	/** Frame bytes waiting for the next animation frame. */
+	private readonly frames = new FrameBuffer();
+	private flushHandle = 0;
+	private perf: PerfCounter | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -320,6 +433,9 @@ export class TerminalView extends ItemView {
 	protected override async onClose(): Promise<void> {
 		this.opened = false;
 		this.generation++;
+		this.cancelFlush();
+		this.frames.clear();
+		this.perf = null;
 		await this.stopSession();
 		this.renderer?.dispose();
 		this.renderer = null;
@@ -350,6 +466,12 @@ export class TerminalView extends ItemView {
 		this.closedReason = null;
 		this.exited = false;
 		this.stderr = [];
+		// Bytes from the previous session must never land in the new one's grid.
+		this.cancelFlush();
+		this.frames.clear();
+		this.perf = perfEnabled()
+			? new PerfCounter(`${paneId} ${this.mode}`, (line) => console.debug(line))
+			: null;
 		this.renderStatus();
 
 		const renderer = await this.ensureRenderer(host);
@@ -382,8 +504,12 @@ export class TerminalView extends ItemView {
 		});
 		this.session = session;
 
-		session.on('frame', (bytes) => {
-			if (this.session === session) renderer.write(bytes);
+		session.on('frame', (bytes, meta) => {
+			if (this.session !== session) return;
+			this.perf?.frame(bytes.length);
+			this.frames.push(bytes, meta.full);
+			if (this.frames.pending >= MAX_PENDING_BYTES) this.flush(renderer);
+			else this.scheduleFlush(renderer);
 		});
 		session.on('closed', (reason) => {
 			if (this.session !== session) return;
@@ -416,6 +542,32 @@ export class TerminalView extends ItemView {
 			renderer.focus();
 		}
 		this.renderStatus();
+	}
+
+	/**
+	 * One repaint per animation frame, however many frames herdr sent. Frames come
+	 * from the window the view actually lives in (`containerEl.win`), so a popout
+	 * keeps painting while the main window is hidden.
+	 */
+	private scheduleFlush(renderer: TerminalRenderer): void {
+		if (this.flushHandle) return;
+		this.flushHandle = this.containerEl.win.requestAnimationFrame(() => {
+			this.flushHandle = 0;
+			this.flush(renderer);
+		});
+	}
+
+	private flush(renderer: TerminalRenderer): void {
+		const batch = this.frames.take();
+		if (!batch) return;
+		renderer.write(batch);
+		this.perf?.repaint();
+	}
+
+	private cancelFlush(): void {
+		if (!this.flushHandle) return;
+		this.containerEl.win.cancelAnimationFrame(this.flushHandle);
+		this.flushHandle = 0;
 	}
 
 	/** Mounts the renderer once per view; later calls reuse the same instance. */
