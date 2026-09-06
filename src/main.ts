@@ -22,7 +22,12 @@ import {
 } from './settings';
 import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
-import { ConnectionCoordinator } from './connection';
+import {
+	ConnectionCoordinator,
+	endpointOf,
+	resolveEndpoint,
+	type Endpoint,
+} from './connection';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
@@ -59,10 +64,10 @@ export default class HerdrPlugin extends Plugin {
 					extraPath: this.settings.extraPath,
 					socketOverride: this.settings.socketPath,
 				}),
-			remoteEnabled: () => this.settings.remote.enabled,
+			endpoint: () => endpointOf(this.settings.remote),
 			createTunnel: (onSocket) => this.createTunnel(onSocket),
 			createClient: (socketPath) => this.createClient(socketPath),
-			createScope: () => this.createScope(),
+			createScope: (endpoint) => this.createScope(endpoint),
 			subscriptions: SCOPE_SUBSCRIPTIONS,
 			notice: (message) => {
 				new Notice(message);
@@ -83,6 +88,31 @@ export default class HerdrPlugin extends Plugin {
 	}
 	get scope(): WorkspaceScope | null {
 		return this.connection.current?.scope ?? null;
+	}
+	/**
+	 * The endpoint the list is connected to, or the one the settings would
+	 * connect to while no connection is published (issue #54).
+	 */
+	get endpoint(): Endpoint {
+		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
+	}
+	/**
+	 * The current scope only when it belongs to `endpointId`; a terminal pinned
+	 * to the other herdr must not read titles from this one (issue #54).
+	 */
+	scopeFor(endpointId: string): WorkspaceScope | null {
+		const current = this.connection.current;
+		return current && current.endpoint.id === endpointId ? current.scope : null;
+	}
+	/**
+	 * The endpoint an id names: the published connection's own snapshot when it
+	 * matches, else one rebuilt from the settings as they are now, else null
+	 * when the settings no longer describe it.
+	 */
+	endpointFor(endpointId: string): Endpoint | null {
+		const current = this.connection.current;
+		if (current && current.endpoint.id === endpointId) return current.endpoint;
+		return resolveEndpoint(endpointId, this.settings.remote);
 	}
 	/** Non-null only while a remote profile is enabled (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -252,7 +282,10 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	async openTerminal(paneId: string): Promise<void> {
 		const workspace = this.app.workspace;
-		const existing = this.terminalLeaf(paneId);
+		// Rows come from the connected endpoint, so that is the one the terminal
+		// is opened on and pinned to (issue #54).
+		const endpointId = this.endpoint.id;
+		const existing = this.terminalLeaf(paneId, endpointId);
 		const open = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
 		const target = decideOpenTarget({
 			mode: normalizeTerminalTab(this.settings.terminalTab),
@@ -334,7 +367,7 @@ export default class HerdrPlugin extends Plugin {
 	 * for it (PRD M12).
 	 */
 	isTerminalOpen(paneId: string): boolean {
-		return this.terminalLeaf(paneId) !== null;
+		return this.terminalLeaf(paneId, this.endpoint.id) !== null;
 	}
 
 	/**
@@ -401,13 +434,15 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * The leaf showing this pane's terminal, if any. The persisted view state is
-	 * the lookup, not `leaf.view`: a background leaf may still be deferred, and
-	 * the guidelines forbid holding view references (PRD N1).
+	 * The leaf showing this pane's terminal on this endpoint, if any. The
+	 * persisted view state is the lookup, not `leaf.view`: a background leaf may
+	 * still be deferred, and the guidelines forbid holding view references (PRD
+	 * N1). The endpoint is part of the key (issue #54): after the list switches
+	 * herdr, a row's `w4:p1` must not reveal the other server's `w4:p1`.
 	 */
-	private terminalLeaf(paneId: string): WorkspaceLeaf | null {
+	private terminalLeaf(paneId: string, endpointId: string): WorkspaceLeaf | null {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			if (stateMatchesPane(leaf.getViewState().state, paneId)) return leaf;
+			if (stateMatchesPane(leaf.getViewState().state, paneId, endpointId)) return leaf;
 		}
 		return null;
 	}
@@ -633,8 +668,8 @@ export default class HerdrPlugin extends Plugin {
 	 * events, never off the raw stream: the scope has already collapsed the
 	 * ~10 pane.updated per second (N4).
 	 */
-	private createScope(): WorkspaceScope {
-		const remoteProfile = this.settings.remote;
+	private createScope(endpoint: Endpoint): WorkspaceScope {
+		const remoteProfile = endpoint.remote;
 		const scope = new WorkspaceScope({
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),

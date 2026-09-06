@@ -44,6 +44,7 @@ import { ItemView, Notice, setIcon, setTooltip, type ViewStateResult, type Works
 import type HerdrPlugin from '../main';
 import { cursorOptions, scrollbackBytes, type AttachMode } from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
+import { endpointLabel, LOCAL_ENDPOINT_ID, type Endpoint } from '../connection';
 import {
 	TerminalSession,
 	type ScrollDirection,
@@ -66,28 +67,45 @@ export const RESIZE_DEBOUNCE_MS = 100;
 export const FALLBACK_COLS = 80;
 export const FALLBACK_ROWS = 24;
 
-/** Persisted view state. `paneId` is a herdr pane id such as `w4:p1`. */
+/**
+ * Persisted view state. `paneId` is a herdr pane id such as `w4:p1`;
+ * `endpointId` is the herdr it lives on (`local` or `ssh:<host>:<socket>`,
+ * issue #54), because pane ids are only unique per server.
+ */
 export interface TerminalViewState {
 	paneId: string;
 	mode: AttachMode;
+	endpointId: string;
 }
 
 /**
  * Parses whatever Obsidian hands `setState` (a restored workspace layout may hold
  * anything). Returns null when there is no usable pane id; an unknown mode falls
- * back to control, which is the documented default (PRD M15).
+ * back to control, which is the documented default (PRD M15). A state saved
+ * before endpoints existed has no endpoint id and is treated as local, which
+ * is the only endpoint a plugin of that age could have opened it on.
  */
 export function parseTerminalState(raw: unknown): TerminalViewState | null {
 	if (typeof raw !== 'object' || raw === null) return null;
 	const record = raw as Record<string, unknown>;
 	const paneId = typeof record.paneId === 'string' ? record.paneId.trim() : '';
 	if (paneId.length === 0) return null;
-	return { paneId, mode: record.mode === 'observe' ? 'observe' : 'control' };
+	const endpointId = typeof record.endpointId === 'string' ? record.endpointId.trim() : '';
+	return {
+		paneId,
+		mode: record.mode === 'observe' ? 'observe' : 'control',
+		endpointId: endpointId.length > 0 ? endpointId : LOCAL_ENDPOINT_ID,
+	};
 }
 
-/** True when a leaf's persisted state points at this pane. Used by `main.ts`. */
-export function stateMatchesPane(raw: unknown, paneId: string): boolean {
-	return parseTerminalState(raw)?.paneId === paneId;
+/**
+ * True when a leaf's persisted state points at this pane on this endpoint.
+ * Used by `main.ts`. Both parts must match: `w4:p1` on the local herdr and
+ * `w4:p1` on a remote one are different terminals (issue #54).
+ */
+export function stateMatchesPane(raw: unknown, paneId: string, endpointId: string): boolean {
+	const state = parseTerminalState(raw);
+	return state?.paneId === paneId && state.endpointId === endpointId;
 }
 
 /**
@@ -377,6 +395,8 @@ export function spawnEnv(env: NodeJS.ProcessEnv, extraPath: string): NodeJS.Proc
 /** What the status line shows, derived from the session's last words. */
 export interface StatusInput {
 	mode: AttachMode;
+	/** Where the bridge runs, from {@link endpointLabel}: `local` or `ssh <host>`. */
+	endpoint: string;
 	/** `terminal.closed` reason, or a locally produced message. */
 	closedReason: string | null;
 	/** Whether the bridge process is gone. */
@@ -417,11 +437,8 @@ export function statusLine(input: StatusInput): StatusLine {
 	if (input.exited) {
 		return { text: 'Bridge process exited. Reconnect to attach again.', warning: true, detail };
 	}
-	return {
-		text: input.mode === 'observe' ? 'Observing (read-only).' : 'Controlling this pane.',
-		warning: false,
-		detail,
-	};
+	const verb = input.mode === 'observe' ? 'Observing (read-only)' : 'Controlling this pane';
+	return { text: `${verb} on ${input.endpoint}.`, warning: false, detail };
 }
 
 /** Newest stderr line plus a count of the ones before it; null when empty. */
@@ -472,6 +489,17 @@ export class TerminalView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private paneId = '';
 	private mode: AttachMode;
+	/** Persisted endpoint id; which herdr `paneId` belongs to (issue #54). */
+	private endpointId: string = LOCAL_ENDPOINT_ID;
+	/**
+	 * The endpoint this view is pinned to, captured on the first start after
+	 * `setState` named it and kept across every later start, so a reconnect, a
+	 * mode toggle or a renderer rebuild spawns against the same herdr whatever
+	 * the list is connected to now.
+	 */
+	private endpoint: Endpoint | null = null;
+	/** Last title the pinned endpoint's scope gave, kept while that scope is away. */
+	private lastTitle = '';
 	private hostEl: HTMLElement | null = null;
 	private statusEl: HTMLElement | null = null;
 	private toggleActionEl: HTMLElement | null = null;
@@ -545,8 +573,14 @@ export class TerminalView extends ItemView {
 
 	/** Agent name of the pane, falling back to the pane id (PRD M13, issue #36). */
 	getDisplayText(): string {
-		const pane = this.paneId ? this.plugin.scope?.get(this.paneId) : undefined;
-		return terminalTabTitle(pane, this.paneId);
+		// Only the pinned endpoint's scope may name this pane: the other herdr's
+		// `w4:p1` is a different agent (issue #54). While the list is connected
+		// elsewhere the last title that scope gave stays, rather than the id.
+		const pane = this.paneId
+			? this.plugin.scopeFor(this.endpointId)?.get(this.paneId)
+			: undefined;
+		if (pane) this.lastTitle = terminalTabTitle(pane, this.paneId);
+		return this.lastTitle || terminalTabTitle(pane, this.paneId);
 	}
 
 	override getIcon(): string {
@@ -554,20 +588,27 @@ export class TerminalView extends ItemView {
 	}
 
 	override getState(): Record<string, unknown> {
-		return { paneId: this.paneId, mode: this.mode };
+		return { paneId: this.paneId, mode: this.mode, endpointId: this.endpointId };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		await super.setState(state, result);
 		const parsed = parseTerminalState(state);
 		if (!parsed) return;
-		const switchedPane = parsed.paneId !== this.paneId;
+		const switchedEndpoint = parsed.endpointId !== this.endpointId;
+		const switchedPane = switchedEndpoint || parsed.paneId !== this.paneId;
 		const changed = switchedPane || parsed.mode !== this.mode;
 		this.paneId = parsed.paneId;
 		this.mode = parsed.mode;
+		this.endpointId = parsed.endpointId;
+		// A new endpoint means a new pin; `start()` captures it.
+		if (switchedEndpoint) this.endpoint = null;
 		// Reuse mode (#38) points this view at another agent, and the previous
 		// agent's output belongs to the previous agent.
-		if (switchedPane) this.forgetOutput();
+		if (switchedPane) {
+			this.lastTitle = '';
+			this.forgetOutput();
+		}
 		if (changed) this.refreshHeader();
 		if (changed && this.opened) await this.start();
 	}
@@ -701,7 +742,7 @@ export class TerminalView extends ItemView {
 	 */
 	private bindScope(): void {
 		for (const off of this.unbindScope.splice(0)) off();
-		const scope = this.plugin.scope;
+		const scope = this.plugin.scopeFor(this.endpointId);
 		if (!scope) return;
 		this.unbindScope.push(
 			// `added` is the interesting one: a pane opened from the file pane is
@@ -853,6 +894,9 @@ export class TerminalView extends ItemView {
 		this.perf = perfEnabled()
 			? new PerfCounter(`${paneId} ${this.mode}`, (line) => console.debug(line))
 			: null;
+		// Pinned on the first start and kept: the endpoint's settings snapshot is
+		// what every later start spawns from, not the settings as they are then.
+		this.endpoint ??= this.plugin.endpointFor(this.endpointId);
 		this.renderStatus();
 
 		const renderer = await this.ensureRenderer(host);
@@ -867,7 +911,14 @@ export class TerminalView extends ItemView {
 		try {
 			// Local: `[<herdr>]`. Remote profile: `['ssh','-T',host,<remote herdr>]`
 			// — terminals never go through the forwarded API socket (PRD S17).
-			command = terminalArgvPrefix(this.plugin.settings, this.plugin.herdrBinaryPath());
+			// The argv comes from the pinned endpoint's snapshot (issue #54).
+			if (!this.endpoint) {
+				throw new Error(`the endpoint ${this.endpointId} is no longer configured`);
+			}
+			command = terminalArgvPrefix(
+				{ remote: this.endpoint.remote },
+				this.plugin.herdrBinaryPath(),
+			);
 		} catch (error) {
 			// A restored tab opens before `connect()` has discovered the binary
 			// (discovery is async); the plugin announces the connection through
@@ -1296,6 +1347,7 @@ export class TerminalView extends ItemView {
 		el.empty();
 		const line = statusLine({
 			mode: this.mode,
+			endpoint: this.endpoint ? endpointLabel(this.endpoint) : this.endpointId,
 			closedReason: this.closedReason,
 			exited: this.exited && this.closedReason === null,
 			stderr: this.stderr,
