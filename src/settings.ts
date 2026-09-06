@@ -23,6 +23,12 @@ export type AgentKind = (typeof AGENT_KINDS)[number];
 /** How a terminal view attaches to a herdr pane. */
 export type AttachMode = 'control' | 'observe';
 
+/**
+ * Where the terminal view opens when a note from the agent's directory is open
+ * (issue #28). `tab` is the pre-#28 behaviour and is used everywhere else.
+ */
+export type TerminalPlacement = 'split-right' | 'split-left' | 'tab';
+
 /** Status transitions the plugin notifies about. Others are noise (PRD M12). */
 export type NotifiedTransition = 'blocked' | 'done';
 
@@ -76,6 +82,8 @@ export interface HerdrSettings {
 	extraPath: string;
 	/** Attach mode used when opening a terminal view. */
 	defaultAttachMode: AttachMode;
+	/** Where a terminal opens when the active note is inside the agent's cwd. */
+	terminalPlacement: TerminalPlacement;
 }
 
 export const DEFAULT_SETTINGS: HerdrSettings = {
@@ -101,6 +109,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	openTerminalAfterStart: true,
 	extraPath: '',
 	defaultAttachMode: 'control',
+	terminalPlacement: 'split-right',
 };
 
 /**
@@ -453,6 +462,23 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.setValue(settings.defaultAttachMode)
 					.onChange(async (value) => {
 						settings.defaultAttachMode = value as AttachMode;
+						await this.save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Terminal placement')
+			.setDesc(
+				'Where a terminal opens when the note you are looking at lives inside the agent’s working directory. Otherwise, and when that terminal is already open, nothing splits: the existing tab is revealed.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('split-right', 'Split to the right of the note')
+					.addOption('split-left', 'Split to the left of the note')
+					.addOption('tab', 'Always a new tab')
+					.setValue(settings.terminalPlacement)
+					.onChange(async (value) => {
+						settings.terminalPlacement = value as TerminalPlacement;
 						await this.save();
 					}),
 			);

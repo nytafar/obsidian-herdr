@@ -40,6 +40,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		openTerminalAfterStart: true,
 		extraPath: '',
 		defaultAttachMode: 'control',
+		terminalPlacement: 'split-right',
 		...overrides,
 	};
 }
