@@ -279,6 +279,11 @@ export default class HerdrPlugin extends Plugin {
 	 * pane it was showing has its session released by that restart. Only a
 	 * genuinely new terminal is placed, beside the note when that note lives
 	 * inside the agent's working directory and in a tab otherwise.
+	 *
+	 * "Same pane" means same pane id on the connected endpoint (issue #54): a
+	 * terminal pinned to the other herdr is neither revealed nor switched by a
+	 * plain open, only by the reuse mode, which is an explicit choice to point
+	 * the one terminal tab at whatever row was clicked.
 	 */
 	async openTerminal(paneId: string): Promise<void> {
 		const workspace = this.app.workspace;
@@ -311,7 +316,7 @@ export default class HerdrPlugin extends Plugin {
 					active: true,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
-					state: { paneId, mode: this.attachModeOf(reused) },
+					state: { paneId, mode: this.attachModeOf(reused), endpointId },
 				});
 				leaf = reused;
 			}
@@ -321,7 +326,7 @@ export default class HerdrPlugin extends Plugin {
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
-				state: { paneId, mode: this.settings.defaultAttachMode },
+				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
 			});
 		}
 		await workspace.revealLeaf(leaf);
