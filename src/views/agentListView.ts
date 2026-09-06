@@ -39,8 +39,6 @@
 import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import type { HerdrSettings } from '../settings';
-import { stripTitleSpinner } from '../herdr/scope';
-import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
@@ -81,19 +79,8 @@ export class AgentListView extends ItemView {
 	private listEl: HTMLElement | null = null;
 	/** The local/remote toggle (issue #54); null until the toolbar is built. */
 	private endpointToggleEl: HTMLElement | null = null;
-	private tabLabels = new Map<string, string>();
-	/**
-	 * Tab ids a `tab.list` has already covered, whether or not it returned a
-	 * label for them. This is what keeps the render path free of round trips: a
-	 * pane whose tab herdr never lists would otherwise make every repaint ask
-	 * again, and each answer would repaint (see `notes/memory.md`, suspect 8).
-	 */
-	private askedTabIds = new Set<string>();
 	private pendingRender = 0;
-	private tabLabelsInFlight = false;
-	/** An `added` arrived mid-flight: ask once more when the flight lands. */
-	private tabLabelsQueued = false;
-	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
+	/** Unsubscribes from the scope and label cache bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
@@ -285,37 +272,35 @@ export class AgentListView extends ItemView {
 		this.contentEl.empty();
 	}
 
-	/** Subscribes to the plugin's current scope, dropping the previous one. */
+	/**
+	 * Subscribes to the plugin's current scope and its tab-label cache, dropping
+	 * the previous pair. Tab labels are the cache's business (issue #43): it
+	 * fetches once per workspace for every view on the connection, applies
+	 * `tab_renamed` in place, and drops answers from a connection or workspace
+	 * that has moved on. This view only tells it when a pane brings a tab it may
+	 * not have covered, and repaints when it says something changed.
+	 */
 	private bindScope(): void {
 		for (const off of this.unbindScope.splice(0)) off();
-		this.tabLabels.clear();
-		this.askedTabIds.clear();
 		const scope = this.plugin.scope;
+		const labels = this.plugin.tabLabelsFor(this.plugin.endpoint.id);
 		if (scope) {
 			this.unbindScope.push(
-				// A new pane can bring a tab this view has never seen a label for, so
-				// `added` is where a label fetch belongs — a bounded number of them,
-				// one per genuinely new tab, instead of one per repaint.
 				scope.on('added', (pane) => {
-					if (!this.tabLabels.has(pane.tabId) && !this.askedTabIds.has(pane.tabId)) {
-						void this.refreshTabLabels();
-					}
+					// Bounded: the cache asks once per genuinely new tab, never per repaint.
+					labels?.ensure(pane.tabId);
 					this.scheduleRender();
 				}),
 				scope.on('removed', () => this.scheduleRender()),
 				scope.on('changed', () => this.scheduleRender()),
-				scope.on('workspaceResolved', () => {
-					// Tab ids belong to a workspace; another workspace's answers say
-					// nothing, including about what has already been asked.
-					this.tabLabels.clear();
-					this.askedTabIds.clear();
-					void this.refreshTabLabels();
-					this.scheduleRender();
-				}),
+				scope.on('workspaceResolved', () => this.scheduleRender()),
 			);
 		}
+		if (labels) {
+			this.unbindScope.push(labels.subscribe(() => this.scheduleRender()));
+			labels.ensure();
+		}
 		this.render();
-		void this.refreshTabLabels();
 	}
 
 	/**
@@ -371,7 +356,9 @@ export class AgentListView extends ItemView {
 		// Settings are read here, once per repaint, so changing the sort or the
 		// grouping reorders the list on the next render and never reconnects.
 		const settings = this.plugin.settings;
-		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath(), {
+		// Labels are read, never fetched, from here (issue #43).
+		const tabLabels = this.plugin.tabLabelsFor(this.plugin.endpoint.id)?.labels() ?? new Map<string, string>();
+		const groups = buildRows(panes, tabLabels, this.plugin.herdrVaultPath(), {
 			groupBy: settings.agentListGroupBy,
 			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
@@ -492,63 +479,5 @@ export class AgentListView extends ItemView {
 			: rowActions(this.plugin.settings.agentListRowClick).body;
 		if (action === 'terminal') void this.plugin.openTerminal(paneId);
 		else void this.plugin.actions.focusPane(paneId);
-	}
-
-	/**
-	 * Fills in tab labels with one read-only `tab.list`. Rows fall back to the
-	 * tab id until this lands, so a failure here is cosmetic and stays silent.
-	 * `tab.list` is optional (PRD M3): a herdr without it says so once through
-	 * the client's `onUnsupportedMethod` notice, and `requestOptional` then
-	 * returns null for good, so this stops asking.
-	 *
-	 * Called on `workspaceResolved`, on an `added` pane whose tab is still
-	 * unknown, and once from `onOpen` — never from `render()`. The old code asked
-	 * from the render path and repainted on the answer, which converges on this
-	 * herdr only because `tab.list` happens to return every tab `pane.list`
-	 * mentions; a tab it did not mention would spin forever, at one request and one
-	 * full DOM rebuild per iteration (`notes/memory.md`, suspect 8). Marking the tab
-	 * ids asked makes that impossible regardless of what herdr answers.
-	 */
-	private async refreshTabLabels(): Promise<void> {
-		const client = this.plugin.client;
-		const workspaceId = this.plugin.scope?.workspaceId;
-		if (!client || !workspaceId) return;
-		if (client.isUnsupported('tab.list')) return;
-		if (this.tabLabelsInFlight) {
-			this.tabLabelsQueued = true;
-			return;
-		}
-		// Snapshot before awaiting: these are the ids this request answers for,
-		// and they count as asked even when the answer omits them.
-		const asked = new Set(this.plugin.scope?.list().map((pane) => pane.tabId) ?? []);
-		this.tabLabelsInFlight = true;
-		try {
-			const result = await client.requestOptional<{ tabs?: TabInfo[] }>('tab.list', {
-				workspace_id: workspaceId,
-			});
-			const labels = new Map<string, string>();
-			for (const tab of result?.tabs ?? []) {
-				if (typeof tab?.tab_id !== 'string') continue;
-				// Live `tab.list` labels carry herdr's own status prefix ("! trauma",
-				// "? vault-maintenance"); the rows' own status colours already say that.
-				const label = tab.label ? stripTitleSpinner(tab.label) : '';
-				labels.set(tab.tab_id, label || tab.tab_id);
-			}
-			for (const tabId of asked) this.askedTabIds.add(tabId);
-			for (const tabId of labels.keys()) this.askedTabIds.add(tabId);
-			if (labels.size > 0) {
-				this.tabLabels = labels;
-				this.scheduleRender();
-			}
-		} catch {
-			// Unknown method or a dead socket: keep showing tab ids. Nothing is
-			// marked asked, so the next new pane may try again.
-		} finally {
-			this.tabLabelsInFlight = false;
-			if (this.tabLabelsQueued) {
-				this.tabLabelsQueued = false;
-				void this.refreshTabLabels();
-			}
-		}
 	}
 }

@@ -54,6 +54,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		defaultAttachMode: 'control',
 		terminalPlacement: 'split-right',
 		terminalTab: 'per-agent',
+		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
 		...overrides,
 	};

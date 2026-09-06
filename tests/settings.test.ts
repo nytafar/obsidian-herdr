@@ -19,6 +19,7 @@ import {
 	MIN_SCROLLBACK_MB,
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
+	normalizeTerminalTitleSource,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
 	SCROLLBACK_BYTES_PER_MB,
@@ -186,6 +187,21 @@ describe('terminalTab (issue #38)', () => {
 		expect(normalizeTerminalTab(undefined)).toBe('per-agent');
 		expect(normalizeTerminalTab(null)).toBe('per-agent');
 		expect(normalizeTerminalTab(1)).toBe('per-agent');
+	});
+});
+
+describe('terminalTitleSource (issue #43)', () => {
+	it('defaults to the agent name, the behaviour before the setting', () => {
+		expect(DEFAULT_SETTINGS.terminalTitleSource).toBe('agent');
+		expect(normalizeTerminalTitleSource(undefined)).toBe('agent');
+	});
+
+	it('passes both sources through and rejects anything else', () => {
+		expect(normalizeTerminalTitleSource('agent')).toBe('agent');
+		expect(normalizeTerminalTitleSource('tab')).toBe('tab');
+		expect(normalizeTerminalTitleSource('label')).toBe('agent');
+		expect(normalizeTerminalTitleSource(7)).toBe('agent');
+		expect(normalizeTerminalTitleSource(null)).toBe('agent');
 	});
 });
 

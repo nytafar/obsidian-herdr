@@ -18,6 +18,7 @@ import {
 	summariseStderr,
 	TERMINAL_VIEW_TYPE,
 	type DebounceTimers,
+	type TitleContext,
 } from '../src/views/terminalView';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
@@ -111,6 +112,60 @@ describe('terminalTabTitle (issue #36)', () => {
 		// No fixed "Herdr terminal": the tab and the view header read the same
 		// string, and a constant there disagreed with an empty tab title.
 		expect(terminalTabTitle(undefined, '')).toBe('');
+	});
+});
+
+describe('terminalTabTitle with the herdr tab label source (issue #43)', () => {
+	const named = pane({ name: 'vault-maintenance', title: 'claude — hvelv' });
+	const context = (overrides: Partial<TitleContext> = {}): TitleContext => ({
+		source: 'tab',
+		tabLabel: 'hvelv',
+		sharing: false,
+		agentsInTab: 1,
+		...overrides,
+	});
+
+	it('titles the tab with the herdr tab label alone when a tab is one agent', () => {
+		expect(terminalTabTitle(named, named.paneId, context())).toBe('hvelv');
+	});
+
+	it('appends the agent name while sharing is on and the tab holds two agent panes', () => {
+		expect(terminalTabTitle(named, named.paneId, context({ sharing: true, agentsInTab: 2 }))).toBe(
+			'hvelv — vault-maintenance',
+		);
+	});
+
+	it('keeps the label plain with sharing on but a single pane in the tab', () => {
+		expect(terminalTabTitle(named, named.paneId, context({ sharing: true, agentsInTab: 1 }))).toBe(
+			'hvelv',
+		);
+	});
+
+	it('keeps the label plain with sharing off even if herdr put two panes in the tab', () => {
+		// Sharing off means the plugin never split this tab; whatever herdr did
+		// by hand, the setting says a tab is one agent.
+		expect(terminalTabTitle(named, named.paneId, context({ sharing: false, agentsInTab: 2 }))).toBe(
+			'hvelv',
+		);
+	});
+
+	it('falls back to the agent name while the label is unknown or blank', () => {
+		expect(terminalTabTitle(named, named.paneId, context({ tabLabel: undefined }))).toBe(
+			'vault-maintenance',
+		);
+		expect(terminalTabTitle(named, named.paneId, context({ tabLabel: '  ' }))).toBe(
+			'vault-maintenance',
+		);
+	});
+
+	it('ignores the label entirely under the agent name source', () => {
+		expect(terminalTabTitle(named, named.paneId, context({ source: 'agent' }))).toBe(
+			'vault-maintenance',
+		);
+	});
+
+	it('still shows the pane id while the scope does not know the pane', () => {
+		expect(terminalTabTitle(undefined, 'w4:p1G', context())).toBe('w4:p1G');
 	});
 });
 
