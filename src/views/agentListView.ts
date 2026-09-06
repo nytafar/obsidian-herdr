@@ -28,6 +28,7 @@ import { ItemView, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
+import { iconForKind, isKindIcon, kindLabel } from './kindIcons';
 import { buildRows, type RowGroup, type RowModel } from './rowModel';
 
 // Re-exported so `main.ts` and the existing tests keep importing the list view's
@@ -200,6 +201,19 @@ export class AgentListView extends ItemView {
 			cls: `herdr-status-glyph herdr-status-${model.status}`,
 		});
 		glyph.setAttribute('aria-label', model.statusLabel);
+
+		// The harness mark (issue #19): the kind is an icon, never a word, since
+		// almost every row would otherwise read "claude". Registered marks are
+		// fill-based and need the modifier class; the Lucide fallback keeps its
+		// stroke, so it must not get it (see `styles.css`).
+		const icon = iconForKind(model.kind);
+		const kindLabelText = kindLabel(model.kind);
+		const kindEl = row.createSpan({
+			cls: isKindIcon(icon) ? 'herdr-agent-kind mod-brand' : 'herdr-agent-kind',
+		});
+		setIcon(kindEl, icon);
+		setTooltip(kindEl, kindLabelText);
+		kindEl.setAttribute('aria-label', kindLabelText);
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
