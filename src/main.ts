@@ -278,6 +278,20 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Rebuilds every open terminal on the engine the settings now name (issue
+	 * #27). Unlike a theme change, this cannot be applied in place: the renderer
+	 * is a different library, so each view snapshots its scrollback, disposes and
+	 * starts again. Deferred leaves are skipped; they read the setting when they
+	 * mount.
+	 */
+	rebuildTerminals(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) void view.rebuildRenderer();
+		}
+	}
+
 	/** Applies the folder hover button setting, both ways (issue #30). */
 	refreshFolderHoverButton(): void {
 		if (this.settings.folderHoverButton) this.explorerButtons.enable();

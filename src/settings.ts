@@ -4,6 +4,13 @@ import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
 import type { RowClickAction } from './views/rowModel';
 import {
+	DEFAULT_TERMINAL_ENGINE,
+	normalizeEngineName,
+	TERMINAL_ENGINES,
+	TERMINAL_ENGINE_LABELS,
+	type TerminalEngine,
+} from './views/renderer/TerminalRenderer';
+import {
 	DEFAULT_TERMINAL_THEME,
 	TERMINAL_THEMES,
 	TERMINAL_THEME_LABELS,
@@ -102,6 +109,12 @@ export interface HerdrSettings {
 	 * `views/renderer/themes.ts`.
 	 */
 	terminalTheme: TerminalThemeName;
+	/**
+	 * Which renderer draws the terminal (issue #27). `ghostty-web` is the default
+	 * and the v1 behaviour; `xterm.js` is the mature alternative. See
+	 * `views/renderer/create.ts`.
+	 */
+	terminalEngine: TerminalEngine;
 	/** Terminal font size in pixels. 0 follows the Obsidian monospace size. */
 	terminalFontSize: number;
 	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
@@ -212,6 +225,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
 	terminalTheme: DEFAULT_TERMINAL_THEME,
+	terminalEngine: DEFAULT_TERMINAL_ENGINE,
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
@@ -696,6 +710,24 @@ export class HerdrSettingTab extends PluginSettingTab {
 						settings.terminalTheme = normalizeThemeName(value);
 						await this.save();
 						this.plugin.refreshTerminals();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('Terminal engine')
+			.setDesc(
+				'Which library draws the terminal. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows. Open terminals are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
+			)
+			.addDropdown((dropdown) => {
+				for (const name of TERMINAL_ENGINES) {
+					dropdown.addOption(name, TERMINAL_ENGINE_LABELS[name]);
+				}
+				dropdown
+					.setValue(normalizeEngineName(settings.terminalEngine))
+					.onChange(async (value) => {
+						settings.terminalEngine = normalizeEngineName(value);
+						await this.save();
+						this.plugin.rebuildTerminals();
 					});
 			});
 

@@ -3,10 +3,11 @@
  * ghostty-web can be swapped for xterm.js without touching the bridge.
  *
  * Nothing in this file may import a renderer library: it holds the contract plus
- * the pure helpers (option normalisation, fit maths) that the DOM-free unit tests
- * cover. The one place that names an implementation is `createRenderer` in
- * `./create.ts`; swapping ghostty-web for xterm.js is that one line plus a new
- * file next to `ghosttyWeb.ts`. See `tests/README.md` for the manual smoke.
+ * the pure helpers (option normalisation, fit maths, engine names) that the
+ * DOM-free unit tests cover. The one place that names an implementation is
+ * `createRenderer` in `./create.ts`, which since issue #27 picks between the two
+ * files next to it — `ghosttyWeb.ts` and `xtermJs.ts` — from `options.engine`.
+ * See `tests/README.md` for the manual smoke and the renderer benchmark.
  */
 
 /** Removes a listener registered with `onData` / `onResize`. Idempotent. */
@@ -47,10 +48,50 @@ export interface RendererOptions {
 	 * vault's CSS variables. See `./themes.ts` for the names and the palettes.
 	 */
 	theme?: string;
+	/**
+	 * Which implementation to build (issue #27). Undefined or unknown →
+	 * {@link DEFAULT_TERMINAL_ENGINE}. Only `./create.ts` reads it.
+	 */
+	engine?: TerminalEngine;
 	/** Observe mode (PRD S16) sets this so keystrokes never reach the pane. */
 	disableStdin?: boolean;
 	cursorBlink?: boolean;
 	cursorStyle?: 'block' | 'underline' | 'bar';
+}
+
+/**
+ * Terminal engines this build ships (issue #27). Both implement the interface
+ * below; the names double as the stored setting value, so they are strings a
+ * human recognises rather than an enum.
+ */
+export const TERMINAL_ENGINES = ['ghostty-web', 'xterm.js'] as const;
+
+export type TerminalEngine = (typeof TERMINAL_ENGINES)[number];
+
+/** ghostty-web stays the default: it is what every v1 terminal was rendered by. */
+export const DEFAULT_TERMINAL_ENGINE: TerminalEngine = 'ghostty-web';
+
+/** Dropdown labels, sentence case per the Obsidian guidelines. */
+export const TERMINAL_ENGINE_LABELS: Record<TerminalEngine, string> = {
+	'ghostty-web': 'Ghostty web (WebAssembly, canvas)',
+	'xterm.js': 'xterm.js (DOM)',
+};
+
+/** Whether `value` is an engine name this build knows. */
+export function isTerminalEngine(value: unknown): value is TerminalEngine {
+	return (
+		typeof value === 'string' &&
+		(TERMINAL_ENGINES as readonly string[]).includes(value)
+	);
+}
+
+/**
+ * A stored setting (hand-edited `data.json`, or a name a newer build wrote)
+ * turned into an engine this build supports. Same contract as
+ * `normalizeThemeName`: anything unknown is the default, never an error.
+ */
+export function normalizeEngineName(value: unknown): TerminalEngine {
+	return isTerminalEngine(value) ? value : DEFAULT_TERMINAL_ENGINE;
 }
 
 export interface TerminalRenderer {

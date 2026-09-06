@@ -800,6 +800,33 @@ export class TerminalView extends ItemView {
 		this.renderer?.refreshTheme?.(theme);
 	}
 
+	/**
+	 * Rebuilds the terminal on whatever engine the settings now name (issue #27).
+	 * `HerdrPlugin.rebuildTerminals()` calls this after the engine dropdown
+	 * changes; the renderer is not swappable in place, so this is the suspend half
+	 * of #15 (snapshot, dispose, empty the host) followed by a fresh `start()`.
+	 *
+	 * History survives as plain text, the same trade a hide/reveal makes. A
+	 * suspended view is left alone: it has no renderer, and the one it mounts when
+	 * its leaf comes back reads the setting then.
+	 */
+	async rebuildRenderer(): Promise<void> {
+		if (!this.opened || this.suspended) return;
+		// Invalidates any `start()` still in flight, so nothing can go on using
+		// the renderer this is about to dispose. `start()` below bumps it again.
+		this.generation++;
+		const renderer = this.renderer;
+		if (renderer) {
+			this.snapshot = renderer.snapshotLines?.() ?? null;
+			renderer.dispose();
+		}
+		this.renderer = null;
+		this.rendererReady = null;
+		this.hostEl?.empty();
+		if (!this.paneId) return;
+		await this.start();
+	}
+
 	/** Mounts the renderer once per view; later calls reuse the same instance. */
 	private async ensureRenderer(host: HTMLElement): Promise<TerminalRenderer | null> {
 		if (!this.renderer) {
@@ -809,6 +836,9 @@ export class TerminalView extends ItemView {
 				fontSize: settings.terminalFontSize,
 				// Colours: `obsidian` by default, which is the CSS variables (#26).
 				theme: settings.terminalTheme,
+				// Which library draws it (#27); read fresh on every mount, so a
+				// rebuilt view picks up a changed setting.
+				engine: settings.terminalEngine,
 				// Bytes, not lines — see `RendererOptions.scrollback`.
 				scrollback: scrollbackBytes(settings),
 				// Input is gated on the session's mode instead of here, so toggling

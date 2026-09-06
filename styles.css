@@ -300,3 +300,176 @@
 .herdr-folder-button:hover {
 	color: var(--text-normal);
 }
+
+/* xterm.js engine (issue #27) ---------------------------------------------- */
+
+/*
+ * The rules `@xterm/xterm` 5.5.0 ships in `css/xterm.css`, copied here because
+ * PRD N5 lets the plugin ship only main.js, manifest.json and styles.css — an
+ * `import '@xterm/xterm/css/xterm.css'` would make esbuild emit a fourth file.
+ *
+ * Copyright (c) 2014 The xterm.js authors. All rights reserved.
+ * Copyright (c) 2012-2013, Christopher Jeffrey (MIT License). MIT, see
+ * `node_modules/@xterm/xterm/LICENSE`.
+ *
+ * Three deliberate differences from upstream:
+ *  - every selector is scoped to `.herdr-terminal-host`, so nothing here can
+ *    reach a note, another plugin's terminal, or the ghostty-web engine;
+ *  - the viewport's hard-coded `#000` is Obsidian's `--background-primary`
+ *    instead. It is only what shows before xterm applies the theme, which it
+ *    does by setting the element's background from `ITheme.background`;
+ *  - the canvas, decoration and overview-ruler rules are left out: they belong
+ *    to `@xterm/addon-canvas` / `addon-webgl` and the decorations API, none of
+ *    which this plugin loads. Add them back if one is ever loaded.
+ *
+ * The per-row and per-colour rules are not here and must not be: xterm's DOM
+ * renderer generates them into its own <style> element at runtime.
+ */
+
+.herdr-terminal-host .xterm {
+	cursor: text;
+	position: relative;
+	user-select: none;
+}
+
+.herdr-terminal-host .xterm.focus,
+.herdr-terminal-host .xterm:focus {
+	outline: none;
+}
+
+/* Must outrank the canvases so an IME candidate window is not painted over. */
+.herdr-terminal-host .xterm .xterm-helpers {
+	position: absolute;
+	top: 0;
+	z-index: 5;
+}
+
+/* Off-screen, so the caret of the real textarea is never visible. */
+.herdr-terminal-host .xterm .xterm-helper-textarea {
+	padding: 0;
+	border: 0;
+	margin: 0;
+	position: absolute;
+	opacity: 0;
+	left: -9999em;
+	top: 0;
+	width: 0;
+	height: 0;
+	z-index: -5;
+	white-space: nowrap;
+	overflow: hidden;
+	resize: none;
+}
+
+.herdr-terminal-host .xterm .composition-view {
+	background: var(--background-primary);
+	color: var(--text-normal);
+	display: none;
+	position: absolute;
+	white-space: nowrap;
+	z-index: 1;
+}
+
+.herdr-terminal-host .xterm .composition-view.active {
+	display: block;
+}
+
+.herdr-terminal-host .xterm .xterm-viewport {
+	background-color: var(--background-primary);
+	overflow-y: scroll;
+	cursor: default;
+	position: absolute;
+	right: 0;
+	left: 0;
+	top: 0;
+	bottom: 0;
+}
+
+.herdr-terminal-host .xterm .xterm-screen {
+	position: relative;
+}
+
+.herdr-terminal-host .xterm .xterm-scroll-area {
+	visibility: hidden;
+}
+
+.herdr-terminal-host .xterm-char-measure-element {
+	display: inline-block;
+	visibility: hidden;
+	position: absolute;
+	top: 0;
+	left: -9999em;
+	line-height: normal;
+}
+
+/* A mouse-reporting application (tmux, an editor) wants the normal pointer. */
+.herdr-terminal-host .xterm.enable-mouse-events {
+	cursor: default;
+}
+
+.herdr-terminal-host .xterm.xterm-cursor-pointer,
+.herdr-terminal-host .xterm .xterm-cursor-pointer {
+	cursor: pointer;
+}
+
+.herdr-terminal-host .xterm.column-select.focus {
+	cursor: crosshair;
+}
+
+.herdr-terminal-host .xterm .xterm-accessibility:not(.debug),
+.herdr-terminal-host .xterm .xterm-message {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	right: 0;
+	z-index: 10;
+	color: transparent;
+	pointer-events: none;
+}
+
+.herdr-terminal-host .xterm .xterm-accessibility-tree:not(.debug) *::selection {
+	color: transparent;
+}
+
+.herdr-terminal-host .xterm .xterm-accessibility-tree {
+	user-select: text;
+	white-space: pre;
+}
+
+.herdr-terminal-host .xterm .live-region {
+	position: absolute;
+	left: -9999px;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+}
+
+/*
+ * Dim applies to the foreground only, which xterm does by generating a
+ * transparent foreground colour; the opacity here has to be reset for that, and
+ * the generated rule is what it has to beat.
+ */
+.herdr-terminal-host .xterm-dim {
+	opacity: 1 !important;
+}
+
+.herdr-terminal-host .xterm-underline-1 { text-decoration: underline; }
+.herdr-terminal-host .xterm-underline-2 { text-decoration: double underline; }
+.herdr-terminal-host .xterm-underline-3 { text-decoration: wavy underline; }
+.herdr-terminal-host .xterm-underline-4 { text-decoration: dotted underline; }
+.herdr-terminal-host .xterm-underline-5 { text-decoration: dashed underline; }
+
+.herdr-terminal-host .xterm-overline {
+	text-decoration: overline;
+}
+
+.herdr-terminal-host .xterm-overline.xterm-underline-1 { text-decoration: overline underline; }
+.herdr-terminal-host .xterm-overline.xterm-underline-2 { text-decoration: overline double underline; }
+.herdr-terminal-host .xterm-overline.xterm-underline-3 { text-decoration: overline wavy underline; }
+.herdr-terminal-host .xterm-overline.xterm-underline-4 { text-decoration: overline dotted underline; }
+.herdr-terminal-host .xterm-overline.xterm-underline-5 { text-decoration: overline dashed underline; }
+
+.herdr-terminal-host .xterm-strikethrough {
+	text-decoration: line-through;
+}
