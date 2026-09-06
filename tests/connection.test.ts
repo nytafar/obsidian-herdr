@@ -138,6 +138,7 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 	const notices: string[] = [];
 	const errors: (string | null)[] = [];
 	let replaced = 0;
+	let primed = 0;
 	const deps: ConnectionDeps = {
 		discover: () => {
 			const d = deferred<DiscoveryResult>();
@@ -167,6 +168,9 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 		onReplaced: () => {
 			replaced++;
 		},
+		onPrimed: () => {
+			primed++;
+		},
 	};
 	const coordinator = new ConnectionCoordinator(deps);
 	return {
@@ -178,6 +182,7 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 		notices,
 		errors,
 		replaced: () => replaced,
+		primed: () => primed,
 	};
 }
 
@@ -512,8 +517,10 @@ describe('Connection: priming', () => {
 		next.snapshots[0]?.reject(new Error('disposed'));
 		await stalePrime;
 		expect(h.errors).toEqual([]);
-		// Retire of the first, publish of the second, retire on dispose.
+		// Retire of the first, publish of the second, retire on dispose; a prime
+		// never rebinds views, it only reports through `onPrimed`.
 		expect(h.replaced()).toBe(replacedBefore + 3);
+		expect(h.primed()).toBe(1);
 	});
 
 	it('does not run a queued re-prime on a retired connection', async () => {

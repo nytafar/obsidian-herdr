@@ -74,6 +74,7 @@ export default class HerdrPlugin extends Plugin {
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
+			onPrimed: () => this.updateStatusBar(),
 		},
 	);
 	/** Null until the herdr binary and socket have been discovered. */

@@ -78,6 +78,8 @@ export interface ConnectionDeps<
 	 * retired and nothing replaced it yet (`current` is then null).
 	 */
 	onReplaced(): void;
+	/** The current connection's scope was (re)primed; counts may have moved. */
+	onPrimed(): void;
 }
 
 /** A live, published connection: what the plugin points views and actions at. */
@@ -95,8 +97,7 @@ export class Connection<
 		readonly client: C,
 		readonly scope: S,
 		readonly tunnel: T | null,
-		private readonly deps: Pick<ConnectionDeps, 'setError'>,
-		private readonly onPrimed: () => void,
+		private readonly deps: Pick<ConnectionDeps, 'setError' | 'onPrimed'>,
 	) {}
 
 	get isRetired(): boolean {
@@ -152,7 +153,7 @@ export class Connection<
 			if (this.retired) return;
 			this.deps.setError((error as Error).message);
 		}
-		this.onPrimed();
+		this.deps.onPrimed();
 	}
 
 	/**
@@ -245,9 +246,7 @@ export class ConnectionCoordinator<
 
 		client = this.deps.createClient(socketPath);
 		const scope = this.deps.createScope();
-		const connection = new Connection(discovery, client, scope, tunnel, this.deps, () =>
-			this.deps.onReplaced(),
-		);
+		const connection = new Connection(discovery, client, scope, tunnel, this.deps);
 		// The one place the scope is loaded: the event stream's `connected` edge,
 		// which fires on the first subscribe ack and again after every reconnect.
 		// Listing only there means nothing is missed between the two (PRD M4) and
