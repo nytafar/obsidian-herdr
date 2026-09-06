@@ -482,7 +482,11 @@ export class HerdrActions {
 				cwd: folderAbsPath,
 				focus: false,
 			});
-		} catch {
+		} catch (error) {
+			// Not reported to the user — the caller falls back to a new tab, which
+			// is a better answer than an error nobody can act on — but a refusal
+			// here is worth knowing about when a split unexpectedly became a tab.
+			console.warn('Herdr: pane.split for a new agent failed', error);
 			return null;
 		}
 		const created = result.pane?.pane_id;
