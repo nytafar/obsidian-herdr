@@ -30,6 +30,11 @@
  * `settings.remote.enabled` and reconnects. Terminals already open stay pinned
  * to the endpoint they started on.
  *
+ * A right-click on a row opens its context menu (issue #35): pin the row to the
+ * top of its group, rename the agent, close the pane. `rowMenu.ts` says what
+ * the menu holds and what the two modals say; this file only draws the `Menu`,
+ * shows the modal, and calls the plugin.
+ *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
  * listener per row, and no stored view reference anywhere else — `main.ts` finds
@@ -38,7 +43,9 @@
 
 import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import type { HerdrSettings } from '../settings';
+import { pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
+import { ConfirmModal, PromptModal } from './modals';
+import { closeConfirmation, renamePrompt, rowMenuItems, type RowMenuItem, type RowMenuRow } from './rowMenu';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
@@ -111,6 +118,7 @@ export class AgentListView extends ItemView {
 		// scope event, and per-row registrations would pile up on the component.
 		this.registerDomEvent(container, 'click', (event) => this.onClick(event));
 		this.registerDomEvent(container, 'keydown', (event) => this.onKeyDown(event));
+		this.registerDomEvent(container, 'contextmenu', (event) => this.onContextMenu(event));
 
 		this.bindScope();
 		// The sidebar is usually restored before `connect()` has built a scope, and
@@ -362,6 +370,9 @@ export class AgentListView extends ItemView {
 			groupBy: settings.agentListGroupBy,
 			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
+			// Pins are per endpoint (issue #35): a local pane id says nothing about
+			// a remote pane that happens to share it.
+			pinnedPaneIds: pinnedPaneIds(settings, this.plugin.endpoint.id),
 		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
@@ -381,9 +392,10 @@ export class AgentListView extends ItemView {
 	}
 
 	private renderRow(parent: HTMLElement, model: RowModel): void {
-		const row = parent.createDiv({
-			cls: model.focused ? 'herdr-agent-row is-focused' : 'herdr-agent-row',
-		});
+		const rowClasses = ['herdr-agent-row'];
+		if (model.focused) rowClasses.push('is-focused');
+		if (model.pinned) rowClasses.push('is-pinned');
+		const row = parent.createDiv({ cls: rowClasses });
 		row.dataset.paneId = model.paneId;
 		row.tabIndex = 0;
 		row.setAttribute('role', 'button');
@@ -413,6 +425,14 @@ export class AgentListView extends ItemView {
 		}
 		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
 		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
+		// The pin marker (issue #35) sits after the name, where it reads as a
+		// property of the row and not as one more badge in the countdown slot.
+		if (model.pinned) {
+			const pin = line.createSpan({ cls: 'herdr-agent-pin' });
+			setIcon(pin, 'pin');
+			setTooltip(pin, 'Pinned');
+			pin.setAttribute('aria-label', 'Pinned');
+		}
 		if (model.pathLabel) {
 			const cwd = text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 			// Only set when the label was cut short (issue #46); otherwise the
@@ -449,6 +469,70 @@ export class AgentListView extends ItemView {
 		if (!paneId) return;
 		event.preventDefault();
 		this.runRowAction(target, paneId);
+	}
+
+	/**
+	 * Right-click on a row: the row menu (issue #35). Anywhere else in the view
+	 * is left to the browser, so the toolbar keeps its default menu.
+	 */
+	private onContextMenu(event: MouseEvent): void {
+		const target = asElement(event.target);
+		const rowEl = target?.closest<HTMLElement>('[data-pane-id]');
+		const paneId = rowEl?.dataset.paneId;
+		if (!paneId) return;
+		const pane = this.plugin.scope?.get(paneId);
+		if (!pane) return;
+		event.preventDefault();
+		const row: RowMenuRow = {
+			paneId,
+			displayName: rowEl.querySelector('.herdr-agent-name')?.textContent ?? paneId,
+			pinned: rowEl.hasClass('is-pinned'),
+			name: pane.name,
+		};
+		const menu = new Menu();
+		for (const item of rowMenuItems(row)) {
+			if (item.separatorBefore) menu.addSeparator();
+			menu.addItem((entry) => {
+				entry
+					.setTitle(item.label)
+					.setIcon(item.icon)
+					.onClick(() => void this.runRowMenuAction(item, row));
+				if (item.warning) entry.setWarning(true);
+			});
+		}
+		menu.showAtMouseEvent(event);
+	}
+
+	/** Runs one row menu entry: asks where the entry asks, then calls the plugin. */
+	private async runRowMenuAction(item: RowMenuItem, row: RowMenuRow): Promise<void> {
+		const plugin = this.plugin;
+		switch (item.action) {
+			case 'pin':
+			case 'unpin':
+				togglePanePin(plugin.settings, plugin.endpoint.id, row.paneId);
+				await plugin.saveSettings();
+				plugin.refreshAgentList();
+				return;
+			case 'rename': {
+				const name = await new PromptModal(this.app, renamePrompt(row)).ask();
+				if (name === null) return;
+				await plugin.actions.renameAgent(row.paneId, name);
+				return;
+			}
+			case 'close': {
+				const text = closeConfirmation(row);
+				const yes = await new ConfirmModal(this.app, { ...text, warning: true }).ask();
+				if (!yes) return;
+				if (await plugin.actions.closePane(row.paneId)) {
+					// A closed pane's id is gone for good; keep the pin list honest.
+					if (row.pinned) {
+						togglePanePin(plugin.settings, plugin.endpoint.id, row.paneId);
+						await plugin.saveSettings();
+					}
+				}
+				return;
+			}
+		}
 	}
 
 	/** Keyboard mirrors the pointer, including which half of the pair fires. */

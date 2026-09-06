@@ -52,6 +52,7 @@ counts are for.
 | Sort | Priority (herdr's own: blocked, done, working, idle, unknown, most recent change first among equals) or alphabetical. Also in the list's header menu. |
 | Group by | Herdr tab, working directory, or nothing. Folder grouping keeps a folder's agents together whichever tab herdr put them in. |
 | Clicking an agent row | Opens the terminal (default) or focuses the pane in herdr. The row's hover button does the other one; its tooltip says which. |
+| Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per herdr endpoint, so a local pin never applies to a remote herdr. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
 
 ## Terminal
 
