@@ -24,7 +24,7 @@ describe('rowMenuItems', () => {
 		expect(items.map((item) => item.label)).toEqual([
 			'Pin to top of group',
 			'Rename agent',
-			'Close pane',
+			'Terminate agent',
 		]);
 	});
 
@@ -47,11 +47,11 @@ describe('rowMenuItems', () => {
 });
 
 describe('closeConfirmation', () => {
-	it('names the agent in the title and says what is lost', () => {
+	it('names the agent in the title and body, and says a pane closes', () => {
 		const text = closeConfirmation(row({ displayName: 'notes-2' }));
-		expect(text.title).toBe('Close "notes-2"?');
-		expect(text.body).toContain('ends the agent');
-		expect(text.confirm).toBe('Close pane');
+		expect(text.title).toBe('Terminate "notes-2"?');
+		expect(text.body).toBe('Terminate notes-2? This closes its herdr pane.');
+		expect(text.confirm).toBe('Terminate agent');
 	});
 });
 
