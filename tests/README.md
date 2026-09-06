@@ -23,6 +23,31 @@ tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
 (`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
 split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
 
+The input layer (`src/views/input/`, #17) is pure by construction — no DOM, no
+`obsidian`, no bridge — so `tests/input/` covers all of it: the mode tracker
+against real escape sequences including ones split across frames, the kitty and
+legacy key encodings, the SGR mouse report builders, and the router's
+scroll-or-report fork. Two of those suites assert the ticket's own acceptance
+criterion, that with the shipped options `routeKey` returns null for every key
+and every wheel notch still becomes `terminal.scroll`; if #18 or #25 flips an
+option, those expectations are what has to change with it.
+
+## Smoking shift+enter, mouse and scroll (#18, #25, #33)
+
+Nothing in the input layer is switched on, so there is nothing to smoke yet. When
+one of those tickets turns an option on, the live check is:
+
+1. `npm run build`, then in the dev vault open an attached Claude pane.
+2. Shift+enter must add a line to the composer without submitting; plain enter
+   must still submit. Try the same in a non-Claude harness.
+3. Confirm what the pane actually received before trusting the UI: the bridge is
+   the only writer, so `console.debug` at `TerminalView.onKeyEvent` shows the
+   exact bytes. Do not use control mode on someone else's pane to test this.
+
+Read `notes/herdr-terminal-bridge.md` first: herdr does not relay mode-setting
+sequences in its frames, so the tracker is in its defaults for every live pane
+and the encoder has to guess which protocol the pane negotiated.
+
 ## Smoking the renderer inside Obsidian
 
 1. `npm run build` (or `npm run dev` for a watch build). The dev vault

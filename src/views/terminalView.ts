@@ -17,6 +17,10 @@
  * scrollback is carried across as plain text and written into the new terminal on
  * reveal, before the first frame.
  *
+ * Keys and wheel notches go through `InputRouter` (`./input/`, #17) on the way,
+ * which is where shift+enter (#18), mouse reports (#25) and local scrollback
+ * (#33) will hook in. It changes nothing until one of them switches it on.
+ *
  * Attach mode comes from `settings.defaultAttachMode`: control attaches with
  * `--takeover` (PRD M15, the herdr TUI pane then follows Obsidian's size), observe
  * is read-only (PRD S16) and never sends input or resizes. The header actions
@@ -44,6 +48,7 @@ import {
 } from '../bridge/terminalSession';
 import { createRenderer } from './renderer/create';
 import type { TerminalRenderer } from './renderer/TerminalRenderer';
+import { InputRouter } from './input/inputRouter';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -442,6 +447,13 @@ export class TerminalView extends ItemView {
 	private opened = false;
 	/** Frame bytes waiting for the next animation frame. */
 	private readonly frames = new FrameBuffer();
+	/**
+	 * Keyboard/mouse/scroll encoding (#17, `src/views/input/`). It watches frames
+	 * for the modes the pane's application sets and decides what a key or a wheel
+	 * notch becomes. With today's options it encodes nothing and routes every
+	 * wheel to `terminal.scroll`, exactly as before; #18/#25/#33 turn it on.
+	 */
+	private readonly input = new InputRouter({ wheelToScroll });
 	private flushHandle = 0;
 	private perf: PerfCounter | null = null;
 
@@ -684,6 +696,9 @@ export class TerminalView extends ItemView {
 
 		session.on('frame', (bytes, meta) => {
 			if (this.session !== session) return;
+			// #17: the input layer watches for the modes the pane's application
+			// sets; seq 1 means a fresh bridge, so it starts from the defaults.
+			this.input.observeFrame(bytes, meta.seq);
 			this.perf?.frame(bytes.length);
 			this.frames.push(bytes, meta.full);
 			if (this.frames.pending >= MAX_PENDING_BYTES) this.flush(renderer);
@@ -767,6 +782,9 @@ export class TerminalView extends ItemView {
 			this.rendererReady = renderer.mount(host).then(() => {
 				renderer.onData((data) => this.onData(data));
 				this.replaySnapshot(renderer);
+				// #17: keys pass the input layer before the renderer encodes them.
+				// Optional on the interface, and it consumes nothing today.
+				renderer.onKeyEvent?.((event) => this.onKeyEvent(event));
 			});
 		}
 		try {
@@ -811,12 +829,39 @@ export class TerminalView extends ItemView {
 		session.input(data);
 	}
 
+	/**
+	 * Keys the input layer encodes itself (#17). True means "consumed": the
+	 * renderer swallows the event and emits nothing through `onData`. Returns
+	 * false for everything today, so typing is untouched.
+	 */
+	private onKeyEvent(event: KeyboardEvent): boolean {
+		const session = this.session;
+		if (!session || session.mode !== 'control') return false;
+		const data = this.input.routeKey(event);
+		if (data === null) return false;
+		session.input(data);
+		return true;
+	}
+
 	private onWheel(event: WheelEvent): void {
 		const session = this.session;
 		if (!session) return;
-		const scroll = wheelToScroll(event.deltaY, event.deltaMode, session.size.rows);
-		if (!scroll) return;
-		session.scroll(scroll.direction, scroll.lines, { source: 'wheel' });
+		// #17: a pane whose application enabled mouse reporting gets a wheel
+		// report; every other pane gets today's `terminal.scroll`.
+		const route = this.input.routeWheel({
+			deltaY: event.deltaY,
+			deltaMode: event.deltaMode,
+			rows: session.size.rows,
+			shiftKey: event.shiftKey,
+			altKey: event.altKey,
+			ctrlKey: event.ctrlKey,
+		});
+		if (!route) return;
+		if (route.kind === 'input') {
+			if (session.mode === 'control') session.input(route.data);
+			return;
+		}
+		session.scroll(route.direction, route.lines, { source: route.source });
 	}
 
 	/** Re-fits the renderer and tells herdr about the new grid (control only). */

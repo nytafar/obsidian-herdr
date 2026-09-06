@@ -54,6 +54,26 @@ export interface TerminalRenderer {
 	/** User input as UTF-8-encodable text, ready for `terminal.input`. */
 	onData(cb: (data: string) => void): Unsubscribe;
 	onResize(cb: (size: { cols: number; rows: number }) => void): Unsubscribe;
+	/**
+	 * Sees a keydown *before* the renderer encodes it, so the input layer
+	 * (`src/views/input/`, #17) can send its own bytes for keys the renderer
+	 * would get wrong — shift+enter in #18, for one.
+	 *
+	 * The callback returns **true when it consumed the key**: the renderer must
+	 * then swallow the event and emit nothing through `onData`. Note the polarity
+	 * is ghostty-web's, and it is the inverse of xterm.js's
+	 * `attachCustomKeyEventHandler`, where true means "let the terminal handle
+	 * it"; an xterm.js renderer implementing this method has to invert.
+	 *
+	 * Optional: a renderer without it simply never routes keys through the layer,
+	 * and the view falls back to the default encoding.
+	 */
+	onKeyEvent?(cb: (event: KeyboardEvent) => boolean): Unsubscribe;
+	/**
+	 * The same interception for the wheel, for #25/#33: true means the callback
+	 * handled the notch and the renderer must not scroll its own viewport.
+	 */
+	onWheelEvent?(cb: (event: WheelEvent) => boolean): Unsubscribe;
 	focus(): void;
 	/**
 	 * Re-read Obsidian's CSS variables after a theme switch (PRD S18). Optional:
