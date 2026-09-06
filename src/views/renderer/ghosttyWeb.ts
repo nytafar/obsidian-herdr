@@ -28,6 +28,9 @@ import {
 
 type DataListener = (data: string) => void;
 type ResizeListener = (size: { cols: number; rows: number }) => void;
+/** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
+type KeyListener = (event: KeyboardEvent) => boolean;
+type WheelListener = (event: WheelEvent) => boolean;
 
 /** Obsidian variable → ITheme key. Missing variables are simply left unset. */
 const THEME_VARS: Record<keyof ITheme, string> = {
@@ -67,8 +70,12 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	private readonly pending: Uint8Array[] = [];
 	private readonly dataListeners = new Set<DataListener>();
 	private readonly resizeListeners = new Set<ResizeListener>();
+	private readonly keyListeners = new Set<KeyListener>();
+	private readonly wheelListeners = new Set<WheelListener>();
 	private readonly libraryDisposables: { dispose(): void }[] = [];
 	private focusRequested = false;
+	/** ghostty-web holds one handler each; ours dispatch to the sets above. */
+	private interceptorsAttached = false;
 
 	constructor(options: RendererOptions = {}) {
 		this.options = options;
@@ -127,6 +134,8 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 
 		this.terminal = terminal;
 		this.fitAddon = fitAddon;
+		// Listeners registered before the WASM finished loading.
+		this.attachInterceptors();
 
 		for (const chunk of this.pending.splice(0)) terminal.write(chunk);
 		this.fit();
@@ -203,6 +212,37 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		return () => this.resizeListeners.delete(cb);
 	}
 
+	/** See `TerminalRenderer.onKeyEvent`: true from `cb` consumes the key. */
+	onKeyEvent(cb: KeyListener): Unsubscribe {
+		this.keyListeners.add(cb);
+		this.attachInterceptors();
+		return () => this.keyListeners.delete(cb);
+	}
+
+	onWheelEvent(cb: WheelListener): Unsubscribe {
+		this.wheelListeners.add(cb);
+		this.attachInterceptors();
+		return () => this.wheelListeners.delete(cb);
+	}
+
+	/**
+	 * ghostty-web takes a single key handler and a single wheel handler, and both
+	 * mean "true: I handled it, stop" — the opposite of xterm.js. They are
+	 * attached once, after `open()`, and dispatch to the listener sets; with no
+	 * listeners they return false and the library behaves exactly as before.
+	 */
+	private attachInterceptors(): void {
+		const terminal = this.terminal;
+		if (this.interceptorsAttached || this.disposed || !terminal) return;
+		this.interceptorsAttached = true;
+		terminal.attachCustomKeyEventHandler((event) =>
+			dispatch(this.keyListeners, event),
+		);
+		terminal.attachCustomWheelEventHandler((event) =>
+			dispatch(this.wheelListeners, event),
+		);
+	}
+
 	focus(): void {
 		if (this.disposed) return;
 		if (!this.terminal) {
@@ -231,6 +271,9 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		this.disposed = true;
 		this.dataListeners.clear();
 		this.resizeListeners.clear();
+		this.keyListeners.clear();
+		this.wheelListeners.clear();
+		this.interceptorsAttached = false;
 		this.pending.length = 0;
 		for (const d of this.libraryDisposables.splice(0)) {
 			try {
@@ -274,4 +317,21 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		}
 		return theme;
 	}
+}
+
+/**
+ * Runs every interceptor; true from any of them consumes the event. A listener
+ * that throws must not take the keyboard down with it, so it counts as "not
+ * consumed" and the library's own encoding still runs.
+ */
+function dispatch<E>(listeners: Set<(event: E) => boolean>, event: E): boolean {
+	let consumed = false;
+	for (const listener of [...listeners]) {
+		try {
+			if (listener(event)) consumed = true;
+		} catch {
+			// A broken interceptor falls back to the renderer's own handling.
+		}
+	}
+	return consumed;
 }
