@@ -400,9 +400,9 @@ export default class HerdrPlugin extends Plugin {
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
 			},
-			// PRD M3: an unsupported method disables one feature, loudly but once.
+			// PRD M3: an unsupported method is reported once, then never retried.
 			onUnsupportedMethod: (method) => {
-				new Notice(`Herdr: this herdr does not support ${method}, so that feature is off.`);
+				new Notice(`Herdr: this herdr does not support ${method}; carrying on without it.`);
 			},
 		});
 		this.client = client;
@@ -436,19 +436,22 @@ export default class HerdrPlugin extends Plugin {
 			this.refreshAgentNames();
 		});
 
-		// The stream is the only thing that knows it dropped, so re-prime from its
-		// `connected` edge: panes closed during an outage would otherwise stay
-		// listed forever (PRD M4).
+		// The one place the scope is loaded: the event stream's `connected` edge,
+		// which fires on the first subscribe ack and again after every reconnect.
+		// Listing only there means nothing is missed between the two (PRD M4) and
+		// that panes closed during an outage do not stay listed forever.
 		client.on('connected', () => {
+			this.connectError = null;
 			void this.primeScope();
+		});
+		client.on('disconnected', (error) => {
+			if (error) this.connectError = error.message;
 		});
 
 		try {
 			await client.ping();
-			// Subscribe before the first listing so nothing is missed in between.
 			client.on('*', (event) => scope.ingest(event));
 			client.subscribe([...SCOPE_SUBSCRIPTIONS]);
-			await this.primeScope();
 		} catch (error) {
 			this.connectError = (error as Error).message;
 			new Notice(`Herdr: ${this.connectError}`);
@@ -460,9 +463,9 @@ export default class HerdrPlugin extends Plugin {
 	 *
 	 * `session.snapshot` carries all three in one round trip (PRD section 7); a
 	 * server that does not know the method falls back to the three list calls
-	 * (PRD M3). Runs on the first connect and on every event-stream reconnect,
-	 * and `prime` diffs rather than resets, so a re-prime is invisible unless
-	 * something actually changed while the stream was down.
+	 * (PRD M3). Runs from the event stream's `connected` edge — the first ack and
+	 * every reconnect — and `prime` diffs rather than resets, so a re-prime is
+	 * invisible unless something actually changed while the stream was down.
 	 */
 	private async primeScope(): Promise<void> {
 		const client = this.client;
