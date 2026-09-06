@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
 	agentDisplayName,
 	buildRows,
-	cacheBadge,
 	countStatuses,
 	pathLabel,
 	relativeCwd,
 	toRow,
 	type RowModel,
 } from '../src/views/rowModel';
+// The badge sits under `herdr/` so the scope can ask it whether a token change
+// is worth an event (PRD N4); a row is still its only reader.
+import { cacheBadge, sameCacheBadge } from '../src/herdr/cacheBadge';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus } from '../src/herdr/types.gen';
 
@@ -157,6 +159,28 @@ describe('cacheBadge (issue #23)', () => {
 		// `cache_sort` is for ordering, never for display.
 		expect(cacheBadge({ cache_sort: '001868' })).toBeNull();
 		expect(cacheBadge({ something_else: '5m' })).toBeNull();
+	});
+});
+
+describe('sameCacheBadge (PRD N4)', () => {
+	it('ignores the keys a row never shows', () => {
+		// `cache_sort` counts seconds, so this is what one second of it looks like.
+		expect(
+			sameCacheBadge(
+				{ cache_ok: '31m', cache_sort: '003587' },
+				{ cache_ok: '31m', cache_sort: '003586' },
+			),
+		).toBe(true);
+		expect(sameCacheBadge({ cache_ok: '31m' }, { cache_ok: '31m', other: 'x' })).toBe(true);
+	});
+
+	it('sees the badge appear, tick, change tone and go', () => {
+		expect(sameCacheBadge({}, { cache_ok: '31m' })).toBe(false);
+		expect(sameCacheBadge({ cache_ok: '31m' }, { cache_ok: '30m' })).toBe(false);
+		expect(sameCacheBadge({ cache_warn: '4m' }, { cache_crit: '4m' })).toBe(false);
+		// An expired cache shows nothing, which is the same as no cache at all.
+		expect(sameCacheBadge({ cache_crit: '1m' }, { cache_crit: '0m' })).toBe(false);
+		expect(sameCacheBadge({ cache_crit: '0m' }, {})).toBe(true);
 	});
 });
 

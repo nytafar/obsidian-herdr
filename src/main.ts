@@ -13,6 +13,7 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	HerdrSettingTab,
+	normalizeTerminalPlacement,
 	renderConnectionStatus,
 	type ConnectionStatus,
 	type HerdrSettings,
@@ -23,7 +24,8 @@ import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
-import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
+import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
+import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 import { decidePlacement } from './terminalPlacement';
@@ -218,7 +220,7 @@ export default class HerdrPlugin extends Plugin {
 	private leafForNewTerminal(paneId: string): WorkspaceLeaf {
 		const workspace = this.app.workspace;
 		const decision = decidePlacement({
-			placement: this.settings.terminalPlacement,
+			placement: normalizeTerminalPlacement(this.settings.terminalPlacement),
 			paneCwd: this.scope?.get(paneId)?.cwd ?? '',
 			activeFilePath: workspace.getActiveFile()?.path ?? null,
 			// herdr's view of the vault, because the cwd is herdr's (PRD S5, M19).

@@ -45,12 +45,33 @@ export const SGR_MOD_SHIFT = 4;
 export const SGR_MOD_ALT = 8;
 export const SGR_MOD_CTRL = 16;
 
-export interface MouseModifiers {
-	shiftKey?: boolean;
-	altKey?: boolean;
-	ctrlKey?: boolean;
-	/** Command on macOS, Windows key elsewhere. Only herdr's bitfield carries it. */
-	metaKey?: boolean;
+/**
+ * The four modifier flags every DOM key, mouse and wheel event carries, in one
+ * shape. Both bitfields below and everything in `inputRouter.ts` speak this;
+ * before it, each call site rebuilt the same four optional fields by hand.
+ *
+ * `metaKey` is Command on macOS, the Windows key elsewhere. Only herdr's
+ * bitfield carries it — xterm's has no bit for it.
+ */
+export interface ModifierKeys {
+	shiftKey: boolean;
+	altKey: boolean;
+	ctrlKey: boolean;
+	metaKey: boolean;
+}
+
+/**
+ * The modifiers of a DOM event (or of anything shaped like one), with the flags
+ * it does not set read as false. This is the one place a `MouseEvent`, a
+ * `KeyboardEvent` or a `WheelEvent` turns into {@link ModifierKeys}.
+ */
+export function pickModifiers(event: Partial<ModifierKeys>): ModifierKeys {
+	return {
+		shiftKey: event.shiftKey === true,
+		altKey: event.altKey === true,
+		ctrlKey: event.ctrlKey === true,
+		metaKey: event.metaKey === true,
+	};
 }
 
 /**
@@ -71,7 +92,7 @@ export const HERDR_MOD_ALT = 4;
 export const HERDR_MOD_SUPER = 8;
 
 /** The crossterm bitfield for a DOM event's modifier flags. */
-export function herdrModifierBits(modifiers: MouseModifiers | undefined): number {
+export function herdrModifierBits(modifiers: Partial<ModifierKeys> | undefined): number {
 	if (!modifiers) return 0;
 	let bits = 0;
 	if (modifiers.shiftKey) bits |= HERDR_MOD_SHIFT;
@@ -81,7 +102,7 @@ export function herdrModifierBits(modifiers: MouseModifiers | undefined): number
 	return bits;
 }
 
-export function mouseModifierBits(modifiers: MouseModifiers | undefined): number {
+export function mouseModifierBits(modifiers: Partial<ModifierKeys> | undefined): number {
 	if (!modifiers) return 0;
 	let bits = 0;
 	if (modifiers.shiftKey) bits |= SGR_MOD_SHIFT;
@@ -107,7 +128,7 @@ export interface SgrReport {
 	position: CellPosition;
 	/** A release is the same report with `m` instead of `M`. */
 	release?: boolean;
-	modifiers?: MouseModifiers;
+	modifiers?: Partial<ModifierKeys>;
 }
 
 /** `CSI < b ; x ; y M|m`, with 1-based coordinates clamped to the grid origin. */
@@ -122,7 +143,7 @@ export function encodeSgrMouse(report: SgrReport): string {
 export function encodeSgrWheel(
 	direction: WheelDirection,
 	position: CellPosition,
-	modifiers?: MouseModifiers,
+	modifiers?: Partial<ModifierKeys>,
 ): string {
 	return encodeSgrMouse({
 		button: direction === 'up' ? SGR_BUTTON_WHEEL_UP : SGR_BUTTON_WHEEL_DOWN,
@@ -135,7 +156,7 @@ export interface MouseButtonEvent {
 	button: MouseButton;
 	position: CellPosition;
 	release?: boolean;
-	modifiers?: MouseModifiers;
+	modifiers?: Partial<ModifierKeys>;
 }
 
 /**
@@ -151,8 +172,8 @@ export function encodeMouseReport(
 	return encodeSgrMouse({
 		button: sgrButtonCode(event.button),
 		position: event.position,
-		...(event.release === undefined ? {} : { release: event.release }),
-		...(event.modifiers === undefined ? {} : { modifiers: event.modifiers }),
+		release: event.release,
+		modifiers: event.modifiers,
 	});
 }
 
@@ -161,7 +182,7 @@ export function encodeWheelReport(
 	state: TerminalModeState,
 	direction: WheelDirection,
 	position: CellPosition,
-	modifiers?: MouseModifiers,
+	modifiers?: Partial<ModifierKeys>,
 ): string | null {
 	if (!mouseReportingEnabled(state) || state.mouseEncoding !== 'sgr') return null;
 	return encodeSgrWheel(direction, position, modifiers);

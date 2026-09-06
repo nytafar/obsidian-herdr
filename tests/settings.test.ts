@@ -16,6 +16,7 @@ import {
 	MAX_SCROLLBACK_MB,
 	MIN_PANES_PER_TAB,
 	MIN_SCROLLBACK_MB,
+	normalizeTerminalPlacement,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
 	SCROLLBACK_BYTES_PER_MB,
@@ -152,6 +153,22 @@ describe('scrollback budget (#15 item 2)', () => {
 describe('terminalPlacement (issue #28)', () => {
 	it('defaults to splitting to the right', () => {
 		expect(DEFAULT_SETTINGS.terminalPlacement).toBe('split-right');
+	});
+
+	it('passes every placement it knows through', () => {
+		expect(normalizeTerminalPlacement('split-right')).toBe('split-right');
+		expect(normalizeTerminalPlacement('split-left')).toBe('split-left');
+		expect(normalizeTerminalPlacement('tab')).toBe('tab');
+	});
+
+	it('falls back to the default for anything else', () => {
+		// A hand-edited `data.json`, or a value from a version that knows more
+		// placements than this one. Before this, anything but 'tab' split.
+		expect(normalizeTerminalPlacement('split-below')).toBe('split-right');
+		expect(normalizeTerminalPlacement('')).toBe('split-right');
+		expect(normalizeTerminalPlacement(undefined)).toBe('split-right');
+		expect(normalizeTerminalPlacement(null)).toBe('split-right');
+		expect(normalizeTerminalPlacement(3)).toBe('split-right');
 	});
 });
 

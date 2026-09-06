@@ -427,8 +427,11 @@ function dispatch<E>(listeners: Set<(event: E) => boolean>, event: E): boolean {
 	for (const listener of [...listeners]) {
 		try {
 			if (listener(event)) consumed = true;
-		} catch {
-			// A broken interceptor falls back to the renderer's own handling.
+		} catch (error) {
+			// A broken interceptor falls back to the renderer's own handling, but
+			// silently swallowing it would hide a key or wheel bug behind "the
+			// terminal feels wrong".
+			console.warn('Herdr: a terminal input interceptor threw', error);
 		}
 	}
 	return consumed;

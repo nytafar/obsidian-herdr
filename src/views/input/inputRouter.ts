@@ -27,9 +27,10 @@ import {
 import {
 	encodeMouseReport,
 	herdrModifierBits,
+	pickModifiers,
 	type CellPosition,
 	type MouseButton,
-	type MouseModifiers,
+	type ModifierKeys,
 } from './mouseEncoder';
 import {
 	mouseReportingEnabled,
@@ -73,7 +74,8 @@ export const DEFAULT_INPUT_ROUTER_OPTIONS: InputRouterOptions = Object.freeze({
 	key: Object.freeze({ ...DEFAULT_KEY_ENCODING_OPTIONS, shiftEnterLineBreak: true }),
 });
 
-export interface WheelInput {
+/** A wheel notch, with the modifier flags the event carried (#25). */
+export interface WheelInput extends Partial<ModifierKeys> {
 	deltaY: number;
 	/** `WheelEvent.deltaMode`: 0 pixels, 1 lines, 2 pages. */
 	deltaMode: number;
@@ -81,10 +83,6 @@ export interface WheelInput {
 	rows: number;
 	/** 0-based cell under the pointer, from the renderer's `cellAt` (#25). */
 	position?: CellPosition;
-	shiftKey?: boolean;
-	altKey?: boolean;
-	ctrlKey?: boolean;
-	metaKey?: boolean;
 }
 
 /**
@@ -108,13 +106,10 @@ export interface WheelScrollRoute {
 
 export type WheelRoute = WheelScrollRoute | null;
 
-export interface MouseButtonInput {
+export interface MouseButtonInput extends Partial<ModifierKeys> {
 	button: MouseButton;
 	position: CellPosition;
 	release?: boolean;
-	shiftKey?: boolean;
-	altKey?: boolean;
-	ctrlKey?: boolean;
 }
 
 export class InputRouter {
@@ -182,15 +177,13 @@ export class InputRouter {
 			direction: scroll.direction,
 			lines: scroll.lines,
 			source: 'wheel',
+			// Still spread conditionally: `column`/`row` are optional on the wire and
+			// herdr must not be told the pointer was at (0, 0) when nothing was
+			// measured, whereas an absent modifier simply means "not held".
 			...(input.position === undefined
 				? {}
 				: { column: input.position.column, row: input.position.row }),
-			modifiers: herdrModifierBits({
-				...(input.shiftKey === undefined ? {} : { shiftKey: input.shiftKey }),
-				...(input.altKey === undefined ? {} : { altKey: input.altKey }),
-				...(input.ctrlKey === undefined ? {} : { ctrlKey: input.ctrlKey }),
-				...(input.metaKey === undefined ? {} : { metaKey: input.metaKey }),
-			}),
+			modifiers: herdrModifierBits(pickModifiers(input)),
 		};
 	}
 
@@ -208,16 +201,11 @@ export class InputRouter {
 	 * say today.
 	 */
 	routeMouseButton(input: MouseButtonInput): string | null {
-		const modifiers: MouseModifiers = {
-			...(input.shiftKey === undefined ? {} : { shiftKey: input.shiftKey }),
-			...(input.altKey === undefined ? {} : { altKey: input.altKey }),
-			...(input.ctrlKey === undefined ? {} : { ctrlKey: input.ctrlKey }),
-		};
 		return encodeMouseReport(this.tracker.state, {
 			button: input.button,
 			position: input.position,
-			...(input.release === undefined ? {} : { release: input.release }),
-			modifiers,
+			release: input.release,
+			modifiers: pickModifiers(input),
 		});
 	}
 }

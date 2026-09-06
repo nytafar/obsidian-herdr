@@ -9,11 +9,20 @@
  *
  * Sort and grouping (issue #20), the home-relative path (#22) and the cache TTL
  * badge (#23) all landed here rather than in the render path, which is the point
- * of the split.
+ * of the split. The badge itself since moved one level down, to
+ * `herdr/cacheBadge.ts`, because the scope needs the same answer.
  */
 
+import { lastPathSegment, trimTrailingSlashes } from '../paths';
+import { cacheBadge, type RowBadge } from '../herdr/cacheBadge';
 import { isUnder, type PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
+
+// A badge's shape is part of what a row says, so the types belong to this
+// module's vocabulary; the code behind them sits under `herdr/` because the
+// scope needs it too — it asks whether a token change moves the badge before it
+// calls a pane changed (PRD N4), and `herdr/scope.ts` may not import a view.
+export type { BadgeTone, RowBadge } from '../herdr/cacheBadge';
 
 /**
  * Order agents are shown in: the ones wanting attention float to the top.
@@ -65,15 +74,6 @@ export interface RowModel {
 	focused: boolean;
 	/** Short trailing markers, in display order. The cache countdown today. */
 	badges: RowBadge[];
-}
-
-/** How a badge is coloured: green while there is time, amber, then red. */
-export type BadgeTone = 'ok' | 'warn' | 'crit';
-
-/** One short marker at the end of a row's first line. */
-export interface RowBadge {
-	text: string;
-	tone: BadgeTone;
 }
 
 /**
@@ -144,7 +144,7 @@ export function countStatuses(panes: readonly PaneState[]): { blocked: number; d
  */
 export function relativeCwd(cwd: string, vaultPath: string): string {
 	if (!cwd) return '';
-	const root = vaultPath.replace(/\/+$/, '');
+	const root = trimTrailingSlashes(vaultPath);
 	if (!root || !isUnder(cwd, root)) return cwd;
 	return cwd.slice(root.length).replace(/^\/+/, '');
 }
@@ -161,43 +161,12 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
  */
 export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
 	if (!cwd) return '';
-	const root = vaultPath.replace(/\/+$/, '');
+	const root = trimTrailingSlashes(vaultPath);
 	if (root && isUnder(cwd, root)) return relativeCwd(cwd, root);
-	const home = homePath.replace(/\/+$/, '');
+	const home = trimTrailingSlashes(homePath);
 	if (!home || !isUnder(cwd, home)) return cwd;
 	const rest = cwd.slice(home.length).replace(/^\/+/, '');
 	return rest ? `~/${rest}` : '~';
-}
-
-/** Token key → badge tone, in the order a row prefers them (issue #23). */
-const CACHE_TOKENS: readonly (readonly [key: string, tone: BadgeTone])[] = [
-	['cache_crit', 'crit'],
-	['cache_warn', 'warn'],
-	['cache_ok', 'ok'],
-];
-
-/**
- * The prompt-cache countdown as a badge, or null (issue #23). A herdr plugin
- * publishes exactly one of `cache_ok` / `cache_warn` / `cache_crit` into the
- * pane's token map with a label such as `8m`; the key carries the tone.
- *
- * An expired cache reports `cache_crit: "0m"`, and nearly every idle pane sits
- * expired, so a wall of red zeros would be pure noise: only a counting cache
- * gets a badge. Panes with no cache tokens — any harness the plugin does not
- * track — get none either, and the plugin's other keys (`cache_sort`) are not
- * for display.
- */
-export function cacheBadge(tokens: Readonly<Record<string, string>>): RowBadge | null {
-	for (const [key, tone] of CACHE_TOKENS) {
-		const text = tokens[key]?.trim();
-		if (!text) continue;
-		// "0m" is expired, not "zero minutes left to show". Any all-zero label
-		// counts, so a plugin that says "0s" or "0h 0m" is silent too.
-		const digits = text.replace(/\D/g, '');
-		if (digits.length > 0 && !/[1-9]/.test(digits)) return null;
-		return { text, tone };
-	}
-	return null;
 }
 
 function statusRank(status: AgentStatus): number {
@@ -215,13 +184,6 @@ interface GroupContext {
 	tabLabels: ReadonlyMap<string, string>;
 	vaultPath: string;
 	homePath: string;
-}
-
-/** Last path segment, used to name a folder group sitting at the vault root. */
-function lastSegment(path: string): string {
-	const trimmed = path.replace(/\/+$/, '');
-	const slash = trimmed.lastIndexOf('/');
-	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
 }
 
 /**
@@ -242,7 +204,9 @@ const GROUPS: Record<GroupBy, Grouping> = {
 			// The same label a row's path shows, so the two never disagree. At the
 			// vault root that is empty, where the vault's own name reads better.
 			return (
-				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) || lastSegment(ctx.vaultPath) || pane.cwd
+				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) ||
+				lastPathSegment(ctx.vaultPath) ||
+				pane.cwd
 			);
 		},
 	},

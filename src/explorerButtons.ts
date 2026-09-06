@@ -29,6 +29,7 @@
 import { Menu, Notice, setIcon, setTooltip, type EventRef } from 'obsidian';
 import type HerdrPlugin from './main';
 import { resolveFolderPath } from './actions';
+import { trimTrailingSlashes } from './paths';
 import { isUnder, type PaneState } from './herdr/scope';
 
 /** View type of the built-in file explorer. */
@@ -45,6 +46,12 @@ export const CLAIM_ATTR = 'data-herdr-folder-button';
 
 /** Sentence case, and it says whose button this is. */
 const BUTTON_LABEL = 'Herdr actions';
+
+/**
+ * Keys that open the menu, mirroring what a `button` element itself activates
+ * on. Exported so a test can hold the contract without a file explorer.
+ */
+export const FOLDER_BUTTON_KEYS: readonly string[] = ['Enter', ' '];
 
 /**
  * How long the observer waits before rescanning. The explorer emits a burst of
@@ -66,11 +73,6 @@ export interface FolderMenuItem {
 	readonly action: FolderMenuAction;
 }
 
-/** Trailing slashes removed, so two spellings of the same directory compare equal. */
-function trimTrailingSlash(path: string): string {
-	return path.replace(/\/+$/, '');
-}
-
 /**
  * The agent pane the "Attach" entry should open for a folder, or null when no
  * agent runs there.
@@ -86,11 +88,11 @@ export function attachablePane(
 	panes: readonly PaneState[],
 ): PaneState | null {
 	if (!folderAbsPath) return null;
-	const folder = trimTrailingSlash(folderAbsPath);
+	const folder = trimTrailingSlashes(folderAbsPath);
 	let descendant: PaneState | null = null;
 	for (const pane of panes) {
 		if (!isUnder(pane.cwd, folder)) continue;
-		if (trimTrailingSlash(pane.cwd) === folder) return pane;
+		if (trimTrailingSlashes(pane.cwd) === folder) return pane;
 		descendant ??= pane;
 	}
 	return descendant;
@@ -123,7 +125,7 @@ export function menuItemsFor(
  * for the vault root itself and a plain relative path for everything else.
  */
 export function vaultRelativeLabel(dataPath: string): string {
-	const trimmed = trimTrailingSlash(dataPath.trim().replace(/^\.\//, ''));
+	const trimmed = trimTrailingSlashes(dataPath.trim().replace(/^\.\//, ''));
 	return trimmed === '' || trimmed === '.' ? '/' : trimmed;
 }
 
@@ -178,6 +180,9 @@ interface Watched {
 	release(): void;
 }
 
+/** Where an opened menu goes: at the pointer, or under the button. */
+type MenuAnchor = (menu: Menu, button: HTMLElement) => void;
+
 /** Injects, maintains and releases the folder hover buttons. */
 export class ExplorerFolderButtons {
 	private readonly plugin: HerdrPlugin;
@@ -227,6 +232,10 @@ export class ExplorerFolderButtons {
 			if (containers.has(container)) continue;
 			watched.release();
 			this.watched.delete(container);
+			// A closed explorer's rows may well still be in the document — a leaf
+			// dragged into a popout keeps its DOM — and nothing observes them any
+			// more, so hand their buttons back with the observer.
+			this.releaseRows(container);
 		}
 		for (const container of containers) {
 			if (!this.watched.has(container)) this.watch(container);
@@ -242,13 +251,27 @@ export class ExplorerFolderButtons {
 		// Capture phase, one listener per explorer instead of one per row: the
 		// rows come and go, the container does not. Capture also means the click
 		// is stopped before the row's own handler folds the folder.
-		const onClick = (event: MouseEvent): void => this.onClick(event);
+		const onClick = (event: MouseEvent): void =>
+			this.onActivate(event, (menu) => menu.showAtMouseEvent(event));
+		// The button is focusable, so it must open its menu from the keyboard too.
+		// Same phase and same reasoning: Enter on a focused button would otherwise
+		// reach the row and toggle the folder. A key press has no pointer to open
+		// the menu at, so it opens under the button instead.
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (!FOLDER_BUTTON_KEYS.includes(event.key)) return;
+			this.onActivate(event, (menu, button) => {
+				const rect = button.getBoundingClientRect();
+				menu.showAtPosition({ x: rect.left, y: rect.bottom });
+			});
+		};
 		container.addEventListener('click', onClick, true);
+		container.addEventListener('keydown', onKeyDown, true);
 		this.watched.set(container, {
 			release: () => {
 				rescan.cancel();
 				observer.disconnect();
 				container.removeEventListener('click', onClick, true);
+				container.removeEventListener('keydown', onKeyDown, true);
 			},
 		});
 	}
@@ -274,18 +297,28 @@ export class ExplorerFolderButtons {
 		}
 	}
 
+	/**
+	 * Makes one row carry a button, and makes this object know it does. Every
+	 * combination of "has the marker" and "has the button" has to end the same
+	 * way, because the explorer clones rows: a row with a button but no marker
+	 * used to be skipped, which left a button nothing owned and `disable()`
+	 * could not strip.
+	 */
 	private claimRow(row: HTMLElement): void {
-		// Re-entry guard: the marker for the common case, the query for a row
-		// Obsidian cloned along with our button.
-		if (row.hasAttribute(CLAIM_ATTR)) return;
-		if (row.querySelector(`.${BUTTON_CLASS}`)) return;
-		const button = row.createDiv({
-			cls: `${BUTTON_CLASS} clickable-icon`,
-			attr: { role: 'button', 'aria-label': BUTTON_LABEL },
-		});
-		setIcon(button, 'bot');
-		setTooltip(button, BUTTON_LABEL);
-		row.setAttribute(CLAIM_ATTR, '');
+		if (!row.querySelector(`.${BUTTON_CLASS}`)) {
+			// A real `button`, like the agent list's row action: it is focusable and
+			// activatable without a `tabindex` of our own, which is what makes the
+			// stylesheet's `:focus-visible` reveal reachable from the keyboard.
+			const button = row.createEl('button', {
+				cls: `${BUTTON_CLASS} clickable-icon`,
+				attr: { type: 'button', 'aria-label': BUTTON_LABEL },
+			});
+			setIcon(button, 'bot');
+			setTooltip(button, BUTTON_LABEL);
+		}
+		// Both of these are idempotent, so a rescan of an untouched explorer
+		// mutates nothing and the observer does not loop on its own work.
+		if (!row.hasAttribute(CLAIM_ATTR)) row.setAttribute(CLAIM_ATTR, '');
 		this.claimed.add(row);
 	}
 
@@ -295,21 +328,37 @@ export class ExplorerFolderButtons {
 		this.claimed.delete(row);
 	}
 
-	private onClick(event: MouseEvent): void {
+	/** Every claimed row of one container, released; detached rows forgotten. */
+	private releaseRows(container: HTMLElement): void {
+		for (const row of [...this.claimed]) {
+			if (container.contains(row)) this.releaseRow(row);
+			else if (!row.isConnected) this.claimed.delete(row);
+		}
+	}
+
+	/**
+	 * A click or an Enter/Space on the button; both open the same menu, and only
+	 * `show` differs. The caller passes that in rather than the event being
+	 * sniffed for its type: a popout window has its own `MouseEvent`, so
+	 * `instanceof` would be false for exactly the clicks a detached explorer
+	 * sends (the same trap {@link asElement} exists for).
+	 */
+	private onActivate(event: Event, show: MenuAnchor): void {
 		const target = asElement(event.target);
-		const button = target?.closest(`.${BUTTON_CLASS}`);
+		const button = target?.closest<HTMLElement>(`.${BUTTON_CLASS}`);
 		if (!button) return;
 		// Stopped in the capture phase, so the row below never sees it and the
-		// folder neither folds nor becomes the explorer's selection.
+		// folder neither folds nor becomes the explorer's selection. It also stops
+		// the browser turning Enter on a button into a second, synthetic click.
 		event.preventDefault();
 		event.stopPropagation();
 		const row = button.closest<HTMLElement>(FOLDER_ROW_SELECTOR);
 		const dataPath = row?.getAttribute('data-path');
 		if (typeof dataPath !== 'string') return;
-		this.openMenu(event, dataPath);
+		this.openMenu(button, dataPath, show);
 	}
 
-	private openMenu(event: MouseEvent, dataPath: string): void {
+	private openMenu(button: HTMLElement, dataPath: string, show: MenuAnchor): void {
 		const absolute = folderAbsPath(dataPath, this.plugin.herdrVaultPath());
 		const panes = this.plugin.scope?.list() ?? [];
 		const menu = new Menu();
@@ -321,7 +370,7 @@ export class ExplorerFolderButtons {
 					.onClick(() => this.run(item.action, absolute, dataPath)),
 			);
 		}
-		menu.showAtMouseEvent(event);
+		show(menu, button);
 	}
 
 	/** Runs a chosen entry. The start flow is `plugin.actions`, never a copy of it. */
