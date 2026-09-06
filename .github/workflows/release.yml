@@ -56,6 +56,22 @@ jobs:
                   test -f main.js
                   test -f manifest.json
                   test -f styles.css
+                  # PRD N5: ghostty-vt.wasm must be embedded as a data URL, not
+                  # emitted next to main.js. Exactly one literal, always.
+                  wasm="$(grep -c 'data:application/wasm;base64' main.js || true)"
+                  if [ "$wasm" != "1" ]; then
+                    echo "expected 1 embedded wasm data URL in main.js, found $wasm" >&2
+                    exit 1
+                  fi
+                  # And the build must emit nothing else: main.js is the only
+                  # file the working tree gains (node_modules aside).
+                  strays="$(git status --porcelain --ignored=matching --untracked-files=all -- . ':!node_modules' \
+                    | awk '{print $2}' \
+                    | grep -v -x -e 'main.js' -e 'node_modules/' || true)"
+                  if [ -n "$strays" ]; then
+                    echo "the build emitted unexpected files: $strays" >&2
+                    exit 1
+                  fi
 
             - name: Create the GitHub release
               env:
