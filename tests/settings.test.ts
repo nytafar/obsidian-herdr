@@ -7,10 +7,14 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	clampPanesPerTab,
 	clampScrollbackMb,
+	DEFAULT_PANES_PER_TAB,
 	DEFAULT_SCROLLBACK_MB,
 	DEFAULT_SETTINGS,
+	MAX_PANES_PER_TAB,
 	MAX_SCROLLBACK_MB,
+	MIN_PANES_PER_TAB,
 	MIN_SCROLLBACK_MB,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
@@ -148,6 +152,32 @@ describe('scrollback budget (#15 item 2)', () => {
 describe('terminalPlacement (issue #28)', () => {
 	it('defaults to splitting to the right', () => {
 		expect(DEFAULT_SETTINGS.terminalPlacement).toBe('split-right');
+	});
+});
+
+describe('panes per tab (issue #29)', () => {
+	it('defaults to two, so the second agent in a folder splits its tab', () => {
+		expect(DEFAULT_SETTINGS.panesPerTab).toBe(2);
+		expect(DEFAULT_PANES_PER_TAB).toBe(2);
+	});
+
+	it('keeps a value inside the range as a whole number', () => {
+		expect(clampPanesPerTab(1)).toBe(MIN_PANES_PER_TAB);
+		expect(clampPanesPerTab(3)).toBe(3);
+		expect(clampPanesPerTab(4)).toBe(MAX_PANES_PER_TAB);
+		expect(clampPanesPerTab(2.4)).toBe(2);
+	});
+
+	it('clamps a hand-edited data.json into range', () => {
+		expect(clampPanesPerTab(0)).toBe(MIN_PANES_PER_TAB);
+		expect(clampPanesPerTab(-3)).toBe(MIN_PANES_PER_TAB);
+		expect(clampPanesPerTab(99)).toBe(MAX_PANES_PER_TAB);
+	});
+
+	it('falls back to the default for anything that is not a finite number', () => {
+		expect(clampPanesPerTab(undefined)).toBe(DEFAULT_PANES_PER_TAB);
+		expect(clampPanesPerTab('2')).toBe(DEFAULT_PANES_PER_TAB);
+		expect(clampPanesPerTab(Number.NaN)).toBe(DEFAULT_PANES_PER_TAB);
 	});
 });
 
