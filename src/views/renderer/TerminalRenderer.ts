@@ -36,6 +36,11 @@ export interface RendererOptions {
 	 * means unlimited (notes/memory.md). Undefined → renderer default.
 	 */
 	scrollback?: number;
+	/**
+	 * Colour theme name (issue #26). Undefined or unknown → `obsidian`, i.e. the
+	 * vault's CSS variables. See `./themes.ts` for the names and the palettes.
+	 */
+	theme?: string;
 	/** Observe mode (PRD S16) sets this so keystrokes never reach the pane. */
 	disableStdin?: boolean;
 	cursorBlink?: boolean;
@@ -76,11 +81,18 @@ export interface TerminalRenderer {
 	onWheelEvent?(cb: (event: WheelEvent) => boolean): Unsubscribe;
 	focus(): void;
 	/**
-	 * Re-read Obsidian's CSS variables after a theme switch (PRD S18). Optional:
-	 * a renderer that takes its colours some other way simply omits it and the
-	 * view's `css-change` handler does nothing.
+	 * Re-apply colours and fonts (PRD S18, issue #26).
+	 *
+	 * With no argument it keeps the theme the renderer already has, which is what
+	 * Obsidian's `css-change` event wants: a vault theme switch only changes the
+	 * colours when the terminal theme is `obsidian`, but it can change the fonts
+	 * either way. Passing a name switches the theme, so the settings tab can
+	 * repaint open terminals without reopening them.
+	 *
+	 * Optional: a renderer that takes its colours some other way simply omits it
+	 * and both callers do nothing.
 	 */
-	refreshTheme?(): void;
+	refreshTheme?(theme?: string): void;
 	/**
 	 * Scrollback plus screen as plain text, oldest line first, trailing blank lines
 	 * trimmed. The terminal view takes one of these before it disposes a hidden
