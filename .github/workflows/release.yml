@@ -57,11 +57,20 @@ jobs:
                   test -f main.js
                   test -f manifest.json
                   test -f styles.css
-                  # PRD N5: ghostty-vt.wasm must be embedded as a data URL, not
-                  # emitted next to main.js. Exactly one literal, always.
-                  wasm="$(grep -c 'data:application/wasm;base64' main.js || true)"
-                  if [ "$wasm" != "1" ]; then
-                    echo "expected 1 embedded wasm data URL in main.js, found $wasm" >&2
+                  # PRD N5: ghostty-vt.wasm must be embedded in main.js, not
+                  # emitted next to it. Since issue #63 it is embedded Brotli-
+                  # compressed, decoded once at runtime, so the marker to look
+                  # for is the decode shim's, not a data URL's.
+                  marker="$(grep -c 'herdr:wasm-brotli' main.js || true)"
+                  if [ "$marker" != "1" ]; then
+                    echo "expected 1 brotli wasm decode shim in main.js, found $marker" >&2
+                    exit 1
+                  fi
+                  # And the uncompressed base64 must be gone: 'AGFzbQEAAAA' is
+                  # base64 of the wasm magic number, so finding it means the
+                  # transform did not run and main.js is ~430 KB heavier.
+                  if grep -q 'AGFzbQEAAAA' main.js; then
+                    echo "main.js still carries the wasm as plain base64" >&2
                     exit 1
                   fi
                   # And the build must emit nothing else: main.js is the only
