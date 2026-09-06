@@ -85,6 +85,21 @@ describe('toPaneState (M7)', () => {
 		expect(state).toMatchObject({ paneId: 'w4:p1', agent: 'claude', title: 'Document skills' });
 	});
 
+	it('keeps the token map, dropping non-string values (issue #23)', () => {
+		expect(
+			toPaneState(
+				pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: '001868' } }),
+			)?.tokens,
+		).toEqual({ cache_ok: '31m', cache_sort: '001868' });
+		// No `tokens` at all is what a non-Claude pane looks like.
+		expect(toPaneState(pane({ pane_id: 'w4:p1' }))?.tokens).toEqual({});
+		expect(
+			toPaneState(
+				pane({ pane_id: 'w4:p1', tokens: { cache_ok: null } as unknown as undefined }),
+			)?.tokens,
+		).toEqual({});
+	});
+
 	it('falls back to foreground_cwd when cwd is absent', () => {
 		expect(
 			toPaneState(pane({ pane_id: 'w4:p1', cwd: null, foreground_cwd: '/tmp/x' }))?.cwd,
@@ -302,6 +317,31 @@ describe('WorkspaceScope.ingest', () => {
 			['label', 'tabId'],
 			['tabId', 'cwd'],
 		]);
+	});
+
+	it('emits changed when the cache tokens tick (issue #23)', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '31m', cache_sort: '001868' } }),
+			}),
+		);
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '30m', cache_sort: '001808' } }),
+			}),
+		);
+		// The same map again is not a change, however often herdr repeats it.
+		scope.ingest(
+			event('pane_updated', {
+				pane: pane({ pane_id: 'w4:p1', tokens: { cache_ok: '30m', cache_sort: '001808' } }),
+			}),
+		);
+		expect(rec.changed.map((entry) => relevantDiff(entry.prev, entry.next))).toEqual([
+			['tokens'],
+			['tokens'],
+		]);
+		expect(scope.get('w4:p1')?.tokens).toEqual({ cache_ok: '30m', cache_sort: '001808' });
 	});
 
 	it('adds a new agent pane and ignores a new shell pane (M7)', () => {

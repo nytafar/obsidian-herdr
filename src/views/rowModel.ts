@@ -55,8 +55,17 @@ export interface RowModel {
 	/** Accessible text for the status glyph. */
 	statusLabel: string;
 	focused: boolean;
-	/** Short trailing markers. Empty today; the cache TTL issue fills it. */
-	badges: string[];
+	/** Short trailing markers, in display order. The cache countdown today. */
+	badges: RowBadge[];
+}
+
+/** How a badge is coloured: green while there is time, amber, then red. */
+export type BadgeTone = 'ok' | 'warn' | 'crit';
+
+/** One short marker at the end of a row's first line. */
+export interface RowBadge {
+	text: string;
+	tone: BadgeTone;
 }
 
 /** Rows under one heading. `key` is the herdr tab id while grouping is by tab. */
@@ -140,6 +149,37 @@ export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string
 	return rest ? `~/${rest}` : '~';
 }
 
+/** Token key → badge tone, in the order a row prefers them (issue #23). */
+const CACHE_TOKENS: readonly (readonly [key: string, tone: BadgeTone])[] = [
+	['cache_crit', 'crit'],
+	['cache_warn', 'warn'],
+	['cache_ok', 'ok'],
+];
+
+/**
+ * The prompt-cache countdown as a badge, or null (issue #23). A herdr plugin
+ * publishes exactly one of `cache_ok` / `cache_warn` / `cache_crit` into the
+ * pane's token map with a label such as `8m`; the key carries the tone.
+ *
+ * An expired cache reports `cache_crit: "0m"`, and nearly every idle pane sits
+ * expired, so a wall of red zeros would be pure noise: only a counting cache
+ * gets a badge. Panes with no cache tokens — any harness the plugin does not
+ * track — get none either, and the plugin's other keys (`cache_sort`) are not
+ * for display.
+ */
+export function cacheBadge(tokens: Readonly<Record<string, string>>): RowBadge | null {
+	for (const [key, tone] of CACHE_TOKENS) {
+		const text = tokens[key]?.trim();
+		if (!text) continue;
+		// "0m" is expired, not "zero minutes left to show". Any all-zero label
+		// counts, so a plugin that says "0s" or "0h 0m" is silent too.
+		const digits = text.replace(/\D/g, '');
+		if (digits.length > 0 && !/[1-9]/.test(digits)) return null;
+		return { text, tone };
+	}
+	return null;
+}
+
 function statusRank(status: AgentStatus): number {
 	return STATUS_ORDER[status] ?? STATUS_ORDER_FALLBACK;
 }
@@ -164,6 +204,12 @@ const COMPARE: Record<SortBy, (a: PaneState, b: PaneState) => number> = {
 		a.paneId.localeCompare(b.paneId),
 };
 
+/** Every badge a row shows, in display order. Only the cache countdown today. */
+function badges(pane: PaneState): RowBadge[] {
+	const cache = cacheBadge(pane.tokens);
+	return cache ? [cache] : [];
+}
+
 /** Projects one pane onto the row it becomes. */
 export function toRow(pane: PaneState, vaultPath: string, homePath = ''): RowModel {
 	const displayName = agentDisplayName(pane);
@@ -176,7 +222,7 @@ export function toRow(pane: PaneState, vaultPath: string, homePath = ''): RowMod
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
-		badges: [],
+		badges: badges(pane),
 	};
 }
 

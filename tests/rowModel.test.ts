@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	agentDisplayName,
 	buildRows,
+	cacheBadge,
 	countStatuses,
 	pathLabel,
 	relativeCwd,
@@ -30,6 +31,7 @@ function pane(
 		label: '',
 		cwd: VAULT,
 		focused: false,
+		tokens: {},
 		...overrides,
 	};
 }
@@ -126,6 +128,37 @@ describe('countStatuses', () => {
 	});
 });
 
+describe('cacheBadge (issue #23)', () => {
+	it('reads the tone off the key that carries the label', () => {
+		// Live shapes from `pane.list`, one counting pane per tone.
+		expect(cacheBadge({ cache_ok: '31m', cache_sort: '001868' })).toEqual({
+			text: '31m',
+			tone: 'ok',
+		});
+		expect(cacheBadge({ cache_warn: '4m', cache_sort: '000240' })).toEqual({
+			text: '4m',
+			tone: 'warn',
+		});
+		expect(cacheBadge({ cache_crit: '1m', cache_sort: '000060' })).toEqual({
+			text: '1m',
+			tone: 'crit',
+		});
+	});
+
+	it('says nothing for an expired cache', () => {
+		expect(cacheBadge({ cache_crit: '0m', cache_sort: '000000' })).toBeNull();
+		expect(cacheBadge({ cache_crit: '0s' })).toBeNull();
+		expect(cacheBadge({ cache_ok: ' ' })).toBeNull();
+	});
+
+	it('says nothing for a pane the plugin does not track', () => {
+		expect(cacheBadge({})).toBeNull();
+		// `cache_sort` is for ordering, never for display.
+		expect(cacheBadge({ cache_sort: '001868' })).toBeNull();
+		expect(cacheBadge({ something_else: '5m' })).toBeNull();
+	});
+});
+
 describe('toRow', () => {
 	it('carries everything a row displays', () => {
 		const row = toRow(
@@ -148,6 +181,18 @@ describe('toRow', () => {
 			focused: true,
 			badges: [],
 		});
+	});
+
+	it('carries the cache countdown as a badge (issue #23)', () => {
+		const row = toRow(
+			pane('w4:p1', 'w4:t1', 'working', { tokens: { cache_ok: '31m', cache_sort: '001868' } }),
+			VAULT,
+		);
+		expect(row.badges).toEqual([{ text: '31m', tone: 'ok' }]);
+		expect(
+			toRow(pane('w4:p1', 'w4:t1', 'idle', { tokens: { cache_crit: '0m' } }), VAULT).badges,
+		).toEqual([]);
+		expect(toRow(pane('w4:p1', 'w4:t1', 'idle'), VAULT).badges).toEqual([]);
 	});
 
 	it('keeps the kind separate from the name', () => {

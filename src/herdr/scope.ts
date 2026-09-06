@@ -63,6 +63,14 @@ export interface PaneState {
 	label: string;
 	cwd: string;
 	focused: boolean;
+	/**
+	 * herdr's per-pane token map, passed through unread except by the row model
+	 * (issue #23). A herdr plugin publishes the prompt-cache countdown into it as
+	 * `cache_ok` / `cache_warn` / `cache_crit` plus `cache_sort`; unknown keys are
+	 * kept, since anything may publish here. Empty for a pane with no tokens,
+	 * which is any harness the plugin does not track.
+	 */
+	tokens: Record<string, string>;
 }
 
 export interface ScopeEventMap {
@@ -103,7 +111,15 @@ const RELEVANT: (keyof PaneState)[] = [
 	'cwd',
 	'agent',
 	'focused',
+	'tokens',
 ];
+
+/** Shallow record equality; `tokens` is the only object field of a pane state. */
+function sameTokens(a: Record<string, string>, b: Record<string, string>): boolean {
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => a[key] === b[key]);
+}
 
 function basename(path: string): string {
 	const trimmed = path.replace(/\/+$/, '');
@@ -130,6 +146,20 @@ export function isUnder(cwd: string, root: string): boolean {
 export function stripTitleSpinner(title: string): string {
 	const stripped = title.replace(/^[^\p{L}\p{N}]+/u, '').trim();
 	return stripped.length > 0 ? stripped : title.trim();
+}
+
+/**
+ * The pane's token map with the string values kept and everything else dropped.
+ * herdr types the values as `string`, but this arrives over JSON from a plugin,
+ * so a stray null or number is ignored rather than rendered (issue #23).
+ */
+function tokensOf(tokens: unknown): Record<string, string> {
+	if (typeof tokens !== 'object' || tokens === null || Array.isArray(tokens)) return {};
+	const result: Record<string, string> = {};
+	for (const [key, value] of Object.entries(tokens as Record<string, unknown>)) {
+		if (typeof value === 'string') result[key] = value;
+	}
+	return result;
 }
 
 /** Reads a `PaneInfo` off an event payload, tolerating unknown shapes. */
@@ -162,12 +192,15 @@ export function toPaneState(pane: PaneInfo, name = ''): PaneState | null {
 		label: pane.label ?? '',
 		cwd: pane.cwd ?? pane.foreground_cwd ?? '',
 		focused: pane.focused === true,
+		tokens: tokensOf(pane.tokens),
 	};
 }
 
 /** Fields of `next` that differ from `prev` and matter to a view. */
 export function relevantDiff(prev: PaneState, next: PaneState): (keyof PaneState)[] {
-	return RELEVANT.filter((field) => prev[field] !== next[field]);
+	return RELEVANT.filter((field) =>
+		field === 'tokens' ? !sameTokens(prev.tokens, next.tokens) : prev[field] !== next[field],
+	);
 }
 
 /**

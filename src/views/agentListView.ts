@@ -35,13 +35,14 @@ import { buildRows, type RowGroup, type RowModel } from './rowModel';
 export {
 	agentDisplayName,
 	buildRows,
+	cacheBadge,
 	countStatuses,
 	pathLabel,
 	relativeCwd,
 	STATUS_LABEL,
 	STATUS_ORDER,
 } from './rowModel';
-export type { RowGroup, RowModel, RowModelOptions } from './rowModel';
+export type { RowBadge, RowGroup, RowModel, RowModelOptions } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -208,7 +209,9 @@ export class AgentListView extends ItemView {
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
 		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
 		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
-		for (const badge of model.badges) line.createSpan({ cls: 'herdr-agent-badge', text: badge });
+		for (const badge of model.badges) {
+			line.createSpan({ cls: `herdr-agent-badge mod-${badge.tone}`, text: badge.text });
+		}
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		const button = row.createEl('button', {
