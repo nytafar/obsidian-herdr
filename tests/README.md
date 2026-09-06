@@ -72,6 +72,9 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    ordering, the grouping and the labels; what is left to eyeball here is the
    DOM. `tests/agentListView.test.ts` only guards the module surface, since the
    view itself needs a document.
+   Tab labels arrive from one `tab.list` per workspace resolution, never from
+   the render path: with the devtools network-free view open, adding a pane
+   should cause at most one extra `tab.list`, and repainting none at all.
 3. The status bar shows `N blocked · M done` and clicking it reveals the list.
 4. Right-click a folder or a note in the file explorer → the three Herdr items.
    The same three exist in the command palette for the active note's folder.

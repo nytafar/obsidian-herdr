@@ -10,7 +10,7 @@
  * This file owns DOM and events only. What a row *says* — grouping, ordering,
  * display-name fallbacks, path and status labels — lives in `rowModel.ts`, which
  * is pure and unit tested (issue #16). `render()` asks for `RowGroup[]` and
- * creates elements; it decides nothing.
+ * creates elements; it decides nothing and fetches nothing.
  *
  * Rendering discipline (PRD N4): the view never listens to the raw event stream.
  * `WorkspaceScope` already swallows the ~10 `pane.updated` per second that only
@@ -48,8 +48,17 @@ export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private listEl: HTMLElement | null = null;
 	private tabLabels = new Map<string, string>();
+	/**
+	 * Tab ids a `tab.list` has already covered, whether or not it returned a
+	 * label for them. This is what keeps the render path free of round trips: a
+	 * pane whose tab herdr never lists would otherwise make every repaint ask
+	 * again, and each answer would repaint (see `notes/memory.md`, suspect 8).
+	 */
+	private askedTabIds = new Set<string>();
 	private pendingRender = 0;
 	private tabLabelsInFlight = false;
+	/** An `added` arrived mid-flight: ask once more when the flight lands. */
+	private tabLabelsQueued = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -81,12 +90,26 @@ export class AgentListView extends ItemView {
 
 		const scope = this.plugin.scope;
 		if (scope) {
-			this.register(scope.on('added', () => this.scheduleRender()));
+			// A new pane can bring a tab this view has never seen a label for, so
+			// `added` is where a label fetch belongs — a bounded number of them,
+			// one per genuinely new tab, instead of one per repaint.
+			this.register(
+				scope.on('added', (pane) => {
+					if (!this.tabLabels.has(pane.tabId) && !this.askedTabIds.has(pane.tabId)) {
+						void this.refreshTabLabels();
+					}
+					this.scheduleRender();
+				}),
+			);
 			this.register(scope.on('removed', () => this.scheduleRender()));
 			this.register(scope.on('changed', () => this.scheduleRender()));
 			this.register(
 				scope.on('workspaceResolved', () => {
+					// Tab ids belong to a workspace; another workspace's answers say
+					// nothing, including about what has already been asked.
 					this.tabLabels.clear();
+					this.askedTabIds.clear();
+					void this.refreshTabLabels();
 					this.scheduleRender();
 				}),
 			);
@@ -119,7 +142,8 @@ export class AgentListView extends ItemView {
 
 	/**
 	 * Rebuilds the rows. Cheap: a scoped workspace holds tens of panes, not
-	 * thousands.
+	 * thousands, and this does no I/O — no request may be started from here, or a
+	 * missing answer becomes a repaint loop.
 	 */
 	private render(): void {
 		const list = this.listEl;
@@ -143,7 +167,6 @@ export class AgentListView extends ItemView {
 		}
 
 		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath());
-		if (groups.some((group) => !this.tabLabels.has(group.key))) void this.refreshTabLabels();
 		for (const group of groups) this.renderGroup(list, group);
 	}
 
@@ -215,12 +238,27 @@ export class AgentListView extends ItemView {
 	 * `tab.list` is optional (PRD M3): a herdr without it says so once through
 	 * the client's `onUnsupportedMethod` notice, and `requestOptional` then
 	 * returns null for good, so this stops asking.
+	 *
+	 * Called on `workspaceResolved`, on an `added` pane whose tab is still
+	 * unknown, and once from `onOpen` — never from `render()`. The old code asked
+	 * from the render path and repainted on the answer, which converges on this
+	 * herdr only because `tab.list` happens to return every tab `pane.list`
+	 * mentions; a tab it did not mention would spin forever, at one request and one
+	 * full DOM rebuild per iteration (`notes/memory.md`, suspect 8). Marking the tab
+	 * ids asked makes that impossible regardless of what herdr answers.
 	 */
 	private async refreshTabLabels(): Promise<void> {
 		const client = this.plugin.client;
 		const workspaceId = this.plugin.scope?.workspaceId;
-		if (!client || !workspaceId || this.tabLabelsInFlight) return;
+		if (!client || !workspaceId) return;
 		if (client.isUnsupported('tab.list')) return;
+		if (this.tabLabelsInFlight) {
+			this.tabLabelsQueued = true;
+			return;
+		}
+		// Snapshot before awaiting: these are the ids this request answers for,
+		// and they count as asked even when the answer omits them.
+		const asked = new Set(this.plugin.scope?.list().map((pane) => pane.tabId) ?? []);
 		this.tabLabelsInFlight = true;
 		try {
 			const result = await client.requestOptional<{ tabs?: TabInfo[] }>('tab.list', {
@@ -234,14 +272,21 @@ export class AgentListView extends ItemView {
 				const label = tab.label ? stripTitleSpinner(tab.label) : '';
 				labels.set(tab.tab_id, label || tab.tab_id);
 			}
+			for (const tabId of asked) this.askedTabIds.add(tabId);
+			for (const tabId of labels.keys()) this.askedTabIds.add(tabId);
 			if (labels.size > 0) {
 				this.tabLabels = labels;
-				this.render();
+				this.scheduleRender();
 			}
 		} catch {
-			// Unknown method or a dead socket: keep showing tab ids.
+			// Unknown method or a dead socket: keep showing tab ids. Nothing is
+			// marked asked, so the next new pane may try again.
 		} finally {
 			this.tabLabelsInFlight = false;
+			if (this.tabLabelsQueued) {
+				this.tabLabelsQueued = false;
+				void this.refreshTabLabels();
+			}
 		}
 	}
 }
