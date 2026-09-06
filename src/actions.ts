@@ -67,6 +67,14 @@ export interface ActionHost {
 	notice(message: string): void;
 	/** Opens the terminal view for a pane (a stub until T9). */
 	openTerminal(paneId: string): Promise<void>;
+	/**
+	 * Detaches every open terminal leaf for `paneId` on the connected endpoint
+	 * (issue #66). Called after a successful `pane.close` from the row menu, so
+	 * the tab disappears along with the row instead of sitting there showing
+	 * "Session closed". Never touches a leaf pinned to another endpoint with the
+	 * same pane id (issue #54's endpoint-aware lookup).
+	 */
+	detachTerminalLeaves(paneId: string): void;
 	/** Sleep, injected so tests do not actually wait. */
 	sleep(ms: number): Promise<void>;
 	/** Clock, injected for the pane wait timeout. */
@@ -456,10 +464,16 @@ export class HerdrActions {
 	/**
 	 * Closes a pane in herdr (`pane.close`, issue #35). This kills whatever runs
 	 * in it, agent included, so the caller asks first; this method only sends.
+	 *
+	 * A successful close also detaches any terminal leaf still open for the pane
+	 * (issue #66): the row is going away, and a menu-driven terminate should take
+	 * its tab with it, unlike a pane that just exits on its own, which leaves the
+	 * tab showing "Session closed". A failed close leaves the tab untouched.
 	 */
 	async closePane(paneId: string): Promise<boolean> {
 		try {
 			await this.host.request('pane.close', { pane_id: paneId });
+			this.host.detachTerminalLeaves(paneId);
 			return true;
 		} catch (error) {
 			this.reportFailure('close the pane', error);

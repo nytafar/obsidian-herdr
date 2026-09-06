@@ -79,6 +79,7 @@ interface Fake {
 	calls: { method: string; params: unknown }[];
 	notices: string[];
 	opened: string[];
+	detached: string[];
 	responses: Map<string, unknown>;
 	taken: Set<string>;
 	clock: { now: number };
@@ -94,6 +95,7 @@ function fake(options: {
 	const calls: { method: string; params: unknown }[] = [];
 	const notices: string[] = [];
 	const opened: string[] = [];
+	const detached: string[] = [];
 	const taken = new Set<string>();
 	const clock = { now: 0 };
 	const responses = new Map<string, unknown>(
@@ -116,12 +118,25 @@ function fake(options: {
 		openTerminal: async (paneId) => {
 			opened.push(paneId);
 		},
+		detachTerminalLeaves: (paneId) => {
+			detached.push(paneId);
+		},
 		sleep: async (ms) => {
 			clock.now += ms;
 		},
 		now: () => clock.now,
 	};
-	return { host, actions: new HerdrActions(host), calls, notices, opened, responses, taken, clock };
+	return {
+		host,
+		actions: new HerdrActions(host),
+		calls,
+		notices,
+		opened,
+		detached,
+		responses,
+		taken,
+		clock,
+	};
 }
 
 describe('normalizePosixPath', () => {
@@ -648,6 +663,21 @@ describe('closePane (issue #35)', () => {
 		expect(f.notices).toEqual([
 			'Herdr: could not close the pane. pane w4:p3 not found (pane_not_found)',
 		]);
+	});
+
+	// Issue #66: a menu-driven terminate takes the terminal tab with it.
+	it('detaches the pane’s terminal leaves once the close succeeds', async () => {
+		const f = fake({ responses: { 'pane.close': {} } });
+		expect(await f.actions.closePane('w4:p3')).toBe(true);
+		expect(f.detached).toEqual(['w4:p3']);
+	});
+
+	it('does not detach any terminal leaf when the close fails', async () => {
+		const f = fake({
+			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
+		});
+		expect(await f.actions.closePane('w4:p3')).toBe(false);
+		expect(f.detached).toEqual([]);
 	});
 });
 

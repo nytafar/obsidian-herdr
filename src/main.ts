@@ -506,6 +506,19 @@ export default class HerdrPlugin extends Plugin {
 		return null;
 	}
 
+	/**
+	 * Detaches every terminal leaf open for `paneId` on the connected endpoint
+	 * (issue #66). Same endpoint-aware match as {@link terminalLeaf}, but over
+	 * every matching leaf instead of the first: a leaf pinned to another
+	 * endpoint with the same pane id is left alone.
+	 */
+	private detachTerminalLeaves(paneId: string): void {
+		const endpointId = this.endpoint.id;
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			if (stateMatchesPane(leaf.getViewState().state, paneId, endpointId)) leaf.detach();
+		}
+	}
+
 	/** Everything `HerdrActions` needs from the plugin (PRD M19, M20). */
 	private actionHost(): ActionHost {
 		return {
@@ -529,6 +542,7 @@ export default class HerdrPlugin extends Plugin {
 				new Notice(message);
 			},
 			openTerminal: (paneId: string) => this.openTerminal(paneId),
+			detachTerminalLeaves: (paneId: string) => this.detachTerminalLeaves(paneId),
 			sleep: (ms: number) =>
 				new Promise<void>((resolve) => {
 					window.setTimeout(resolve, ms);

@@ -64,7 +64,7 @@ export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
 		},
 		{
 			action: 'close',
-			label: 'Close pane',
+			label: 'Terminate agent',
 			icon: 'x',
 			warning: true,
 			separatorBefore: true,
@@ -78,9 +78,9 @@ export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
  */
 export function closeConfirmation(row: RowMenuRow): { title: string; body: string; confirm: string } {
 	return {
-		title: `Close "${row.displayName}"?`,
-		body: 'This closes the herdr pane and ends the agent running in it. Anything unsaved in that session is lost.',
-		confirm: 'Close pane',
+		title: `Terminate "${row.displayName}"?`,
+		body: `Terminate ${row.displayName}? This closes its herdr pane.`,
+		confirm: 'Terminate agent',
 	};
 }
 
