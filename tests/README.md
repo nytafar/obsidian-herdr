@@ -2,8 +2,9 @@
 
 `npm test` runs vitest (`tests/**/*.test.ts`) in a plain node environment.
 
-Only DOM-free logic is unit tested: the pure helpers of the agent list
-(`groupByTab`, `relativeCwd`, `countStatuses`), the notification decision path
+Only DOM-free logic is unit tested: the agent list's row model
+(`src/views/rowModel.ts` — `buildRows`, `toRow`, `relativeCwd`,
+`agentDisplayName`, `countStatuses`), the notification decision path
 (`src/notify.ts`, with an injected clock) and the folder actions
 (`src/actions.ts`, against a fake client — nothing here talks to a live herdr).
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
@@ -18,7 +19,9 @@ side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`). The
 terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
-(`resolveFont`, `computeFit`, `cssVar`, `parsePx`).
+(`resolveFont`, `computeFit`, `cssVar`, `parsePx`). Terminal placement
+(`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
+split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
 
 ## Smoking the renderer inside Obsidian
 
@@ -70,7 +73,14 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    revealed wherever the user dragged it).
 2. Rows group by herdr tab and show a status dot, the agent name, the stripped
    terminal title and the cwd relative to the vault. Clicking a row focuses that
-   pane in herdr; the terminal button opens the terminal view (below).
+   pane in herdr; the terminal button opens the terminal view (below). All of
+   that comes from `buildRows`, so `tests/rowModel.test.ts` already covers the
+   ordering, the grouping and the labels; what is left to eyeball here is the
+   DOM. `tests/agentListView.test.ts` only guards the module surface, since the
+   view itself needs a document.
+   Tab labels arrive from one `tab.list` per workspace resolution, never from
+   the render path: with the devtools network-free view open, adding a pane
+   should cause at most one extra `tab.list`, and repainting none at all.
 3. The status bar shows `N blocked · M done` and clicking it reveals the list.
 4. Right-click a folder or a note in the file explorer → the three Herdr items.
    The same three exist in the command palette for the active note's folder.
@@ -96,6 +106,11 @@ herdr pane. The unit tests stop at the exported decisions.
 4. Click the terminal button again from the list: the same tab is revealed, no
    second bridge process. `pgrep -fa 'terminal session'` shows exactly one per
    open terminal tab, and none after the tab is closed.
+   With **Terminal placement** on its default (split right) and a note from the
+   agent's folder open in the main area, the first open lands beside that note
+   instead of in a tab; switching the setting to split left puts it on the other
+   side, and to "Always a new tab" restores the pre-#28 behaviour. With an
+   unrelated note open (or none), it is a tab either way.
 5. Header actions: the eye toggles observe mode — the strip changes to
    `Observing (read-only).`, typing no longer reaches the pane and resizing no
    longer moves the herdr pane. Toggling back restarts the bridge in control

@@ -144,3 +144,9 @@ describe('scrollback budget (#15 item 2)', () => {
 		).toBe(MIN_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);
 	});
 });
+
+describe('terminalPlacement (issue #28)', () => {
+	it('defaults to splitting to the right', () => {
+		expect(DEFAULT_SETTINGS.terminalPlacement).toBe('split-right');
+	});
+});
