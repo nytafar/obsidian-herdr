@@ -240,6 +240,13 @@ export class SshTunnel {
 	private retryTimer: ReturnType<typeof setTimer> | null = null;
 	private currentBackoff: number;
 	private stopped = false;
+	/**
+	 * Bumped by every `start()` and `stop()`. An attempt records the value it
+	 * was born with and gives up, cleaning up after itself, whenever the two
+	 * differ after an await: a `stop()` that lands mid-startup must not leave a
+	 * child that was spawned after it returned (issue #59).
+	 */
+	private generation = 0;
 	/** True once the forward has come up; makes later attempts "reconnecting". */
 	private everConnected = false;
 	/** Set once the remote `~` has been expanded; avoids a second ssh call. */
@@ -316,14 +323,17 @@ export class SshTunnel {
 		if (this.state === 'connected' && this.child) return this.localPath;
 		this.stopped = false;
 		this.error = null;
+		const generation = ++this.generation;
 		const remotePath = await this.remotePath();
-		await this.attempt(remotePath);
+		this.throwIfAborted(generation);
+		await this.attempt(remotePath, generation);
 		return this.localPath;
 	}
 
 	/** SIGTERM, then SIGKILL after the grace period, then remove the socket file. */
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.generation += 1;
 		this.clearRetry();
 		const child = this.child;
 		this.child = null;
@@ -332,10 +342,20 @@ export class SshTunnel {
 		this.setState('stopped');
 	}
 
-	private async attempt(remotePath: string): Promise<void> {
+	/** True once a later `start()` or `stop()` has superseded this attempt. */
+	private aborted(generation: number): boolean {
+		return this.stopped || generation !== this.generation;
+	}
+
+	private throwIfAborted(generation: number): void {
+		if (this.aborted(generation)) throw new Error('tunnel was stopped while connecting');
+	}
+
+	private async attempt(remotePath: string, generation: number): Promise<void> {
 		this.attempts += 1;
 		this.setState(this.everConnected ? 'reconnecting' : 'starting');
 		await this.removeLocalSocket();
+		this.throwIfAborted(generation);
 
 		const argv = buildTunnelArgv({
 			host: this.options.host,
@@ -378,8 +398,10 @@ export class SshTunnel {
 		const interval = this.options.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;
 		const probeTimeout = this.options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 		for (;;) {
-			if (this.stopped) throw new Error('tunnel was stopped while connecting');
-			if (await this.deps.probe(this.localPath, probeTimeout)) {
+			if (this.aborted(generation)) break;
+			const listening = await this.deps.probe(this.localPath, probeTimeout);
+			if (this.aborted(generation)) break;
+			if (listening) {
 				connected = true;
 				this.everConnected = true;
 				this.attempts = 0;
@@ -393,6 +415,20 @@ export class SshTunnel {
 			await delay(interval);
 		}
 
+		// Superseded by a `stop()` or a newer `start()` while the socket was
+		// coming up: `stop()` may already have killed the child (then `exit.at`
+		// is set) or may have run before `this.child` was assigned, in which
+		// case this attempt is the only owner and must reap it. Either way the
+		// state belongs to whoever superseded us, so it is left alone.
+		if (this.aborted(generation)) {
+			if (this.child === child) this.child = null;
+			if (exit.at === null) {
+				await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+			}
+			await this.removeLocalSocket();
+			throw new Error('tunnel was stopped while connecting');
+		}
+
 		// Failed to come up: own the cleanup so no half-open ssh is left behind.
 		// The reason is taken *before* the kill, or our own SIGTERM would
 		// overwrite whatever ssh actually complained about.
@@ -402,6 +438,7 @@ export class SshTunnel {
 			await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
 		}
 		await this.removeLocalSocket();
+		if (this.aborted(generation)) throw new Error('tunnel was stopped while connecting');
 		this.setState('failed');
 		throw new Error(`ssh tunnel to ${this.options.host} failed: ${this.error}`);
 	}
@@ -439,12 +476,15 @@ export class SshTunnel {
 
 	private async reconnect(): Promise<void> {
 		if (this.stopped) return;
+		const generation = this.generation;
 		try {
-			await this.attempt(await this.remotePath());
+			const remotePath = await this.remotePath();
+			this.throwIfAborted(generation);
+			await this.attempt(remotePath, generation);
 		} catch {
 			// `attempt` already recorded the reason and set the state; the exit
 			// handler is not involved here, so re-arm the timer ourselves.
-			if (this.stopped || this.options.reconnect === false) return;
+			if (this.aborted(generation) || this.options.reconnect === false) return;
 			const wait = this.currentBackoff;
 			this.currentBackoff = Math.min(
 				this.currentBackoff * 2,
