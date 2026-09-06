@@ -72,11 +72,20 @@ export interface InputRouterOptions {
  * Code's own `/terminal-setup` writes into iTerm2 and VS Code. `CSI 13;2u` is
  * still emitted instead when the tracker ever does see kitty flags.
  *
+ * `shiftTabBacktab` is on for #18/#47: Claude Code cycles modes on shift+tab
+ * and ghostty-web sends a plain tab for it, so the router claims the key and
+ * sends `CSI Z`. Claiming it also makes the renderer call `preventDefault`,
+ * which is what keeps the browser from moving focus out of the terminal.
+ *
  * `kittyModifiedKeys` stays off: with no mode signal it would encode every
  * modified key on a guess, and guessing wrong breaks ordinary typing.
  */
 export const DEFAULT_INPUT_ROUTER_OPTIONS: InputRouterOptions = Object.freeze({
-	key: Object.freeze({ ...DEFAULT_KEY_ENCODING_OPTIONS, shiftEnterLineBreak: true }),
+	key: Object.freeze({
+		...DEFAULT_KEY_ENCODING_OPTIONS,
+		shiftEnterLineBreak: true,
+		shiftTabBacktab: true,
+	}),
 });
 
 /** A wheel notch, with the modifier flags the event carried (#25). */

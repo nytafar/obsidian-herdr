@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	DEFAULT_KEY_ENCODING_OPTIONS,
+	LEGACY_BACKTAB,
 	LEGACY_LINE_BREAK,
 	encodeKey,
 	encodeKittyKey,
@@ -144,6 +145,39 @@ describe('encodeKey once #18 turns shiftEnterLineBreak on', () => {
 	it('touches no other key', () => {
 		expect(encodeKey(key({ key: 'a', shiftKey: true }), kittyState, options)).toBeNull();
 		expect(encodeKey(key({ key: 'Tab', shiftKey: true }), kittyState, options)).toBeNull();
+	});
+});
+
+describe('encodeKey once #47 turns shiftTabBacktab on', () => {
+	const options = { ...DEFAULT_KEY_ENCODING_OPTIONS, shiftTabBacktab: true };
+
+	it('sends CSI Z on a pane with no kitty protocol', () => {
+		expect(encodeKey(key({ key: 'Tab', shiftKey: true }), DEFAULT_MODE_STATE, options)).toBe(
+			LEGACY_BACKTAB,
+		);
+		expect(LEGACY_BACKTAB).toBe('\x1b[Z');
+	});
+
+	it('sends CSI 9 ; 2 u when the pane negotiated kitty', () => {
+		expect(encodeKey(key({ key: 'Tab', shiftKey: true }), kittyState, options)).toBe(
+			'\x1b[9;2u',
+		);
+	});
+
+	it('leaves plain tab alone so it still completes', () => {
+		expect(encodeKey(key({ key: 'Tab' }), DEFAULT_MODE_STATE, options)).toBeNull();
+		expect(encodeKey(key({ key: 'Tab' }), kittyState, options)).toBeNull();
+	});
+
+	it('leaves ctrl, alt and cmd tab to the renderer', () => {
+		expect(encodeKey(key({ key: 'Tab', shiftKey: true, ctrlKey: true }), DEFAULT_MODE_STATE, options)).toBeNull();
+		expect(encodeKey(key({ key: 'Tab', shiftKey: true, altKey: true }), DEFAULT_MODE_STATE, options)).toBeNull();
+		expect(encodeKey(key({ key: 'Tab', shiftKey: true, metaKey: true }), DEFAULT_MODE_STATE, options)).toBeNull();
+	});
+
+	it('touches no other key', () => {
+		expect(encodeKey(key({ key: 'Enter', shiftKey: true }), kittyState, options)).toBeNull();
+		expect(encodeKey(key({ key: 'a', shiftKey: true }), kittyState, options)).toBeNull();
 	});
 });
 

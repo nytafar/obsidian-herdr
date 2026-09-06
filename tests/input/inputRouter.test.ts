@@ -100,7 +100,9 @@ describe('routeKey', () => {
 	});
 
 	it('can be switched off, and then encodes nothing at all', () => {
-		const instance = router({ key: { shiftEnterLineBreak: false, kittyModifiedKeys: false } });
+		const instance = router({
+			key: { shiftEnterLineBreak: false, shiftTabBacktab: false, kittyModifiedKeys: false },
+		});
 		feed(instance, '\x1b[>1u');
 		expect(instance.routeKey(keyEvent)).toBeNull();
 		expect(instance.routeKey({ ...keyEvent, shiftKey: false, altKey: true })).toBeNull();
