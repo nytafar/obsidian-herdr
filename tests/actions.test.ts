@@ -4,11 +4,13 @@ import {
 	AGENT_START_RETRY_MS,
 	HerdrActions,
 	buildAgentName,
+	chooseSplitTarget,
 	folderName,
 	normalizePosixPath,
 	resolveFolderPath,
 	sanitizeAgentName,
 	type ActionHost,
+	type AgentPaneSummary,
 } from '../src/actions';
 import { HerdrError } from '../src/herdr/client';
 import type { HerdrSettings } from '../src/settings';
@@ -41,6 +43,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,
+		panesPerTab: 2,
 		extraPath: '',
 		defaultAttachMode: 'control',
 		terminalPlacement: 'split-right',
@@ -76,6 +79,8 @@ function fake(options: {
 	settings?: HerdrSettings;
 	workspaceId?: string | null;
 	responses?: Record<string, unknown>;
+	/** Agent panes the scope would report, for the split choice (issue #29). */
+	agentPanes?: AgentPaneSummary[];
 } = {}): Fake {
 	const calls: { method: string; params: unknown }[] = [];
 	const notices: string[] = [];
@@ -96,6 +101,7 @@ function fake(options: {
 			return value as T;
 		},
 		takenAgentNames: () => new Set(taken),
+		agentPanes: () => options.agentPanes ?? [],
 		vaultName: () => 'hvelv',
 		notice: (message) => notices.push(message),
 		openTerminal: async (paneId) => {
@@ -400,5 +406,204 @@ describe('HerdrActions.focusPane', () => {
 		});
 		expect(await bad.actions.focusPane('w4:p1')).toBe(false);
 		expect(bad.notices[0]).toContain('pane_not_found');
+	});
+});
+
+/**
+ * Issue #29. The choice is pure, so everything about which tab wins is asserted
+ * here; the `startAgentHere` cases below only check that the choice is acted on,
+ * against the same fake client as the rest of this file.
+ */
+describe('chooseSplitTarget (issue #29)', () => {
+	const NOTES = `${VAULT}/notes`;
+
+	function agentPane(
+		paneId: string,
+		tabId: string,
+		cwd: string,
+		statusChangedSeq = 0,
+	): AgentPaneSummary {
+		return { paneId, tabId, cwd, statusChangedSeq };
+	}
+
+	it('opens a new tab when the workspace has no agents at all', () => {
+		expect(chooseSplitTarget([], NOTES, 2)).toEqual({ kind: 'new-tab' });
+	});
+
+	it('splits the tab of the one agent already in the folder', () => {
+		const panes = [agentPane('w4:p1', 'w4:t1', NOTES)];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({
+			kind: 'split',
+			paneId: 'w4:p1',
+			tabId: 'w4:t1',
+		});
+	});
+
+	it('opens a new tab once the folder’s tab is at the cap', () => {
+		const panes = [agentPane('w4:p1', 'w4:t1', NOTES), agentPane('w4:p2', 'w4:t1', NOTES)];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({ kind: 'new-tab' });
+		// Raising the cap makes the same tab eligible again.
+		expect(chooseSplitTarget(panes, NOTES, 3)).toMatchObject({ kind: 'split', tabId: 'w4:t1' });
+	});
+
+	it('never splits at a cap of one, which is the old always-a-new-tab behaviour', () => {
+		expect(chooseSplitTarget([agentPane('w4:p1', 'w4:t1', NOTES)], NOTES, 1)).toEqual({
+			kind: 'new-tab',
+		});
+	});
+
+	it('ignores agents in a sibling folder', () => {
+		const panes = [agentPane('w4:p1', 'w4:t1', `${VAULT}/journal`)];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({ kind: 'new-tab' });
+	});
+
+	it('does not put a subfolder’s agent in the parent folder’s tab, or the reverse', () => {
+		const parent = [agentPane('w4:p1', 'w4:t1', VAULT)];
+		expect(chooseSplitTarget(parent, NOTES, 2)).toEqual({ kind: 'new-tab' });
+		const child = [agentPane('w4:p1', 'w4:t1', `${NOTES}/2026`)];
+		expect(chooseSplitTarget(child, NOTES, 2)).toEqual({ kind: 'new-tab' });
+	});
+
+	it('skips a tab that mixes the folder with another one', () => {
+		const panes = [
+			agentPane('w4:p1', 'w4:t1', NOTES),
+			agentPane('w4:p2', 'w4:t1', `${VAULT}/journal`),
+		];
+		expect(chooseSplitTarget(panes, NOTES, 4)).toEqual({ kind: 'new-tab' });
+	});
+
+	it('picks the tab still under the cap when the folder spans two tabs', () => {
+		const panes = [
+			agentPane('w4:p1', 'w4:t1', NOTES),
+			agentPane('w4:p2', 'w4:t1', NOTES),
+			agentPane('w4:p3', 'w4:t2', NOTES),
+		];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({
+			kind: 'split',
+			paneId: 'w4:p3',
+			tabId: 'w4:t2',
+		});
+	});
+
+	it('prefers the most recently active tab, and the most recent pane in it', () => {
+		const panes = [
+			agentPane('w4:p1', 'w4:t1', NOTES, 3),
+			agentPane('w4:p2', 'w4:t2', NOTES, 7),
+			agentPane('w4:p3', 'w4:t3', NOTES, 5),
+		];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({
+			kind: 'split',
+			paneId: 'w4:p2',
+			tabId: 'w4:t2',
+		});
+	});
+
+	it('falls back to the first tab when nothing has a stamp yet', () => {
+		const panes = [agentPane('w4:p1', 'w4:t1', NOTES), agentPane('w4:p2', 'w4:t2', NOTES)];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toMatchObject({ tabId: 'w4:t1' });
+	});
+
+	it('compares paths after normalisation, not as strings', () => {
+		const panes = [agentPane('w4:p1', 'w4:t1', `${VAULT}//notes/`)];
+		expect(chooseSplitTarget(panes, `${VAULT}/journal/../notes`, 2)).toMatchObject({
+			kind: 'split',
+			paneId: 'w4:p1',
+		});
+	});
+
+	it('ignores panes herdr reports without a cwd or a tab', () => {
+		const panes = [
+			{ paneId: 'w4:p0', tabId: '', cwd: NOTES },
+			{ paneId: 'w4:p1', tabId: 'w4:t1', cwd: '' },
+		];
+		expect(chooseSplitTarget(panes, NOTES, 2)).toEqual({ kind: 'new-tab' });
+	});
+});
+
+describe('HerdrActions.startAgentHere splitting an existing tab (issue #29)', () => {
+	const NOTES = `${VAULT}/notes`;
+
+	function splitting(overrides: Parameters<typeof fake>[0] = {}): Fake {
+		return fake({
+			agentPanes: [{ paneId: 'w4:p1', tabId: 'w4:t1', cwd: NOTES, statusChangedSeq: 0 }],
+			responses: {
+				'pane.split': { pane: pane({ pane_id: 'w4:p2', tab_id: 'w4:t1' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p2', tab_id: 'w4:t1' })] },
+				'agent.start': {},
+			},
+			...overrides,
+		});
+	}
+
+	it('splits the folder’s tab and starts the agent in the new pane', async () => {
+		const f = splitting();
+		const started = await f.actions.startAgentHere(NOTES);
+		expect(started).toEqual({ tabId: 'w4:t1', paneId: 'w4:p2', name: 'notes', kind: 'claude' });
+		expect(f.calls.map((c) => c.method)).toEqual(['pane.split', 'pane.list', 'agent.start']);
+		expect(f.calls[0]?.params).toEqual({
+			direction: 'right',
+			target_pane_id: 'w4:p1',
+			cwd: NOTES,
+			focus: false,
+		});
+		expect(f.calls.at(2)?.params).toEqual({ name: 'notes', kind: 'claude', pane_id: 'w4:p2' });
+	});
+
+	it('creates a tab instead once the cap is reached', async () => {
+		const f = fake({
+			settings: settings({ panesPerTab: 1 }),
+			agentPanes: [{ paneId: 'w4:p1', tabId: 'w4:t1', cwd: NOTES }],
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': {},
+			},
+		});
+		const started = await f.actions.startAgentHere(NOTES);
+		expect(started?.paneId).toBe('w4:p9');
+		expect(f.calls.some((c) => c.method === 'pane.split')).toBe(false);
+	});
+
+	it('falls back to a new tab when the chosen pane is already gone', async () => {
+		const f = splitting({
+			responses: {
+				'pane.split': () => new HerdrError('pane_not_found', 'pane w4:p1 not found'),
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': {},
+			},
+		});
+		const started = await f.actions.startAgentHere(NOTES);
+		expect(started).toEqual({ tabId: 'w4:t9', paneId: 'w4:p9', name: 'notes', kind: 'claude' });
+		expect(f.calls.map((c) => c.method)).toEqual([
+			'pane.split',
+			'tab.create',
+			'pane.list',
+			'agent.start',
+		]);
+		// The stale pane is a race, not something the user has to hear about.
+		expect(f.notices.join(' ')).not.toContain('pane_not_found');
+	});
+
+	it('waits for the split pane itself, never for a sibling already in the tab', async () => {
+		let call = 0;
+		const f = splitting({
+			responses: {
+				'pane.split': { pane: pane({ pane_id: 'w4:p2', tab_id: 'w4:t1' }) },
+				'pane.list': () =>
+					++call < 2
+						? { panes: [pane({ pane_id: 'w4:p1', tab_id: 'w4:t1' })] }
+						: {
+								panes: [
+									pane({ pane_id: 'w4:p1', tab_id: 'w4:t1' }),
+									pane({ pane_id: 'w4:p2', tab_id: 'w4:t1' }),
+								],
+							},
+				'agent.start': {},
+			},
+		});
+		const started = await f.actions.startAgentHere(NOTES);
+		expect(started?.paneId).toBe('w4:p2');
+		expect(call).toBe(2);
 	});
 });

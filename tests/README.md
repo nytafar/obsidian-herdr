@@ -6,7 +6,9 @@ Only DOM-free logic is unit tested: the agent list's row model
 (`src/views/rowModel.ts` — `buildRows`, `toRow`, `relativeCwd`,
 `agentDisplayName`, `countStatuses`), the notification decision path
 (`src/notify.ts`, with an injected clock) and the folder actions
-(`src/actions.ts`, against a fake client — nothing here talks to a live herdr).
+(`src/actions.ts`, against a fake client — nothing here talks to a live herdr,
+including the choice of which herdr tab a new agent is split into,
+`chooseSplitTarget`).
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
 aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
 `obsidian.d.ts`. The terminal view is unit tested the same way: only its exported
@@ -15,7 +17,8 @@ decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
 canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
 machine with injected timers, so the decision to free a hidden terminal is tested
 without a DOM; what a measurement *is* (a host with no box) is not. The settings
-side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`). The
+side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`) and the
+panes-per-tab cap (`clampPanesPerTab`). The
 terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`

@@ -289,6 +289,9 @@ export default class HerdrPlugin extends Plugin {
 			// Real agent names from `agent.list`, session-wide: herdr rejects a
 			// duplicate name anywhere, not just in this workspace (PRD M20).
 			takenAgentNames: () => this.scope?.agentNames() ?? new Set<string>(),
+			// Agent panes in scope, so "Start agent here" can split the folder's
+			// existing tab instead of opening another one (issue #29).
+			agentPanes: () => this.scope?.list() ?? [],
 			vaultName: () => this.app.vault.getName(),
 			notice: (message: string) => {
 				new Notice(message);

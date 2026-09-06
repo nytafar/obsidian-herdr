@@ -17,7 +17,7 @@
  * {@link ActionHost}, and the module stays unit testable against a fake client.
  */
 
-import { remoteVaultPathIssue, type HerdrSettings } from './settings';
+import { clampPanesPerTab, remoteVaultPathIssue, type HerdrSettings } from './settings';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
 
@@ -55,6 +55,11 @@ export interface ActionHost {
 	request<T>(method: string, params: unknown): Promise<T>;
 	/** Agent names herdr already uses session-wide, for uniqueness (M20). */
 	takenAgentNames(): Set<string>;
+	/**
+	 * Agent panes of the scoped workspace, as the scope currently knows them.
+	 * Only {@link chooseSplitTarget} reads this (issue #29).
+	 */
+	agentPanes(): readonly AgentPaneSummary[];
 	/** Vault folder name, for the `{vault}` placeholder. */
 	vaultName(): string;
 	/** Show a message to the user. */
@@ -116,6 +121,102 @@ export function folderName(absolutePath: string): string {
 	const slash = trimmed.lastIndexOf('/');
 	const name = slash === -1 ? trimmed : trimmed.slice(slash + 1);
 	return name || '/';
+}
+
+/**
+ * What {@link chooseSplitTarget} needs of an agent pane. `PaneState` from
+ * `src/herdr/scope.ts` satisfies it; the structural type keeps this module free
+ * of the scope.
+ */
+export interface AgentPaneSummary {
+	paneId: string;
+	tabId: string;
+	/** Absolute cwd as herdr reports it. */
+	cwd: string;
+	/**
+	 * The scope's monotonic status stamp, higher meaning more recently changed.
+	 * Optional and zero for a pane that has not moved since it was first listed,
+	 * so it can only ever break a tie, never invent an order.
+	 */
+	statusChangedSeq?: number;
+}
+
+/** Where the next agent of a folder goes: into an existing tab, or a new one. */
+export type SplitTarget =
+	| { kind: 'split'; paneId: string; tabId: string }
+	| { kind: 'new-tab' };
+
+/** Per-tab tally {@link chooseSplitTarget} builds while scanning the panes. */
+interface TabTally {
+	tabId: string;
+	/** Agent panes of this tab that the scope knows about. */
+	count: number;
+	/** False as soon as one of them sits somewhere other than the folder. */
+	sameFolder: boolean;
+	/** The pane to split, and its stamp. */
+	paneId: string;
+	seq: number;
+}
+
+/**
+ * Picks the herdr tab a new agent for `folderPath` should be split into, or
+ * `new-tab` when none qualifies (issue #29).
+ *
+ * A tab qualifies when *every* agent pane the scope knows in it has that folder
+ * as its cwd — an exact match after normalisation, not `isUnder`, so a parent
+ * folder's tab never swallows a subfolder's agent — and when it holds fewer than
+ * `panesPerTab` of them. Among the qualifying tabs the most recently active one
+ * wins, measured by the highest `statusChangedSeq` in the tab; with no stamps to
+ * compare (everything a fresh `pane.list` primed is 0) that is the first tab in
+ * list order, and the pane chosen inside it is likewise its most recent one.
+ *
+ * Only agent panes are counted, because only those are in scope (PRD M7). A tab
+ * where the user also keeps a plain shell therefore reads as holding one pane,
+ * and the cap is a cap on *agents* per tab. That is the number the setting talks
+ * about, and it is the only one herdr tells us about without a second call.
+ */
+export function chooseSplitTarget(
+	panes: readonly AgentPaneSummary[],
+	folderPath: string,
+	panesPerTab: number,
+): SplitTarget {
+	const cap = clampPanesPerTab(panesPerTab);
+	// A cap of one is "always a new tab": no tab can be under it and non-empty.
+	if (cap < 2) return { kind: 'new-tab' };
+	const folder = normalizePosixPath(folderPath);
+	if (folder === '' || folder === '.') return { kind: 'new-tab' };
+
+	const tabs = new Map<string, TabTally>();
+	for (const pane of panes) {
+		if (!pane.paneId || !pane.tabId) continue;
+		const seq = typeof pane.statusChangedSeq === 'number' ? pane.statusChangedSeq : 0;
+		const sameFolder = pane.cwd ? normalizePosixPath(pane.cwd) === folder : false;
+		const tally = tabs.get(pane.tabId);
+		if (!tally) {
+			tabs.set(pane.tabId, {
+				tabId: pane.tabId,
+				count: 1,
+				sameFolder,
+				paneId: pane.paneId,
+				seq,
+			});
+			continue;
+		}
+		tally.count += 1;
+		tally.sameFolder = tally.sameFolder && sameFolder;
+		if (seq > tally.seq) {
+			tally.paneId = pane.paneId;
+			tally.seq = seq;
+		}
+	}
+
+	let best: TabTally | null = null;
+	for (const tally of tabs.values()) {
+		if (!tally.sameFolder || tally.count >= cap) continue;
+		// Strictly greater, so a tie keeps the tab seen first.
+		if (!best || tally.seq > best.seq) best = tally;
+	}
+	return best ? { kind: 'split', paneId: best.paneId, tabId: best.tabId } : { kind: 'new-tab' };
 }
 
 /**
@@ -252,12 +353,15 @@ export class HerdrActions {
 	}
 
 	/**
-	 * Creates a tab, waits for its pane to exist, then starts an agent in it
-	 * (PRD M20). `tab.create` already returns `root_pane`, but the pane is only
-	 * usable once herdr lists it, so the id from the reply is confirmed against
-	 * `pane.list` first. That still does not mean the pane sits at a prompt, so
-	 * the start itself is retried on the two "not ready yet" codes for
-	 * {@link AGENT_START_RETRY_MS} — see the comment in the retry loop.
+	 * Makes a pane for the folder, waits for it to exist, then starts an agent in
+	 * it (PRD M20).
+	 *
+	 * The pane comes from splitting the folder's existing herdr tab when one is
+	 * under the panes-per-tab cap (issue #29), and from a new tab otherwise.
+	 * Either way the pane is only usable once herdr lists it, so the id from the
+	 * reply is confirmed against `pane.list` first. That still does not mean the
+	 * pane sits at a prompt, so the start itself is retried on the two "not ready
+	 * yet" codes for {@link AGENT_START_RETRY_MS} — see the retry loop.
 	 */
 	async startAgentHere(folderAbsPath: string): Promise<StartedAgent | null> {
 		const workspaceId = this.host.workspaceId();
@@ -265,21 +369,37 @@ export class HerdrActions {
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 
-		let created: TabCreatedResult;
-		try {
-			created = await this.host.request<TabCreatedResult>('tab.create', {
-				workspace_id: workspaceId,
-				cwd: folderAbsPath,
-				label,
-				focus: false,
-			});
-		} catch (error) {
-			this.reportFailure('create a tab', error);
-			return null;
+		const target = chooseSplitTarget(
+			this.host.agentPanes(),
+			folderAbsPath,
+			settings.panesPerTab,
+		);
+		let tabId = '';
+		let paneId: string | null = null;
+		if (target.kind === 'split') {
+			const split = await this.splitForAgent(folderAbsPath, target);
+			if (split) {
+				tabId = split.tabId;
+				paneId = split.paneId;
+			}
 		}
 
-		const tabId = created.tab?.tab_id ?? '';
-		const paneId = await this.waitForPane(tabId, created.root_pane?.pane_id);
+		if (!paneId) {
+			let created: TabCreatedResult;
+			try {
+				created = await this.host.request<TabCreatedResult>('tab.create', {
+					workspace_id: workspaceId,
+					cwd: folderAbsPath,
+					label,
+					focus: false,
+				});
+			} catch (error) {
+				this.reportFailure('create a tab', error);
+				return null;
+			}
+			tabId = created.tab?.tab_id ?? '';
+			paneId = await this.waitForPane(tabId, created.root_pane?.pane_id);
+		}
 		if (!paneId) {
 			this.host.notice('Herdr: the new tab never reported a pane, so no agent was started.');
 			return null;
@@ -341,11 +461,53 @@ export class HerdrActions {
 	}
 
 	/**
-	 * Polls `pane.list` until a pane of `tabId` exists, or the timeout passes.
-	 * `hint` is `tab.create`'s `root_pane.pane_id`; it is preferred when the list
-	 * confirms it, so a tab that already holds several panes cannot mislead us.
+	 * Splits an existing agent pane of the folder's tab and returns the new pane
+	 * (issue #29). `pane.split` answers with the *new* pane
+	 * (notes/herdr-api.md), which is the one the agent starts in.
+	 *
+	 * Returns null instead of reporting when herdr refuses, because the caller
+	 * then falls back to creating a tab: the pane list behind the choice is
+	 * event-driven, so it can still name a pane that closed a moment ago, and a
+	 * new tab is a better answer to that than an error the user cannot act on.
 	 */
-	private async waitForPane(tabId: string, hint?: string | null): Promise<string | null> {
+	private async splitForAgent(
+		folderAbsPath: string,
+		target: { paneId: string; tabId: string },
+	): Promise<{ tabId: string; paneId: string } | null> {
+		let result: PaneResult;
+		try {
+			result = await this.host.request<PaneResult>('pane.split', {
+				direction: 'right',
+				target_pane_id: target.paneId,
+				cwd: folderAbsPath,
+				focus: false,
+			});
+		} catch {
+			return null;
+		}
+		const created = result.pane?.pane_id;
+		if (!created) return null;
+		const tabId = result.pane?.tab_id || target.tabId;
+		// Only this pane will do: the tab already holds an agent, and falling back
+		// to "any pane of the tab" would start a second agent on top of it.
+		// A `pane.list` that never confirms it is not a reason to create a tab as
+		// well: the pane exists, herdr just said so, and creating another one would
+		// leave the split behind as an empty shell.
+		const paneId = await this.waitForPane(tabId, created, true);
+		return { tabId, paneId: paneId ?? created };
+	}
+
+	/**
+	 * Polls `pane.list` until a pane of `tabId` exists, or the timeout passes.
+	 * `hint` is `tab.create`'s `root_pane.pane_id` (or `pane.split`'s new pane);
+	 * it is preferred when the list confirms it, so a tab that already holds
+	 * several panes cannot mislead us. With `onlyHint`, nothing else is accepted.
+	 */
+	private async waitForPane(
+		tabId: string,
+		hint?: string | null,
+		onlyHint = false,
+	): Promise<string | null> {
 		if (!tabId && hint) return hint;
 		const deadline = this.host.now() + PANE_WAIT_TIMEOUT_MS;
 		for (;;) {
@@ -355,7 +517,7 @@ export class HerdrActions {
 				});
 				const panes = result.panes ?? [];
 				if (hint && panes.some((pane) => pane.pane_id === hint)) return hint;
-				const match = panes.find((pane) => pane.tab_id === tabId);
+				const match = onlyHint ? undefined : panes.find((pane) => pane.tab_id === tabId);
 				if (match) return match.pane_id;
 			} catch (error) {
 				this.reportFailure('list panes', error);
