@@ -23,6 +23,7 @@ import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agentListView';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
+import { decidePlacement } from './terminalPlacement';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
@@ -159,15 +160,18 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Opens the terminal view for a herdr pane as a main-area tab (PRD M13).
-	 * One tab per pane: an existing leaf for the same pane is revealed instead of
-	 * a second bridge process being spawned for it.
+	 * Opens the terminal view for a herdr pane (PRD M13, issue #28).
+	 *
+	 * One view per pane: an existing leaf for the same pane is revealed, so a
+	 * second open neither spawns a second bridge process nor carves out another
+	 * split. Only a genuinely new terminal is placed, beside the note when that
+	 * note lives inside the agent's working directory and in a tab otherwise.
 	 */
 	async openTerminal(paneId: string): Promise<void> {
 		const workspace = this.app.workspace;
 		let leaf = this.terminalLeaf(paneId);
 		if (!leaf) {
-			leaf = workspace.getLeaf('tab');
+			leaf = this.leafForNewTerminal(paneId);
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
@@ -175,6 +179,36 @@ export default class HerdrPlugin extends Plugin {
 			});
 		}
 		await workspace.revealLeaf(leaf);
+	}
+
+	/** The leaf a new terminal view takes (issue #28). */
+	private leafForNewTerminal(paneId: string): WorkspaceLeaf {
+		const workspace = this.app.workspace;
+		const decision = decidePlacement({
+			placement: this.settings.terminalPlacement,
+			paneCwd: this.scope?.get(paneId)?.cwd ?? '',
+			activeFilePath: workspace.getActiveFile()?.path ?? null,
+			// herdr's view of the vault, because the cwd is herdr's (PRD S5, M19).
+			vaultPath: this.herdrVaultPath(),
+		});
+		if (decision.kind === 'tab') return workspace.getLeaf('tab');
+		const source = this.activeNoteLeaf();
+		if (!source) return workspace.getLeaf('tab');
+		return workspace.createLeafBySplit(source, 'vertical', decision.before);
+	}
+
+	/**
+	 * The main-area leaf showing the active file, or null. `getMostRecentLeaf`
+	 * rather than the active leaf: the terminal is usually opened from the agent
+	 * list, which sits in a sidebar. The file is read off the persisted view
+	 * state, not `leaf.view`, like `terminalLeaf` does (PRD N1).
+	 */
+	private activeNoteLeaf(): WorkspaceLeaf | null {
+		const file = this.app.workspace.getActiveFile();
+		const leaf = this.app.workspace.getMostRecentLeaf();
+		if (!file || !leaf) return null;
+		const state = leaf.getViewState().state;
+		return state?.file === file.path ? leaf : null;
 	}
 
 	/**

@@ -14,7 +14,9 @@ decisions (`parseTerminalState`, `attachFor`, `debounce`, `wheelToScroll`,
 herdr. The terminal renderer
 (`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
 tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
-(`resolveFont`, `computeFit`, `cssVar`, `parsePx`).
+(`resolveFont`, `computeFit`, `cssVar`, `parsePx`). Terminal placement
+(`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
+split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
 
 ## Smoking the renderer inside Obsidian
 
@@ -92,6 +94,11 @@ herdr pane. The unit tests stop at the exported decisions.
 4. Click the terminal button again from the list: the same tab is revealed, no
    second bridge process. `pgrep -fa 'terminal session'` shows exactly one per
    open terminal tab, and none after the tab is closed.
+   With **Terminal placement** on its default (split right) and a note from the
+   agent's folder open in the main area, the first open lands beside that note
+   instead of in a tab; switching the setting to split left puts it on the other
+   side, and to "Always a new tab" restores the pre-#28 behaviour. With an
+   unrelated note open (or none), it is a tab either way.
 5. Header actions: the eye toggles observe mode — the strip changes to
    `Observing (read-only).`, typing no longer reaches the pane and resizing no
    longer moves the herdr pane. Toggling back restarts the bridge in control
