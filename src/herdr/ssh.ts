@@ -49,6 +49,8 @@ const DEFAULT_PROBE_TIMEOUT_MS = 2000;
 const DEFAULT_BACKOFF_MS = 1000;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const DEFAULT_KILL_GRACE_MS = 2000;
+/** Ceiling on the one-shot `ssh host printf $HOME` used to expand a tilde. */
+const DEFAULT_HOME_TIMEOUT_MS = 15_000;
 /** Keep only the tail of ssh's stderr; it is for the settings status line. */
 const MAX_STDERR_CHARS = 2000;
 
@@ -93,8 +95,15 @@ export type ProbeSocket = (path: string, timeoutMs: number) => Promise<boolean>;
 /** Removes the local socket file. Must not throw when it is absent. */
 export type RemoveFile = (path: string) => Promise<void>;
 
-/** Runs a command and resolves with its stdout, trimmed. Empty on failure. */
-export type RunCommand = (file: string, args: string[]) => Promise<string>;
+/**
+ * Runs a command and resolves with its stdout, trimmed. Empty on failure,
+ * on abort and on timeout; the child must be gone by the time it resolves.
+ */
+export type RunCommand = (
+	file: string,
+	args: string[],
+	options: { signal: AbortSignal; timeoutMs: number },
+) => Promise<string>;
 
 export interface SshTunnelDeps {
 	spawn: SpawnTunnel;
@@ -127,6 +136,8 @@ export interface SshTunnelOptions {
 	maxBackoffMs?: number;
 	/** How long SIGTERM is given before SIGKILL. */
 	killGraceMs?: number;
+	/** Ceiling on the remote `$HOME` lookup that expands a `~` socket path. */
+	homeTimeoutMs?: number;
 	/** Reconnect after the ssh child exits on its own. Default true. */
 	reconnect?: boolean;
 	env?: NodeJS.ProcessEnv;
@@ -190,18 +201,31 @@ export function defaultDeps(): SshTunnelDeps {
 		removeFile: async (path) => {
 			await rm(path, { force: true });
 		},
-		run: (file, args) =>
+		// `signal` and `timeout` both make Node kill the child (SIGTERM), which
+		// surfaces as `error` followed by `close`; either way this resolves
+		// once, with '' when the lookup did not finish on its own terms.
+		run: (file, args, { signal, timeoutMs }) =>
 			new Promise<string>((resolve) => {
-				const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+				if (signal.aborted) {
+					resolve('');
+					return;
+				}
+				const child = spawn(file, args, {
+					stdio: ['ignore', 'pipe', 'ignore'],
+					signal,
+					timeout: timeoutMs,
+				});
 				let out = '';
+				let failed = false;
 				child.stdout?.on('data', (chunk: unknown) => {
 					out += String(chunk);
 				});
 				child.on('error', () => {
+					failed = true;
 					resolve('');
 				});
 				child.on('close', () => {
-					resolve(out.trim());
+					resolve(failed || signal.aborted ? '' : out.trim());
 				});
 			}),
 	};
@@ -271,6 +295,8 @@ export class SshTunnel {
 	private resolvedRemotePath: string | null = null;
 	/** Remote `$HOME`, learned while expanding a `~` socket path (issue #22). */
 	private resolvedHome = '';
+	/** The in-flight `$HOME` lookup, so `stop()` can kill its child. */
+	private homeLookup: AbortController | null = null;
 
 	constructor(options: SshTunnelOptions) {
 		this.options = options;
@@ -356,6 +382,8 @@ export class SshTunnel {
 		this.stopped = true;
 		this.generation += 1;
 		this.clearRetry();
+		this.homeLookup?.abort();
+		this.homeLookup = null;
 		const child = this.child;
 		this.child = null;
 		if (child) await killChild(child, this.options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
@@ -530,12 +558,26 @@ export class SshTunnel {
 			this.resolvedRemotePath = configured;
 			return configured;
 		}
-		const home = await this.deps.run(this.options.sshBinary ?? 'ssh', [
-			'-o',
-			'BatchMode=yes',
-			this.options.host,
-			'printf %s "$HOME"',
-		]);
+		// One lookup at a time: a newer start() takes over the controller and
+		// the older caller is cut off by its generation check.
+		this.homeLookup?.abort();
+		const lookup = new AbortController();
+		this.homeLookup = lookup;
+		let home: string;
+		try {
+			home = await this.deps.run(
+				this.options.sshBinary ?? 'ssh',
+				['-o', 'BatchMode=yes', this.options.host, 'printf %s "$HOME"'],
+				{
+					signal: lookup.signal,
+					timeoutMs: this.options.homeTimeoutMs ?? DEFAULT_HOME_TIMEOUT_MS,
+				},
+			);
+		} finally {
+			if (this.homeLookup === lookup) this.homeLookup = null;
+		}
+		// Cut short: cache nothing, the caller's generation check throws.
+		if (lookup.signal.aborted) return configured;
 		const trimmedHome = home.replace(/\/+$/, '');
 		if (trimmedHome.length > 0) this.resolvedHome = trimmedHome;
 		const resolved = trimmedHome.length > 0 ? `${trimmedHome}${configured.slice(1)}` : configured;

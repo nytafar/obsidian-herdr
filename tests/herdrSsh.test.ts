@@ -69,7 +69,7 @@ interface Harness {
 	children: FakeChild[];
 	spawns: { file: string; args: string[] }[];
 	removed: string[];
-	runs: { file: string; args: string[] }[];
+	runs: { file: string; args: string[]; signal: AbortSignal; timeoutMs: number }[];
 	/** Flipped to make the probe succeed. */
 	listening: boolean;
 	/** Spawn ordinals (1-based) whose probe never succeeds. */
@@ -99,8 +99,8 @@ function harness(
 		removeFile: async (path) => {
 			state.removed.push(path);
 		},
-		run: async (file, args) => {
-			state.runs.push({ file, args });
+		run: async (file, args, { signal, timeoutMs }) => {
+			state.runs.push({ file, args, signal, timeoutMs });
 			return options.home ?? '/home/lasse';
 		},
 	};
@@ -230,6 +230,9 @@ describe('SshTunnel.start', () => {
 		await tunnel.start();
 
 		expect(h.runs).toHaveLength(1);
+		// The lookup is bounded and cancellable (#59).
+		expect(h.runs[0]?.timeoutMs).toBeGreaterThan(0);
+		expect(h.runs[0]?.signal.aborted).toBe(false);
 		expect(h.spawns[0]?.args).toContain(
 			`${tunnel.localSocketPath}:/home/lasse/.config/herdr/herdr.sock`,
 		);
@@ -382,10 +385,17 @@ describe('SshTunnel ownership (#59)', () => {
 	it('stop during remote HOME resolution spawns nothing and leaves stopped', async () => {
 		const h = harness();
 		const home = deferred<string>();
-		h.deps.run = () => home.promise;
+		let lookup: AbortSignal | null = null;
+		h.deps.run = (_file, _args, { signal }) => {
+			lookup = signal;
+			// The real dep resolves '' once the signal kills the child.
+			signal.addEventListener('abort', () => home.resolve(''));
+			return home.promise;
+		};
 		const tunnel = new SshTunnel({
 			host: HOST,
 			remoteSocketPath: '~/.config/herdr/herdr.sock',
+			homeTimeoutMs: 50,
 			killGraceMs: 1,
 			deps: h.deps,
 		});
@@ -393,10 +403,12 @@ describe('SshTunnel ownership (#59)', () => {
 		const starting = tunnel.start();
 		await delay(5);
 		await tunnel.stop();
-		home.resolve('/home/lasse');
+		// The lookup child is killed rather than left to finish on its own.
+		expect((lookup as AbortSignal | null)?.aborted).toBe(true);
 
 		await expect(starting).rejects.toThrow(/stopped while connecting/);
 		expect(h.spawns).toHaveLength(0);
+		expect(tunnel.remoteHome).toBe('');
 		expect(h.children).toHaveLength(0);
 		expect(tunnel.status.state).toBe('stopped');
 		expect(h.removed.at(-1)).toBe(tunnel.localSocketPath);
