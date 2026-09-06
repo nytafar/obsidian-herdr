@@ -3,7 +3,6 @@ import {
 	buildTunnelArgv,
 	localSocketPathFor,
 	MAX_LOCAL_SOCKET_PATH,
-	resolveCwd,
 	SshTunnel,
 	terminalArgvPrefix,
 	type SshTunnelDeps,
@@ -392,36 +391,6 @@ describe('terminalArgvPrefix (S17)', () => {
 		expect(() =>
 			terminalArgvPrefix(settings({ enabled: true, host: HOST, remoteBinary: '' }), '/bin/herdr'),
 		).toThrow(/remote herdr binary/);
-	});
-});
-
-describe('resolveCwd (S5, M19)', () => {
-	const local = '/Users/lasse/Vaults/hvelv';
-
-	it('resolves against the vault path when local', () => {
-		expect(resolveCwd('projects/a', settings({ enabled: false }), local)).toBe(
-			`${local}/projects/a`,
-		);
-		expect(resolveCwd('', settings({ enabled: false }), local)).toBe(local);
-		expect(resolveCwd('/', settings({ enabled: false }), local)).toBe(local);
-	});
-
-	it('resolves against the remote vault root when remote', () => {
-		const remote = settings({ enabled: true, host: HOST, remoteVaultPath: '/home/lasse/hvelv/' });
-		expect(resolveCwd('projects/a', remote, local)).toBe('/home/lasse/hvelv/projects/a');
-		expect(resolveCwd('./notes/', remote, local)).toBe('/home/lasse/hvelv/notes');
-		expect(resolveCwd('.', remote, local)).toBe('/home/lasse/hvelv');
-	});
-
-	it('falls back to the local root when the remote vault path is unset', () => {
-		const remote = settings({ enabled: true, host: HOST, remoteVaultPath: '' });
-		expect(resolveCwd('a', remote, local)).toBe(`${local}/a`);
-	});
-
-	it('leaves an already absolute path alone', () => {
-		expect(resolveCwd('/etc', settings({ enabled: true, remoteVaultPath: '/r' }), local)).toBe(
-			'/etc',
-		);
 	});
 });
 

@@ -540,31 +540,3 @@ export function terminalArgvPrefix(
 	return [localHerdrPath];
 }
 
-/**
- * Turns a vault-relative path into the absolute path herdr should use as a cwd
- * (PRD M19, S5). Remote panes live under the remote vault root, so the remote
- * profile carries its own root and it wins when enabled.
- *
- * T6 lands a similar helper in `src/actions.ts`; the merger unifies them.
- */
-export function resolveCwd(
-	vaultRelativePath: string,
-	settings: Pick<HerdrSettings, 'remote'>,
-	localBasePath: string,
-): string {
-	const remote = settings.remote;
-	const base = (
-		remote.enabled && remote.remoteVaultPath.trim().length > 0
-			? remote.remoteVaultPath.trim()
-			: localBasePath
-	).replace(/\/+$/, '');
-	const trimmed = vaultRelativePath.trim();
-	// An absolute path is already resolved; the vault never hands one out, but
-	// callers pass user input here. `/` alone means the vault root.
-	if (trimmed.startsWith('/') && trimmed.replace(/\/+$/, '').length > 0) {
-		return trimmed.replace(/\/+$/, '');
-	}
-	const relative = trimmed.replace(/^\.?\/+/, '').replace(/\/+$/, '');
-	if (relative.length === 0 || relative === '.') return base;
-	return base.length > 0 ? `${base}/${relative}` : relative;
-}

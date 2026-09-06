@@ -142,6 +142,13 @@ describe('resolveFolderPath', () => {
 		expect(resolveFolderPath('/tmp/x', { basePath: VAULT })).toBe('/tmp/x');
 	});
 
+	// Came from the deleted ssh.ts `resolveCwd`, which this helper replaces.
+	it('normalises leading dots and trailing slashes', () => {
+		const roots = { basePath: VAULT, remoteVaultPath: '/home/lasse/hvelv/' };
+		expect(resolveFolderPath('./notes/', roots)).toBe('/home/lasse/hvelv/notes');
+		expect(resolveFolderPath('.', roots)).toBe('/home/lasse/hvelv');
+	});
+
 	it('handles spaces and unicode in folder names', () => {
 		expect(resolveFolderPath('Møter og notater/2026', { basePath: VAULT })).toBe(
 			`${VAULT}/Møter og notater/2026`,
