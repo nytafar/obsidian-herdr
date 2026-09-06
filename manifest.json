@@ -1,7 +1,7 @@
 {
 	"id": "herdr",
 	"name": "Herdr",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"minAppVersion": "1.7.2",
 	"description": "See, reach and start your herdr agents from inside Obsidian: live agent list, notifications, embedded pane terminals, new tabs at a note's folder.",
 	"author": "Lasse",
