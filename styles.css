@@ -271,6 +271,10 @@
  * plugin sets, and nothing here applies once the setting is off and the marker
  * is gone. Absolutely positioned rather than a flex child, so a folder name is
  * laid out the same whether or not the pointer is over it.
+ *
+ * It is a `button` element, so it is in the tab order and the `:focus-visible`
+ * rule below is what a keyboard user actually sees. The reset here is only what
+ * `clickable-icon` does not cover for a `button` inside a nav item.
  */
 .nav-folder-title[data-herdr-folder-button] {
 	position: relative;
@@ -285,6 +289,10 @@
 	right: 0;
 	display: flex;
 	align-items: center;
+	padding: 0 var(--size-2-1);
+	border: none;
+	box-shadow: none;
+	background-color: transparent;
 	color: var(--text-muted);
 	opacity: 0;
 	/* Invisible must also mean unclickable, or it would swallow row clicks. */

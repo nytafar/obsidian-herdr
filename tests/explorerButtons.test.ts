@@ -15,6 +15,7 @@ import {
 	CLAIM_ATTR,
 	FOLDER_ROW_SELECTOR,
 	folderAbsPath,
+	FOLDER_BUTTON_KEYS,
 	menuItemsFor,
 	vaultRelativeLabel,
 } from '../src/explorerButtons';
@@ -157,6 +158,13 @@ describe('the DOM contract', () => {
 		expect(CLAIM_ATTR).toBe('data-herdr-folder-button');
 		expect(BUTTON_CLASS).toBe('herdr-folder-button');
 		expect(FOLDER_ROW_SELECTOR).toBe('.nav-folder-title[data-path]');
+	});
+
+	it('opens the menu on the same keys a button activates on', () => {
+		// The capture listener answers Enter and Space, which is what a `button`
+		// fires a click for; the stylesheet's `:focus-visible` reveal is only
+		// worth anything if the keyboard can reach the menu.
+		expect(FOLDER_BUTTON_KEYS).toEqual(['Enter', ' ']);
 	});
 });
 
