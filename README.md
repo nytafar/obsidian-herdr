@@ -65,7 +65,7 @@ Only panes that run an agent are listed; plain shells stay invisible.
 ## Using it
 
 **The list.** Each row is one agent: a kind icon coloured by status (orange
-blocked, green done, grey working or idle), the agent's name, its current task
+blocked, green done, blue working, faint idle), the agent's name, its current task
 from the terminal title, a prompt-cache countdown while one is running, and its
 folder. The header button sets sort (herdr's own priority order, or alphabetical)
 and grouping (herdr tab, working directory, or none). Clicking a row opens the
