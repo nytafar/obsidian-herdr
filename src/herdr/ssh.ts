@@ -16,8 +16,10 @@
  * Gotchas encoded here, each measured:
  *   - Unix socket paths are capped around 104 bytes on macOS; a long local path
  *     is rejected outright with "Bad local forwarding specification". The local
- *     end is `/tmp/herdr-<8 hex>.sock` (24 chars), derived from host plus remote
- *     path so two profiles never collide.
+ *     end is `/tmp/herdr-<8 hex>.sock` (24 chars), derived from host, remote
+ *     path and a per-instance nonce: two vaults with identical remote settings
+ *     each own their own file, so one stopping never unlinks the other's live
+ *     socket (issue #59). One instance keeps its path across its own retries.
  *   - A stale local socket file makes the bind fail. It is removed before every
  *     spawn and after every stop.
  *   - `ssh -L local:~/x` does **not** expand the tilde: the forward binds, and
@@ -31,7 +33,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { connect } from 'node:net';
 import type { HerdrSettings } from '../settings';
@@ -106,7 +108,11 @@ export interface SshTunnelOptions {
 	host: string;
 	/** Socket of the herdr server on the remote host. A leading `~` is expanded. */
 	remoteSocketPath: string;
-	/** Override for the derived `/tmp/herdr-<hash>.sock`. */
+	/**
+	 * Override for the derived `/tmp/herdr-<hash>.sock`. Two tunnels given the
+	 * same explicit path will unlink each other's socket; leave it derived
+	 * unless the caller owns the collision.
+	 */
 	localSocketPath?: string;
 	/** `ssh` executable. Defaults to whatever is on PATH. */
 	sshBinary?: string;
@@ -132,13 +138,25 @@ export interface SshTunnelOptions {
 /**
  * Short, collision-free local socket path for one (host, remote socket) pair.
  * The hash keeps two profiles apart while staying far under the length cap.
+ * `instance` separates two tunnels with identical settings, one per running
+ * plugin instance (issue #59); without it the function is pure and stable.
  */
-export function localSocketPathFor(host: string, remoteSocketPath: string, dir = '/tmp'): string {
+export function localSocketPathFor(
+	host: string,
+	remoteSocketPath: string,
+	dir = '/tmp',
+	instance = '',
+): string {
 	const digest = createHash('sha256')
-		.update(`${host}\0${remoteSocketPath}`)
+		.update(`${host}\0${remoteSocketPath}\0${instance}`)
 		.digest('hex')
 		.slice(0, 8);
 	return `${dir.replace(/\/+$/, '')}/herdr-${digest}.sock`;
+}
+
+/** Nonce that makes this tunnel's local socket path its own. */
+function instanceToken(): string {
+	return randomBytes(8).toString('hex');
 }
 
 /** Default probe: open a connection, then drop it. Nothing is written. */
@@ -257,8 +275,11 @@ export class SshTunnel {
 	constructor(options: SshTunnelOptions) {
 		this.options = options;
 		this.deps = { ...defaultDeps(), ...options.deps };
+		// Derived once, so every retry of this instance binds the same file and
+		// never anyone else's.
 		this.localPath =
-			options.localSocketPath ?? localSocketPathFor(options.host, options.remoteSocketPath);
+			options.localSocketPath ??
+			localSocketPathFor(options.host, options.remoteSocketPath, '/tmp', instanceToken());
 		this.currentBackoff = options.backoffMs ?? DEFAULT_BACKOFF_MS;
 		if (this.localPath.length > MAX_LOCAL_SOCKET_PATH) {
 			throw new Error(

@@ -139,6 +139,16 @@ describe('localSocketPathFor (S5)', () => {
 		);
 	});
 
+	it('gives every tunnel instance its own path for identical settings (#59)', () => {
+		const a = new SshTunnel({ host: HOST, remoteSocketPath: REMOTE_SOCKET });
+		const b = new SshTunnel({ host: HOST, remoteSocketPath: REMOTE_SOCKET });
+		expect(a.localSocketPath).not.toBe(b.localSocketPath);
+		expect(a.localSocketPath).toMatch(/^\/tmp\/herdr-[0-9a-f]{8}\.sock$/);
+		expect(localSocketPathFor(HOST, REMOTE_SOCKET, '/tmp', 'x')).not.toBe(
+			localSocketPathFor(HOST, REMOTE_SOCKET, '/tmp', 'y'),
+		);
+	});
+
 	it('rejects an over-long explicit local path instead of letting ssh fail', () => {
 		const long = `/tmp/${'x'.repeat(120)}.sock`;
 		expect(
@@ -469,6 +479,69 @@ describe('SshTunnel ownership (#59)', () => {
 		expect(h.children).toHaveLength(2);
 		expect(h.children[0]?.signals).toEqual(['SIGTERM']);
 		expect(tunnel.status.state).toBe('connected');
+		await tunnel.stop();
+	});
+
+	it('two tunnels with identical settings start and stop without touching each other', async () => {
+		// A Map stands in for /tmp: spawn binds, removeFile unlinks, probe checks.
+		const sockets = new Map<string, string>();
+		const make = (owner: string): { tunnel: SshTunnel; children: FakeChild[] } => {
+			const children: FakeChild[] = [];
+			const tunnel = new SshTunnel({
+				host: HOST,
+				remoteSocketPath: REMOTE_SOCKET,
+				killGraceMs: 1,
+				deps: {
+					run: async () => '',
+					removeFile: async (path) => {
+						sockets.delete(path);
+					},
+					probe: async (path) => sockets.has(path),
+					spawn: (_file, args) => {
+						const spec = args[args.indexOf('-L') + 1] ?? '';
+						sockets.set(spec.slice(0, spec.indexOf(':')), owner);
+						const child = new FakeChild();
+						children.push(child);
+						return child;
+					},
+				},
+			});
+			return { tunnel, children };
+		};
+		const a = make('vault A');
+		const b = make('vault B');
+		await a.tunnel.start();
+		await b.tunnel.start();
+
+		expect(a.tunnel.localSocketPath).not.toBe(b.tunnel.localSocketPath);
+		expect(sockets.get(a.tunnel.localSocketPath)).toBe('vault A');
+		expect(sockets.get(b.tunnel.localSocketPath)).toBe('vault B');
+
+		await a.tunnel.stop();
+		expect(sockets.has(a.tunnel.localSocketPath)).toBe(false);
+		expect(sockets.get(b.tunnel.localSocketPath)).toBe('vault B');
+		expect(b.children[0]?.signals).toEqual([]);
+		expect(b.tunnel.status.state).toBe('connected');
+
+		await b.tunnel.stop();
+		expect(sockets.size).toBe(0);
+	});
+
+	it('retries reuse the instance path, not a fresh one', async () => {
+		const h = harness();
+		const tunnel = new SshTunnel({
+			host: HOST,
+			remoteSocketPath: REMOTE_SOCKET,
+			backoffMs: 5,
+			killGraceMs: 1,
+			deps: h.deps,
+		});
+		const path = tunnel.localSocketPath;
+		await tunnel.start();
+		h.children[0]?.exit(255);
+		await waitFor(() => h.spawns.length === 2 && tunnel.status.state === 'connected');
+		for (const spawn of h.spawns) expect(spawn.args).toContain(`${path}:${REMOTE_SOCKET}`);
+		expect(new Set(h.removed)).toEqual(new Set([path]));
 		await tunnel.stop();
 	});
 
