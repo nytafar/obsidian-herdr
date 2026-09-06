@@ -59,6 +59,8 @@ export class AgentListView extends ItemView {
 	private tabLabelsInFlight = false;
 	/** An `added` arrived mid-flight: ask once more when the flight lands. */
 	private tabLabelsQueued = false;
+	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
+	private unbindScope: (() => void)[] = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -88,22 +90,42 @@ export class AgentListView extends ItemView {
 		this.registerDomEvent(container, 'click', (event) => this.onClick(event));
 		this.registerDomEvent(container, 'keydown', (event) => this.onKeyDown(event));
 
+		this.bindScope();
+		// The sidebar is usually restored before `connect()` has built a scope, and
+		// a plugin reload rebuilds this view before it too; rebinding on replace is
+		// what turns "Not connected to herdr." into rows without a manual reopen.
+		this.register(this.plugin.onScopeReplaced(() => this.bindScope()));
+		this.register(() => {
+			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
+			this.pendingRender = 0;
+		});
+	}
+
+	protected override async onClose(): Promise<void> {
+		for (const off of this.unbindScope.splice(0)) off();
+		this.listEl = null;
+		this.contentEl.empty();
+	}
+
+	/** Subscribes to the plugin's current scope, dropping the previous one. */
+	private bindScope(): void {
+		for (const off of this.unbindScope.splice(0)) off();
+		this.tabLabels.clear();
+		this.askedTabIds.clear();
 		const scope = this.plugin.scope;
 		if (scope) {
-			// A new pane can bring a tab this view has never seen a label for, so
-			// `added` is where a label fetch belongs — a bounded number of them,
-			// one per genuinely new tab, instead of one per repaint.
-			this.register(
+			this.unbindScope.push(
+				// A new pane can bring a tab this view has never seen a label for, so
+				// `added` is where a label fetch belongs — a bounded number of them,
+				// one per genuinely new tab, instead of one per repaint.
 				scope.on('added', (pane) => {
 					if (!this.tabLabels.has(pane.tabId) && !this.askedTabIds.has(pane.tabId)) {
 						void this.refreshTabLabels();
 					}
 					this.scheduleRender();
 				}),
-			);
-			this.register(scope.on('removed', () => this.scheduleRender()));
-			this.register(scope.on('changed', () => this.scheduleRender()));
-			this.register(
+				scope.on('removed', () => this.scheduleRender()),
+				scope.on('changed', () => this.scheduleRender()),
 				scope.on('workspaceResolved', () => {
 					// Tab ids belong to a workspace; another workspace's answers say
 					// nothing, including about what has already been asked.
@@ -114,18 +136,8 @@ export class AgentListView extends ItemView {
 				}),
 			);
 		}
-		this.register(() => {
-			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
-			this.pendingRender = 0;
-		});
-
 		this.render();
 		void this.refreshTabLabels();
-	}
-
-	protected override async onClose(): Promise<void> {
-		this.listEl = null;
-		this.contentEl.empty();
 	}
 
 	/**

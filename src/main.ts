@@ -37,6 +37,12 @@ export default class HerdrPlugin extends Plugin {
 	tunnel: SshTunnel | null = null;
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
+	/**
+	 * Views that outlive a connection (a restored sidebar opens before `connect`
+	 * runs; a plugin reload rebuilds them before it) subscribe here and rebind to
+	 * whatever `scope` is now. Called after every assignment of `scope`.
+	 */
+	private readonly scopeListeners = new Set<() => void>();
 
 	private discovery: DiscoveryResult | null = null;
 	/** One prime at a time; a reconnect can land while the first is in flight. */
@@ -100,6 +106,7 @@ export default class HerdrPlugin extends Plugin {
 		this.client?.dispose();
 		this.client = null;
 		this.scope = null;
+		this.scopeListeners.clear();
 		// `stop()` is async (SIGTERM, then SIGKILL, then the socket file) but
 		// `onunload` is not; the tunnel owns its own teardown from here.
 		const tunnel = this.tunnel;
@@ -217,6 +224,12 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	isTerminalOpen(paneId: string): boolean {
 		return this.terminalLeaf(paneId) !== null;
+	}
+
+	/** Runs `listener` whenever `scope` is replaced. Returns the unsubscribe. */
+	onScopeReplaced(listener: () => void): () => void {
+		this.scopeListeners.add(listener);
+		return () => this.scopeListeners.delete(listener);
 	}
 
 	/**
@@ -447,6 +460,7 @@ export default class HerdrPlugin extends Plugin {
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
 		});
 		this.scope = scope;
+		for (const listener of [...this.scopeListeners]) listener();
 
 		// Everything downstream hangs off scope events, never off the raw stream:
 		// the scope has already collapsed the ~10 pane.updated per second (N4).
