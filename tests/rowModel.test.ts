@@ -220,6 +220,14 @@ describe('toRow', () => {
 		expect(toRow(pane('w4:p1', 'w4:t1', 'idle'), VAULT).badges).toEqual([]);
 	});
 
+	it('leaves the path empty when the caller says the header carries it (issue #39)', () => {
+		const state = pane('w4:p1', 'w4:t1', 'idle', { cwd: `${VAULT}/projects/herdr` });
+		expect(toRow(state, VAULT, '', false).pathLabel).toBe('');
+		// Everything else about the row is untouched.
+		expect(toRow(state, VAULT, '', false).displayName).toBe('w4:p1');
+		expect(toRow(state, VAULT, '', true).pathLabel).toBe('projects/herdr');
+	});
+
 	it('keeps the kind separate from the name', () => {
 		const row = toRow(pane('w4:p1', 'w4:t1', 'idle', { agent: 'codex', name: 'scribe' }), VAULT);
 		expect(row.kind).toBe('codex');
@@ -476,6 +484,29 @@ describe('buildRows', () => {
 			'/Users/lasse/code/herdr',
 			VAULT,
 		]);
+	});
+
+	it('drops the row path line when the group header is the folder (issue #39)', () => {
+		const panes = [
+			pane('p1', 'w4:t1', 'idle', { cwd: `${VAULT}/projects/herdr` }),
+			pane('p2', 'w4:t1', 'idle', { cwd: '/Users/lasse/code/herdr' }),
+		];
+		const options = { homePath: '/Users/lasse' };
+		const grouped = buildRows(panes, new Map(), VAULT, { ...options, groupBy: 'folder' });
+		expect(flatten(grouped).map((row) => row.pathLabel)).toEqual(['', '']);
+		// The headers still carry the folders, so nothing is lost. Both groups are
+		// idle, so they tie and fall back to a locale compare of their labels,
+		// which looks past the leading tilde.
+		expect(grouped.map((group) => group.label)).toEqual(['~/code/herdr', 'projects/herdr']);
+
+		// Every other grouping keeps the line: nothing else names the folder.
+		for (const groupBy of ['tab', 'none'] as const) {
+			const rows = flatten(buildRows(panes, new Map(), VAULT, { ...options, groupBy }));
+			expect(rows.map((row) => row.pathLabel).sort()).toEqual([
+				'projects/herdr',
+				'~/code/herdr',
+			]);
+		}
 	});
 
 	it('names a folder group without a cwd rather than leaving it blank', () => {
