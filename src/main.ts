@@ -5,6 +5,7 @@ import {
 	Menu,
 	Notice,
 	Plugin,
+	setTooltip,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -22,7 +23,13 @@ import {
 } from './settings';
 import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
-import { ConnectionCoordinator } from './connection';
+import {
+	ConnectionCoordinator,
+	endpointLabel,
+	endpointOf,
+	resolveEndpoint,
+	type Endpoint,
+} from './connection';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
@@ -59,10 +66,10 @@ export default class HerdrPlugin extends Plugin {
 					extraPath: this.settings.extraPath,
 					socketOverride: this.settings.socketPath,
 				}),
-			remoteEnabled: () => this.settings.remote.enabled,
+			endpoint: () => endpointOf(this.settings.remote),
 			createTunnel: (onSocket) => this.createTunnel(onSocket),
 			createClient: (socketPath) => this.createClient(socketPath),
-			createScope: () => this.createScope(),
+			createScope: (endpoint) => this.createScope(endpoint),
 			subscriptions: SCOPE_SUBSCRIPTIONS,
 			notice: (message) => {
 				new Notice(message);
@@ -83,6 +90,31 @@ export default class HerdrPlugin extends Plugin {
 	}
 	get scope(): WorkspaceScope | null {
 		return this.connection.current?.scope ?? null;
+	}
+	/**
+	 * The endpoint the list is connected to, or the one the settings would
+	 * connect to while no connection is published (issue #54).
+	 */
+	get endpoint(): Endpoint {
+		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
+	}
+	/**
+	 * The current scope only when it belongs to `endpointId`; a terminal pinned
+	 * to the other herdr must not read titles from this one (issue #54).
+	 */
+	scopeFor(endpointId: string): WorkspaceScope | null {
+		const current = this.connection.current;
+		return current && current.endpoint.id === endpointId ? current.scope : null;
+	}
+	/**
+	 * The endpoint an id names: the published connection's own snapshot when it
+	 * matches, else one rebuilt from the settings as they are now, else null
+	 * when the settings no longer describe it.
+	 */
+	endpointFor(endpointId: string): Endpoint | null {
+		const current = this.connection.current;
+		if (current && current.endpoint.id === endpointId) return current.endpoint;
+		return resolveEndpoint(endpointId, this.settings.remote);
 	}
 	/** Non-null only while a remote profile is enabled (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -117,7 +149,7 @@ export default class HerdrPlugin extends Plugin {
 		this.notifier = new TransitionNotifier({
 			now: () => Date.now(),
 			settings: () => this.settings.notifications,
-			isTerminalOpen: (paneId) => this.isTerminalOpen(paneId),
+			isTerminalOpen: (paneId, endpointId) => this.isTerminalOpen(paneId, endpointId),
 			windowFocused: () => this.windowFocused,
 			showNotice: (message) => {
 				new Notice(message);
@@ -249,10 +281,18 @@ export default class HerdrPlugin extends Plugin {
 	 * pane it was showing has its session released by that restart. Only a
 	 * genuinely new terminal is placed, beside the note when that note lives
 	 * inside the agent's working directory and in a tab otherwise.
+	 *
+	 * "Same pane" means same pane id on the connected endpoint (issue #54): a
+	 * terminal pinned to the other herdr is neither revealed nor switched by a
+	 * plain open, only by the reuse mode, which is an explicit choice to point
+	 * the one terminal tab at whatever row was clicked.
 	 */
 	async openTerminal(paneId: string): Promise<void> {
 		const workspace = this.app.workspace;
-		const existing = this.terminalLeaf(paneId);
+		// Rows come from the connected endpoint, so that is the one the terminal
+		// is opened on and pinned to (issue #54).
+		const endpointId = this.endpoint.id;
+		const existing = this.terminalLeaf(paneId, endpointId);
 		const open = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
 		const target = decideOpenTarget({
 			mode: normalizeTerminalTab(this.settings.terminalTab),
@@ -278,7 +318,7 @@ export default class HerdrPlugin extends Plugin {
 					active: true,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
-					state: { paneId, mode: this.attachModeOf(reused) },
+					state: { paneId, mode: this.attachModeOf(reused), endpointId },
 				});
 				leaf = reused;
 			}
@@ -288,7 +328,7 @@ export default class HerdrPlugin extends Plugin {
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
-				state: { paneId, mode: this.settings.defaultAttachMode },
+				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
 			});
 		}
 		await workspace.revealLeaf(leaf);
@@ -330,11 +370,11 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * True when a terminal view for this pane is open, which mutes notifications
-	 * for it (PRD M12).
+	 * True when a terminal view for this pane on this endpoint is open, which
+	 * mutes notifications for it (PRD M12, issue #54).
 	 */
-	isTerminalOpen(paneId: string): boolean {
-		return this.terminalLeaf(paneId) !== null;
+	isTerminalOpen(paneId: string, endpointId: string): boolean {
+		return this.terminalLeaf(paneId, endpointId) !== null;
 	}
 
 	/**
@@ -401,13 +441,15 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * The leaf showing this pane's terminal, if any. The persisted view state is
-	 * the lookup, not `leaf.view`: a background leaf may still be deferred, and
-	 * the guidelines forbid holding view references (PRD N1).
+	 * The leaf showing this pane's terminal on this endpoint, if any. The
+	 * persisted view state is the lookup, not `leaf.view`: a background leaf may
+	 * still be deferred, and the guidelines forbid holding view references (PRD
+	 * N1). The endpoint is part of the key (issue #54): after the list switches
+	 * herdr, a row's `w4:p1` must not reveal the other server's `w4:p1`.
 	 */
-	private terminalLeaf(paneId: string): WorkspaceLeaf | null {
+	private terminalLeaf(paneId: string, endpointId: string): WorkspaceLeaf | null {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			if (stateMatchesPane(leaf.getViewState().state, paneId)) return leaf;
+			if (stateMatchesPane(leaf.getViewState().state, paneId, endpointId)) return leaf;
 		}
 		return null;
 	}
@@ -555,6 +597,10 @@ export default class HerdrPlugin extends Plugin {
 		if (!this.settings.notifications.statusBar) return;
 		const panes = this.scope?.list() ?? [];
 		if (panes.length === 0) return;
+		// Which herdr the counts are for (issue #54); the bar itself stays terse.
+		const where = `Herdr agents on ${endpointLabel(this.endpoint)}`;
+		setTooltip(el, where);
+		el.setAttribute('aria-label', where);
 		const { blocked, done } = countStatuses(panes);
 		el.createSpan({ cls: 'herdr-status-bar-blocked', text: `${blocked} blocked` });
 		el.createSpan({ text: ' · ' });
@@ -633,15 +679,15 @@ export default class HerdrPlugin extends Plugin {
 	 * events, never off the raw stream: the scope has already collapsed the
 	 * ~10 pane.updated per second (N4).
 	 */
-	private createScope(): WorkspaceScope {
-		const remoteProfile = this.settings.remote;
+	private createScope(endpoint: Endpoint): WorkspaceScope {
+		const remoteProfile = endpoint.remote;
 		const scope = new WorkspaceScope({
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
 		});
 		scope.on('changed', (_paneId, prev, next) => {
-			this.notifier.onChanged(prev, next);
+			this.notifier.onChanged(prev, next, endpoint.id);
 			this.updateStatusBar();
 		});
 		scope.on('added', () => {
@@ -651,7 +697,7 @@ export default class HerdrPlugin extends Plugin {
 			this.refreshAgentNames();
 		});
 		scope.on('removed', (pane) => {
-			this.notifier.forget(pane.paneId);
+			this.notifier.forget(pane.paneId, endpoint.id);
 			this.updateStatusBar();
 		});
 		scope.on('workspaceResolved', () => {

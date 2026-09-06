@@ -45,6 +45,16 @@
 	color: var(--text-muted);
 }
 
+/* Local/remote switch (issue #54): accent colour while the remote herdr is the
+   connected one, hidden entirely when no remote host is configured. */
+.herdr-endpoint-toggle.is-active {
+	color: var(--text-accent);
+}
+
+.herdr-endpoint-toggle.herdr-hidden {
+	display: none;
+}
+
 .herdr-agent-list-body {
 	display: flex;
 	flex-direction: column;

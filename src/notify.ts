@@ -13,7 +13,9 @@
  *   - a pane that just fired is muted for {@link DEBOUNCE_MS}, because an agent
  *     can flap blocked → working → blocked within a second;
  *   - a pane whose terminal view is open in Obsidian never notifies: the user is
- *     looking straight at it;
+ *     looking straight at it. "This pane" means this pane id on the endpoint
+ *     the scope belongs to (issue #54): a local terminal showing `w4:p1` does
+ *     not mute the remote herdr's `w4:p1`;
  *   - escalation is per settings: `Notice` whenever enabled, OS notification only
  *     when the Obsidian window does not have focus (notes/electron-node.md).
  *
@@ -34,6 +36,8 @@ const NOTIFIED: readonly NotifiedTransition[] = ['blocked', 'done'];
 /** What a single transition asks the host to do. */
 export interface NotifyPlan {
 	paneId: string;
+	/** The herdr the pane belongs to (`src/connection.ts`, issue #54). */
+	endpointId: string;
 	transition: NotifiedTransition;
 	title: string;
 	body: string;
@@ -48,8 +52,8 @@ export interface NotifierDeps {
 	now(): number;
 	/** Read live settings; the user can toggle these while the plugin runs. */
 	settings(): NotificationSettings;
-	/** True when a terminal view for this pane is open in Obsidian (PRD M12). */
-	isTerminalOpen(paneId: string): boolean;
+	/** True when a terminal view for this pane on this endpoint is open (PRD M12, #54). */
+	isTerminalOpen(paneId: string, endpointId: string): boolean;
 	/** True when the Obsidian window has focus, i.e. `document.hasFocus()`. */
 	windowFocused(): boolean;
 	/** Show an Obsidian `Notice`. */
@@ -76,11 +80,12 @@ export function paneName(pane: PaneState): string {
 	return pane.name.trim() || pane.label.trim() || pane.title.trim() || pane.paneId;
 }
 
-function planFor(pane: PaneState, transition: NotifiedTransition): NotifyPlan {
+function planFor(pane: PaneState, endpointId: string, transition: NotifiedTransition): NotifyPlan {
 	const name = paneName(pane);
 	const verb = transition === 'blocked' ? 'needs you' : 'is done';
 	return {
 		paneId: pane.paneId,
+		endpointId,
 		transition,
 		title: `Herdr: ${name} ${verb}`,
 		body: pane.title.trim() || pane.cwd || pane.paneId,
@@ -98,17 +103,18 @@ function planFor(pane: PaneState, transition: NotifiedTransition): NotifyPlan {
 export function decideNotification(
 	prev: PaneState,
 	next: PaneState,
+	endpointId: string,
 	lastFiredAt: number | undefined,
 	deps: Pick<NotifierDeps, 'now' | 'settings' | 'isTerminalOpen' | 'windowFocused'>,
 ): NotifyPlan | null {
 	if (!isNotifiedTransition(prev, next)) return null;
 	// The user is already watching this pane inside Obsidian.
-	if (deps.isTerminalOpen(next.paneId)) return null;
+	if (deps.isTerminalOpen(next.paneId, endpointId)) return null;
 	if (lastFiredAt !== undefined && deps.now() - lastFiredAt < DEBOUNCE_MS) return null;
 
 	const transition = next.agentStatus;
 	const settings = deps.settings()[transition];
-	const plan = planFor(next, transition);
+	const plan = planFor(next, endpointId, transition);
 	plan.notice = settings.notice;
 	// An OS notification while the window is focused would duplicate the Notice.
 	plan.os = settings.os && !deps.windowFocused();
@@ -122,29 +128,39 @@ export function decideNotification(
  * it about `removed` panes so the map does not grow forever.
  */
 export class TransitionNotifier {
+	/** Keyed by endpoint and pane: the two herdrs' `w4:p1` debounce apart. */
 	private readonly lastFired = new Map<string, number>();
 
 	constructor(private readonly deps: NotifierDeps) {}
 
-	/** Handles one scope `changed` event. Returns the plan it acted on, if any. */
-	onChanged(prev: PaneState, next: PaneState): NotifyPlan | null {
-		const plan = decideNotification(prev, next, this.lastFired.get(next.paneId), this.deps);
+	/**
+	 * Handles one scope `changed` event from the scope of `endpointId`. Returns
+	 * the plan it acted on, if any.
+	 */
+	onChanged(prev: PaneState, next: PaneState, endpointId: string): NotifyPlan | null {
+		const key = debounceKey(next.paneId, endpointId);
+		const plan = decideNotification(prev, next, endpointId, this.lastFired.get(key), this.deps);
 		if (!plan) return null;
-		this.lastFired.set(plan.paneId, this.deps.now());
+		this.lastFired.set(key, this.deps.now());
 		if (plan.notice) this.deps.showNotice(plan.title, plan);
 		if (plan.os) this.deps.showOsNotification(plan.title, plan.body, plan);
 		return plan;
 	}
 
 	/** Drops the debounce entry of a pane that left the scope. */
-	forget(paneId: string): void {
-		this.lastFired.delete(paneId);
+	forget(paneId: string, endpointId: string): void {
+		this.lastFired.delete(debounceKey(paneId, endpointId));
 	}
 
 	/** Drops every debounce entry, e.g. when the scoped workspace changes. */
 	reset(): void {
 		this.lastFired.clear();
 	}
+}
+
+/** Newline never occurs in either id, so the pair reads back unambiguously. */
+function debounceKey(paneId: string, endpointId: string): string {
+	return `${endpointId}\n${paneId}`;
 }
 
 /**

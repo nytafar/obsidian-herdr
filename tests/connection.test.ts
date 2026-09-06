@@ -11,6 +11,11 @@ import type { HerdrEvent } from '../src/herdr/client';
 import type { SessionSnapshot } from '../src/herdr/types.gen';
 import {
 	ConnectionCoordinator,
+	endpointIdOf,
+	endpointLabel,
+	endpointOf,
+	LOCAL_ENDPOINT_ID,
+	resolveEndpoint,
 	type ConnectionClient,
 	type ConnectionDeps,
 	type ConnectionScope,
@@ -107,6 +112,7 @@ class FakeClient implements ConnectionClient {
 
 class FakeScope implements ConnectionScope {
 	primed = 0;
+	endpointId = '';
 	ingested: HerdrEvent[] = [];
 	setAgentNames(): void {}
 	prime(): void {
@@ -145,7 +151,14 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 			discoveries.push(d);
 			return d.promise;
 		},
-		remoteEnabled: () => options.remote ?? false,
+		endpoint: () =>
+			endpointOf({
+				enabled: options.remote ?? false,
+				host: 'lasse@xl',
+				remoteSocketPath: '~/.config/herdr/herdr.sock',
+				remoteBinary: '/home/lasse/.local/bin/herdr',
+				remoteVaultPath: '/home/lasse/hvelv',
+			}),
 		createTunnel: (onSocket) => {
 			if (options.tunnelThrows) throw new Error('the remote profile has no SSH host');
 			const tunnel = new FakeTunnel(onSocket);
@@ -157,8 +170,9 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 			clients.push(client);
 			return client;
 		},
-		createScope: () => {
+		createScope: (endpoint) => {
 			const scope = new FakeScope();
+			scope.endpointId = endpoint.id;
 			scopes.push(scope);
 			return scope;
 		},
@@ -535,5 +549,68 @@ describe('Connection: priming', () => {
 		await settle();
 		expect(client.snapshots).toHaveLength(1);
 		expect(h.scopes[0]?.primed).toBe(0);
+	});
+});
+
+describe('endpoint identity (issue #54)', () => {
+	const remote = {
+		enabled: true,
+		host: ' lasse@xl ',
+		remoteSocketPath: '~/.config/herdr/herdr.sock ',
+		remoteBinary: '/home/lasse/.local/bin/herdr',
+		remoteVaultPath: '/home/lasse/hvelv',
+	};
+
+	it('names the local herdr `local` and a remote one by host and socket', () => {
+		expect(endpointIdOf({ ...remote, enabled: false })).toBe(LOCAL_ENDPOINT_ID);
+		expect(endpointIdOf(remote)).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
+	});
+
+	it('snapshots trimmed settings into a frozen copy', () => {
+		const live = { ...remote };
+		const endpoint = endpointOf(live);
+		expect(endpoint.id).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
+		expect(endpoint.remote.host).toBe('lasse@xl');
+		expect(Object.isFrozen(endpoint.remote)).toBe(true);
+		// The snapshot does not follow the live settings object.
+		live.host = 'other';
+		expect(endpoint.remote.host).toBe('lasse@xl');
+	});
+
+	it('resolves an id against the settings as they are now', () => {
+		const local = resolveEndpoint(LOCAL_ENDPOINT_ID, { ...remote, enabled: true });
+		expect(local?.remote.enabled).toBe(false);
+		expect(local?.id).toBe(LOCAL_ENDPOINT_ID);
+		// The list may have switched to local; the remote profile is still there.
+		const pinned = resolveEndpoint('ssh:lasse@xl:~/.config/herdr/herdr.sock', {
+			...remote,
+			enabled: false,
+		});
+		expect(pinned?.remote.enabled).toBe(true);
+		expect(pinned?.remote.remoteBinary).toBe('/home/lasse/.local/bin/herdr');
+		expect(resolveEndpoint('ssh:someone@else:/x.sock', remote)).toBeNull();
+	});
+
+	it('labels endpoints for status lines and tooltips', () => {
+		expect(endpointLabel(endpointOf({ ...remote, enabled: false }))).toBe('local');
+		expect(endpointLabel(endpointOf(remote))).toBe('ssh lasse@xl');
+	});
+
+	it('pins each connection to the endpoint read at the start of its attempt', async () => {
+		const h = harness({ remote: true });
+		const connecting = h.coordinator.connect();
+		await settle();
+		h.discoveries[0]?.resolve(DISCOVERY);
+		await settle();
+		h.tunnels[0]?.started.resolve('/tmp/forward.sock');
+		await settle();
+		h.clients[0]?.pings[0]?.resolve({ type: 'pong' });
+		await connecting;
+		expect(h.coordinator.current?.endpoint.id).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
+		expect(h.coordinator.current?.endpoint.remote.enabled).toBe(true);
+		expect(h.scopes[0]?.endpointId).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
+		const local = harness();
+		await connected(local);
+		expect(local.coordinator.current?.endpoint.id).toBe(LOCAL_ENDPOINT_ID);
 	});
 });

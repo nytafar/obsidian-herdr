@@ -40,6 +40,17 @@ different socket inside the CLI process, so remote terminals run the CLI on the
 far side: `ssh -T <host> <remote binary> terminal session control|observe …`.
 That is why the remote binary path matters even when the tunnel is healthy.
 
+## Switching between local and remote
+
+With an SSH host configured, the agent list's toolbar has a switch (laptop for
+the local herdr, server for the remote one) that changes which herdr the list,
+the actions, the notifications and the status bar counts are for. Terminals are
+pinned to the herdr they were opened on: a local terminal keeps running, keeps
+its title, and reconnects, toggles mode and rebuilds against the local herdr
+after the list has switched to remote, and the other way round. Its status line
+says which herdr it is on. Pane ids repeat across servers, so a remote `w4:p1`
+row opens its own terminal rather than revealing the local `w4:p1`.
+
 ## Checking by hand
 
 ```bash

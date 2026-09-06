@@ -20,6 +20,64 @@
 import type { DiscoveryResult } from './herdr/binary';
 import type { ClientEventMap, HerdrEvent, Subscription } from './herdr/client';
 import type { AgentInfo, PaneInfo, SessionSnapshot, WorkspaceInfo } from './herdr/types.gen';
+import type { RemoteSettings } from './settings';
+
+/** Endpoint id of the local herdr; a remote one reads `ssh:<host>:<remote socket>`. */
+export const LOCAL_ENDPOINT_ID = 'local';
+
+/**
+ * Where a connection, and everything that inherits from it, talks to (issue
+ * #54). A terminal is pinned to the endpoint it first started on, so the same
+ * pane id on the local and on a remote herdr never aliases: the id is what the
+ * view persists and what the leaf lookup compares, the settings snapshot is what
+ * a later start derives its spawn command from. The snapshot is taken once per
+ * connection attempt and never changes afterwards, whatever the settings tab
+ * does meanwhile.
+ */
+export interface Endpoint {
+	/** `local`, or `ssh:<host>:<remote socket path>`. */
+	readonly id: string;
+	/** Remote settings as they were; `enabled` is false for the local endpoint. */
+	readonly remote: Readonly<RemoteSettings>;
+}
+
+/** The id of the endpoint these remote settings describe. */
+export function endpointIdOf(
+	remote: Pick<RemoteSettings, 'enabled' | 'host' | 'remoteSocketPath'>,
+): string {
+	if (!remote.enabled) return LOCAL_ENDPOINT_ID;
+	return `ssh:${remote.host.trim()}:${remote.remoteSocketPath.trim()}`;
+}
+
+/** Snapshots the remote settings into an endpoint; the copy is frozen. */
+export function endpointOf(remote: RemoteSettings): Endpoint {
+	const snapshot: RemoteSettings = Object.freeze({
+		enabled: remote.enabled,
+		host: remote.host.trim(),
+		remoteSocketPath: remote.remoteSocketPath.trim(),
+		remoteBinary: remote.remoteBinary.trim(),
+		remoteVaultPath: remote.remoteVaultPath.trim(),
+	});
+	return { id: endpointIdOf(snapshot), remote: snapshot };
+}
+
+/**
+ * Rebuilds the endpoint an id names from the settings as they are now: the
+ * local one for `local`, the remote one when the configured host and socket
+ * still match. Null when the settings no longer describe it (the host was
+ * changed under a pinned terminal), which the caller reports rather than
+ * silently pointing the terminal elsewhere.
+ */
+export function resolveEndpoint(id: string, remote: RemoteSettings): Endpoint | null {
+	if (id === LOCAL_ENDPOINT_ID) return endpointOf({ ...remote, enabled: false });
+	const candidate = endpointOf({ ...remote, enabled: true });
+	return candidate.id === id ? candidate : null;
+}
+
+/** Short human name for status lines and tooltips: `local` or `ssh <host>`. */
+export function endpointLabel(endpoint: Pick<Endpoint, 'remote'>): string {
+	return endpoint.remote.enabled ? `ssh ${endpoint.remote.host}` : 'local';
+}
 
 /** The slice of `HerdrClient` a connection drives. */
 export interface ConnectionClient {
@@ -56,8 +114,12 @@ export interface ConnectionDeps<
 > {
 	/** Finds the binary and the socket. Never expected to throw. */
 	discover(): Promise<DiscoveryResult>;
-	/** True when the attempt should go through an SSH forward instead. */
-	remoteEnabled(): boolean;
+	/**
+	 * The endpoint the attempt targets, read once at its start; a remote one
+	 * goes through an SSH forward. Everything the connection derives from the
+	 * settings comes from this snapshot, not from the live settings.
+	 */
+	endpoint(): Endpoint;
 	/**
 	 * Builds the tunnel for a remote attempt. `onSocket` reports the local
 	 * socket after every (re)connect of the forward. May throw synchronously
@@ -65,8 +127,11 @@ export interface ConnectionDeps<
 	 */
 	createTunnel(onSocket: (localSocketPath: string) => void): T;
 	createClient(socketPath: string): C;
-	/** Builds the scope and wires whatever the caller hangs off its events. */
-	createScope(): S;
+	/**
+	 * Builds the scope and wires whatever the caller hangs off its events. The
+	 * endpoint is the attempt's, so those handlers can label what they report.
+	 */
+	createScope(endpoint: Endpoint): S;
 	/** Event subscriptions the scope needs (`SCOPE_SUBSCRIPTIONS`). */
 	subscriptions: readonly Subscription[];
 	/** Something the user should see (a missing binary, a failed ping). */
@@ -94,6 +159,7 @@ export class Connection<
 
 	constructor(
 		readonly discovery: DiscoveryResult,
+		readonly endpoint: Endpoint,
 		readonly client: C,
 		readonly scope: S,
 		readonly tunnel: T | null,
@@ -214,7 +280,8 @@ export class ConnectionCoordinator<
 		const discovery = await this.deps.discover();
 		if (!alive()) return;
 		this.latestDiscovery = discovery;
-		const remote = this.deps.remoteEnabled();
+		const endpoint = this.deps.endpoint();
+		const remote = endpoint.remote.enabled;
 		// A remote profile needs `ssh`, not a local herdr, so a missing local
 		// binary only stops the local path.
 		if (!discovery.binary && !remote) {
@@ -245,8 +312,8 @@ export class ConnectionCoordinator<
 		}
 
 		client = this.deps.createClient(socketPath);
-		const scope = this.deps.createScope();
-		const connection = new Connection(discovery, client, scope, tunnel, this.deps);
+		const scope = this.deps.createScope(endpoint);
+		const connection = new Connection(discovery, endpoint, client, scope, tunnel, this.deps);
 		// The one place the scope is loaded: the event stream's `connected` edge,
 		// which fires on the first subscribe ack and again after every reconnect.
 		// Listing only there means nothing is missed between the two (PRD M4) and

@@ -24,7 +24,11 @@
  * #44): the sort and group-by menu, "start agent in the vault", and a quick
  * settings menu. What the two menus contain is `listMenu.ts` and
  * `quickSettings.ts`, both pure and tested; choosing an entry writes the same
- * settings the settings tab writes and repaints every open list.
+ * settings the settings tab writes and repaints every open list. A fourth
+ * button, shown only when a remote host is configured, switches the list
+ * between the local and the remote herdr (issue #54): it flips
+ * `settings.remote.enabled` and reconnects. Terminals already open stay pinned
+ * to the endpoint they started on.
  *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
@@ -34,6 +38,7 @@
 
 import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
+import type { HerdrSettings } from '../settings';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
@@ -44,9 +49,38 @@ import { asElement } from './dom';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
+/** What the local/remote toggle in the toolbar shows (issue #54). */
+export interface EndpointToggle {
+	/** Hidden entirely unless a remote host is configured. */
+	shown: boolean;
+	/** True while the remote profile is the connected one. */
+	remote: boolean;
+	icon: string;
+	/** Tooltip and aria-label: what a click does, not what is on. */
+	label: string;
+}
+
+/**
+ * The toggle is a picture of where the list points (`laptop` for the local
+ * herdr, `server` for the remote one) and a label naming the other side, so a
+ * click reads as "switch to". Without a host there is nothing to switch to.
+ */
+export function endpointToggle(settings: Pick<HerdrSettings, 'remote'>): EndpointToggle {
+	const host = settings.remote.host.trim();
+	const remote = settings.remote.enabled;
+	return {
+		shown: host.length > 0,
+		remote,
+		icon: remote ? 'server' : 'laptop',
+		label: remote ? 'Switch to local herdr' : `Switch to remote herdr (${host})`,
+	};
+}
+
 export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private listEl: HTMLElement | null = null;
+	/** The local/remote toggle (issue #54); null until the toolbar is built. */
+	private endpointToggleEl: HTMLElement | null = null;
 	private tabLabels = new Map<string, string>();
 	/**
 	 * Tab ids a `tab.list` has already covered, whether or not it returned a
@@ -113,6 +147,13 @@ export class AgentListView extends ItemView {
 	 */
 	private renderToolbar(container: HTMLElement): void {
 		const bar = container.createDiv({ cls: 'herdr-list-toolbar' });
+		// Leftmost, apart from the three menu buttons: it changes what the whole
+		// list shows rather than how. Hidden unless a remote host is configured.
+		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch to remote herdr', () => {
+			void this.toggleEndpoint();
+		});
+		this.endpointToggleEl.addClass('herdr-endpoint-toggle');
+		this.updateEndpointToggle();
 		this.toolbarButton(bar, 'arrow-down-up', 'Sort and group', (event) =>
 			this.openListMenu(event),
 		);
@@ -132,7 +173,7 @@ export class AgentListView extends ItemView {
 		icon: string,
 		label: string,
 		onClick: (event: MouseEvent) => void,
-	): void {
+	): HTMLElement {
 		const button = bar.createEl('button', {
 			cls: 'clickable-icon herdr-list-menu-button',
 			attr: { type: 'button' },
@@ -141,6 +182,33 @@ export class AgentListView extends ItemView {
 		setTooltip(button, label);
 		button.setAttribute('aria-label', label);
 		this.registerDomEvent(button, 'click', onClick);
+		return button;
+	}
+
+	/**
+	 * The local/remote switch (issue #54): the same flip the settings toggle
+	 * does, followed by the same reconnect, without the debounce a typed field
+	 * needs. Open terminals are left alone; each stays pinned to its endpoint.
+	 */
+	private async toggleEndpoint(): Promise<void> {
+		const settings = this.plugin.settings;
+		if (settings.remote.host.trim().length === 0) return;
+		settings.remote.enabled = !settings.remote.enabled;
+		this.updateEndpointToggle();
+		await this.plugin.saveSettings();
+		await this.plugin.reconnect();
+	}
+
+	/** Icon, label, active state and visibility from the settings as they are. */
+	private updateEndpointToggle(): void {
+		const el = this.endpointToggleEl;
+		if (!el) return;
+		const toggle = endpointToggle(this.plugin.settings);
+		el.toggleClass('herdr-hidden', !toggle.shown);
+		el.toggleClass('is-active', toggle.remote);
+		setIcon(el, toggle.icon);
+		setTooltip(el, toggle.label);
+		el.setAttribute('aria-label', toggle.label);
 	}
 
 	/**
@@ -280,6 +348,9 @@ export class AgentListView extends ItemView {
 		const list = this.listEl;
 		if (!list) return;
 		list.empty();
+		// The host may have been typed into settings since the toolbar was built,
+		// and the settings tab's own toggle flips the same flag.
+		this.updateEndpointToggle();
 
 		const scope = this.plugin.scope;
 		if (!scope || !scope.workspaceId) {

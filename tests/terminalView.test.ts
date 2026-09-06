@@ -27,10 +27,19 @@ import type { PaneState } from '../src/herdr/scope';
 
 describe('parseTerminalState', () => {
 	it('reads a well-formed state', () => {
-		expect(parseTerminalState({ paneId: 'w4:p1', mode: 'observe' })).toEqual({
+		expect(
+			parseTerminalState({ paneId: 'w4:p1', mode: 'observe', endpointId: 'ssh:xl:/s.sock' }),
+		).toEqual({
 			paneId: 'w4:p1',
 			mode: 'observe',
+			endpointId: 'ssh:xl:/s.sock',
 		});
+	});
+
+	it('treats a state saved before endpoints existed as local (issue #54)', () => {
+		expect(parseTerminalState({ paneId: 'w4:p1', mode: 'control' })?.endpointId).toBe('local');
+		expect(parseTerminalState({ paneId: 'w4:p1', endpointId: '  ' })?.endpointId).toBe('local');
+		expect(parseTerminalState({ paneId: 'w4:p1', endpointId: 7 })?.endpointId).toBe('local');
 	});
 
 	it('defaults an unknown or missing mode to control', () => {
@@ -107,9 +116,17 @@ describe('terminalTabTitle (issue #36)', () => {
 
 describe('stateMatchesPane', () => {
 	it('is the lookup main.ts uses for reuse and for muting notifications', () => {
-		expect(stateMatchesPane({ paneId: 'w4:p1', mode: 'control' }, 'w4:p1')).toBe(true);
-		expect(stateMatchesPane({ paneId: 'w4:p2' }, 'w4:p1')).toBe(false);
-		expect(stateMatchesPane(undefined, 'w4:p1')).toBe(false);
+		expect(stateMatchesPane({ paneId: 'w4:p1', mode: 'control' }, 'w4:p1', 'local')).toBe(true);
+		expect(stateMatchesPane({ paneId: 'w4:p2' }, 'w4:p1', 'local')).toBe(false);
+		expect(stateMatchesPane(undefined, 'w4:p1', 'local')).toBe(false);
+	});
+
+	it('never aliases the same pane id across endpoints (issue #54)', () => {
+		const remote = { paneId: 'w4:p1', mode: 'control', endpointId: 'ssh:lasse@xl:/s.sock' };
+		expect(stateMatchesPane(remote, 'w4:p1', 'ssh:lasse@xl:/s.sock')).toBe(true);
+		expect(stateMatchesPane(remote, 'w4:p1', 'local')).toBe(false);
+		// A pre-endpoint state is a local terminal, so a remote lookup misses it.
+		expect(stateMatchesPane({ paneId: 'w4:p1' }, 'w4:p1', 'ssh:lasse@xl:/s.sock')).toBe(false);
 	});
 
 	it('keeps the view type stable — the layout file stores it', () => {
@@ -277,19 +294,23 @@ describe('summariseStderr', () => {
 
 describe('statusLine', () => {
 	it('states the mode while the session is live', () => {
-		expect(statusLine({ mode: 'control', closedReason: null, exited: false, stderr: [] })).toEqual({
-			text: 'Controlling this pane.',
+		const live = { closedReason: null, exited: false, stderr: [] };
+		expect(statusLine({ mode: 'control', endpoint: 'local', ...live })).toEqual({
+			text: 'Controlling this pane on local.',
 			warning: false,
 			detail: null,
 		});
-		expect(statusLine({ mode: 'observe', closedReason: null, exited: false, stderr: [] }).text).toBe(
-			'Observing (read-only).',
+		// The endpoint is in the line (issue #54): a terminal pinned to the other
+		// herdr keeps saying so after the list switches.
+		expect(statusLine({ mode: 'observe', endpoint: 'ssh lasse@xl', ...live }).text).toBe(
+			'Observing (read-only) on ssh lasse@xl.',
 		);
 	});
 
 	it('renders the close reason and suggests a reconnect when one can help', () => {
 		const takenOver = statusLine({
 			mode: 'control',
+			endpoint: 'local',
 			closedReason: 'terminal attach taken over',
 			exited: true,
 			stderr: [],
@@ -301,6 +322,7 @@ describe('statusLine', () => {
 
 		const gone = statusLine({
 			mode: 'control',
+			endpoint: 'local',
 			closedReason: 'terminal term_7 exited',
 			exited: true,
 			stderr: [],
@@ -311,6 +333,7 @@ describe('statusLine', () => {
 	it('reports a silent exit, and always carries the stderr summary', () => {
 		const line = statusLine({
 			mode: 'control',
+			endpoint: 'local',
 			closedReason: null,
 			exited: true,
 			stderr: ['herdr: connection failed'],
