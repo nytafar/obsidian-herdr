@@ -22,6 +22,12 @@ tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
 (`resolveFont`, `computeFit`, `cssVar`, `parsePx`). Terminal placement
 (`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
 split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
+The file explorer's folder hover button (`src/explorerButtons.ts`, #30) splits
+the same way: the observer, the injected button and the row bookkeeping need a
+real file explorer — undocumented DOM this repo does not fake — so
+`tests/explorerButtons.test.ts` covers the decisions taken before any element is
+touched (`menuItemsFor`, `attachablePane`, `folderAbsPath`, `vaultRelativeLabel`,
+`asElement`) plus the two DOM constants the stylesheet also depends on.
 
 The input layer (`src/views/input/`, #17) is pure by construction — no DOM, no
 `obsidian`, no bridge — so `tests/input/` covers all of it: the mode tracker
@@ -89,6 +95,31 @@ connection through it then dies silently, because the tilde is not expanded —
 `SshTunnel` asks the remote `$HOME` instead. And the forwarded API socket gives
 no terminals, since the bridge speaks to herdr's separate client socket; remote
 terminals go through `ssh -T host <remote herdr> terminal session …`.
+## Smoking the folder hover button inside Obsidian (#30)
+
+The injection and its teardown are the untested half, and both are visible by
+hand in the dev vault:
+
+1. `npm run build`, reload the plugin. Hover a folder in the file explorer: a
+   small bot icon appears at the right edge of the row and disappears when the
+   pointer leaves. Files get no button.
+2. Click it. The menu is **Start agent here** and **Copy path from vault root**,
+   and the folder must **not** fold or unfold — that is the capture-phase
+   `stopPropagation`. Fold and unfold with a normal click on the row to confirm
+   the row itself still works.
+3. Start an agent in that folder (or in one below it), then open the menu again:
+   **Attach** is now the first entry and opens that agent's terminal view.
+4. Scroll a long explorer, collapse and expand a few folders, then hover a row
+   that scrolled out and back: the button is still there. That is the
+   `MutationObserver` reclaiming recycled rows; without it the button survives
+   only the first paint.
+5. Settings → **File explorer → Folder hover button** off: every button
+   disappears at once, no `data-herdr-folder-button` attribute is left in the
+   explorer DOM (check in devtools), and hovering does nothing. On again brings
+   them back without a reload.
+6. Drag the file explorer into a popout window, or open a second explorer in the
+   right sidebar: the buttons appear there too, because `layout-change` rescans.
+
 ## Smoking the agent list, actions and notifications inside Obsidian
 
 The unit tests cover the decisions, not the wiring. Inside the dev vault:
