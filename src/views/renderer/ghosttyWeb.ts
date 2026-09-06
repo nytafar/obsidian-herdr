@@ -92,9 +92,16 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 			fontFamily: font.fontFamily,
 			fontSize: font.fontSize,
 			theme: this.readTheme(el),
-			...(this.options.scrollback === undefined
-				? {}
-				: { scrollback: this.options.scrollback }),
+			// ghostty-web's `scrollback` is a BYTE budget handed to libghostty-vt's
+			// page list, not a line count, and `0` means "no limit": measured
+			// headlessly, a terminal with 0 grew the shared WASM heap past 1 GB
+			// after 200k lines, while the 10 KB default caps it at ~5.4 MB / ~445
+			// lines (notes/memory.md). Only a positive number is ever passed on.
+			...(typeof this.options.scrollback === 'number' &&
+			Number.isFinite(this.options.scrollback) &&
+			this.options.scrollback > 0
+				? { scrollback: this.options.scrollback }
+				: {}),
 			...(this.options.disableStdin === undefined
 				? {}
 				: { disableStdin: this.options.disableStdin }),
