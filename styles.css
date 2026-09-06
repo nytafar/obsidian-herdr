@@ -1,8 +1,205 @@
 /*
+ * Herdr plugin styles. Everything here uses Obsidian CSS variables so the plugin
+ * follows the active theme; no colours or sizes are hard-coded, and no plugin
+ * code sets inline styles (PRD N1).
+ */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Settings tab status block ------------------------------------------------ */
 
-If your plugin does not need CSS, delete this file.
+.herdr-settings-status {
+	margin-bottom: var(--size-4-4);
+}
 
-*/
+.herdr-status-text {
+	margin: 0 0 var(--size-2-2) 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.herdr-status-text.mod-warning {
+	color: var(--text-warning);
+}
+
+/* Agent list view ---------------------------------------------------------- */
+
+.herdr-agent-list {
+	padding: var(--size-4-2);
+}
+
+.herdr-agent-list-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.herdr-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	padding: var(--size-4-2);
+}
+
+.herdr-tab-group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+}
+
+.herdr-tab-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	padding: 0 var(--size-4-2);
+}
+
+.herdr-agent-row {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-1);
+	padding: var(--size-2-2) var(--size-4-2);
+	border-radius: var(--radius-s);
+	cursor: var(--cursor);
+}
+
+.herdr-agent-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.herdr-agent-row:focus-visible {
+	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+	outline: none;
+}
+
+.herdr-agent-row.is-focused {
+	background-color: var(--background-modifier-active-hover);
+}
+
+.herdr-agent-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.herdr-agent-line {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+
+.herdr-agent-name {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-medium);
+	white-space: nowrap;
+}
+
+.herdr-agent-title,
+.herdr-agent-cwd {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-agent-cwd {
+	font-family: var(--font-monospace);
+	color: var(--text-faint);
+}
+
+.herdr-row-action {
+	flex: 0 0 auto;
+	color: var(--text-muted);
+}
+
+/* Status glyphs: one dot per agent status, coloured by the theme's palette. */
+
+.herdr-status-glyph {
+	flex: 0 0 auto;
+	width: var(--size-4-2);
+	height: var(--size-4-2);
+	margin-top: var(--size-2-2);
+	border-radius: 50%;
+	background-color: var(--text-faint);
+}
+
+.herdr-status-glyph.herdr-status-blocked {
+	background-color: var(--color-orange);
+}
+
+.herdr-status-glyph.herdr-status-done {
+	background-color: var(--color-green);
+}
+
+.herdr-status-glyph.herdr-status-working {
+	background-color: var(--color-blue);
+}
+
+.herdr-status-glyph.herdr-status-idle {
+	background-color: var(--text-faint);
+}
+
+.herdr-status-glyph.herdr-status-unknown {
+	background-color: transparent;
+	box-shadow: inset 0 0 0 1px var(--text-faint);
+}
+
+/* Status bar item ---------------------------------------------------------- */
+
+.herdr-status-bar {
+	cursor: var(--cursor);
+}
+
+.herdr-status-bar .herdr-status-bar-blocked {
+	color: var(--color-orange);
+}
+
+.herdr-status-bar .herdr-status-bar-done {
+	color: var(--color-green);
+}
+
+/* Terminal view ------------------------------------------------------------ */
+
+.herdr-terminal-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+/* The renderer measures this box, so it must fill the leaf and never scroll. */
+.herdr-terminal-host {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	overflow: hidden;
+	background-color: var(--background-primary);
+}
+
+.herdr-terminal-status {
+	flex: 0 0 auto;
+	display: flex;
+	gap: var(--size-4-2);
+	align-items: baseline;
+	padding: var(--size-2-1) var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-terminal-status.mod-warning .herdr-terminal-status-text {
+	color: var(--text-warning);
+}
+
+.herdr-terminal-status-detail {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
