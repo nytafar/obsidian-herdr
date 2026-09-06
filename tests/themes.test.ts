@@ -8,6 +8,7 @@ import {
 	isTerminalThemeName,
 	normalizeThemeName,
 	luminance,
+	obsidianFontWeights,
 	obsidianTheme,
 	parseColor,
 	resolveTheme,
@@ -377,5 +378,30 @@ describe('obsidianTheme: cursor and selection', () => {
 		const theme = obsidianTheme(reader(vars));
 		expect(theme.selectionBackground).toBeUndefined();
 		expect(theme.selectionForeground).toBeUndefined();
+	});
+});
+
+describe('obsidianFontWeights', () => {
+	it('reads the vault weights, numbers or keywords', () => {
+		expect(
+			obsidianFontWeights(reader({ '--font-weight': '400', '--bold-weight': '600' })),
+		).toEqual({ fontWeight: 400, fontWeightBold: 600 });
+		expect(
+			obsidianFontWeights(reader({ '--font-weight': 'normal', '--bold-weight': 'bold' })),
+		).toEqual({ fontWeight: 400, fontWeightBold: 700 });
+	});
+
+	it('drops a bold weight that would not read as bold', () => {
+		expect(
+			obsidianFontWeights(reader({ '--font-weight': '600', '--bold-weight': '600' })),
+		).toEqual({ fontWeight: 600 });
+		expect(obsidianFontWeights(reader({ '--bold-weight': '300' }))).toEqual({});
+	});
+
+	it('sets nothing when the variables are missing or nonsense', () => {
+		expect(obsidianFontWeights(reader({}))).toEqual({});
+		expect(
+			obsidianFontWeights(reader({ '--font-weight': 'heavy', '--bold-weight': '5000' })),
+		).toEqual({});
 	});
 });

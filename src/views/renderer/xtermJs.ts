@@ -55,6 +55,7 @@ import {
 import {
 	followsObsidian,
 	normalizeThemeName,
+	obsidianFontWeights,
 	obsidianTheme,
 	resolveTheme,
 	type TerminalTheme,
@@ -205,6 +206,9 @@ export class XtermJsRenderer implements TerminalRenderer {
 			...UNICODE_TERMINAL_OPTIONS,
 			fontFamily: font.fontFamily,
 			fontSize: font.fontSize,
+			// Bold from `--bold-weight` (#50). xterm.js is the only engine with a
+			// weight option; see `obsidianFontWeights` for what neither takes.
+			...obsidianFontWeights(this.readVars(el)),
 			theme: this.currentTheme(el),
 			// Lines, not bytes — see `scrollbackLines`.
 			...(scrollback === undefined ? {} : { scrollback }),
@@ -466,6 +470,13 @@ export class XtermJsRenderer implements TerminalRenderer {
 		}
 		this.terminal.options.fontFamily = font.fontFamily;
 		this.terminal.options.fontSize = font.fontSize;
+		const weights = obsidianFontWeights(this.readVars(el));
+		// Undefined would be written through as a change, so only set what the
+		// vault actually defines and leave xterm's own default otherwise.
+		if (weights.fontWeight !== undefined) this.terminal.options.fontWeight = weights.fontWeight;
+		if (weights.fontWeightBold !== undefined) {
+			this.terminal.options.fontWeightBold = weights.fontWeightBold;
+		}
 		this.fit();
 	}
 

@@ -628,3 +628,60 @@ export function obsidianTheme(
 
 	return theme;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Text attributes (#50 gap 4).                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The font weights a renderer should use for plain and for bold cells, in CSS
+ * weight numbers.
+ *
+ * This is everything the two engines will take of Obsidian's attribute
+ * variables, and it is less than the variable list suggests:
+ *
+ *  - **bold** is settable, from `--bold-weight`, on xterm.js only
+ *    (`fontWeight` / `fontWeightBold`). ghostty-web's `ITerminalOptions` has no
+ *    weight option at all, so it keeps its own bold.
+ *  - **italic** is not settable on either engine: both render it as
+ *    `font-style: italic` on the cell, with no hook for `--italic-weight`, and
+ *    forcing `--italic-color` would override the ANSI colour of every italic
+ *    cell rather than complement it.
+ *  - **dim** is not settable either: xterm.js implements it by halving the
+ *    foreground alpha, which already lands between `--text-normal` and
+ *    `--text-faint` because the foreground is `--text-normal`; ghostty-web
+ *    renders it internally. `--text-faint` and `--text-muted` therefore go
+ *    unused, deliberately.
+ */
+export interface TerminalFontWeights {
+	fontWeight?: number;
+	fontWeightBold?: number;
+}
+
+const MIN_WEIGHT = 1;
+const MAX_WEIGHT = 1000;
+
+/** A CSS font weight as a number: `600`, `normal`, `bold`, or undefined. */
+function parseWeight(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const text = value.trim().toLowerCase();
+	if (text === 'normal') return 400;
+	if (text === 'bold') return 700;
+	const n = Number.parseFloat(text);
+	if (!Number.isFinite(n) || n < MIN_WEIGHT || n > MAX_WEIGHT) return undefined;
+	return Math.round(n);
+}
+
+/**
+ * Plain and bold weights from the vault own variables. A bold weight that does
+ * not actually outweigh the plain one is dropped rather than passed on: it would
+ * make bold text indistinguishable, which is worse than the engine default.
+ */
+export function obsidianFontWeights(read: CssVarReader): TerminalFontWeights {
+	const normal = parseWeight(read('--font-weight'));
+	const bold = parseWeight(read('--bold-weight'));
+	const weights: TerminalFontWeights = {};
+	if (normal !== undefined) weights.fontWeight = normal;
+	if (bold !== undefined && bold > (normal ?? 400)) weights.fontWeightBold = bold;
+	return weights;
+}
