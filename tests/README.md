@@ -2,8 +2,9 @@
 
 `npm test` runs vitest (`tests/**/*.test.ts`) in a plain node environment.
 
-Only DOM-free logic is unit tested: the pure helpers of the agent list
-(`groupByTab`, `relativeCwd`, `countStatuses`), the notification decision path
+Only DOM-free logic is unit tested: the agent list's row model
+(`src/views/rowModel.ts` — `buildRows`, `toRow`, `relativeCwd`,
+`agentDisplayName`, `countStatuses`), the notification decision path
 (`src/notify.ts`, with an injected clock) and the folder actions
 (`src/actions.ts`, against a fake client — nothing here talks to a live herdr).
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
@@ -66,7 +67,11 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    revealed wherever the user dragged it).
 2. Rows group by herdr tab and show a status dot, the agent name, the stripped
    terminal title and the cwd relative to the vault. Clicking a row focuses that
-   pane in herdr; the terminal button opens the terminal view (below).
+   pane in herdr; the terminal button opens the terminal view (below). All of
+   that comes from `buildRows`, so `tests/rowModel.test.ts` already covers the
+   ordering, the grouping and the labels; what is left to eyeball here is the
+   DOM. `tests/agentListView.test.ts` only guards the module surface, since the
+   view itself needs a document.
 3. The status bar shows `N blocked · M done` and clicking it reveals the list.
 4. Right-click a folder or a note in the file explorer → the three Herdr items.
    The same three exist in the command palette for the active note's folder.

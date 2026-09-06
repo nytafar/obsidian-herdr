@@ -7,6 +7,11 @@
  * one source of truth for "seen" (PRD M9); the icon button opens the pane as a
  * terminal view in Obsidian.
  *
+ * This file owns DOM and events only. What a row *says* — grouping, ordering,
+ * display-name fallbacks, path and status labels — lives in `rowModel.ts`, which
+ * is pure and unit tested (issue #16). `render()` asks for `RowGroup[]` and
+ * creates elements; it decides nothing.
+ *
  * Rendering discipline (PRD N4): the view never listens to the raw event stream.
  * `WorkspaceScope` already swallows the ~10 `pane.updated` per second that only
  * bump `revision`, so this view re-renders only on its `added` / `changed` /
@@ -21,99 +26,23 @@
 
 import { ItemView, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import { isUnder, stripTitleSpinner, type PaneState } from '../herdr/scope';
-import type { AgentStatus, TabInfo } from '../herdr/types.gen';
+import { stripTitleSpinner } from '../herdr/scope';
+import type { TabInfo } from '../herdr/types.gen';
+import { buildRows, type RowGroup, type RowModel } from './rowModel';
+
+// Re-exported so `main.ts` and the existing tests keep importing the list view's
+// helpers from the list view, while the code itself lives in the pure module.
+export {
+	agentDisplayName,
+	buildRows,
+	countStatuses,
+	relativeCwd,
+	STATUS_LABEL,
+	STATUS_ORDER,
+} from './rowModel';
+export type { RowGroup, RowModel, RowModelOptions } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
-
-/** Order agents are shown in: the ones wanting attention float to the top. */
-const STATUS_ORDER: Record<AgentStatus, number> = {
-	blocked: 0,
-	done: 1,
-	working: 2,
-	idle: 3,
-	unknown: 4,
-};
-
-/** Screen-reader text per status; the glyph itself is CSS (`styles.css`). */
-const STATUS_LABEL: Record<AgentStatus, string> = {
-	blocked: 'Blocked',
-	done: 'Done',
-	working: 'Working',
-	idle: 'Idle',
-	unknown: 'Unknown',
-};
-
-/** Panes of one herdr tab, in display order. */
-export interface TabGroup {
-	tabId: string;
-	label: string;
-	panes: PaneState[];
-}
-
-/**
- * What a row calls an agent (PRD M8): its herdr name, else the stripped terminal
- * title, else the pane id. Never `pane.agent`, which is only the kind.
- */
-export function agentDisplayName(pane: PaneState): string {
-	return pane.name.trim() || pane.title.trim() || pane.paneId;
-}
-
-/** Counts the statuses the status bar cares about (PRD S11). */
-export function countStatuses(panes: readonly PaneState[]): { blocked: number; done: number } {
-	let blocked = 0;
-	let done = 0;
-	for (const pane of panes) {
-		if (pane.agentStatus === 'blocked') blocked++;
-		else if (pane.agentStatus === 'done') done++;
-	}
-	return { blocked, done };
-}
-
-/**
- * The cwd as shown in a row: relative to the vault when it sits inside it, the
- * absolute path otherwise (a herdr pane may well run outside the vault). The
- * vault root itself renders as an empty string, since repeating the vault name
- * on every row says nothing.
- */
-export function relativeCwd(cwd: string, vaultPath: string): string {
-	if (!cwd) return '';
-	const root = vaultPath.replace(/\/+$/, '');
-	if (!root || !isUnder(cwd, root)) return cwd;
-	return cwd.slice(root.length).replace(/^\/+/, '');
-}
-
-/**
- * Groups panes by tab and sorts them: tabs by their most urgent pane, then by
- * label; panes by status, then title. Pure, so it is testable without a DOM.
- */
-export function groupByTab(
-	panes: readonly PaneState[],
-	tabLabels: ReadonlyMap<string, string>,
-): TabGroup[] {
-	const groups = new Map<string, TabGroup>();
-	for (const pane of panes) {
-		let group = groups.get(pane.tabId);
-		if (!group) {
-			group = { tabId: pane.tabId, label: tabLabels.get(pane.tabId) ?? pane.tabId, panes: [] };
-			groups.set(pane.tabId, group);
-		}
-		group.panes.push(pane);
-	}
-	const urgency = (group: TabGroup): number =>
-		Math.min(...group.panes.map((pane) => STATUS_ORDER[pane.agentStatus] ?? 9));
-	const list = [...groups.values()];
-	for (const group of list) {
-		group.panes.sort(
-			(a, b) =>
-				(STATUS_ORDER[a.agentStatus] ?? 9) - (STATUS_ORDER[b.agentStatus] ?? 9) ||
-				a.title.localeCompare(b.title) ||
-				a.paneId.localeCompare(b.paneId),
-		);
-	}
-	list.sort((a, b) => urgency(a) - urgency(b) || a.label.localeCompare(b.label));
-	return list;
-}
 
 export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
@@ -188,7 +117,10 @@ export class AgentListView extends ItemView {
 		});
 	}
 
-	/** Rebuilds the rows. Cheap: a scoped workspace holds tens of panes, not thousands. */
+	/**
+	 * Rebuilds the rows. Cheap: a scoped workspace holds tens of panes, not
+	 * thousands.
+	 */
 	private render(): void {
 		const list = this.listEl;
 		if (!list) return;
@@ -210,42 +142,36 @@ export class AgentListView extends ItemView {
 			return;
 		}
 
-		const groups = groupByTab(panes, this.tabLabels);
-		if (groups.some((group) => !this.tabLabels.has(group.tabId))) void this.refreshTabLabels();
-
-		const vaultPath = this.plugin.herdrVaultPath();
-		for (const group of groups) {
-			const groupEl = list.createDiv({ cls: 'herdr-tab-group' });
-			groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
-			for (const pane of group.panes) this.renderRow(groupEl, pane, vaultPath);
-		}
+		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath());
+		if (groups.some((group) => !this.tabLabels.has(group.key))) void this.refreshTabLabels();
+		for (const group of groups) this.renderGroup(list, group);
 	}
 
-	private renderRow(parent: HTMLElement, pane: PaneState, vaultPath: string): void {
+	private renderGroup(parent: HTMLElement, group: RowGroup): void {
+		const groupEl = parent.createDiv({ cls: 'herdr-tab-group' });
+		groupEl.createDiv({ cls: 'herdr-tab-label', text: group.label });
+		for (const row of group.rows) this.renderRow(groupEl, row);
+	}
+
+	private renderRow(parent: HTMLElement, model: RowModel): void {
 		const row = parent.createDiv({
-			cls: pane.focused ? 'herdr-agent-row is-focused' : 'herdr-agent-row',
+			cls: model.focused ? 'herdr-agent-row is-focused' : 'herdr-agent-row',
 		});
-		row.dataset.paneId = pane.paneId;
+		row.dataset.paneId = model.paneId;
 		row.tabIndex = 0;
 		row.setAttribute('role', 'button');
 
 		const glyph = row.createSpan({
-			cls: `herdr-status-glyph herdr-status-${pane.agentStatus}`,
+			cls: `herdr-status-glyph herdr-status-${model.status}`,
 		});
-		glyph.setAttribute('aria-label', STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus);
+		glyph.setAttribute('aria-label', model.statusLabel);
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
-		// `pane.agent` is the kind ("claude") and is the same on every row, so it
-		// is never the name: the agent's own name comes from `agent.list`
-		// (scope.setAgentNames), then the stripped title, then the pane id.
-		const name = agentDisplayName(pane);
-		line.createSpan({ cls: 'herdr-agent-name', text: name });
-		if (pane.title && pane.title !== name) {
-			line.createSpan({ cls: 'herdr-agent-title', text: pane.title });
-		}
-		const cwd = relativeCwd(pane.cwd, vaultPath);
-		if (cwd) text.createDiv({ cls: 'herdr-agent-cwd', text: cwd });
+		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
+		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
+		for (const badge of model.badges) line.createSpan({ cls: 'herdr-agent-badge', text: badge });
+		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		const button = row.createEl('button', {
 			cls: 'clickable-icon herdr-row-action',
