@@ -113,10 +113,30 @@ describe('LineSplitter', () => {
 		expect(s.push(bytes.subarray(2))).toEqual(['héllo →']);
 	});
 
-	it('throws and resets when a line exceeds the budget', () => {
+	it('reports an oversized record via the callback instead of throwing (#60)', () => {
 		const s = new LineSplitter(16);
-		expect(() => s.push(Buffer.from('x'.repeat(32)))).toThrow(/exceeded 16 bytes/);
-		expect(s.push(Buffer.from('ok\n'))).toEqual(['ok']);
+		const overflows: number[] = [];
+		expect(s.push(Buffer.from('x'.repeat(32) + '\n'), (bytes) => overflows.push(bytes))).toEqual([]);
+		expect(overflows).toEqual([32]);
+	});
+
+	it('rejects a completed oversized line, not only an unterminated one (#60)', () => {
+		// The 100-byte line above is fully terminated within the chunk: the old
+		// bridge splitter only checked the size of a *pending* (unterminated)
+		// tail, so a complete oversized line slipped through uncapped.
+		const s = new LineSplitter(16);
+		const overflows: number[] = [];
+		const lines = s.push(Buffer.from(`${'x'.repeat(100)}\n`), (bytes) => overflows.push(bytes));
+		expect(lines).toEqual([]);
+		expect(overflows).toEqual([100]);
+	});
+
+	it('discards the remainder of a rejected record so the next real record is not misread as a suffix (#60)', () => {
+		const s = new LineSplitter(16);
+		s.push(Buffer.from('x'.repeat(17)), () => undefined);
+		// A naive reset (rather than discard-until-newline) would let this next
+		// push emit "suffix" as a standalone record; only "ok" is a real one.
+		expect(s.push(Buffer.from('suffix\nok\n'))).toEqual(['ok']);
 	});
 });
 
