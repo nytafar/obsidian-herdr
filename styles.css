@@ -172,36 +172,30 @@
 	font-weight: var(--font-bold);
 }
 
-/* Status glyphs: one dot per agent status, coloured by the theme's palette. */
+/* Status colours on the kind mark (issue #34) -------------------------------
+   The row used to carry a separate dot; the mark itself now says the status, in
+   the same palette the dot used. Only `color` is set: our own marks fill with
+   `currentColor` (the rule above) and Lucide's `bot` fallback strokes with it,
+   so one property colours both. An unknown status keeps the muted default. */
 
-.herdr-status-glyph {
-	flex: 0 0 auto;
-	width: var(--size-4-2);
-	height: var(--size-4-2);
-	margin-top: var(--size-2-2);
-	border-radius: 50%;
-	background-color: var(--text-faint);
+.herdr-agent-kind.herdr-status-blocked {
+	color: var(--color-orange);
 }
 
-.herdr-status-glyph.herdr-status-blocked {
-	background-color: var(--color-orange);
+.herdr-agent-kind.herdr-status-done {
+	color: var(--color-green);
 }
 
-.herdr-status-glyph.herdr-status-done {
-	background-color: var(--color-green);
+.herdr-agent-kind.herdr-status-working {
+	color: var(--color-blue);
 }
 
-.herdr-status-glyph.herdr-status-working {
-	background-color: var(--color-blue);
+.herdr-agent-kind.herdr-status-idle {
+	color: var(--text-faint);
 }
 
-.herdr-status-glyph.herdr-status-idle {
-	background-color: var(--text-faint);
-}
-
-.herdr-status-glyph.herdr-status-unknown {
-	background-color: transparent;
-	box-shadow: inset 0 0 0 1px var(--text-faint);
+.herdr-agent-kind.herdr-status-unknown {
+	color: var(--text-faint);
 }
 
 /* Status bar item ---------------------------------------------------------- */

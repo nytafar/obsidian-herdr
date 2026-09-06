@@ -2,12 +2,12 @@
  * Agent list sidebar view (PRD M8, M9, M10, N1, N4; T4).
  *
  * One row per agent pane of the scoped workspace, grouped by herdr tab, by
- * working directory or not at all (issue #20): status glyph, harness mark, agent
- * name, stripped terminal title, and the cwd relative to the vault. A row carries
- * two one-click actions — open the pane as a terminal view in Obsidian (PRD M13)
- * and focus it in herdr (`pane.focus`, the one source of truth for "seen", PRD
- * M9). The row body gets the first and the icon button the second, and a setting
- * swaps them (issue #21).
+ * working directory or not at all (issue #20): the harness mark, coloured by the
+ * agent's status (issue #34), the agent name, the stripped terminal title, and
+ * the cwd relative to the vault. A row carries two one-click actions — open the
+ * pane as a terminal view in Obsidian (PRD M13) and focus it in herdr
+ * (`pane.focus`, the one source of truth for "seen", PRD M9). The row body gets
+ * the first and the icon button the second, and a setting swaps them (issue #21).
  *
  * This file owns DOM and events only. What a row *says* — grouping, ordering,
  * display-name fallbacks, path and status labels — lives in `rowModel.ts`, which
@@ -30,7 +30,7 @@ import { ItemView, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
-import { iconForKind, isKindIcon, kindLabel } from './kindIcons';
+import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -204,23 +204,20 @@ export class AgentListView extends ItemView {
 		row.tabIndex = 0;
 		row.setAttribute('role', 'button');
 
-		const glyph = row.createSpan({
-			cls: `herdr-status-glyph herdr-status-${model.status}`,
-		});
-		glyph.setAttribute('aria-label', model.statusLabel);
-
-		// The harness mark (issue #19): the kind is an icon, never a word, since
-		// almost every row would otherwise read "claude". Registered marks are
-		// fill-based and need the modifier class; the Lucide fallback keeps its
-		// stroke, so it must not get it (see `styles.css`).
+		// The harness mark (issue #19), which since issue #34 also carries the
+		// status: the `herdr-status-*` class colours the mark itself, so the row
+		// needs no separate dot. Registered marks are fill-based and need the
+		// modifier class; the Lucide fallback keeps its stroke, so it must not get
+		// it (see `styles.css`). Colour is not a label, so the accessible name says
+		// both halves — "Claude, blocked".
 		const icon = iconForKind(model.kind);
-		const kindLabelText = kindLabel(model.kind);
-		const kindEl = row.createSpan({
-			cls: isKindIcon(icon) ? 'herdr-agent-kind mod-brand' : 'herdr-agent-kind',
-		});
+		const iconLabel = kindStatusLabel(model.kind, model.statusLabel);
+		const kindClasses = ['herdr-agent-kind', `herdr-status-${model.status}`];
+		if (isKindIcon(icon)) kindClasses.push('mod-brand');
+		const kindEl = row.createSpan({ cls: kindClasses });
 		setIcon(kindEl, icon);
-		setTooltip(kindEl, kindLabelText);
-		kindEl.setAttribute('aria-label', kindLabelText);
+		setTooltip(kindEl, iconLabel);
+		kindEl.setAttribute('aria-label', iconLabel);
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
@@ -322,7 +319,7 @@ export class AgentListView extends ItemView {
 			for (const tab of result?.tabs ?? []) {
 				if (typeof tab?.tab_id !== 'string') continue;
 				// Live `tab.list` labels carry herdr's own status prefix ("! trauma",
-				// "? vault-maintenance"); the row's status dot already says that.
+				// "? vault-maintenance"); the rows' own status colours already say that.
 				const label = tab.label ? stripTitleSpinner(tab.label) : '';
 				labels.set(tab.tab_id, label || tab.tab_id);
 			}

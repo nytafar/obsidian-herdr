@@ -43,7 +43,7 @@ export const STATUS_ORDER: Record<AgentStatus, number> = {
 /** A status the table above does not know sorts last, never in the middle. */
 const STATUS_ORDER_FALLBACK = 9;
 
-/** Screen-reader text per status; the glyph itself is CSS (`styles.css`). */
+/** Screen-reader text per status; the colour it goes with is CSS (`styles.css`). */
 export const STATUS_LABEL: Record<AgentStatus, string> = {
 	blocked: 'Blocked',
 	done: 'Done',
@@ -69,7 +69,7 @@ export interface RowModel {
 	 */
 	pathLabel: string;
 	status: AgentStatus;
-	/** Accessible text for the status glyph. */
+	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
 	focused: boolean;
 	/** Short trailing markers, in display order. The cache countdown today. */
