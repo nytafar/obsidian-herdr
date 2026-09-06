@@ -37,6 +37,23 @@ export type AttachMode = 'control' | 'observe';
  */
 export type TerminalPlacement = 'split-right' | 'split-left' | 'tab';
 
+/** The default placement: beside the note, on the side reading continues on. */
+export const DEFAULT_TERMINAL_PLACEMENT: TerminalPlacement = 'split-right';
+
+const TERMINAL_PLACEMENTS: readonly TerminalPlacement[] = ['split-right', 'split-left', 'tab'];
+
+/**
+ * Whatever `data.json` holds turned into a placement, the same contract as
+ * {@link clampScrollbackMb} and `normalizeThemeName`. Worth having because the
+ * old read treated everything that was not `'tab'` as a split, so a typo or a
+ * value from a future version silently split a note pane in two.
+ */
+export function normalizeTerminalPlacement(value: unknown): TerminalPlacement {
+	return TERMINAL_PLACEMENTS.includes(value as TerminalPlacement)
+		? (value as TerminalPlacement)
+		: DEFAULT_TERMINAL_PLACEMENT;
+}
+
 /**
  * Row order in the agent list (issue #20). `priority` is herdr's own attention
  * order, so the sidebar and a herdr TUI set to `agent_panel_sort = "priority"`
@@ -221,7 +238,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentListSort: 'priority',
 	agentListGroupBy: 'tab',
 	defaultAttachMode: 'control',
-	terminalPlacement: 'split-right',
+	terminalPlacement: DEFAULT_TERMINAL_PLACEMENT,
 	agentListRowClick: 'terminal',
 };
 
@@ -674,9 +691,9 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.addOption('split-right', 'Split to the right of the note')
 					.addOption('split-left', 'Split to the left of the note')
 					.addOption('tab', 'Always a new tab')
-					.setValue(settings.terminalPlacement)
+					.setValue(normalizeTerminalPlacement(settings.terminalPlacement))
 					.onChange(async (value) => {
-						settings.terminalPlacement = value as TerminalPlacement;
+						settings.terminalPlacement = normalizeTerminalPlacement(value);
 						await this.save();
 					}),
 			);

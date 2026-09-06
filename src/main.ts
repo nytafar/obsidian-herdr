@@ -13,6 +13,7 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	HerdrSettingTab,
+	normalizeTerminalPlacement,
 	renderConnectionStatus,
 	type ConnectionStatus,
 	type HerdrSettings,
@@ -218,7 +219,7 @@ export default class HerdrPlugin extends Plugin {
 	private leafForNewTerminal(paneId: string): WorkspaceLeaf {
 		const workspace = this.app.workspace;
 		const decision = decidePlacement({
-			placement: this.settings.terminalPlacement,
+			placement: normalizeTerminalPlacement(this.settings.terminalPlacement),
 			paneCwd: this.scope?.get(paneId)?.cwd ?? '',
 			activeFilePath: workspace.getActiveFile()?.path ?? null,
 			// herdr's view of the vault, because the cwd is herdr's (PRD S5, M19).
