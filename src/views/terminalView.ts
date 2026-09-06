@@ -512,17 +512,17 @@ export class TerminalView extends ItemView {
 		this.statusEl = container.createDiv({ cls: 'herdr-terminal-status' });
 
 		this.toggleActionEl = this.addAction('eye', 'Switch to observe mode', () => {
-			void this.toggleMode();
+			this.detached('mode toggle', () => this.toggleMode());
 		});
 		this.updateToggleAction();
 		this.addAction('refresh-cw', 'Reconnect', () => {
-			void this.start();
+			this.detached('reconnect', () => this.start());
 		});
 
 		this.registerDomEvent(this.hostEl, 'wheel', (event) => this.onWheel(event));
 		this.register(
 			this.plugin.onScopeReplaced(() => {
-				if (this.awaitingConnection) void this.start();
+				if (this.awaitingConnection) this.detached('reconnect', () => this.start());
 			}),
 		);
 		// A theme switch changes every colour the renderer was handed (PRD S18).
@@ -537,10 +537,14 @@ export class TerminalView extends ItemView {
 		});
 		this.register(() => this.scheduleResize?.cancel());
 
-		this.visibility = new VisibilityTracker(HIDE_GRACE_MS, () => void this.suspend(), {
-			setTimeout: (cb, ms) => window.setTimeout(cb, ms),
-			clearTimeout: (handle) => window.clearTimeout(handle),
-		});
+		this.visibility = new VisibilityTracker(
+			HIDE_GRACE_MS,
+			() => this.detached('suspend', () => this.suspend()),
+			{
+				setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+				clearTimeout: (handle) => window.clearTimeout(handle),
+			},
+		);
 		this.register(() => this.visibility?.cancel());
 		// A tab that goes to the background has its content hidden rather than
 		// resized, so both of these are really "measure the host again".
@@ -589,6 +593,18 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * Runs one of the async steps nothing awaits — suspend, resume, restart — and
+	 * makes sure a rejection is reported instead of becoming an unhandled one. A
+	 * `void promise` here would have hidden exactly the failures that leave the
+	 * view half torn down, so every fire-and-forget call goes through this.
+	 */
+	private detached(what: string, run: () => Promise<void>): void {
+		run().catch((error: unknown) => {
+			console.warn(`Herdr: terminal ${what} failed`, error);
+		});
+	}
+
+	/**
 	 * One measurement into the tracker. A hidden leaf's content has `display: none`
 	 * and therefore no box at all, so a zero measurement means hidden and anything
 	 * else means shown. Cheap enough to call from every resize and layout change.
@@ -598,7 +614,7 @@ export class TerminalView extends ItemView {
 		const tracker = this.visibility;
 		if (!host || !tracker) return;
 		const visible = host.clientWidth > 0 && host.clientHeight > 0;
-		if (tracker.update(visible) === 'revealed') void this.resume();
+		if (tracker.update(visible) === 'revealed') this.detached('resume', () => this.resume());
 	}
 
 	/**
@@ -629,7 +645,15 @@ export class TerminalView extends ItemView {
 		this.cancelFlush();
 		this.frames.clear();
 		this.perf = null;
-		await this.stopSession();
+		try {
+			await this.stopSession();
+		} catch (error) {
+			// A child that will not die is herdr's problem, not a reason to keep a
+			// renderer alive: `suspended` is already true, so bailing out here would
+			// leave a 60 fps repaint loop running with nothing left to come back and
+			// stop it. Fall through to the dispose below.
+			console.warn('Herdr: releasing the terminal session failed', error);
+		}
 		// A reconnect or a reveal raced us; it owns the view now, it has already
 		// cleared `suspended`, and the renderer it kept must stay.
 		if (generation !== this.generation) return;
@@ -683,6 +707,11 @@ export class TerminalView extends ItemView {
 
 		const renderer = await this.ensureRenderer(host);
 		if (!renderer || generation !== this.generation) return;
+		// From here on a renderer is mounted, so from here on every exit path owes
+		// the tracker a grace period: a start that fails on a still-hidden leaf
+		// (no herdr binary yet, say) would otherwise leave the renderer painting
+		// with no timer left to suspend it. `arm()` is a no-op while visible.
+		this.visibility?.arm();
 
 		let command: string[];
 		try {
@@ -758,9 +787,6 @@ export class TerminalView extends ItemView {
 			session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
 			renderer.focus();
 		}
-		// Reconnecting a leaf that is still hidden starts a fresh grace period;
-		// without this the tracker sits in its hidden state with no timer.
-		this.visibility?.arm();
 		this.renderStatus();
 	}
 
