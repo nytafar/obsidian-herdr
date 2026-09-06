@@ -19,10 +19,14 @@ machine with injected timers, so the decision to free a hidden terminal is teste
 without a DOM; what a measurement *is* (a host with no box) is not. The settings
 side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`) and the
 panes-per-tab cap (`clampPanesPerTab`). The
-terminal renderer
-(`src/views/renderer/ghosttyWeb.ts`) needs a canvas and the ghostty WASM, so its
-tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
-(`resolveFont`, `computeFit`, `cellFromPoint`, `cssVar`, `parsePx`). Terminal placement
+terminal renderers
+(`src/views/renderer/ghosttyWeb.ts`, `xtermJs.ts`) need a canvas or a DOM, so
+their tests stop at the pure helpers in `src/views/renderer/TerminalRenderer.ts`
+(`resolveFont`, `computeFit`, `cellFromPoint`, `cssVar`, `parsePx`,
+`normalizeEngineName`), at the byte-budget-to-line-count conversion
+`scrollbackLines` from the xterm.js renderer, and at which class
+`createRenderer` picks for an engine name — with both renderer modules mocked,
+since instantiating either needs a browser (#27). Terminal placement
 (`src/terminalPlacement.ts`, `decidePlacement`) is pure for the same reason: the
 split-versus-tab choice is unit tested, the `createLeafBySplit` call is not.
 The file explorer's folder hover button (`src/explorerButtons.ts`, #30) splits
@@ -93,6 +97,96 @@ protocol is the herdr-side change that unblocks the click half of #25.
    `grep -c 'data:application/wasm;base64' main.js && ls main.js manifest.json styles.css`.
    If `Ghostty.load()` ever falls through to `./ghostty-vt.wasm`, the devtools
    network tab shows a failed request for it — that means the embedding broke.
+
+## Comparing the two renderer engines (#27)
+
+`node scripts/bench-renderers.mjs` measures what can be measured headlessly and
+re-reads what cannot. It is not shipped (`scripts/` is outside the bundle) and
+writes nothing into the working tree: the bundle variants go to a temp
+directory. `--only bundle|throughput|repaint` and `--lines N` narrow a run; it
+re-executes itself under `--expose-gc`, because "retained" here means what
+survives three forced collections.
+
+Numbers below are from 2026-09-06, node v22.23.1, an M-series Mac, a 120x40
+grid, 200 000 lines of 180 characters (the payload notes/memory.md used) and the
+plugin's default 10 MB scrollback setting — 10 MB of ghostty-web's byte budget,
+which `scrollbackLines()` converts to 6 000 lines for xterm.js.
+
+**Bundle contribution**, minified `main.js`, each engine stubbed out in turn so
+the cost is a subtraction:
+
+| Build | main.js | Engine cost |
+|---|---|---|
+| neither engine | 89.4 KB | — |
+| ghostty-web only | 736.7 KB | +647.3 KB |
+| xterm.js only | 390.1 KB | +300.7 KB |
+| both (what ships) | 1033.4 KB | +944.0 KB |
+
+**Write throughput and retained memory**, one child process per engine so the
+heaps never mix. ghostty-vt is instantiated straight from the `.wasm` the way
+the memory diagnosis did it; xterm.js is `@xterm/headless` 5.5.0, the same
+parser and buffer as the browser build:
+
+| | ghostty-web | xterm.js |
+|---|---|---|
+| 36.4 MB parsed in | 414 ms | 883 ms |
+| throughput | 88.0 MB/s, 483 000 lines/s | 41.2 MB/s, 227 000 lines/s |
+| scrollback held | 5 961 lines | 6 000 lines |
+| memory for it | +14.29 MB of WASM | +11.85 MB of heap + external |
+| after disposing it | **14.31 MB never returned** | **0.51 MB never returned** |
+
+So ghostty-web parses about **2.1x faster**, and costs about the same memory
+while it lives — but a `WebAssembly.Memory` cannot shrink, so its 14 MB stays
+until Obsidian restarts, where xterm.js gives 96 % of its buffer back to the
+process on `dispose()`. That is the ratchet notes/memory.md named, measured
+against an engine that does not have it.
+
+**Repaint cost per second cannot be measured headless**, so the script reads
+both render loops instead and re-checks each claim against the installed source
+on every run (a claim whose evidence has gone prints `[STALE]`):
+
+- **xterm.js repaints only dirty rows, and only when something changed.**
+  `RenderService.refreshRows(start, end)`
+  (`node_modules/@xterm/xterm/src/browser/services/RenderService.ts:135`) widens
+  a pending row range and hands it to `RenderDebouncer.refresh()`
+  (`src/browser/RenderDebouncer.ts:40`), which requests an animation frame only
+  when none is pending and then renders exactly that range. Idle means no frame
+  is requested at all.
+- **xterm.js also pauses itself when hidden.**
+  `RenderService._registerIntersectionObserver()` (same file, :110) observes the
+  screen element with an `IntersectionObserver`; not intersecting sets
+  `_isPaused`, and `refreshRows()` then only records that a full refresh is
+  owed. A background Obsidian tab costs nothing even before #15's disposal.
+- **ghostty-web's loop is unconditional.** `Terminal.startRenderLoop()`
+  (`node_modules/ghostty-web/dist/ghostty-web.js`) re-arms
+  `requestAnimationFrame` every frame, checking only `isDisposed` and `isOpen`.
+  60 wakeups a second per open terminal, hidden tab or not, until `dispose()`.
+- **But each of those frames is not a full repaint.**
+  `CanvasRenderer.render()` (same file) asks the WASM `isRowDirty(y)` per row and
+  redraws only those. The cost of an idle ghostty-web terminal is the wakeup and
+  its WASM round trips (`getCursor`, `getDimensions`, `getScrollbackLength` every
+  frame), not 60 canvas redraws a second — which is a correction to how #14 and
+  #24 phrased it.
+
+## Smoking the xterm.js engine inside Obsidian (#27)
+
+The renderer itself needs a DOM, so nothing below is unit tested. With a terminal
+open, settings → Herdr → Terminal → **Terminal engine** → xterm.js:
+
+1. The open terminal rebuilds in place: history reappears as plain text (no
+   colours — the same trade a hide/reveal makes), and the status line still says
+   "Controlling this pane."
+2. Type. Keys reach the agent, and **shift+enter still inserts a line break**
+   rather than submitting: that path runs through the renderer's key hook, whose
+   polarity is inverted for xterm.js, so it is the thing most likely to break.
+3. Resize the pane. The grid follows and herdr's pane follows with it (control
+   mode), which proves `fit()` reads xterm's cell metrics.
+4. Scroll with the wheel over the terminal. Every notch must reach herdr, not
+   scroll xterm's own viewport — the capture-phase listener is what makes that
+   true, and a notch that scrolls locally instead means it did not fire.
+5. Switch the colour theme in settings. Both engines take the same palette, so
+   the colours must not change when the engine does.
+6. Switch back to ghostty-web and check the same six things.
 
 ## Checking the remote profile against `xl` (T10, PRD S5/S17)
 
