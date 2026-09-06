@@ -5,6 +5,7 @@ import {
 	Menu,
 	Notice,
 	Plugin,
+	setTooltip,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -24,6 +25,7 @@ import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
+	endpointLabel,
 	endpointOf,
 	resolveEndpoint,
 	type Endpoint,
@@ -147,7 +149,7 @@ export default class HerdrPlugin extends Plugin {
 		this.notifier = new TransitionNotifier({
 			now: () => Date.now(),
 			settings: () => this.settings.notifications,
-			isTerminalOpen: (paneId) => this.isTerminalOpen(paneId),
+			isTerminalOpen: (paneId, endpointId) => this.isTerminalOpen(paneId, endpointId),
 			windowFocused: () => this.windowFocused,
 			showNotice: (message) => {
 				new Notice(message);
@@ -368,11 +370,11 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * True when a terminal view for this pane is open, which mutes notifications
-	 * for it (PRD M12).
+	 * True when a terminal view for this pane on this endpoint is open, which
+	 * mutes notifications for it (PRD M12, issue #54).
 	 */
-	isTerminalOpen(paneId: string): boolean {
-		return this.terminalLeaf(paneId, this.endpoint.id) !== null;
+	isTerminalOpen(paneId: string, endpointId: string): boolean {
+		return this.terminalLeaf(paneId, endpointId) !== null;
 	}
 
 	/**
@@ -595,6 +597,10 @@ export default class HerdrPlugin extends Plugin {
 		if (!this.settings.notifications.statusBar) return;
 		const panes = this.scope?.list() ?? [];
 		if (panes.length === 0) return;
+		// Which herdr the counts are for (issue #54); the bar itself stays terse.
+		const where = `Herdr agents on ${endpointLabel(this.endpoint)}`;
+		setTooltip(el, where);
+		el.setAttribute('aria-label', where);
 		const { blocked, done } = countStatuses(panes);
 		el.createSpan({ cls: 'herdr-status-bar-blocked', text: `${blocked} blocked` });
 		el.createSpan({ text: ' · ' });
@@ -681,7 +687,7 @@ export default class HerdrPlugin extends Plugin {
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
 		});
 		scope.on('changed', (_paneId, prev, next) => {
-			this.notifier.onChanged(prev, next);
+			this.notifier.onChanged(prev, next, endpoint.id);
 			this.updateStatusBar();
 		});
 		scope.on('added', () => {
@@ -691,7 +697,7 @@ export default class HerdrPlugin extends Plugin {
 			this.refreshAgentNames();
 		});
 		scope.on('removed', (pane) => {
-			this.notifier.forget(pane.paneId);
+			this.notifier.forget(pane.paneId, endpoint.id);
 			this.updateStatusBar();
 		});
 		scope.on('workspaceResolved', () => {

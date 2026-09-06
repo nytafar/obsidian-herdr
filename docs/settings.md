@@ -16,6 +16,11 @@ All under **Settings → Herdr**. Sentence case names match the UI.
 See [remote.md](remote.md). **Use a remote herdr**, **SSH host**, **Remote socket
 path**, **Remote herdr binary** (absolute path), **Remote vault path** (required).
 
+Once an SSH host is set, the agent list's toolbar gains a switch between the
+local and the remote herdr; it flips **Use a remote herdr** and reconnects, the
+same as the settings toggle. The status bar's tooltip names the herdr its
+counts are for.
+
 ## Notifications
 
 | Setting | Meaning |
