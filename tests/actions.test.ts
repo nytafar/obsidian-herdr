@@ -38,6 +38,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		defaultAgentKind: 'claude',
 		agentNamePattern: '{folder}',
 		terminalFontFamily: '',
+		terminalTheme: 'obsidian',
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,

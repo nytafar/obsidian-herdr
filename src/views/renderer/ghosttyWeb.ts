@@ -25,6 +25,12 @@ import {
 	type TerminalRenderer,
 	type Unsubscribe,
 } from './TerminalRenderer';
+import {
+	followsObsidian,
+	normalizeThemeName,
+	resolveTheme,
+	type TerminalThemeName,
+} from './themes';
 
 type DataListener = (data: string) => void;
 type ResizeListener = (size: { cols: number; rows: number }) => void;
@@ -32,7 +38,10 @@ type ResizeListener = (size: { cols: number; rows: number }) => void;
 type KeyListener = (event: KeyboardEvent) => boolean;
 type WheelListener = (event: WheelEvent) => boolean;
 
-/** Obsidian variable → ITheme key. Missing variables are simply left unset. */
+/**
+ * Obsidian variable → ITheme key, used by the `obsidian` theme (issue #26), which
+ * is the default. Missing variables are simply left unset.
+ */
 const THEME_VARS: Record<keyof ITheme, string> = {
 	foreground: '--text-normal',
 	background: '--background-primary',
@@ -67,6 +76,8 @@ export const MAX_SNAPSHOT_LINES = 10_000;
 
 export class GhosttyWebRenderer implements TerminalRenderer {
 	private readonly options: RendererOptions;
+	/** Current colour theme (issue #26); `refreshTheme(name)` replaces it. */
+	private themeName: TerminalThemeName;
 	private terminal: Terminal | undefined;
 	private fitAddon: FitAddon | undefined;
 	private container: HTMLElement | undefined;
@@ -86,6 +97,7 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 
 	constructor(options: RendererOptions = {}) {
 		this.options = options;
+		this.themeName = normalizeThemeName(options.theme);
 	}
 
 	async mount(el: HTMLElement): Promise<void> {
@@ -105,7 +117,7 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		const terminal = new Terminal({
 			fontFamily: font.fontFamily,
 			fontSize: font.fontSize,
-			theme: this.readTheme(el),
+			theme: this.currentTheme(el),
 			// ghostty-web's `scrollback` is a BYTE budget handed to libghostty-vt's
 			// page list, not a line count, and `0` means "no limit": measured
 			// headlessly, a terminal with 0 grew the shared WASM heap past 1 GB
@@ -260,14 +272,25 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	}
 
 	/**
-	 * Re-read Obsidian's CSS variables. The optional `TerminalRenderer.refreshTheme`;
-	 * the view calls it from the workspace `css-change` event (PRD S18).
+	 * The optional `TerminalRenderer.refreshTheme`. Two callers: the view's
+	 * `css-change` handler passes nothing (PRD S18), the settings tab passes the
+	 * new theme name (issue #26).
+	 *
+	 * Fonts are re-read either way, since they follow Obsidian unless overridden.
+	 * The colours are only rebuilt when they can actually have changed — the theme
+	 * name changed, or it is `obsidian` and the CSS variables just did — so a
+	 * `css-change` under a built-in palette costs nothing but a font read.
 	 */
-	refreshTheme(): void {
+	refreshTheme(theme?: string): void {
+		const next = theme === undefined ? this.themeName : normalizeThemeName(theme);
+		const changed = next !== this.themeName;
+		this.themeName = next;
 		const el = this.container;
 		if (this.disposed || !this.terminal || !el) return;
 		const font = this.readFont(el);
-		this.terminal.options.theme = this.readTheme(el);
+		if (changed || followsObsidian(next)) {
+			this.terminal.options.theme = this.currentTheme(el);
+		}
 		this.terminal.options.fontFamily = font.fontFamily;
 		this.terminal.options.fontSize = font.fontSize;
 		this.fit();
@@ -340,7 +363,17 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		});
 	}
 
-	private readTheme(el: HTMLElement): ITheme {
+	/**
+	 * Colours for the current theme name: a built-in palette, or — for `obsidian`,
+	 * the default — exactly the CSS variables this renderer has always read.
+	 */
+	private currentTheme(el: HTMLElement): ITheme {
+		return resolveTheme(this.themeName, this.readObsidianTheme(el));
+	}
+
+	private readObsidianTheme(el: HTMLElement): ITheme {
+		// A palette needs none of this, and reading 22 CSS variables is not free.
+		if (!followsObsidian(this.themeName)) return {};
 		const read = this.readVars(el);
 		const theme: ITheme = {};
 		for (const [key, varName] of Object.entries(THEME_VARS)) {

@@ -780,6 +780,16 @@ export class TerminalView extends ItemView {
 		this.flushHandle = 0;
 	}
 
+	/**
+	 * Repaints with the theme the settings now hold (issue #26). Called by
+	 * `HerdrPlugin.refreshTerminals()` after the setting changes, so an open
+	 * terminal switches palette without being reopened. A view whose renderer is
+	 * suspended picks the theme up from the options when it mounts again.
+	 */
+	applyTheme(theme: string): void {
+		this.renderer?.refreshTheme?.(theme);
+	}
+
 	/** Mounts the renderer once per view; later calls reuse the same instance. */
 	private async ensureRenderer(host: HTMLElement): Promise<TerminalRenderer | null> {
 		if (!this.renderer) {
@@ -787,6 +797,8 @@ export class TerminalView extends ItemView {
 			const renderer = createRenderer({
 				fontFamily: settings.terminalFontFamily,
 				fontSize: settings.terminalFontSize,
+				// Colours: `obsidian` by default, which is the CSS variables (#26).
+				theme: settings.terminalTheme,
 				// Bytes, not lines — see `RendererOptions.scrollback`.
 				scrollback: scrollbackBytes(settings),
 				// Input is gated on the session's mode instead of here, so toggling
