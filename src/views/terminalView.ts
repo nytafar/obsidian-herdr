@@ -812,6 +812,9 @@ export class TerminalView extends ItemView {
 	 */
 	async rebuildRenderer(): Promise<void> {
 		if (!this.opened || this.suspended) return;
+		// Invalidates any `start()` still in flight, so nothing can go on using
+		// the renderer this is about to dispose. `start()` below bumps it again.
+		this.generation++;
 		const renderer = this.renderer;
 		if (renderer) {
 			this.snapshot = renderer.snapshotLines?.() ?? null;
