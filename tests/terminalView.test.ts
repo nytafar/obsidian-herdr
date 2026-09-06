@@ -11,6 +11,7 @@ import {
 	spawnEnv,
 	stateMatchesPane,
 	statusLine,
+	terminalTabTitle,
 	HIDE_GRACE_MS,
 	VisibilityTracker,
 	summariseStderr,
@@ -20,6 +21,7 @@ import {
 	type DebounceTimers,
 } from '../src/views/terminalView';
 import { buildArgv } from '../src/bridge/terminalSession';
+import type { PaneState } from '../src/herdr/scope';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
 // the ghostty WASM and a live herdr. See tests/README.md for the smoke recipe.
@@ -49,6 +51,58 @@ describe('parseTerminalState', () => {
 
 	it('trims the pane id so a stray space still matches a leaf', () => {
 		expect(parseTerminalState({ paneId: ' w4:p1 ' })?.paneId).toBe('w4:p1');
+	});
+});
+
+/** A pane as the scope holds it; only the name fields matter here. */
+function pane(overrides: Partial<PaneState> = {}): PaneState {
+	return {
+		paneId: 'w4:p1G',
+		workspaceId: 'w4',
+		tabId: 't1',
+		agent: 'claude',
+		name: '',
+		agentStatus: 'idle',
+		title: '',
+		label: '',
+		cwd: '/Users/lasse/Vaults/hvelv',
+		focused: false,
+		tokens: {},
+		statusChangedSeq: 0,
+		...overrides,
+	};
+}
+
+describe('terminalTabTitle (issue #36)', () => {
+	it('prefers the agent name over anything herdr labels the pane', () => {
+		const state = pane({
+			name: 'vault-maintenance',
+			title: 'claude — hvelv',
+			label: '● claude',
+		});
+		expect(terminalTabTitle(state, state.paneId)).toBe('vault-maintenance');
+	});
+
+	it('falls back to the stripped title, never to the kind', () => {
+		const state = pane({ title: 'npm run dev', label: '● claude' });
+		expect(terminalTabTitle(state, state.paneId)).toBe('npm run dev');
+	});
+
+	it('falls back to the pane id when the pane has neither', () => {
+		const state = pane();
+		expect(terminalTabTitle(state, state.paneId)).toBe('w4:p1G');
+	});
+
+	it('shows the pane id while the scope does not know the pane yet', () => {
+		// The case from the report: a pane started from the file pane is opened
+		// before `agent.list` has answered for it.
+		expect(terminalTabTitle(undefined, 'w4:p1G')).toBe('w4:p1G');
+	});
+
+	it('says nothing at all when there is no pane either (issue #37)', () => {
+		// No fixed "Herdr terminal": the tab and the view header read the same
+		// string, and a constant there disagreed with an empty tab title.
+		expect(terminalTabTitle(undefined, '')).toBe('');
 	});
 });
 

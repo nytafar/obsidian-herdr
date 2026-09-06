@@ -14,7 +14,9 @@ import {
 	DEFAULT_SETTINGS,
 	HerdrSettingTab,
 	normalizeTerminalPlacement,
+	normalizeTerminalTab,
 	renderConnectionStatus,
+	type AttachMode,
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
@@ -27,8 +29,13 @@ import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
-import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
-import { decidePlacement } from './terminalPlacement';
+import {
+	TERMINAL_VIEW_TYPE,
+	TerminalView,
+	parseTerminalState,
+	stateMatchesPane,
+} from './views/terminalView';
+import { decideOpenTarget, decidePlacement } from './terminalPlacement';
 import { ExplorerFolderButtons } from './explorerButtons';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
@@ -195,16 +202,42 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Opens the terminal view for a herdr pane (PRD M13, issue #28).
+	 * Opens the terminal view for a herdr pane (PRD M13, issues #28 and #38).
 	 *
 	 * One view per pane: an existing leaf for the same pane is revealed, so a
 	 * second open neither spawns a second bridge process nor carves out another
-	 * split. Only a genuinely new terminal is placed, beside the note when that
-	 * note lives inside the agent's working directory and in a tab otherwise.
+	 * split. Under the `reuse` tab mode an open terminal for *another* pane is
+	 * switched to this one instead — its `setState` restarts the bridge, and the
+	 * pane it was showing has its session released by that restart. Only a
+	 * genuinely new terminal is placed, beside the note when that note lives
+	 * inside the agent's working directory and in a tab otherwise.
 	 */
 	async openTerminal(paneId: string): Promise<void> {
 		const workspace = this.app.workspace;
-		let leaf = this.terminalLeaf(paneId);
+		const existing = this.terminalLeaf(paneId);
+		const open = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
+		const target = decideOpenTarget({
+			mode: normalizeTerminalTab(this.settings.terminalTab),
+			hasPaneLeaf: existing !== null,
+			hasAnyLeaf: open.length > 0,
+		});
+
+		let leaf = existing;
+		if (target === 'switch') {
+			// The first terminal leaf in layout order, so repeated opens keep
+			// landing in the same place rather than walking across the workspace.
+			const reused = open.at(0);
+			if (reused) {
+				await reused.setViewState({
+					type: TERMINAL_VIEW_TYPE,
+					active: true,
+					// The mode this view is in, off its persisted state rather than
+					// `leaf.view` (PRD N1), so a manual switch to observe survives.
+					state: { paneId, mode: this.attachModeOf(reused) },
+				});
+				leaf = reused;
+			}
+		}
 		if (!leaf) {
 			leaf = this.leafForNewTerminal(paneId);
 			await leaf.setViewState({
@@ -214,6 +247,11 @@ export default class HerdrPlugin extends Plugin {
 			});
 		}
 		await workspace.revealLeaf(leaf);
+	}
+
+	/** The attach mode a terminal leaf persists, or the configured default. */
+	private attachModeOf(leaf: WorkspaceLeaf): AttachMode {
+		return parseTerminalState(leaf.getViewState().state)?.mode ?? this.settings.defaultAttachMode;
 	}
 
 	/** The leaf a new terminal view takes (issue #28). */

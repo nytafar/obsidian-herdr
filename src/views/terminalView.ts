@@ -50,6 +50,8 @@ import {
 	type TerminalSessionMode,
 } from '../bridge/terminalSession';
 import { createRenderer } from './renderer/create';
+import { agentDisplayName } from './rowModel';
+import type { PaneState } from '../herdr/scope';
 import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
 import { InputRouter } from './input/inputRouter';
 import { pickModifiers } from './input/mouseEncoder';
@@ -85,6 +87,30 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
 /** True when a leaf's persisted state points at this pane. Used by `main.ts`. */
 export function stateMatchesPane(raw: unknown, paneId: string): boolean {
 	return parseTerminalState(raw)?.paneId === paneId;
+}
+
+/**
+ * What the tab and the view header say (issue #36).
+ *
+ * The same choice the agent list makes — {@link agentDisplayName}: the agent's
+ * own name from `agent.list`, else the stripped terminal title, else the pane
+ * id. Deliberately *not* `pane.agent`, which is the kind ("claude") and would
+ * title every tab the same, and not `pane.label`, which is herdr's tab label
+ * with a status prefix in it.
+ *
+ * A pane the scope has not answered for yet (a pane started from the file pane
+ * is opened before `agent.list` lands) falls back to its id, so the tab is
+ * still identifiable; the view subscribes to `added`/`changed` and re-reads
+ * this as soon as a name arrives.
+ *
+ * A view with no pane at all — only a restored layout whose state was lost gets
+ * there — is titled with nothing rather than a fixed "Herdr terminal" (issue
+ * #37): the icon already says which plugin owns the tab, and a constant in the
+ * view header was the one place the header disagreed with the tab.
+ */
+export function terminalTabTitle(pane: PaneState | undefined, paneId: string): string {
+	if (pane) return agentDisplayName(pane);
+	return paneId;
 }
 
 /**
@@ -469,6 +495,10 @@ export class TerminalView extends ItemView {
 	private wheelIntercepted = false;
 	private flushHandle = 0;
 	private perf: PerfCounter | null = null;
+	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
+	private unbindScope: (() => void)[] = [];
+	/** Pending `updateHeader` frame, so a burst of `changed` retitles once (#36). */
+	private pendingHeader = 0;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -480,10 +510,10 @@ export class TerminalView extends ItemView {
 		return TERMINAL_VIEW_TYPE;
 	}
 
-	/** Agent name of the pane, falling back to the pane id (PRD M13). */
+	/** Agent name of the pane, falling back to the pane id (PRD M13, issue #36). */
 	getDisplayText(): string {
 		const pane = this.paneId ? this.plugin.scope?.get(this.paneId) : undefined;
-		return pane?.label || pane?.agent || this.paneId || 'Herdr terminal';
+		return terminalTabTitle(pane, this.paneId);
 	}
 
 	override getIcon(): string {
@@ -498,9 +528,14 @@ export class TerminalView extends ItemView {
 		await super.setState(state, result);
 		const parsed = parseTerminalState(state);
 		if (!parsed) return;
-		const changed = parsed.paneId !== this.paneId || parsed.mode !== this.mode;
+		const switchedPane = parsed.paneId !== this.paneId;
+		const changed = switchedPane || parsed.mode !== this.mode;
 		this.paneId = parsed.paneId;
 		this.mode = parsed.mode;
+		// Reuse mode (#38) points this view at another agent, and the previous
+		// agent's output belongs to the previous agent.
+		if (switchedPane) this.forgetOutput();
+		if (changed) this.refreshHeader();
 		if (changed && this.opened) await this.start();
 	}
 
@@ -521,11 +556,20 @@ export class TerminalView extends ItemView {
 		});
 
 		this.registerDomEvent(this.hostEl, 'wheel', (event) => this.onWheel(event));
+		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {
+				// The scope object itself is replaced on every connect, so the old
+				// subscription is dead: rebind before deciding anything about a retry.
+				this.bindScope();
 				if (this.awaitingConnection) this.detached('reconnect', () => this.start());
 			}),
 		);
+		this.register(() => {
+			for (const off of this.unbindScope.splice(0)) off();
+			if (this.pendingHeader) this.containerEl.win.cancelAnimationFrame(this.pendingHeader);
+			this.pendingHeader = 0;
+		});
 		// A theme switch changes every colour the renderer was handed (PRD S18).
 		this.registerEvent(
 			// Optional on the interface: a renderer without it keeps its colours.
@@ -585,6 +629,67 @@ export class TerminalView extends ItemView {
 		this.statusEl = null;
 		this.toggleActionEl = null;
 		this.contentEl.empty();
+	}
+
+	/**
+	 * Drops everything on screen that belonged to the pane this view was showing.
+	 *
+	 * Only a pane switch calls this. The renderer is kept — rebuilding it would
+	 * cost another WASM terminal — so the grid and its scrollback are cleared the
+	 * way a terminal clears them, with an erase-display for the screen and for
+	 * the scrollback. A suspended view has no renderer, and its carried-over
+	 * scrollback is dropped instead, or it would be replayed into the new pane's
+	 * terminal on reveal.
+	 */
+	private forgetOutput(): void {
+		this.snapshot = null;
+		this.cancelFlush();
+		this.frames.clear();
+		this.renderer?.write(new TextEncoder().encode('\u001b[H\u001b[2J\u001b[3J'));
+	}
+
+	/**
+	 * Watches the scope for this pane so the tab title follows the agent (#36).
+	 *
+	 * The handlers read `this.paneId` at event time rather than capturing it, so
+	 * a view that switches pane (issue #38 reuses one leaf) keeps working without
+	 * rebinding. Only the title depends on this; the bridge is unaffected.
+	 */
+	private bindScope(): void {
+		for (const off of this.unbindScope.splice(0)) off();
+		const scope = this.plugin.scope;
+		if (!scope) return;
+		this.unbindScope.push(
+			// `added` is the interesting one: a pane opened from the file pane is
+			// shown before `agent.list` has answered, so its name arrives late.
+			scope.on('added', (pane) => {
+				if (pane.paneId === this.paneId) this.scheduleHeader();
+			}),
+			scope.on('changed', (paneId) => {
+				if (paneId === this.paneId) this.scheduleHeader();
+			}),
+		);
+		this.scheduleHeader();
+	}
+
+	/** Coalesces a burst of scope events into one retitle per animation frame. */
+	private scheduleHeader(): void {
+		if (this.pendingHeader) return;
+		this.pendingHeader = this.containerEl.win.requestAnimationFrame(() => {
+			this.pendingHeader = 0;
+			this.refreshHeader();
+		});
+	}
+
+	/**
+	 * Makes Obsidian re-read `getDisplayText` for the tab and the view header.
+	 *
+	 * `updateHeader` is not in `obsidian.d.ts` even though every core view uses
+	 * it, so it is called through an optional-method type: an Obsidian that ever
+	 * drops it leaves a stale title instead of throwing inside a frame callback.
+	 */
+	private refreshHeader(): void {
+		(this.leaf as WorkspaceLeaf & { updateHeader?: () => void }).updateHeader?.();
 	}
 
 	/** Obsidian's own resize hook; the observer covers the rest. */

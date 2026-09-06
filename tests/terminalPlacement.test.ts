@@ -5,7 +5,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decidePlacement, type PlacementInput } from '../src/terminalPlacement';
+import {
+	decideOpenTarget,
+	decidePlacement,
+	type OpenTargetInput,
+	type PlacementInput,
+} from '../src/terminalPlacement';
 
 const VAULT = '/Users/lasse/Vaults/hvelv';
 
@@ -92,5 +97,33 @@ describe('decidePlacement (issue #28)', () => {
 			kind: 'split',
 			before: false,
 		});
+	});
+});
+
+function target(overrides: Partial<OpenTargetInput> = {}): OpenTargetInput {
+	return { mode: 'per-agent', hasPaneLeaf: false, hasAnyLeaf: false, ...overrides };
+}
+
+describe('decideOpenTarget (issue #38)', () => {
+	it('reveals this pane’s own terminal in either mode', () => {
+		expect(decideOpenTarget(target({ hasPaneLeaf: true, hasAnyLeaf: true }))).toBe('existing');
+		expect(
+			decideOpenTarget(target({ mode: 'reuse', hasPaneLeaf: true, hasAnyLeaf: true })),
+		).toBe('existing');
+	});
+
+	it('places a new leaf per agent when the setting says so', () => {
+		expect(decideOpenTarget(target({ hasAnyLeaf: true }))).toBe('new');
+		expect(decideOpenTarget(target())).toBe('new');
+	});
+
+	it('switches an open terminal to this pane under reuse', () => {
+		expect(decideOpenTarget(target({ mode: 'reuse', hasAnyLeaf: true }))).toBe('switch');
+	});
+
+	it('still places the first terminal under reuse', () => {
+		// Nothing to take over: reuse only ever holds one tab, it does not refuse
+		// to open one.
+		expect(decideOpenTarget(target({ mode: 'reuse' }))).toBe('new');
 	});
 });
