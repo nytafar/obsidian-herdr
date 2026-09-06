@@ -399,7 +399,8 @@ export class XtermJsRenderer implements TerminalRenderer {
 	 *
 	 * The key hook inverts: our callbacks return "consumed", xterm's contract is
 	 * "process this in the terminal", so a consumed key returns false and xterm
-	 * emits nothing through `onData`.
+	 * emits nothing through `onData` — plus a `preventDefault()` xterm would not
+	 * do for us.
 	 *
 	 * The wheel hook is ours, not xterm's. `attachCustomWheelEventHandler` is
 	 * consulted by a bubble-phase listener on `.xterm`, and returning false there
@@ -413,9 +414,16 @@ export class XtermJsRenderer implements TerminalRenderer {
 		const el = this.container;
 		if (this.interceptorsAttached || this.disposed || !terminal || !el) return;
 		this.interceptorsAttached = true;
-		terminal.attachCustomKeyEventHandler(
-			(event) => !dispatch(this.keyListeners, event),
-		);
+		terminal.attachCustomKeyEventHandler((event) => {
+			if (!dispatch(this.keyListeners, event)) return true;
+			// xterm returns early without preventing the default when its embedder
+			// claims a key, so the browser would still act on it: the character
+			// would land in the hidden textarea, and Tab would move focus out of
+			// the terminal. The interface promises the event is swallowed, so it
+			// is swallowed here.
+			event.preventDefault();
+			return false;
+		});
 		const onWheel = (event: WheelEvent): void => {
 			if (!dispatch(this.wheelListeners, event)) return;
 			event.preventDefault();
