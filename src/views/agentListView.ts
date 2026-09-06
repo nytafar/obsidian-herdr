@@ -38,6 +38,7 @@ import type { TabInfo } from '../herdr/types.gen';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
+import { asElement } from './dom';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -309,8 +310,8 @@ export class AgentListView extends ItemView {
 	}
 
 	private onClick(event: MouseEvent): void {
-		const target = event.target;
-		if (!(target instanceof Element)) return;
+		const target = asElement(event.target);
+		if (!target) return;
 		const row = target.closest<HTMLElement>('[data-pane-id]');
 		const paneId = row?.dataset.paneId;
 		if (!paneId) return;
@@ -321,8 +322,8 @@ export class AgentListView extends ItemView {
 	/** Keyboard mirrors the pointer, including which half of the pair fires. */
 	private onKeyDown(event: KeyboardEvent): void {
 		if (event.key !== 'Enter' && event.key !== ' ') return;
-		const target = event.target;
-		if (!(target instanceof Element)) return;
+		const target = asElement(event.target);
+		if (!target) return;
 		const row = target.closest<HTMLElement>('[data-pane-id]');
 		const paneId = row?.dataset.paneId;
 		if (!paneId) return;
