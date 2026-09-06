@@ -30,7 +30,11 @@ export interface RendererOptions {
 	fontFamily?: string;
 	/** Font size in px. Undefined/0 → Obsidian's computed monospace size. */
 	fontSize?: number;
-	/** Scrollback lines. Undefined → renderer default. */
+	/**
+	 * Scrollback budget in **bytes**, not lines: ghostty-web hands this straight to
+	 * libghostty-vt's page list, where roughly 600 lines fit in a megabyte and `0`
+	 * means unlimited (notes/memory.md). Undefined → renderer default.
+	 */
 	scrollback?: number;
 	/** Observe mode (PRD S16) sets this so keystrokes never reach the pane. */
 	disableStdin?: boolean;

@@ -28,7 +28,7 @@
 
 import { ItemView, Notice, setIcon, setTooltip, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import type { AttachMode } from '../settings';
+import { scrollbackBytes, type AttachMode } from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
 import {
 	TerminalSession,
@@ -577,6 +577,8 @@ export class TerminalView extends ItemView {
 			const renderer = createRenderer({
 				fontFamily: settings.terminalFontFamily,
 				fontSize: settings.terminalFontSize,
+				// Bytes, not lines — see `RendererOptions.scrollback`.
+				scrollback: scrollbackBytes(settings),
 				// Input is gated on the session's mode instead of here, so toggling
 				// control/observe does not have to rebuild the terminal.
 			});

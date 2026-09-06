@@ -37,6 +37,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		agentNamePattern: '{folder}',
 		terminalFontFamily: '',
 		terminalFontSize: 0,
+		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,
 		extraPath: '',
 		defaultAttachMode: 'control',

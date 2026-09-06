@@ -7,9 +7,15 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	clampScrollbackMb,
+	DEFAULT_SCROLLBACK_MB,
 	DEFAULT_SETTINGS,
+	MAX_SCROLLBACK_MB,
+	MIN_SCROLLBACK_MB,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
+	SCROLLBACK_BYTES_PER_MB,
+	scrollbackBytes,
 	type ConnectionStatus,
 	type HerdrSettings,
 } from '../src/settings';
@@ -106,5 +112,35 @@ describe('renderConnectionStatus', () => {
 			text: 'Workspace: no herdr workspace matches this vault yet.',
 			warning: true,
 		});
+	});
+});
+
+describe('scrollback budget (#15 item 2)', () => {
+	it('keeps a sane value untouched, as a whole number of megabytes', () => {
+		expect(clampScrollbackMb(1)).toBe(MIN_SCROLLBACK_MB);
+		expect(clampScrollbackMb(10)).toBe(10);
+		expect(clampScrollbackMb(64)).toBe(MAX_SCROLLBACK_MB);
+		expect(clampScrollbackMb(10.4)).toBe(10);
+	});
+
+	it('clamps a hand-edited data.json into range — 0 would mean unlimited', () => {
+		expect(clampScrollbackMb(0)).toBe(MIN_SCROLLBACK_MB);
+		expect(clampScrollbackMb(-5)).toBe(MIN_SCROLLBACK_MB);
+		expect(clampScrollbackMb(4096)).toBe(MAX_SCROLLBACK_MB);
+	});
+
+	it('falls back to the default for anything that is not a finite number', () => {
+		expect(clampScrollbackMb(undefined)).toBe(DEFAULT_SCROLLBACK_MB);
+		expect(clampScrollbackMb('10')).toBe(DEFAULT_SCROLLBACK_MB);
+		expect(clampScrollbackMb(Number.NaN)).toBe(DEFAULT_SCROLLBACK_MB);
+		expect(clampScrollbackMb(Number.POSITIVE_INFINITY)).toBe(DEFAULT_SCROLLBACK_MB);
+		expect(DEFAULT_SETTINGS.terminalScrollbackMb).toBe(DEFAULT_SCROLLBACK_MB);
+	});
+
+	it('hands the renderer bytes, never a line count and never zero', () => {
+		expect(scrollbackBytes(settings())).toBe(DEFAULT_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);
+		expect(
+			scrollbackBytes({ ...DEFAULT_SETTINGS, terminalScrollbackMb: 0 }),
+		).toBe(MIN_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);
 	});
 });
