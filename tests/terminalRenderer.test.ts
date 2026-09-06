@@ -3,7 +3,11 @@ import {
 	cellFromPoint,
 	computeFit,
 	cssVar,
+	DEFAULT_CURSOR_STYLE,
 	DEFAULT_TERMINAL_ENGINE,
+	normalizeCursorStyle,
+	TERMINAL_CURSOR_STYLES,
+	TERMINAL_CURSOR_STYLE_LABELS,
 	FALLBACK_FONT_FAMILY,
 	FALLBACK_FONT_SIZE,
 	isTerminalEngine,
@@ -304,5 +308,31 @@ describe('scrollbackLines', () => {
 		expect(scrollbackLines(0)).toBeUndefined();
 		expect(scrollbackLines(-1)).toBeUndefined();
 		expect(scrollbackLines(Number.NaN)).toBeUndefined();
+	});
+});
+
+describe('cursor style names (issue #52)', () => {
+	it('keeps every shape both engines accept', () => {
+		expect([...TERMINAL_CURSOR_STYLES]).toEqual(['block', 'underline', 'bar']);
+	});
+
+	it('defaults to block, which is what both engines start with', () => {
+		expect(DEFAULT_CURSOR_STYLE).toBe('block');
+		expect(normalizeCursorStyle(undefined)).toBe('block');
+	});
+
+	it('turns anything a newer or hand-edited data.json holds into a shape', () => {
+		expect(normalizeCursorStyle('bar')).toBe('bar');
+		expect(normalizeCursorStyle('beam')).toBe(DEFAULT_CURSOR_STYLE);
+		expect(normalizeCursorStyle(7)).toBe(DEFAULT_CURSOR_STYLE);
+		expect(normalizeCursorStyle(null)).toBe(DEFAULT_CURSOR_STYLE);
+	});
+
+	it('labels every shape in sentence case', () => {
+		for (const style of TERMINAL_CURSOR_STYLES) {
+			const label = TERMINAL_CURSOR_STYLE_LABELS[style];
+			expect(label).toBeTruthy();
+			expect(label).toBe(label[0]?.toUpperCase() + label.slice(1).toLowerCase());
+		}
 	});
 });

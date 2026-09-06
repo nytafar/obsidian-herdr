@@ -4,10 +4,16 @@ import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
 import type { RowClickAction } from './views/rowModel';
 import {
+	DEFAULT_CURSOR_STYLE,
 	DEFAULT_TERMINAL_ENGINE,
+	normalizeCursorStyle,
 	normalizeEngineName,
+	TERMINAL_CURSOR_STYLES,
+	TERMINAL_CURSOR_STYLE_LABELS,
 	TERMINAL_ENGINES,
 	TERMINAL_ENGINE_LABELS,
+	type CursorOptions,
+	type TerminalCursorStyle,
 	type TerminalEngine,
 } from './views/renderer/TerminalRenderer';
 import {
@@ -154,6 +160,13 @@ export interface HerdrSettings {
 	 * `views/renderer/create.ts`.
 	 */
 	terminalEngine: TerminalEngine;
+	/**
+	 * Cursor shape in the terminal view (issue #52). `block` is both engines'
+	 * own default. See `views/renderer/TerminalRenderer.ts`.
+	 */
+	terminalCursorStyle: TerminalCursorStyle;
+	/** Whether the terminal cursor blinks (issue #52). On by default. */
+	terminalCursorBlink: boolean;
 	/** Terminal font size in pixels. 0 follows the Obsidian monospace size. */
 	terminalFontSize: number;
 	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
@@ -248,6 +261,14 @@ export function clampPanesPerTab(value: unknown): number {
 	return Math.min(MAX_PANES_PER_TAB, Math.max(MIN_PANES_PER_TAB, whole));
 }
 
+/** The two cursor knobs (issue #52) as the renderer interface takes them. */
+export function cursorOptions(settings: HerdrSettings): CursorOptions {
+	return {
+		cursorStyle: normalizeCursorStyle(settings.terminalCursorStyle),
+		cursorBlink: settings.terminalCursorBlink !== false,
+	};
+}
+
 /** The byte budget handed to the renderer for one terminal. */
 export function scrollbackBytes(settings: HerdrSettings): number {
 	return clampScrollbackMb(settings.terminalScrollbackMb) * SCROLLBACK_BYTES_PER_MB;
@@ -274,6 +295,8 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalFontFamily: '',
 	terminalTheme: DEFAULT_TERMINAL_THEME,
 	terminalEngine: DEFAULT_TERMINAL_ENGINE,
+	terminalCursorStyle: DEFAULT_CURSOR_STYLE,
+	terminalCursorBlink: true,
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
@@ -816,6 +839,33 @@ export class HerdrSettingTab extends PluginSettingTab {
 						this.plugin.rebuildTerminals();
 					});
 			});
+
+		new Setting(containerEl)
+			.setName('Cursor style')
+			.setDesc('Shape of the terminal cursor. Applies to open terminals immediately.')
+			.addDropdown((dropdown) => {
+				for (const style of TERMINAL_CURSOR_STYLES) {
+					dropdown.addOption(style, TERMINAL_CURSOR_STYLE_LABELS[style]);
+				}
+				dropdown
+					.setValue(normalizeCursorStyle(settings.terminalCursorStyle))
+					.onChange(async (value) => {
+						settings.terminalCursorStyle = normalizeCursorStyle(value);
+						await this.save();
+						this.plugin.refreshTerminalCursors();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('Blinking cursor')
+			.setDesc('Blink the terminal cursor. Applies to open terminals immediately.')
+			.addToggle((toggle) =>
+				toggle.setValue(settings.terminalCursorBlink !== false).onChange(async (value) => {
+					settings.terminalCursorBlink = value;
+					await this.save();
+					this.plugin.refreshTerminalCursors();
+				}),
+			);
 
 		new Setting(containerEl)
 			.setName('Font family')

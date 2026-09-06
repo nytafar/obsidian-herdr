@@ -8,6 +8,7 @@ import {
 	isRecoverable,
 	MAX_SCROLL_LINES,
 	parseTerminalState,
+	planThemeUpdate,
 	spawnEnv,
 	stateMatchesPane,
 	statusLine,
@@ -534,5 +535,39 @@ describe('VisibilityTracker (#15 item 1)', () => {
 
 	it('grace period is long enough to survive tab flipping', () => {
 		expect(HIDE_GRACE_MS).toBeGreaterThanOrEqual(10_000);
+	});
+});
+
+describe('planThemeUpdate (issue #53)', () => {
+	const live = { opened: true, suspended: false, hasRenderer: true, inPlace: true };
+
+	it('lets xterm.js repaint in place', () => {
+		expect(planThemeUpdate(live)).toBe('in-place');
+	});
+
+	it('rebuilds the renderer for an engine whose theme option is inert', () => {
+		expect(planThemeUpdate({ ...live, inPlace: false })).toBe('rebuild-renderer');
+	});
+
+	it('defers for a suspended view, which reads the setting when it mounts', () => {
+		expect(planThemeUpdate({ ...live, suspended: true })).toBe('defer');
+		expect(planThemeUpdate({ ...live, suspended: true, inPlace: false })).toBe('defer');
+	});
+
+	it('defers for a closed view and for one with no renderer mounted', () => {
+		expect(planThemeUpdate({ ...live, opened: false })).toBe('defer');
+		expect(planThemeUpdate({ ...live, hasRenderer: false })).toBe('defer');
+	});
+
+	it('is decided by the renderer, not by the session: a closed tab still repaints', () => {
+		// Nothing in the input names the session, which is the point: a palette
+		// change must never reattach or take a pane over.
+		expect(planThemeUpdate({ ...live, inPlace: false })).toBe('rebuild-renderer');
+		expect(Object.keys(live).sort()).toEqual([
+			'hasRenderer',
+			'inPlace',
+			'opened',
+			'suspended',
+		]);
 	});
 });

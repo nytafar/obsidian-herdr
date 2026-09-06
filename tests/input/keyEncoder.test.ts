@@ -8,6 +8,8 @@ import {
 	kittyActive,
 	kittyKeyCode,
 	kittyModifiers,
+	IME_PROCESSING_KEY_CODE,
+	isComposingKey,
 	type KeyEventLike,
 } from '../../src/views/input/keyEncoder';
 import {
@@ -155,5 +157,34 @@ describe('encodeKey with kittyModifiedKeys on', () => {
 
 	it('still leaves unmodified keys to be typed', () => {
 		expect(encodeKey(key({ key: 'a' }), kittyState, options)).toBeNull();
+	});
+});
+
+describe('IME composition guard (#49)', () => {
+	const lineBreak = { ...DEFAULT_KEY_ENCODING_OPTIONS, shiftEnterLineBreak: true };
+
+	it('recognises both composing signals', () => {
+		expect(isComposingKey(key({ key: 'Enter', isComposing: true }))).toBe(true);
+		expect(isComposingKey(key({ key: 'Enter', keyCode: IME_PROCESSING_KEY_CODE }))).toBe(true);
+		expect(isComposingKey(key({ key: 'Enter' }))).toBe(false);
+		expect(isComposingKey(key({ key: 'Enter', isComposing: false, keyCode: 13 }))).toBe(false);
+	});
+
+	it('leaves a composing shift+enter to the input method', () => {
+		const composing = key({ key: 'Enter', shiftKey: true, isComposing: true });
+		expect(encodeKey(composing, DEFAULT_MODE_STATE, lineBreak)).toBeNull();
+		const legacy = key({ key: 'Enter', shiftKey: true, keyCode: IME_PROCESSING_KEY_CODE });
+		expect(encodeKey(legacy, DEFAULT_MODE_STATE, lineBreak)).toBeNull();
+	});
+
+	it('leaves a composing key alone under the kitty rule too', () => {
+		const kitty = { ...DEFAULT_KEY_ENCODING_OPTIONS, kittyModifiedKeys: true };
+		const composing = key({ key: 'Tab', shiftKey: true, isComposing: true });
+		expect(encodeKey(composing, kittyState, kitty)).toBeNull();
+	});
+
+	it('still encodes shift+enter once the composition is over', () => {
+		const done = key({ key: 'Enter', shiftKey: true, isComposing: false });
+		expect(encodeKey(done, DEFAULT_MODE_STATE, lineBreak)).toBe(LEGACY_LINE_BREAK);
 	});
 });

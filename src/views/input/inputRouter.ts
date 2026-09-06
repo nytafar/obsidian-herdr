@@ -21,6 +21,7 @@
 import {
 	DEFAULT_KEY_ENCODING_OPTIONS,
 	encodeKey,
+	isComposingKey,
 	type KeyEncodingOptions,
 	type KeyEventLike,
 } from './keyEncoder';
@@ -117,6 +118,9 @@ export class InputRouter {
 	private readonly wheelToScroll: WheelToScroll;
 	private readonly options: InputRouterOptions;
 
+	/** Set by `setComposing`, from the element's composition events (#49). */
+	private composing = false;
+
 	constructor(deps: InputRouterDeps, options: Partial<InputRouterOptions> = {}) {
 		this.wheelToScroll = deps.wheelToScroll;
 		this.options = { ...DEFAULT_INPUT_ROUTER_OPTIONS, ...options };
@@ -155,7 +159,26 @@ export class InputRouter {
 	 * ours (#18); plain enter is null, so it stays the bare `CR` that submits.
 	 */
 	routeKey(event: KeyEventLike): string | null {
+		// #49: nothing is ours between `compositionstart` and `compositionend`.
+		// The flag covers the keydowns a browser reports with neither
+		// `isComposing` nor `keyCode` 229 — Safari's first composing keydown, and
+		// the Enter that ends a composition on some input methods.
+		if (this.composing || isComposingKey(event)) return null;
 		return encodeKey(event, this.tracker.state, this.options.key);
+	}
+
+	/**
+	 * The terminal element's `compositionstart` / `compositionend` (#49). The
+	 * view registers both; a router nobody tells stays at false and relies on
+	 * `isComposing` alone.
+	 */
+	setComposing(composing: boolean): void {
+		this.composing = composing;
+	}
+
+	/** True between `compositionstart` and `compositionend`. */
+	get isComposing(): boolean {
+		return this.composing;
 	}
 
 	/**

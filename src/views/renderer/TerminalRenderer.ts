@@ -55,8 +55,33 @@ export interface RendererOptions {
 	engine?: TerminalEngine;
 	/** Observe mode (PRD S16) sets this so keystrokes never reach the pane. */
 	disableStdin?: boolean;
+	/** Whether the cursor blinks (issue #52). Undefined → renderer default. */
 	cursorBlink?: boolean;
-	cursorStyle?: 'block' | 'underline' | 'bar';
+	/** Cursor shape (issue #52). Undefined → renderer default, i.e. `block`. */
+	cursorStyle?: TerminalCursorStyle;
+}
+
+/** Cursor shapes both engines accept (issue #52); also the stored setting. */
+export const TERMINAL_CURSOR_STYLES = ['block', 'underline', 'bar'] as const;
+
+export type TerminalCursorStyle = (typeof TERMINAL_CURSOR_STYLES)[number];
+
+/** Both engines default to a block cursor; the setting keeps that default. */
+export const DEFAULT_CURSOR_STYLE: TerminalCursorStyle = 'block';
+
+/** Dropdown labels, sentence case per the Obsidian guidelines. */
+export const TERMINAL_CURSOR_STYLE_LABELS: Record<TerminalCursorStyle, string> = {
+	block: 'Block',
+	underline: 'Underline',
+	bar: 'Bar',
+};
+
+/** Same contract as `normalizeEngineName`: anything unknown is the default. */
+export function normalizeCursorStyle(value: unknown): TerminalCursorStyle {
+	return typeof value === 'string' &&
+		(TERMINAL_CURSOR_STYLES as readonly string[]).includes(value)
+		? (value as TerminalCursorStyle)
+		: DEFAULT_CURSOR_STYLE;
 }
 
 /**
@@ -92,6 +117,12 @@ export function isTerminalEngine(value: unknown): value is TerminalEngine {
  */
 export function normalizeEngineName(value: unknown): TerminalEngine {
 	return isTerminalEngine(value) ? value : DEFAULT_TERMINAL_ENGINE;
+}
+
+/** The two cursor knobs, as {@link TerminalRenderer.applyCursor} takes them. */
+export interface CursorOptions {
+	cursorStyle: TerminalCursorStyle;
+	cursorBlink: boolean;
 }
 
 export interface TerminalRenderer {
@@ -150,6 +181,24 @@ export interface TerminalRenderer {
 	 * and both callers do nothing.
 	 */
 	refreshTheme?(theme?: string): void;
+	/**
+	 * Whether {@link refreshTheme} actually repaints an open terminal with new
+	 * colours (issue #53).
+	 *
+	 * xterm.js says true: `options.theme` goes through a real theme service.
+	 * ghostty-web says false: its `handleOptionChange` has a `case "theme"` whose
+	 * whole body is a `console.warn`, so assigning the option after `open()`
+	 * repaints nothing. The view asks before it calls, and rebuilds the renderer
+	 * — not the session — when the answer is false. A renderer without the method
+	 * is assumed to update in place, which is what `refreshTheme` implies.
+	 */
+	canUpdateThemeInPlace?(): boolean;
+	/**
+	 * Cursor shape and blink on an open terminal (issue #52). Both engines apply
+	 * these in place: ghostty-web's `handleOptionChange` forwards `cursorStyle`
+	 * and `cursorBlink` to its renderer, unlike `theme`.
+	 */
+	applyCursor?(cursor: CursorOptions): void;
 	/**
 	 * Scrollback plus screen as plain text, oldest line first, trailing blank lines
 	 * trimmed. The terminal view takes one of these before it disposes a hidden
