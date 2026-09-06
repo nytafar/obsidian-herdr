@@ -13,6 +13,7 @@ import {
 	iconForKind,
 	isKindIcon,
 	kindLabel,
+	kindStatusLabel,
 	registerKindIcons,
 } from '../src/views/kindIcons';
 import { AGENT_KINDS } from '../src/settings';
@@ -83,6 +84,22 @@ describe('the SVG strings', () => {
 			expect(svg, kind).not.toMatch(/fill="(?!currentColor)#?\w/);
 			expect(svg, kind).not.toContain('stroke=');
 		}
+	});
+});
+
+describe('kindStatusLabel (issue #34)', () => {
+	it('reads as one sentence-case phrase', () => {
+		expect(kindStatusLabel('claude', 'Blocked')).toBe('Claude, blocked');
+		expect(kindStatusLabel('opencode', 'Working')).toBe('Opencode, working');
+	});
+
+	it('falls back to the kind alone when there is no status text', () => {
+		expect(kindStatusLabel('claude', '')).toBe('Claude');
+		expect(kindStatusLabel('claude', '   ')).toBe('Claude');
+	});
+
+	it('still names an unknown kind', () => {
+		expect(kindStatusLabel('', 'Idle')).toBe('Unknown agent, idle');
 	});
 });
 

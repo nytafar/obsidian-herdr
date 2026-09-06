@@ -126,6 +126,20 @@ export function kindLabel(kind: string): string {
 }
 
 /**
+ * Kind and status in one phrase (issue #34): "Claude, blocked".
+ *
+ * The mark now carries the status colour, so it is the only thing left on a row
+ * that says what the agent is doing, and its accessible name has to say both —
+ * a colour is not a label. One sentence-case phrase, so the status is lowercased
+ * as the second clause; with no status text the kind stands alone.
+ */
+export function kindStatusLabel(kind: string, statusLabel: string): string {
+	const status = statusLabel.trim();
+	const name = kindLabel(kind);
+	return status ? `${name}, ${status.toLowerCase()}` : name;
+}
+
+/**
  * Registers every mark, once, at plugin load.
  *
  * @param register Obsidian's `addIcon`, injected so this module stays free of

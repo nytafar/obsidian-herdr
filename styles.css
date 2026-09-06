@@ -26,6 +26,20 @@
 	padding: var(--size-4-2);
 }
 
+/* One control above the rows: the sort and group-by menu (issue #41). Right
+   aligned and muted, like the file explorer's own header icons, so it reads as
+   chrome rather than as the first row of the list. */
+.herdr-list-header {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	margin-bottom: var(--size-2-2);
+}
+
+.herdr-list-menu-button {
+	color: var(--text-muted);
+}
+
 .herdr-agent-list-body {
 	display: flex;
 	flex-direction: column;
@@ -85,12 +99,21 @@
 	align-items: baseline;
 	gap: var(--size-4-1);
 	min-width: 0;
+	/* The name and the title are the only things allowed to run out of room, and
+	   they end in an ellipsis rather than under the action button (issue #40). */
+	overflow: hidden;
 }
 
 .herdr-agent-name {
 	color: var(--text-normal);
 	font-size: var(--font-ui-small);
 	font-weight: var(--font-medium);
+	/* Shrinkable, so a long name truncates instead of pushing the badge or the
+	   button out of the row; `min-width: 0` is what lets a flex item do that. */
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
@@ -98,6 +121,8 @@
 .herdr-agent-cwd {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+	flex: 0 1 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -108,7 +133,9 @@
 	color: var(--text-faint);
 }
 
-/* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23). */
+/* Row badges: the prompt-cache countdown a herdr plugin publishes (issue #23).
+   It sits between the kind mark and the name (issue #40), and never shrinks:
+   a countdown that says "31" instead of "31m" would be worse than none. */
 
 .herdr-agent-badge {
 	flex: 0 0 auto;
@@ -133,9 +160,33 @@
 	color: var(--color-red);
 }
 
+/* The row's action button (issue #21), shown on hover and on keyboard focus only
+   (issue #42) — twenty quiet rows each with an icon is noise. It keeps its place
+   in the layout while hidden, so nothing shifts when the pointer arrives, and it
+   stays a `button` in the tab order: only `opacity` hides it, and `:focus-within`
+   brings it back the moment Tab reaches the row or the button itself. */
+
 .herdr-row-action {
 	flex: 0 0 auto;
 	color: var(--text-muted);
+	opacity: 0;
+	/* Invisible has to mean unclickable too, or it would swallow row clicks. */
+	pointer-events: none;
+}
+
+.herdr-agent-row:hover .herdr-row-action,
+.herdr-agent-row:focus-within .herdr-row-action {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+/* A pointer that cannot hover — touch, pen — would never see the reveal, so
+   there the button is simply always visible. */
+@media (hover: none) {
+	.herdr-row-action {
+		opacity: 1;
+		pointer-events: auto;
+	}
 }
 
 /* Agent kind marks (issue #19) ---------------------------------------------
@@ -172,36 +223,30 @@
 	font-weight: var(--font-bold);
 }
 
-/* Status glyphs: one dot per agent status, coloured by the theme's palette. */
+/* Status colours on the kind mark (issue #34) -------------------------------
+   The row used to carry a separate dot; the mark itself now says the status, in
+   the same palette the dot used. Only `color` is set: our own marks fill with
+   `currentColor` (the rule above) and Lucide's `bot` fallback strokes with it,
+   so one property colours both. An unknown status keeps the muted default. */
 
-.herdr-status-glyph {
-	flex: 0 0 auto;
-	width: var(--size-4-2);
-	height: var(--size-4-2);
-	margin-top: var(--size-2-2);
-	border-radius: 50%;
-	background-color: var(--text-faint);
+.herdr-agent-kind.herdr-status-blocked {
+	color: var(--color-orange);
 }
 
-.herdr-status-glyph.herdr-status-blocked {
-	background-color: var(--color-orange);
+.herdr-agent-kind.herdr-status-done {
+	color: var(--color-green);
 }
 
-.herdr-status-glyph.herdr-status-done {
-	background-color: var(--color-green);
+.herdr-agent-kind.herdr-status-working {
+	color: var(--color-blue);
 }
 
-.herdr-status-glyph.herdr-status-working {
-	background-color: var(--color-blue);
+.herdr-agent-kind.herdr-status-idle {
+	color: var(--text-faint);
 }
 
-.herdr-status-glyph.herdr-status-idle {
-	background-color: var(--text-faint);
-}
-
-.herdr-status-glyph.herdr-status-unknown {
-	background-color: transparent;
-	box-shadow: inset 0 0 0 1px var(--text-faint);
+.herdr-agent-kind.herdr-status-unknown {
+	color: var(--text-faint);
 }
 
 /* Status bar item ---------------------------------------------------------- */

@@ -43,7 +43,7 @@ export const STATUS_ORDER: Record<AgentStatus, number> = {
 /** A status the table above does not know sorts last, never in the middle. */
 const STATUS_ORDER_FALLBACK = 9;
 
-/** Screen-reader text per status; the glyph itself is CSS (`styles.css`). */
+/** Screen-reader text per status; the colour it goes with is CSS (`styles.css`). */
 export const STATUS_LABEL: Record<AgentStatus, string> = {
 	blocked: 'Blocked',
 	done: 'Done',
@@ -69,10 +69,10 @@ export interface RowModel {
 	 */
 	pathLabel: string;
 	status: AgentStatus;
-	/** Accessible text for the status glyph. */
+	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
 	focused: boolean;
-	/** Short trailing markers, in display order. The cache countdown today. */
+	/** Short markers drawn before the name, in display order. The cache countdown today. */
 	badges: RowBadge[];
 }
 
@@ -240,15 +240,26 @@ function badges(pane: PaneState): RowBadge[] {
 	return cache ? [cache] : [];
 }
 
-/** Projects one pane onto the row it becomes. */
-export function toRow(pane: PaneState, vaultPath: string, homePath = ''): RowModel {
+/**
+ * Projects one pane onto the row it becomes.
+ *
+ * @param showPath false leaves `pathLabel` empty (issue #39). Grouping by folder
+ *   puts that very path in the group header, and a row that repeats its own
+ *   heading says nothing; every other grouping keeps the line.
+ */
+export function toRow(
+	pane: PaneState,
+	vaultPath: string,
+	homePath = '',
+	showPath = true,
+): RowModel {
 	const displayName = agentDisplayName(pane);
 	return {
 		paneId: pane.paneId,
 		kind: pane.agent,
 		displayName,
 		title: pane.title && pane.title !== displayName ? pane.title : '',
-		pathLabel: pathLabel(pane.cwd, vaultPath, homePath),
+		pathLabel: showPath ? pathLabel(pane.cwd, vaultPath, homePath) : '',
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
@@ -271,6 +282,8 @@ export function buildRows(
 ): RowGroup[] {
 	const { groupBy, sort, homePath } = { ...DEFAULTS, ...options };
 	const grouping = GROUPS[groupBy] ?? GROUPS.tab;
+	// Grouping by folder already names the folder above the rows (issue #39).
+	const showPath = groupBy !== 'folder';
 	const context: GroupContext = { tabLabels, vaultPath, homePath };
 	// One sort up front fixes the row order inside every group.
 	const ordered = [...panes].sort(COMPARE[sort] ?? COMPARE.priority);
@@ -291,7 +304,7 @@ export function buildRows(
 			// nothing about how urgent the group is.
 			entry.urgency = urgency;
 		}
-		entry.group.rows.push(toRow(pane, vaultPath, homePath));
+		entry.group.rows.push(toRow(pane, vaultPath, homePath, showPath));
 	}
 
 	return [...groups.values()]

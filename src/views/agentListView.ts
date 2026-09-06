@@ -2,12 +2,12 @@
  * Agent list sidebar view (PRD M8, M9, M10, N1, N4; T4).
  *
  * One row per agent pane of the scoped workspace, grouped by herdr tab, by
- * working directory or not at all (issue #20): status glyph, harness mark, agent
- * name, stripped terminal title, and the cwd relative to the vault. A row carries
- * two one-click actions — open the pane as a terminal view in Obsidian (PRD M13)
- * and focus it in herdr (`pane.focus`, the one source of truth for "seen", PRD
- * M9). The row body gets the first and the icon button the second, and a setting
- * swaps them (issue #21).
+ * working directory or not at all (issue #20): the harness mark, coloured by the
+ * agent's status (issue #34), the agent name, the stripped terminal title, and
+ * the cwd relative to the vault. A row carries two one-click actions — open the
+ * pane as a terminal view in Obsidian (PRD M13) and focus it in herdr
+ * (`pane.focus`, the one source of truth for "seen", PRD M9). The row body gets
+ * the first and the icon button the second, and a setting swaps them (issue #21).
  *
  * This file owns DOM and events only. What a row *says* — grouping, ordering,
  * display-name fallbacks, path and status labels — lives in `rowModel.ts`, which
@@ -20,17 +20,23 @@
  * `removed` / `workspaceResolved` events, and even those are coalesced into one
  * repaint per frame.
  *
+ * The header above the rows holds one `clickable-icon` button, which opens the
+ * sort and group-by menu (issue #41); what that menu contains is `listMenu.ts`,
+ * pure and tested, and choosing an entry writes the same settings the settings
+ * tab does and repaints every open list.
+ *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
  * listener per row, and no stored view reference anywhere else — `main.ts` finds
  * this view with `getLeavesOfType`.
  */
 
-import { ItemView, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
+import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { stripTitleSpinner } from '../herdr/scope';
 import type { TabInfo } from '../herdr/types.gen';
-import { iconForKind, isKindIcon, kindLabel } from './kindIcons';
+import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
+import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -74,6 +80,7 @@ export class AgentListView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('herdr-agent-list');
+		this.renderHeader(container);
 		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 
 		// One delegated listener beats one per row: rows are rebuilt on every
@@ -90,6 +97,58 @@ export class AgentListView extends ItemView {
 			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
 			this.pendingRender = 0;
 		});
+	}
+
+	/**
+	 * The one control above the rows (issue #41): a header button that opens the
+	 * sort and group-by menu, the way the file explorer exposes its sort order.
+	 * Built once in `onOpen`, outside `listEl`, so a repaint never touches it.
+	 */
+	private renderHeader(container: HTMLElement): void {
+		const header = container.createDiv({ cls: 'herdr-list-header' });
+		const button = header.createEl('button', {
+			cls: 'clickable-icon herdr-list-menu-button',
+			attr: { type: 'button' },
+		});
+		setIcon(button, 'arrow-down-up');
+		setTooltip(button, 'Sort and group');
+		button.setAttribute('aria-label', 'Sort and group');
+		this.registerDomEvent(button, 'click', (event) => this.openListMenu(event));
+	}
+
+	/**
+	 * Opens the sort and group-by menu at the pointer. Enter on the button counts:
+	 * the browser turns it into a click, and the menu then takes the keyboard.
+	 */
+	private openListMenu(event: MouseEvent): void {
+		const menu = new Menu();
+		let section: ListMenuSection | null = null;
+		for (const item of listMenuItems(this.plugin.settings)) {
+			if (item.section !== section) {
+				if (section !== null) menu.addSeparator();
+				section = item.section;
+				const heading = SECTION_LABEL[section];
+				menu.addItem((entry) => entry.setTitle(heading).setIsLabel(true));
+			}
+			menu.addItem((entry) =>
+				entry
+					.setTitle(item.label)
+					.setChecked(item.checked)
+					.onClick(() => void this.applyMenuChoice(item)),
+			);
+		}
+		menu.showAtMouseEvent(event);
+	}
+
+	/**
+	 * Writes one menu choice: the same settings the settings tab writes, saved the
+	 * same way, and then every open list repaints — this one included, which is
+	 * why it goes through the plugin rather than calling `refresh()` here.
+	 */
+	private async applyMenuChoice(item: ListMenuItem): Promise<void> {
+		item.apply(this.plugin.settings);
+		await this.plugin.saveSettings();
+		this.plugin.refreshAgentList();
 	}
 
 	protected override async onClose(): Promise<void> {
@@ -204,35 +263,38 @@ export class AgentListView extends ItemView {
 		row.tabIndex = 0;
 		row.setAttribute('role', 'button');
 
-		const glyph = row.createSpan({
-			cls: `herdr-status-glyph herdr-status-${model.status}`,
-		});
-		glyph.setAttribute('aria-label', model.statusLabel);
-
-		// The harness mark (issue #19): the kind is an icon, never a word, since
-		// almost every row would otherwise read "claude". Registered marks are
-		// fill-based and need the modifier class; the Lucide fallback keeps its
-		// stroke, so it must not get it (see `styles.css`).
+		// The harness mark (issue #19), which since issue #34 also carries the
+		// status: the `herdr-status-*` class colours the mark itself, so the row
+		// needs no separate dot. Registered marks are fill-based and need the
+		// modifier class; the Lucide fallback keeps its stroke, so it must not get
+		// it (see `styles.css`). Colour is not a label, so the accessible name says
+		// both halves — "Claude, blocked".
 		const icon = iconForKind(model.kind);
-		const kindLabelText = kindLabel(model.kind);
-		const kindEl = row.createSpan({
-			cls: isKindIcon(icon) ? 'herdr-agent-kind mod-brand' : 'herdr-agent-kind',
-		});
+		const iconLabel = kindStatusLabel(model.kind, model.statusLabel);
+		const kindClasses = ['herdr-agent-kind', `herdr-status-${model.status}`];
+		if (isKindIcon(icon)) kindClasses.push('mod-brand');
+		const kindEl = row.createSpan({ cls: kindClasses });
 		setIcon(kindEl, icon);
-		setTooltip(kindEl, kindLabelText);
-		kindEl.setAttribute('aria-label', kindLabelText);
+		setTooltip(kindEl, iconLabel);
+		kindEl.setAttribute('aria-label', iconLabel);
 
 		const text = row.createDiv({ cls: 'herdr-agent-text' });
 		const line = text.createDiv({ cls: 'herdr-agent-line' });
-		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
-		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
+		// The row reads mark, countdown, name (issue #40). The badge comes first
+		// because it is fixed width and the name is not: after the name it was the
+		// part a long title pushed out of the row, under the action button.
 		for (const badge of model.badges) {
 			line.createSpan({ cls: `herdr-agent-badge mod-${badge.tone}`, text: badge.text });
 		}
+		line.createSpan({ cls: 'herdr-agent-name', text: model.displayName });
+		if (model.title) line.createSpan({ cls: 'herdr-agent-title', text: model.title });
 		if (model.pathLabel) text.createDiv({ cls: 'herdr-agent-cwd', text: model.pathLabel });
 
 		// The row body and the button hold one action each, and which is which is
-		// a setting (issue #21). The button records its own action in the dataset,
+		// a setting (issue #21). The button is drawn on every row but only shown on
+		// hover or focus (issue #42), which is `styles.css` alone: it stays in the
+		// tab order and in the layout, so nothing here changes with the pointer.
+		// The button records its own action in the dataset,
 		// so a click is dispatched by what was drawn — and promised in the tooltip
 		// — rather than by a setting that may have changed since the last repaint.
 		const actions = rowActions(this.plugin.settings.agentListRowClick);
@@ -322,7 +384,7 @@ export class AgentListView extends ItemView {
 			for (const tab of result?.tabs ?? []) {
 				if (typeof tab?.tab_id !== 'string') continue;
 				// Live `tab.list` labels carry herdr's own status prefix ("! trauma",
-				// "? vault-maintenance"); the row's status dot already says that.
+				// "? vault-maintenance"); the rows' own status colours already say that.
 				const label = tab.label ? stripTitleSpinner(tab.label) : '';
 				labels.set(tab.tab_id, label || tab.tab_id);
 			}
