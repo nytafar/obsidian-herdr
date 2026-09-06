@@ -13,7 +13,7 @@ including the choice of which herdr tab a new agent is split into,
 aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
 `obsidian.d.ts`. The terminal view is unit tested the same way: only its exported
 decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
-`wheelToScroll`, `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
+`spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
 canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
 machine with injected timers, so the decision to free a hidden terminal is tested
 without a DOM; what a measurement *is* (a host with no box) is not. The settings

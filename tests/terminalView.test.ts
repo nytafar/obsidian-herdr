@@ -4,9 +4,7 @@ import {
 	debounce,
 	FrameBuffer,
 	PerfCounter,
-	FALLBACK_ROWS,
 	isRecoverable,
-	MAX_SCROLL_LINES,
 	parseTerminalState,
 	planThemeUpdate,
 	spawnEnv,
@@ -17,8 +15,6 @@ import {
 	VisibilityTracker,
 	summariseStderr,
 	TERMINAL_VIEW_TYPE,
-	wheelToScroll,
-	WHEEL_PIXELS_PER_LINE,
 	type DebounceTimers,
 } from '../src/views/terminalView';
 import { buildArgv } from '../src/bridge/terminalSession';
@@ -210,33 +206,6 @@ describe('debounce', () => {
 		expect(timers.pending()).toBe(0);
 		timers.run();
 		expect(fn).not.toHaveBeenCalled();
-	});
-});
-
-describe('wheelToScroll', () => {
-	it('maps direction from the sign of deltaY', () => {
-		expect(wheelToScroll(-100, 0, 24)?.direction).toBe('up');
-		expect(wheelToScroll(100, 0, 24)?.direction).toBe('down');
-	});
-
-	it('converts pixels, lines and pages', () => {
-		expect(wheelToScroll(WHEEL_PIXELS_PER_LINE * 3, 0, 24)?.lines).toBe(3);
-		expect(wheelToScroll(-4, 1, 24)?.lines).toBe(4);
-		expect(wheelToScroll(2, 2, 30)?.lines).toBe(60);
-	});
-
-	it('never asks for zero lines, and clamps a fling', () => {
-		expect(wheelToScroll(1, 0, 24)?.lines).toBe(1);
-		expect(wheelToScroll(100000, 0, 24)?.lines).toBe(MAX_SCROLL_LINES);
-	});
-
-	it('ignores a delta of zero or a broken event', () => {
-		expect(wheelToScroll(0, 0, 24)).toBeNull();
-		expect(wheelToScroll(Number.NaN, 0, 24)).toBeNull();
-	});
-
-	it('falls back to a 24-row page when the session has no rows yet', () => {
-		expect(wheelToScroll(1, 2, 0)?.lines).toBe(FALLBACK_ROWS);
 	});
 });
 
