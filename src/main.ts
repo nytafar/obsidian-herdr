@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import {
 	FileSystemAdapter,
 	Menu,
@@ -156,6 +157,17 @@ export default class HerdrPlugin extends Plugin {
 		const remote = this.settings.remote;
 		if (remote.enabled && remote.remoteVaultPath.trim()) return remote.remoteVaultPath.trim();
 		return this.vaultPath();
+	}
+
+	/**
+	 * Home directory as seen by the machine herdr runs on (issue #22): the remote
+	 * user's home with a remote profile, this user's home otherwise. Empty when a
+	 * remote tunnel never had to expand a `~`, in which case rows outside the
+	 * vault keep their absolute paths.
+	 */
+	herdrHomePath(): string {
+		if (this.settings.remote.enabled) return this.tunnel?.remoteHome ?? '';
+		return homedir();
 	}
 
 	/**

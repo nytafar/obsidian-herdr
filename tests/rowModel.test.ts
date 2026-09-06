@@ -3,6 +3,7 @@ import {
 	agentDisplayName,
 	buildRows,
 	countStatuses,
+	pathLabel,
 	relativeCwd,
 	toRow,
 	type RowModel,
@@ -57,6 +58,41 @@ describe('relativeCwd', () => {
 	it('survives an unknown vault path', () => {
 		expect(relativeCwd('/tmp/x', '')).toBe('/tmp/x');
 		expect(relativeCwd('', VAULT)).toBe('');
+	});
+});
+
+describe('pathLabel (issue #22)', () => {
+	const HOME = '/Users/lasse';
+
+	it('keeps a path inside the vault vault-relative', () => {
+		expect(pathLabel(`${VAULT}/projects/herdr`, VAULT, HOME)).toBe('projects/herdr');
+		expect(pathLabel(VAULT, VAULT, HOME)).toBe('');
+	});
+
+	it('shortens a path under the home but outside the vault', () => {
+		expect(pathLabel('/Users/lasse/code/herdr', VAULT, HOME)).toBe('~/code/herdr');
+		expect(pathLabel(HOME, VAULT, HOME)).toBe('~');
+	});
+
+	it('tolerates trailing slashes on both roots', () => {
+		expect(pathLabel('/Users/lasse/code/herdr', `${VAULT}/`, `${HOME}/`)).toBe('~/code/herdr');
+		expect(pathLabel(`${VAULT}/notes`, `${VAULT}//`, HOME)).toBe('notes');
+	});
+
+	it('leaves a path outside both absolute', () => {
+		expect(pathLabel('/opt/thing', VAULT, HOME)).toBe('/opt/thing');
+		// A home that is a string prefix but not a parent directory.
+		expect(pathLabel('/Users/lasseX/code', VAULT, HOME)).toBe('/Users/lasseX/code');
+	});
+
+	it('falls back to the absolute path without a home', () => {
+		expect(pathLabel('/Users/lasse/code/herdr', VAULT)).toBe('/Users/lasse/code/herdr');
+		expect(pathLabel('/Users/lasse/code/herdr', VAULT, '   ')).toBe('/Users/lasse/code/herdr');
+		expect(pathLabel('', VAULT, HOME)).toBe('');
+	});
+
+	it('prefers the vault when the vault sits inside the home', () => {
+		expect(pathLabel(`${VAULT}/notes`, VAULT, HOME)).toBe('notes');
 	});
 });
 
@@ -236,6 +272,24 @@ describe('buildRows', () => {
 		expect(rows.map((row) => row.title)).toEqual(['', 'Refactor scope']);
 		expect(rows.map((row) => row.pathLabel)).toEqual(['/opt/thing', 'notes']);
 		expect(rows.every((row) => row.badges.length === 0)).toBe(true);
+	});
+
+	it('shortens paths under the home when one is given (issue #22)', () => {
+		const groups = buildRows(
+			[
+				pane('p1', 'w4:t1', 'idle', { cwd: '/Users/lasse/code/herdr', title: 'a' }),
+				pane('p2', 'w4:t1', 'idle', { cwd: `${VAULT}/notes`, title: 'b' }),
+				pane('p3', 'w4:t1', 'idle', { cwd: '/opt/thing', title: 'c' }),
+			],
+			new Map(),
+			VAULT,
+			{ homePath: '/Users/lasse' },
+		);
+		expect(groups[0]?.rows.map((row) => row.pathLabel)).toEqual([
+			'~/code/herdr',
+			'notes',
+			'/opt/thing',
+		]);
 	});
 
 	it('accepts explicit options without changing the default behaviour', () => {

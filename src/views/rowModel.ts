@@ -46,7 +46,10 @@ export interface RowModel {
 	 * name — the view suppresses that duplicate, so the decision belongs here.
 	 */
 	title: string;
-	/** The cwd as shown: vault-relative inside the vault, absolute outside it. */
+	/**
+	 * The cwd as shown: vault-relative inside the vault, `~/…` under the home
+	 * directory, absolute otherwise (issue #22).
+	 */
 	pathLabel: string;
 	status: AgentStatus;
 	/** Accessible text for the status glyph. */
@@ -73,9 +76,14 @@ export interface RowModelOptions {
 	groupBy?: 'tab';
 	/** Only `status` today: blocked, done, then the rest. */
 	sort?: 'status';
+	/**
+	 * Home directory on the machine herdr runs on, used to shorten a cwd that
+	 * sits outside the vault (issue #22). Empty leaves such paths absolute.
+	 */
+	homePath?: string;
 }
 
-const DEFAULTS: Required<RowModelOptions> = { groupBy: 'tab', sort: 'status' };
+const DEFAULTS: Required<RowModelOptions> = { groupBy: 'tab', sort: 'status', homePath: '' };
 
 type GroupBy = Required<RowModelOptions>['groupBy'];
 type SortBy = Required<RowModelOptions>['sort'];
@@ -112,6 +120,26 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
 	return cwd.slice(root.length).replace(/^\/+/, '');
 }
 
+/**
+ * The cwd as a row shows it (issue #22): vault-relative inside the vault, then
+ * `~/…` when it sits under the user's home, and absolute when it is neither.
+ * The home directory itself is `~`, and the vault root stays empty — repeating
+ * the vault name on every row says nothing.
+ *
+ * The home is herdr's home, so under a remote profile it is the remote user's
+ * (`main.ts` picks which one). The vault wins over the home, because a vault
+ * inside the home would otherwise lose its short relative paths.
+ */
+export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
+	if (!cwd) return '';
+	const root = vaultPath.replace(/\/+$/, '');
+	if (root && isUnder(cwd, root)) return relativeCwd(cwd, root);
+	const home = homePath.replace(/\/+$/, '');
+	if (!home || !isUnder(cwd, home)) return cwd;
+	const rest = cwd.slice(home.length).replace(/^\/+/, '');
+	return rest ? `~/${rest}` : '~';
+}
+
 function statusRank(status: AgentStatus): number {
 	return STATUS_ORDER[status] ?? STATUS_ORDER_FALLBACK;
 }
@@ -137,14 +165,14 @@ const COMPARE: Record<SortBy, (a: PaneState, b: PaneState) => number> = {
 };
 
 /** Projects one pane onto the row it becomes. */
-export function toRow(pane: PaneState, vaultPath: string): RowModel {
+export function toRow(pane: PaneState, vaultPath: string, homePath = ''): RowModel {
 	const displayName = agentDisplayName(pane);
 	return {
 		paneId: pane.paneId,
 		kind: pane.agent,
 		displayName,
 		title: pane.title && pane.title !== displayName ? pane.title : '',
-		pathLabel: relativeCwd(pane.cwd, vaultPath),
+		pathLabel: pathLabel(pane.cwd, vaultPath, homePath),
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
@@ -166,7 +194,7 @@ export function buildRows(
 	vaultPath: string,
 	options: RowModelOptions = {},
 ): RowGroup[] {
-	const { groupBy, sort } = { ...DEFAULTS, ...options };
+	const { groupBy, sort, homePath } = { ...DEFAULTS, ...options };
 	const keyOf = GROUP_KEY[groupBy] ?? GROUP_KEY.tab;
 	// One sort up front: it fixes the row order inside every group and, because
 	// the most urgent pane of a tab is then its first, the group order too.
@@ -188,7 +216,7 @@ export function buildRows(
 			};
 			groups.set(key, entry);
 		}
-		entry.group.rows.push(toRow(pane, vaultPath));
+		entry.group.rows.push(toRow(pane, vaultPath, homePath));
 	}
 
 	return [...groups.values()]

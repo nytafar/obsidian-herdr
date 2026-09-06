@@ -36,6 +36,7 @@ export {
 	agentDisplayName,
 	buildRows,
 	countStatuses,
+	pathLabel,
 	relativeCwd,
 	STATUS_LABEL,
 	STATUS_ORDER,
@@ -178,7 +179,9 @@ export class AgentListView extends ItemView {
 			return;
 		}
 
-		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath());
+		const groups = buildRows(panes, this.tabLabels, this.plugin.herdrVaultPath(), {
+			homePath: this.plugin.herdrHomePath(),
+		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
 
