@@ -35,7 +35,8 @@ import {
 	type ScrollDirection,
 	type TerminalSessionMode,
 } from '../bridge/terminalSession';
-import { GhosttyWebRenderer } from './renderer/ghosttyWeb';
+import { createRenderer } from './renderer/create';
+import type { TerminalRenderer } from './renderer/TerminalRenderer';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -229,7 +230,7 @@ export class TerminalView extends ItemView {
 	private hostEl: HTMLElement | null = null;
 	private statusEl: HTMLElement | null = null;
 	private toggleActionEl: HTMLElement | null = null;
-	private renderer: GhosttyWebRenderer | null = null;
+	private renderer: TerminalRenderer | null = null;
 	private rendererReady: Promise<void> | null = null;
 	private session: TerminalSession | null = null;
 	private closedReason: string | null = null;
@@ -293,7 +294,10 @@ export class TerminalView extends ItemView {
 
 		this.registerDomEvent(this.hostEl, 'wheel', (event) => this.onWheel(event));
 		// A theme switch changes every colour the renderer was handed (PRD S18).
-		this.registerEvent(this.app.workspace.on('css-change', () => this.renderer?.refreshTheme()));
+		this.registerEvent(
+			// Optional on the interface: a renderer without it keeps its colours.
+			this.app.workspace.on('css-change', () => this.renderer?.refreshTheme?.()),
+		);
 
 		this.scheduleResize = debounce(() => this.applyFit(), RESIZE_DEBOUNCE_MS, {
 			setTimeout: (cb, ms) => window.setTimeout(cb, ms),
@@ -415,10 +419,10 @@ export class TerminalView extends ItemView {
 	}
 
 	/** Mounts the renderer once per view; later calls reuse the same instance. */
-	private async ensureRenderer(host: HTMLElement): Promise<GhosttyWebRenderer | null> {
+	private async ensureRenderer(host: HTMLElement): Promise<TerminalRenderer | null> {
 		if (!this.renderer) {
 			const settings = this.plugin.settings;
-			const renderer = new GhosttyWebRenderer({
+			const renderer = createRenderer({
 				fontFamily: settings.terminalFontFamily,
 				fontSize: settings.terminalFontSize,
 				// Input is gated on the session's mode instead of here, so toggling

@@ -4,7 +4,9 @@
  *
  * Nothing in this file may import a renderer library: it holds the contract plus
  * the pure helpers (option normalisation, fit maths) that the DOM-free unit tests
- * cover. See `tests/README.md` for how to smoke the real renderer in Obsidian.
+ * cover. The one place that names an implementation is `createRenderer` in
+ * `./create.ts`; swapping ghostty-web for xterm.js is that one line plus a new
+ * file next to `ghosttyWeb.ts`. See `tests/README.md` for the manual smoke.
  */
 
 /** Removes a listener registered with `onData` / `onResize`. Idempotent. */
@@ -49,6 +51,12 @@ export interface TerminalRenderer {
 	onData(cb: (data: string) => void): Unsubscribe;
 	onResize(cb: (size: { cols: number; rows: number }) => void): Unsubscribe;
 	focus(): void;
+	/**
+	 * Re-read Obsidian's CSS variables after a theme switch (PRD S18). Optional:
+	 * a renderer that takes its colours some other way simply omits it and the
+	 * view's `css-change` handler does nothing.
+	 */
+	refreshTheme?(): void;
 	dispose(): void;
 }
 
