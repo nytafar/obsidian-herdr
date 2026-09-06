@@ -45,6 +45,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalScrollbackMb: 10,
 		openTerminalAfterStart: true,
 		panesPerTab: 2,
+		folderHoverButton: true,
 		extraPath: '',
 		defaultAttachMode: 'control',
 		terminalPlacement: 'split-right',

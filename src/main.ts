@@ -27,6 +27,7 @@ import { AGENT_LIST_VIEW_TYPE, AgentListView, countStatuses } from './views/agen
 import { registerKindIcons } from './views/kindIcons';
 import { TERMINAL_VIEW_TYPE, TerminalView, stateMatchesPane } from './views/terminalView';
 import { decidePlacement } from './terminalPlacement';
+import { ExplorerFolderButtons } from './explorerButtons';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
@@ -40,6 +41,8 @@ export default class HerdrPlugin extends Plugin {
 	tunnel: SshTunnel | null = null;
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
+	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
+	private explorerButtons!: ExplorerFolderButtons;
 	/**
 	 * Views that outlive a connection (a restored sidebar opens before `connect`
 	 * runs; a plugin reload rebuilds them before it) subscribe here and rebind to
@@ -62,6 +65,7 @@ export default class HerdrPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.actions = new HerdrActions(this.actionHost());
+		this.explorerButtons = new ExplorerFolderButtons(this);
 		this.notifier = new TransitionNotifier({
 			now: () => Date.now(),
 			settings: () => this.settings.notifications,
@@ -102,6 +106,7 @@ export default class HerdrPlugin extends Plugin {
 		// Vault-facing work waits for the layout, per the Obsidian guidelines.
 		this.app.workspace.onLayoutReady(() => {
 			this.registerFileMenus();
+			this.refreshFolderHoverButton();
 			void this.connect();
 		});
 	}
@@ -109,6 +114,10 @@ export default class HerdrPlugin extends Plugin {
 	onunload() {
 		// Leaves are never detached here: Obsidian restores them and the user
 		// decides where the view lives (PRD M10, N1).
+
+		// The explorer buttons are not registered on the plugin, because the
+		// setting has to release them too; `disable()` is the one teardown.
+		this.explorerButtons.disable();
 		this.client?.dispose();
 		this.client = null;
 		this.scope = null;
@@ -267,6 +276,12 @@ export default class HerdrPlugin extends Plugin {
 			const view = leaf.view;
 			if (view instanceof TerminalView) view.applyTheme(this.settings.terminalTheme);
 		}
+	}
+
+	/** Applies the folder hover button setting, both ways (issue #30). */
+	refreshFolderHoverButton(): void {
+		if (this.settings.folderHoverButton) this.explorerButtons.enable();
+		else this.explorerButtons.disable();
 	}
 
 	/** Runs `listener` whenever `scope` is replaced. Returns the unsubscribe. */

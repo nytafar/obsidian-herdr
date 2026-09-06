@@ -113,6 +113,11 @@ export interface HerdrSettings {
 	 * opens another tab. See {@link clampPanesPerTab}.
 	 */
 	panesPerTab: number;
+	/**
+	 * Show the hover button on file explorer folder rows (issue #30, PRD C21).
+	 * Behind a setting because it injects into undocumented explorer DOM.
+	 */
+	folderHoverButton: boolean;
 	/** Directories appended to PATH when spawning herdr, colon separated. */
 	extraPath: string;
 	/** Row order inside each group of the agent list. */
@@ -211,6 +216,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	openTerminalAfterStart: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
+	folderHoverButton: true,
 	extraPath: '',
 	agentListSort: 'priority',
 	agentListGroupBy: 'tab',
@@ -569,6 +575,21 @@ export class HerdrSettingTab extends PluginSettingTab {
 						settings.panesPerTab = clampPanesPerTab(value);
 						await this.save();
 					}),
+			);
+
+		new Setting(containerEl).setName('File explorer').setHeading();
+
+		new Setting(containerEl)
+			.setName('Folder hover button')
+			.setDesc(
+				'Show a button on folder rows in the file explorer, on hover, that opens the herdr actions for that folder. The right-click menu has the same actions and is unaffected. Turn this off if an Obsidian update makes the button misbehave.',
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(settings.folderHoverButton).onChange(async (value) => {
+					settings.folderHoverButton = value;
+					await this.save();
+					this.plugin.refreshFolderHoverButton();
+				}),
 			);
 
 		new Setting(containerEl).setName('Agent list').setHeading();
