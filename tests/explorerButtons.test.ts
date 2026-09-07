@@ -1,18 +1,26 @@
 /**
  * The folder hover button (issue #30). The injection itself needs a real file
- * explorer — an undocumented DOM this repo does not fake — so what is tested
- * here is every decision the class makes before it touches an element: which
- * menu a folder gets, which pane "Attach" opens, what a row's `data-path`
+ * explorer — an undocumented DOM this repo does not fake — so most of what is
+ * tested here is every decision the class makes before it touches an element:
+ * which menu a folder gets, which pane "Attach" opens, what a row's `data-path`
  * becomes on herdr's side of a remote profile, and the popout-safe element
  * check that guards the click handler.
+ *
+ * The last suite is the exception. Issue #74 moved the pointer listeners off
+ * the explorer container and onto that container's own window, and the whole
+ * point of that move — target, phase, which listener answers a click when two
+ * explorers share a window, and how hard the event is stopped — is invisible to
+ * a pure function. So the explorer, its window and the clicked element are
+ * faked down to the handful of members the class actually calls.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	asElement,
 	attachablePane,
 	BUTTON_CLASS,
 	CLAIM_ATTR,
+	ExplorerFolderButtons,
 	FOLDER_ROW_SELECTOR,
 	folderAbsPath,
 	FOLDER_BUTTON_KEYS,
@@ -21,6 +29,38 @@ import {
 } from '../src/explorerButtons';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import type { PaneState } from '../src/herdr/scope';
+
+// The `obsidian` stub's `Menu` is a bare class, and the wiring suite needs to
+// know that a menu was opened and what it offered. One title list per menu
+// shown; anything else about the menu is `menuItemsFor`'s business, above.
+const shown = vi.hoisted(() => [] as string[][]);
+vi.mock('obsidian', async (importOriginal) => {
+	const actual = await importOriginal<Record<string, unknown>>();
+	class FakeMenu {
+		private readonly titles: string[] = [];
+		addItem(build: (entry: unknown) => void): this {
+			const entry = {
+				setTitle: (title: string) => {
+					this.titles.push(title);
+					return entry;
+				},
+				setIcon: () => entry,
+				onClick: () => entry,
+			};
+			build(entry);
+			return this;
+		}
+		showAtMouseEvent(): this {
+			shown.push([...this.titles]);
+			return this;
+		}
+		showAtPosition(): this {
+			shown.push([...this.titles]);
+			return this;
+		}
+	}
+	return { ...actual, Menu: FakeMenu };
+});
 
 function pane(paneId: string, cwd: string): PaneState {
 	return {
@@ -171,5 +211,285 @@ describe('the DOM contract', () => {
 describe('the setting', () => {
 	it('ships on', () => {
 		expect(DEFAULT_SETTINGS.folderHoverButton).toBe(true);
+	});
+});
+
+interface FakeListener {
+	readonly type: string;
+	readonly handler: (event: Event) => void;
+	readonly capture: boolean;
+}
+
+interface FakeEvent {
+	readonly target: object;
+	defaultPrevented: boolean;
+	stopped: boolean;
+	immediateStopped: boolean;
+	preventDefault(): void;
+	stopPropagation(): void;
+	stopImmediatePropagation(): void;
+}
+
+interface ListenerHost {
+	readonly listeners: FakeListener[];
+	addEventListener(type: string, handler: (event: Event) => void, capture?: boolean): void;
+	removeEventListener(type: string, handler: (event: Event) => void, capture?: boolean): void;
+	dispatch(type: string, event: FakeEvent): void;
+}
+
+/** An event target that records what was bound to it and can dispatch to it. */
+function listenerHost(): ListenerHost {
+	const listeners: FakeListener[] = [];
+	return {
+		listeners,
+		addEventListener(type, handler, capture): void {
+			listeners.push({ type, handler, capture: capture === true });
+		},
+		removeEventListener(type, handler, capture): void {
+			const at = listeners.findIndex(
+				(entry) =>
+					entry.type === type &&
+					entry.handler === handler &&
+					entry.capture === (capture === true),
+			);
+			if (at >= 0) listeners.splice(at, 1);
+		},
+		// Listeners sharing a target run in registration order, and
+		// `stopImmediatePropagation` is exactly what cuts the rest of them off.
+		// The two-explorers case turns on that, so the fake honours it.
+		dispatch(type, event): void {
+			for (const entry of [...listeners]) {
+				if (entry.type !== type) continue;
+				entry.handler(event as unknown as Event);
+				if (event.immediateStopped) return;
+			}
+		},
+	};
+}
+
+interface FakeExplorer {
+	/** The container's own listeners, kept apart from the window's. */
+	readonly host: ListenerHost;
+	readonly container: HTMLElement;
+	/** Puts a node inside this container, for the `contains` guard. */
+	holds(node: object): void;
+}
+
+/** One explorer container, in the window it is given. */
+function fakeContainer(view: ListenerHost | null): FakeExplorer {
+	const host = listenerHost();
+	const inside = new Set<object>();
+	const container = {
+		ownerDocument: { defaultView: view },
+		addEventListener: (type: string, handler: (event: Event) => void, capture?: boolean) =>
+			host.addEventListener(type, handler, capture),
+		removeEventListener: (type: string, handler: (event: Event) => void, capture?: boolean) =>
+			host.removeEventListener(type, handler, capture),
+		querySelectorAll: (): never[] => [],
+		contains: (node: object | null): boolean => node !== null && inside.has(node),
+	} as unknown as HTMLElement;
+	return { host, container, holds: (node) => inside.add(node) };
+}
+
+function fakeEvent(target: object): FakeEvent {
+	const event: FakeEvent = {
+		target,
+		defaultPrevented: false,
+		stopped: false,
+		immediateStopped: false,
+		preventDefault(): void {
+			event.defaultPrevented = true;
+		},
+		stopPropagation(): void {
+			event.stopped = true;
+		},
+		stopImmediatePropagation(): void {
+			event.stopped = true;
+			event.immediateStopped = true;
+		},
+	};
+	return event;
+}
+
+/** A click landing on our button, inside a folder row carrying `data-path`. */
+function buttonTarget(dataPath: string): object {
+	const row = {
+		getAttribute: (name: string): string | null => (name === 'data-path' ? dataPath : null),
+	};
+	const button = {
+		getBoundingClientRect: (): { left: number; bottom: number } => ({ left: 4, bottom: 8 }),
+		closest: (selector: string): object | null => {
+			if (selector === `.${BUTTON_CLASS}`) return button;
+			return selector === FOLDER_ROW_SELECTOR ? row : null;
+		},
+	};
+	return button;
+}
+
+/** A click on the row itself, away from the button: not ours to take. */
+function rowTarget(): object {
+	const row = {
+		getAttribute: (): string | null => 'notes',
+		closest: (selector: string): object | null =>
+			selector === FOLDER_ROW_SELECTOR ? row : null,
+	};
+	return row;
+}
+
+type ExplorerPlugin = ConstructorParameters<typeof ExplorerFolderButtons>[0];
+
+let leaves: { view: { containerEl: HTMLElement } }[] = [];
+
+/** Just enough plugin: the leaves to watch, the vault path and an empty scope. */
+function fakePlugin(): ExplorerPlugin {
+	return {
+		app: {
+			workspace: {
+				on: (): object => ({}),
+				offref: (): void => {},
+				getLeavesOfType: (): { view: { containerEl: HTMLElement } }[] => leaves,
+			},
+		},
+		herdrVaultPath: (): string => VAULT,
+		scope: { list: (): PaneState[] => [] },
+	} as unknown as ExplorerPlugin;
+}
+
+const MENU = ['Start agent here', 'Copy path from vault root'];
+
+describe('the pointer listener (issue #74)', () => {
+	beforeEach(() => {
+		leaves = [];
+		shown.length = 0;
+		// `watch` observes its container, and node has no `MutationObserver`;
+		// nothing here mutates a container, so an inert one is enough.
+		vi.stubGlobal(
+			'MutationObserver',
+			class {
+				observe(): void {}
+				disconnect(): void {}
+			},
+		);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function explorer(view: ListenerHost | null): FakeExplorer {
+		const made = fakeContainer(view);
+		leaves.push({ view: { containerEl: made.container } });
+		return made;
+	}
+
+	it('binds click and auxclick on the container window, in capture', () => {
+		const view = listenerHost();
+		const made = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		expect(view.listeners.map((entry) => entry.type)).toEqual(['click', 'auxclick']);
+		expect(view.listeners.every((entry) => entry.capture)).toBe(true);
+		// Nothing contends for the explorer's keys, so those stay on the container.
+		expect(made.host.listeners.map((entry) => entry.type)).toEqual(['keydown']);
+		expect(made.host.listeners[0]?.capture).toBe(true);
+		buttons.disable();
+	});
+
+	it('opens the menu and stops the click immediately, so nothing downstream reacts', () => {
+		const view = listenerHost();
+		const made = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		const target = buttonTarget('notes');
+		made.holds(target);
+		const event = fakeEvent(target);
+		view.dispatch('click', event);
+		expect(shown).toEqual([MENU]);
+		expect(event.defaultPrevented).toBe(true);
+		expect(event.immediateStopped).toBe(true);
+		buttons.disable();
+	});
+
+	it('answers a middle click the same way, so no folder note opens in a tab', () => {
+		const view = listenerHost();
+		const made = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		const target = buttonTarget('notes');
+		made.holds(target);
+		const event = fakeEvent(target);
+		view.dispatch('auxclick', event);
+		expect(shown).toEqual([MENU]);
+		expect(event.immediateStopped).toBe(true);
+		buttons.disable();
+	});
+
+	it('lets a click elsewhere in the row through untouched', () => {
+		const view = listenerHost();
+		const made = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		const target = rowTarget();
+		made.holds(target);
+		const event = fakeEvent(target);
+		view.dispatch('click', event);
+		expect(shown).toEqual([]);
+		expect(event.defaultPrevented).toBe(false);
+		expect(event.stopped).toBe(false);
+		buttons.disable();
+	});
+
+	it('opens exactly one menu when two explorers share a window', () => {
+		const view = listenerHost();
+		const first = explorer(view);
+		const second = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		expect(view.listeners).toHaveLength(4);
+		// The click lands in the second explorer. The first must ignore it even
+		// though the button matches its selector every bit as well.
+		const target = buttonTarget('notes');
+		second.holds(target);
+		expect(first.container.contains(target as unknown as Node)).toBe(false);
+		view.dispatch('click', fakeEvent(target));
+		expect(shown).toEqual([MENU]);
+		buttons.disable();
+	});
+
+	it('ignores a button in the window that is in no container it watches', () => {
+		// The window hears every click in it, including one on a folder row of an
+		// explorer this object does not watch — a leaf being torn down, say. The
+		// containment guard is the whole of what keeps that from opening a menu,
+		// and it is the same guard that stops two explorers opening two.
+		const view = listenerHost();
+		explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		const event = fakeEvent(buttonTarget('notes'));
+		view.dispatch('click', event);
+		expect(shown).toEqual([]);
+		expect(event.stopped).toBe(false);
+		buttons.disable();
+	});
+
+	it('gives the window listeners back on disable', () => {
+		const view = listenerHost();
+		const made = explorer(view);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		buttons.enable();
+		buttons.disable();
+		expect(view.listeners).toEqual([]);
+		expect(made.host.listeners).toEqual([]);
+		const target = buttonTarget('notes');
+		made.holds(target);
+		view.dispatch('click', fakeEvent(target));
+		expect(shown).toEqual([]);
+	});
+
+	it('survives a container whose window is gone rather than throwing', () => {
+		explorer(null);
+		const buttons = new ExplorerFolderButtons(fakePlugin());
+		expect(() => buttons.enable()).not.toThrow();
+		expect(() => buttons.disable()).not.toThrow();
 	});
 });
