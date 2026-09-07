@@ -100,8 +100,21 @@
 	outline: none;
 }
 
-.herdr-agent-row.is-focused {
-	background-color: var(--background-modifier-active-hover);
+/*
+ * The pane herdr has focused. `--nav-item-background-active` and not
+ * `--background-modifier-active-hover`, which is Obsidian's blend for an item
+ * that is active *and* hovered and so is faint by design: as a resting state it
+ * came out invisible in both RedShift and Gruvbox (issue #77). A theme has to
+ * keep the nav-item variables legible or its own file explorer stops marking the
+ * active file, which is the guarantee we want and the modifier does not carry.
+ *
+ * It stays put under the pointer rather than swapping to the active-hover blend,
+ * because that blend is the faint value this rule exists to get away from. The
+ * hover feedback on a focused row is the action icon appearing.
+ */
+.herdr-agent-row.is-focused,
+.herdr-agent-row.is-focused:hover {
+	background-color: var(--nav-item-background-active);
 }
 
 .herdr-agent-text {
