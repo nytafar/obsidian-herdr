@@ -14,6 +14,22 @@
  * `MutationObserver` per explorer view, debounced at 150 ms, rescans and claims
  * or releases each row by the `data-herdr-folder-button` marker.
  *
+ * The click has to be taken from other plugins, not merely before Obsidian's own
+ * row handler (issue #74). Folder notes binds `click` on `document` in the
+ * capture phase and, for a folder that has a folder note, ends in
+ * `stopImmediatePropagation`; capture runs outermost first, so `document` beats
+ * a listener on the explorer container whatever the load order is, and our
+ * button never heard its own click. So the pointer listeners sit one level
+ * further out again, on the container's *own* window — `ownerDocument
+ * .defaultView`, never the module's `window`, because a popout explorer is a
+ * different one — in capture, which is the top of the propagation path and thus
+ * beyond any `document` listener's reach. `auxclick` rides along because Folder
+ * notes opens the folder note in a new tab on middle click. Two explorer leaves
+ * can share one window, so each listener ignores what its own container does not
+ * `contains`; without that, one click would open two menus. `keydown` stays on
+ * the container: the only window key handler in play is a mod-key link preview,
+ * and a key event reaches us through the focused button either way.
+ *
  * Lifetime is the awkward part. `Plugin.registerDomEvent` and
  * `Plugin.registerEvent` release at *plugin unload*, but this feature has to
  * release the moment the setting is switched off, which is what the ticket's
@@ -246,15 +262,22 @@ export class ExplorerFolderButtons {
 		const rescan = rescanner(() => this.scan(container), RESCAN_DEBOUNCE_MS);
 		const observer = new MutationObserver(() => rescan.schedule());
 		observer.observe(container, { childList: true, subtree: true });
-		// Capture phase, one listener per explorer instead of one per row: the
-		// rows come and go, the container does not. Capture also means the click
-		// is stopped before the row's own handler folds the folder.
-		const onClick = (event: MouseEvent): void =>
+		// One listener per explorer instead of one per row: the rows come and go,
+		// the container does not. It is bound on the window rather than on the
+		// container so that another plugin's `document` capture listener cannot
+		// eat the click first (issue #74), which costs us the containment check:
+		// a second explorer leaf in this same window has its own listener, and
+		// only the one whose container holds the click may answer it.
+		const onPointer = (event: MouseEvent): void => {
+			const target = asElement(event.target);
+			if (!target || !container.contains(target)) return;
 			this.onActivate(event, (menu) => menu.showAtMouseEvent(event));
+		};
 		// The button is focusable, so it must open its menu from the keyboard too.
-		// Same phase and same reasoning: Enter on a focused button would otherwise
-		// reach the row and toggle the folder. A key press has no pointer to open
-		// the menu at, so it opens under the button instead.
+		// Same phase, and the container is still target enough: nothing contends
+		// for the explorer's keys, and capture keeps Enter on a focused button
+		// from reaching the row and toggling the folder. A key press has no
+		// pointer to open the menu at, so it opens under the button instead.
 		const onKeyDown = (event: KeyboardEvent): void => {
 			if (!FOLDER_BUTTON_KEYS.includes(event.key)) return;
 			this.onActivate(event, (menu, button) => {
@@ -262,13 +285,19 @@ export class ExplorerFolderButtons {
 				menu.showAtPosition({ x: rect.left, y: rect.bottom });
 			});
 		};
-		container.addEventListener('click', onClick, true);
+		// Null only if the container has been pulled out of its document already,
+		// in which case there is nothing left to click; the keydown listener and
+		// the observer still go on, and `release` stays symmetric with this.
+		const view = container.ownerDocument.defaultView;
+		view?.addEventListener('click', onPointer, true);
+		view?.addEventListener('auxclick', onPointer, true);
 		container.addEventListener('keydown', onKeyDown, true);
 		this.watched.set(container, {
 			release: () => {
 				rescan.cancel();
 				observer.disconnect();
-				container.removeEventListener('click', onClick, true);
+				view?.removeEventListener('click', onPointer, true);
+				view?.removeEventListener('auxclick', onPointer, true);
 				container.removeEventListener('keydown', onKeyDown, true);
 			},
 		});
@@ -345,11 +374,14 @@ export class ExplorerFolderButtons {
 		const target = asElement(event.target);
 		const button = target?.closest<HTMLElement>(`.${BUTTON_CLASS}`);
 		if (!button) return;
-		// Stopped in the capture phase, so the row below never sees it and the
-		// folder neither folds nor becomes the explorer's selection. It also stops
-		// the browser turning Enter on a button into a second, synthetic click.
+		// Stopped in the capture phase, so nothing below sees it: the row neither
+		// folds nor becomes the explorer's selection, and no other plugin's
+		// `document` handler opens a folder note under our menu (issue #74).
+		// Immediate, because a listener sharing our target is exactly the case
+		// plain `stopPropagation` would leave running. It also stops the browser
+		// turning Enter on a button into a second, synthetic click.
 		event.preventDefault();
-		event.stopPropagation();
+		event.stopImmediatePropagation();
 		const row = button.closest<HTMLElement>(FOLDER_ROW_SELECTOR);
 		const dataPath = row?.getAttribute('data-path');
 		if (typeof dataPath !== 'string') return;
