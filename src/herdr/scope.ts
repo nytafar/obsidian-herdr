@@ -14,8 +14,10 @@
  *     `pane_updated` per second at idle and most of them only move `revision`
  *     (PRD N4).
  *
- * No Obsidian imports: the vault is passed in as a path plus a name so this file
- * stays unit-testable and reusable from the remote profile.
+ * No Obsidian imports and no socket: the vault is passed in as a path plus a
+ * name, and the one call this module needs to make (`ScopeOptions.lookupPanes`)
+ * arrives as a plain async callback, so the file stays unit-testable and
+ * reusable from the remote profile.
  */
 
 import { lastPathSegment, trimTrailingSlashes } from '../paths';
@@ -112,6 +114,16 @@ export interface ScopeOptions {
 	 * because the panes' cwds are remote paths (PRD S5, M19).
 	 */
 	remoteVaultPath?: string;
+	/**
+	 * Panes of one workspace, normally `pane.list` with a `workspace_id`. The
+	 * scope calls it only when `pane_agent_detected` announces an agent on a pane
+	 * it does not already hold: that event names the pane and the agent but
+	 * carries no cwd, tab or title, and herdr 0.8.0 has no per-pane get (issue
+	 * #75). Injected rather than taken as a client so this file keeps its promise
+	 * of no Obsidian and no socket. Left out, detections still remove released
+	 * panes and simply admit nothing.
+	 */
+	lookupPanes?: (workspaceId: string) => Promise<PaneInfo[]>;
 }
 
 /** Fields whose change is worth re-rendering a row for (PRD N4). */
@@ -286,6 +298,13 @@ export class WorkspaceScope {
 	 * collision check needs them all (PRD M20).
 	 */
 	private names = new Map<string, string>();
+	/**
+	 * pane id → the workspace its detection lookup was asked about (issue #75).
+	 * Presence is what makes a late answer valid: `drop` deletes the entry, so an
+	 * answer that lands after the pane closed, or after its agent was released,
+	 * finds nothing to apply and cannot resurrect the row.
+	 */
+	private pendingLookups = new Map<string, string>();
 	/** Counter behind `PaneState.statusChangedSeq`; only ever increases. */
 	private statusSeq = 0;
 	private resolvedId: string | null = null;
@@ -491,12 +510,21 @@ export class WorkspaceScope {
 				return;
 			}
 			case 'pane_agent_detected': {
-				// The pane either gained or lost an agent; the following pane_updated
-				// carries the detail, but act now so a released pane leaves the list.
+				// Both halves act now. A release drops the pane at once, as it always
+				// did. A gain used to wait for the next pane_updated to carry the
+				// detail, which measured as seconds of nothing (issue #75):
+				// pane.updated is a round-robin across every pane herdr has, not a
+				// per-pane heartbeat, so a pane that just started an agent waits its
+				// turn among a hundred others. This event lands ~138 ms after
+				// agent.start and already names the agent, so it is the trigger.
 				const paneId = stringField(event.data, 'pane_id');
 				const agent = stringField(event.data, 'agent');
 				if (!paneId) return;
-				if (agent === null || event.data.released === true) this.drop(paneId);
+				if (agent === null || event.data.released === true) {
+					this.drop(paneId);
+					return;
+				}
+				this.admit(paneId, stringField(event.data, 'workspace_id'));
 				return;
 			}
 			case 'workspace_created':
@@ -543,6 +571,56 @@ export class WorkspaceScope {
 			default:
 				return;
 		}
+	}
+
+	/**
+	 * Fills in a pane that just gained an agent (issue #75). One lookup per
+	 * detection, and none at all for a pane already in the map, so a burst of
+	 * starts is not a burst of `pane.list`. The workspace on the event decides
+	 * whether the detection is ours; a detection elsewhere is not chased.
+	 */
+	private admit(paneId: string, eventWorkspaceId: string | null): void {
+		const workspaceId = this.resolvedId;
+		if (workspaceId === null) return;
+		if (eventWorkspaceId !== null && eventWorkspaceId !== workspaceId) return;
+		if (this.panes.has(paneId)) return;
+		// A second detection for a pane whose first lookup is still out asks again
+		// for nothing; the answer in flight already covers it.
+		if (this.pendingLookups.has(paneId)) return;
+		const lookup = this.options.lookupPanes;
+		if (!lookup) return;
+		this.pendingLookups.set(paneId, workspaceId);
+		void lookup(workspaceId).then(
+			(panes) => {
+				this.settleLookup(paneId, workspaceId, panes);
+			},
+			() => {
+				// No answer is no change: the next pane_updated for the pane still
+				// admits it the slow way, and nothing here is worth a notice.
+				if (this.pendingLookups.get(paneId) === workspaceId) this.pendingLookups.delete(paneId);
+			},
+		);
+	}
+
+	/**
+	 * Applies a detection lookup, or discards it. Everything that can happen
+	 * between the question and the answer has to leave the map exactly as it is:
+	 * the pane closed or lost its agent (`drop` cancelled the entry, so a late
+	 * answer never resurrects it), the scoped workspace moved (the answer
+	 * describes a workspace we no longer show, and feeding it in would leak
+	 * foreign panes), or herdr no longer lists the pane at all.
+	 */
+	private settleLookup(paneId: string, workspaceId: string, panes: PaneInfo[]): void {
+		if (this.pendingLookups.get(paneId) !== workspaceId) return;
+		this.pendingLookups.delete(paneId);
+		if (this.resolvedId !== workspaceId) return;
+		const pane = panes.find((entry) => entry.pane_id === paneId);
+		if (!pane || pane.workspace_id !== workspaceId) return;
+		// Only the detected pane is taken from the answer. The rest of the list is
+		// what the event stream already maintains, and a whole-workspace overwrite
+		// would put back panes that closed while the request was out.
+		this.inventory.set(pane.pane_id, pane);
+		this.upsert(pane);
 	}
 
 	/** True when the pane inventory decides the resolution (cwd rule or nothing). */
@@ -604,6 +682,9 @@ export class WorkspaceScope {
 
 	/** Takes a pane out of the scoped map, emitting `removed` if it was there. */
 	private drop(paneId: string): void {
+		// Before the early return below, because the pane a detection lookup is out
+		// for is by definition not in the map yet (issue #75).
+		this.pendingLookups.delete(paneId);
 		const previous = this.panes.get(paneId);
 		if (!previous) return;
 		this.panes.delete(paneId);

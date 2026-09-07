@@ -818,3 +818,133 @@ describe('WorkspaceScope re-resolution keeps the collection in step (#58)', () =
 		expect(members(scope)).toEqual([['pa', 'wA']]);
 	});
 });
+
+describe('pane_agent_detected admits the pane (issue #75)', () => {
+	/**
+	 * A `lookupPanes` the test settles by hand. The point of every case here is
+	 * what happens *between* the ask and the answer, so the promise stays open
+	 * until the test has driven the scope somewhere else.
+	 */
+	function deferredLookup(): {
+		fn: (workspaceId: string) => Promise<PaneInfo[]>;
+		calls: string[];
+		answer: (panes: PaneInfo[]) => Promise<void>;
+		fail: () => Promise<void>;
+	} {
+		const calls: string[] = [];
+		let settle: (panes: PaneInfo[]) => void = () => undefined;
+		let abort: (error: Error) => void = () => undefined;
+		const pending = new Promise<PaneInfo[]>((resolve, reject) => {
+			settle = resolve;
+			abort = reject;
+		});
+		// Swallowed here so a rejected lookup is not an unhandled rejection in the
+		// test run; the scope attaches its own rejection handler as well.
+		pending.catch(() => undefined);
+		const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+		return {
+			calls,
+			fn: (workspaceId) => {
+				calls.push(workspaceId);
+				return pending;
+			},
+			answer: (panes) => {
+				settle(panes);
+				return flush();
+			},
+			fail: () => {
+				abort(new Error('pane.list failed'));
+				return flush();
+			},
+		};
+	}
+
+	function primed(fn?: (workspaceId: string) => Promise<PaneInfo[]>): {
+		scope: WorkspaceScope;
+		rec: Recorded;
+	} {
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		return { scope, rec: record(scope) };
+	}
+
+	const detected = (paneId: string, workspaceId = 'w4') =>
+		event('pane_agent_detected', { pane_id: paneId, workspace_id: workspaceId, agent: 'claude' });
+
+	it('looks the pane up and adds it, without waiting for a pane_updated', async () => {
+		const lookup = deferredLookup();
+		const { scope, rec } = primed(lookup.fn);
+		scope.ingest(detected('w4:p2'));
+		expect(lookup.calls).toEqual(['w4']);
+		await lookup.answer([pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2' })]);
+		expect(rec.added.map((state) => state.paneId)).toEqual(['w4:p2']);
+		expect(scope.get('w4:p2')?.agent).toBe('claude');
+		// Only the detected pane goes through `upsert`; the rest of the answer is
+		// what the event stream already keeps current.
+		expect(rec.changed).toHaveLength(0);
+	});
+
+	it('does not look up a pane it already holds, nor one of another workspace', () => {
+		const lookup = deferredLookup();
+		const { scope } = primed(lookup.fn);
+		scope.ingest(detected('w4:p1'));
+		scope.ingest(detected('wT:p8', 'wT'));
+		// A second detection while the first is still out asks again for nothing.
+		scope.ingest(detected('w4:p2'));
+		scope.ingest(detected('w4:p2'));
+		expect(lookup.calls).toEqual(['w4']);
+	});
+
+	it('is inert when the lookup fails', async () => {
+		const lookup = deferredLookup();
+		const { scope, rec } = primed(lookup.fn);
+		scope.ingest(detected('w4:p2'));
+		await lookup.fail();
+		expect(rec.added).toHaveLength(0);
+		expect(scope.size).toBe(1);
+	});
+
+	it('does not resurrect a pane that closed while the lookup was out', async () => {
+		const lookup = deferredLookup();
+		const { scope, rec } = primed(lookup.fn);
+		scope.ingest(detected('w4:p2'));
+		scope.ingest(event('pane_closed', { pane_id: 'w4:p2', workspace_id: 'w4' }));
+		// herdr listed the pane before it closed: the answer is stale, not wrong.
+		await lookup.answer([pane({ pane_id: 'w4:p2' })]);
+		expect(rec.added).toHaveLength(0);
+		expect(scope.get('w4:p2')).toBeUndefined();
+	});
+
+	it('drops the answer when the scoped workspace moved meanwhile', async () => {
+		const lookup = deferredLookup();
+		const { scope, rec } = primed(lookup.fn);
+		scope.ingest(detected('w4:p2'));
+		scope.configure({ workspaceId: 'wT' });
+		rec.added.length = 0;
+		await lookup.answer([pane({ pane_id: 'w4:p2' })]);
+		expect(rec.added).toHaveLength(0);
+		expect(scope.get('w4:p2')).toBeUndefined();
+	});
+
+	it('still removes a released agent at once, without a lookup', () => {
+		const lookup = deferredLookup();
+		const { scope, rec } = primed(lookup.fn);
+		scope.ingest(
+			event('pane_agent_detected', {
+				pane_id: 'w4:p1',
+				workspace_id: 'w4',
+				agent: null,
+				released: true,
+			}),
+		);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(lookup.calls).toEqual([]);
+	});
+
+	it('admits nothing when no lookup is injected, and does not throw', () => {
+		const { scope, rec } = primed();
+		scope.ingest(detected('w4:p2'));
+		expect(rec.added).toHaveLength(0);
+		expect(scope.size).toBe(1);
+	});
+});

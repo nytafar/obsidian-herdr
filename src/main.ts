@@ -747,10 +747,21 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private createScope(endpoint: Endpoint): WorkspaceScope {
 		const remoteProfile = endpoint.remote;
-		const scope = new WorkspaceScope({
+		const scope: WorkspaceScope = new WorkspaceScope({
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
+			// The one request the scope makes: what `pane_agent_detected` leaves out
+			// for a pane that just gained an agent (issue #75). Answered by the
+			// client of the connection this scope belongs to, and only while that
+			// connection is the published one — a lookup still in flight when the
+			// connection is replaced must not write into a scope nothing renders,
+			// so it is left hanging rather than answered from the new client.
+			lookupPanes: (workspaceId) => {
+				const current = this.connection.current;
+				if (!current || current.scope !== scope) return Promise.resolve([]);
+				return current.client.listPanes(workspaceId);
+			},
 		});
 		scope.on('changed', (_paneId, prev, next) => {
 			this.notifier.onChanged(prev, next, endpoint.id);
