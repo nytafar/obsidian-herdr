@@ -261,7 +261,15 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
 ## Smoking the terminal view inside Obsidian (T9, PRD M13/M15/S16)
 
 Nothing below is automated: the view needs a canvas, the ghostty WASM and a live
-herdr pane. The unit tests stop at the exported decisions.
+herdr pane. The unit tests stop at the exported decisions — but the session and
+renderer lifecycle behind the view is no longer among the things only a hand
+test covers: `tests/paneTerminal.test.ts` drives `PaneTerminal` (issue #83)
+through fake factories and a fake scheduler, including the races this recipe
+used to be the only check on — a suspend during a start, a reveal during the
+release, a mount finishing after its renderer was given up, and a connection
+arriving after a start had already given up on one. What is left to a hand test
+is what the fakes stand in for: a real canvas, a real child process, and step 9
+below, which is the only place the memory the suspension exists for is visible.
 
 1. `npm run build`, then in the dev vault open the agent list and click the
    terminal button on a row (or run the "start agent here" action with
