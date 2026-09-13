@@ -367,3 +367,139 @@ export class ConnectionCoordinator<
 		this.deps.notice(`Herdr: ${message}`);
 	}
 }
+
+/**
+ * The tab-label cache seen from here: something built per connection and
+ * disposed with it. Kept to `dispose` so this module owns the lifetime without
+ * knowing what a label is (`src/tabLabels.ts` does).
+ */
+export interface EndpointSessionLabels {
+	dispose(): void;
+}
+
+/**
+ * What one connection generation offers the views pinned to its endpoint
+ * (issue #81): the endpoint's own settings snapshot, the client, the workspace
+ * scope and the tab-label cache, together, so a view asks the endpoint-match
+ * question once instead of once per getter.
+ *
+ * It is a *session*, not a per-endpoint record: it lives and dies with the
+ * connection's identity, because the caches hanging off it are built from that
+ * connection's client and scope. A connection is published before its first
+ * ping answers and stays published through a transport outage, so a session
+ * existing means "this endpoint is the one the plugin is on", never "herdr is
+ * reachable right now" — what counts as usable is the caller's call.
+ */
+export interface EndpointSession<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	L extends EndpointSessionLabels = EndpointSessionLabels,
+> {
+	/** The connection's own endpoint snapshot, not the settings as they are now. */
+	readonly endpoint: Endpoint;
+	readonly client: C;
+	readonly scope: S;
+	/** Built on first read, shared by every view on this connection. */
+	readonly tabLabels: L;
+}
+
+class LiveEndpointSession<
+	C extends ConnectionClient,
+	S extends ConnectionScope,
+	L extends EndpointSessionLabels,
+	T extends ConnectionTunnel,
+> implements EndpointSession<C, S, L>
+{
+	private labels: L | null = null;
+
+	constructor(
+		readonly connection: Connection<C, S, T>,
+		private readonly create: (connection: Connection<C, S, T>) => L,
+	) {}
+
+	get endpoint(): Endpoint {
+		return this.connection.endpoint;
+	}
+
+	get client(): C {
+		return this.connection.client;
+	}
+
+	get scope(): S {
+		return this.connection.scope;
+	}
+
+	get tabLabels(): L {
+		// Lazily, because a lookup for the scope alone (a tab title repaint) must
+		// not make the cache subscribe to a client it will never fetch from.
+		return (this.labels ??= this.create(this.connection));
+	}
+
+	dispose(): void {
+		this.labels?.dispose();
+		this.labels = null;
+	}
+}
+
+export interface EndpointSessionDeps<
+	C extends ConnectionClient,
+	S extends ConnectionScope,
+	L extends EndpointSessionLabels,
+	T extends ConnectionTunnel,
+> {
+	/** The published connection, or null while none is. */
+	current(): Connection<C, S, T> | null;
+	/** Builds the tab-label cache of a connection; called at most once per one. */
+	createTabLabels(connection: Connection<C, S, T>): L;
+}
+
+/**
+ * The one place that answers "is the published connection the one this endpoint
+ * id names, and if so what does it give me" (issue #81). One session at a time,
+ * for the published connection; a new connection on the same endpoint disposes
+ * the previous session rather than handing on caches built from a client that
+ * has been retired.
+ */
+export class EndpointSessions<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	L extends EndpointSessionLabels = EndpointSessionLabels,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
+	private live: LiveEndpointSession<C, S, L, T> | null = null;
+
+	constructor(private readonly deps: EndpointSessionDeps<C, S, L, T>) {}
+
+	/**
+	 * The session of the published connection when its endpoint is `endpointId`,
+	 * else null: a terminal pinned to the other herdr must not read titles, tab
+	 * labels or an endpoint from this one (issue #54).
+	 */
+	for(endpointId: string): EndpointSession<C, S, L> | null {
+		const connection = this.sync();
+		if (!connection || connection.endpoint.id !== endpointId) return null;
+		return (this.live ??= new LiveEndpointSession(connection, (owner) =>
+			this.deps.createTabLabels(owner),
+		));
+	}
+
+	/**
+	 * Drops the session of a connection that is no longer published. Call it on
+	 * every replacement, so the caches go when the connection does rather than
+	 * when someone next looks one up. Returns the published connection.
+	 */
+	sync(): Connection<C, S, T> | null {
+		const connection = this.deps.current();
+		if (this.live && this.live.connection !== connection) {
+			this.live.dispose();
+			this.live = null;
+		}
+		return connection;
+	}
+
+	/** Unload: drops the session whatever the coordinator still reports. */
+	dispose(): void {
+		this.live?.dispose();
+		this.live = null;
+	}
+}

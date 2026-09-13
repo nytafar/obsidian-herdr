@@ -47,3 +47,25 @@ ship: ghostty-web (libghostty's VT in WebAssembly, canvas output) and xterm.js.
 ghostty-web is the default; its WebAssembly memory is shared and only grows, so
 hidden tabs are torn down after thirty seconds to cap it. The benchmark that
 compares them is `scripts/bench-renderers.mjs`.
+
+What a settings change does to an open terminal is a table, not a call path:
+`TERMINAL_SETTING_EFFECTS` in `src/views/paneTerminal.ts` maps each setting to
+one named effect — `theme`, `cursor`, `engine`, `title`, `next-mount` — and the
+plugin calls one entry point per terminal leaf with the setting that moved.
+Theme and cursor refresh the renderer, in place when the engine can and by
+remount otherwise; the session is preserved either way, so a palette change can
+never reclaim a pane another controller took over. Only an engine change
+restarts the bridge. A hidden leaf holds every effect the renderer would show
+until it is revealed, except the title, whose tab header is on screen anyway.
+
+## The settings tab
+
+The tab itself is an assembler. Seven section builders — connection, remote,
+notifications, agents, file explorer, agent list, terminal — are plain functions
+over a container, the settings object and a bundle of callbacks, listed in
+`SETTINGS_SECTIONS` in `src/settings.ts`; none of them ever sees the plugin. The
+callbacks bundle is the whole of what a control may do besides write into the
+settings: save, save and reconnect, redisplay, refresh the agent list or the
+folder hover buttons, or hand one changed setting to the open terminals. The tab
+builds that bundle from the plugin once and then just runs the list, which is
+what makes a section renderable on a bare container in a test.

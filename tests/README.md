@@ -11,12 +11,20 @@ including the choice of which herdr tab a new agent is split into,
 `chooseSplitTarget`).
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
 aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
-`obsidian.d.ts`. The terminal view is unit tested the same way: only its exported
+`obsidian.d.ts`. Most of that fixture only has to be loadable, but `Setting` is
+a working recorder (see "The `Setting` fixture" below). The terminal view is
+unit tested the same way: only its exported
 decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
 `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
 canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
 machine with injected timers, so the decision to free a hidden terminal is tested
-without a DOM; what a measurement *is* (a host with no box) is not. The settings
+without a DOM; what a measurement *is* (a host with no box) is not. What a
+settings change costs an open terminal is a table rather than a call path
+(`TERMINAL_SETTING_EFFECTS`, `planSettingEffect`, `collapseEffects` in
+`src/views/paneTerminal.ts`, issue #84), so it is asserted row by row in
+`tests/paneTerminal.test.ts` alongside the effects themselves running on the
+lifecycle: a theme remount that keeps the session, an engine change that does
+not, and an observe-mode bridge that no rebuild takes over. The settings
 side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`) and the
 panes-per-tab cap (`clampPanesPerTab`). The
 terminal renderers
@@ -44,6 +52,34 @@ wheel payload. The router suite pins the shipped policy: shift+enter and
 alt+enter are `ESC CR` (#18), plain enter and every other key are the renderer's,
 and a wheel notch is always a `terminal.scroll` carrying the cell and herdr's
 crossterm modifier bits rather than an SGR report the plugin built (#25).
+
+## The `Setting` fixture and the settings tab (#85)
+
+The settings tab is a status block plus seven sections, and each section is a
+plain function over a container, the settings object and a bundle of callbacks
+(`save`, `saveAndReconnect`, `redisplay`, `refreshAgentList`,
+`refreshFolderHoverButton`, `applyTerminalSetting`). No builder sees the plugin,
+so `tests/settingsSections.test.ts` renders a section on a bare container and
+asserts three things: the rows it puts up, what a change writes into the
+settings, and which callbacks run in which order — save before the refresh, and
+the redisplay last where a control shows or hides other fields. Both conditional
+groups are covered: the remote fields, which only exist while the profile is on
+(the enable toggle itself is always there), and the panes-per-tab cap, which
+only exists while agents share a herdr tab.
+
+That works because `Setting` in `tests/fixtures/obsidian.ts` is a recorder
+rather than a stub. It records `setName`, `setDesc`, `setHeading` and `setClass`,
+and `addToggle`, `addText`, `addTextArea`, `addDropdown`, `addSlider`,
+`addButton` and `addExtraButton` each build a component that records what it was
+configured with — value, placeholder, dropdown options in order, slider limits,
+button text — and keeps the handler passed to `onChange` (or `onClick`).
+`component.change(value)` is what a test drives: it stores the new value, runs
+the handler and returns its result, so an async handler can be awaited. Nothing
+touches a DOM; the container is only an identity, which is what
+`settingsContainer()` returns. Read a container back with `builtSettings`,
+`settingNames` or `settingNamed(container, name)`, and `setting.control()` for
+the single control of a row. `inputEl`, `selectEl` and `sliderEl` are
+`FakeElement`s that record listeners, for code that attaches one.
 
 ## Smoking shift+enter, mouse and scroll (#18, #25, #33)
 
@@ -243,9 +279,11 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    terminal title and the cwd relative to the vault. Clicking a row focuses that
    pane in herdr; the terminal button opens the terminal view (below). All of
    that comes from `buildRows`, so `tests/rowModel.test.ts` already covers the
-   ordering, the grouping and the labels; what is left to eyeball here is the
-   DOM. `tests/agentListView.test.ts` only guards the module surface, since the
-   view itself needs a document.
+   ordering, the grouping and the labels; what a click, a right-click or a key
+   on a row then *does* is `tests/rowDispatch.test.ts`, which drives the
+   dispatcher with a fake host and no view at all (issue #82). What is left to
+   eyeball here is the DOM. `tests/agentListView.test.ts` only guards the module
+   surface, since the view itself needs a document.
    Tab labels arrive from one `tab.list` per workspace resolution, never from
    the render path: with the devtools network-free view open, adding a pane
    should cause at most one extra `tab.list`, and repainting none at all.
@@ -259,7 +297,15 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
 ## Smoking the terminal view inside Obsidian (T9, PRD M13/M15/S16)
 
 Nothing below is automated: the view needs a canvas, the ghostty WASM and a live
-herdr pane. The unit tests stop at the exported decisions.
+herdr pane. The unit tests stop at the exported decisions — but the session and
+renderer lifecycle behind the view is no longer among the things only a hand
+test covers: `tests/paneTerminal.test.ts` drives `PaneTerminal` (issue #83)
+through fake factories and a fake scheduler, including the races this recipe
+used to be the only check on — a suspend during a start, a reveal during the
+release, a mount finishing after its renderer was given up, and a connection
+arriving after a start had already given up on one. What is left to a hand test
+is what the fakes stand in for: a real canvas, a real child process, and step 9
+below, which is the only place the memory the suspension exists for is visible.
 
 1. `npm run build`, then in the dev vault open the agent list and click the
    terminal button on a row (or run the "start agent here" action with

@@ -61,6 +61,15 @@ function parseArgs(argv) {
 
 function resolveBinary(override) {
 	if (override) return override;
+	// The dev shell's PATH wins: a stale copy in one of the fixed directories
+	// (this happened with 0.8.0 in ~/.local/bin beside 0.8.2 in /usr/bin) must
+	// not silently generate against an older protocol than the one running.
+	try {
+		const onPath = execFileSync('sh', ['-lc', 'command -v herdr'], { encoding: 'utf8' }).trim();
+		if (onPath && existsSync(onPath)) return onPath;
+	} catch {
+		// Not on PATH; fall through to the fixed directories.
+	}
 	const found = BINARY_CANDIDATES.find((candidate) => existsSync(candidate));
 	if (found) return found;
 	return 'herdr';

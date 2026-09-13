@@ -72,11 +72,29 @@ export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
 	];
 }
 
+/** What the terminate confirmation says. The view draws it as a warning. */
+export interface CloseConfirmText {
+	title: string;
+	body: string;
+	/** Text on the confirming button. Sentence case. */
+	confirm: string;
+}
+
+/** What the rename prompt says, and what it starts from. */
+export interface RenamePromptText {
+	title: string;
+	/** Line under the input explaining what herdr accepts. */
+	label: string;
+	initial: string;
+	/** Text on the confirming button. Sentence case. */
+	confirm: string;
+}
+
 /**
  * What the close confirmation says. The name is quoted so a row called `notes`
  * and one called `notes-2` cannot be confused at the moment it matters.
  */
-export function closeConfirmation(row: RowMenuRow): { title: string; body: string; confirm: string } {
+export function closeConfirmation(row: RowMenuRow): CloseConfirmText {
 	return {
 		title: `Terminate "${row.displayName}"?`,
 		body: `Terminate ${row.displayName}? This closes its herdr pane.`,
@@ -88,12 +106,7 @@ export function closeConfirmation(row: RowMenuRow): { title: string; body: strin
  * What the rename prompt says. The agent's own name is the starting value; an
  * agent herdr never named starts blank rather than with its title or pane id.
  */
-export function renamePrompt(row: RowMenuRow): {
-	title: string;
-	label: string;
-	initial: string;
-	confirm: string;
-} {
+export function renamePrompt(row: RowMenuRow): RenamePromptText {
 	return {
 		title: 'Rename agent',
 		label: 'Lowercase letters, digits, hyphen and underscore; herdr refuses anything else.',

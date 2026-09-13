@@ -11,6 +11,7 @@ import {
 	sanitizeAgentName,
 	type ActionHost,
 	type AgentPaneSummary,
+	type Requester,
 } from '../src/actions';
 import { HerdrError } from '../src/herdr/client';
 import type { HerdrSettings } from '../src/settings';
@@ -77,12 +78,17 @@ interface Fake {
 	host: ActionHost;
 	actions: HerdrActions;
 	calls: { method: string; params: unknown }[];
+	/** The connection generation each call went out on, in the same order. */
+	generations: number[];
 	notices: string[];
 	opened: string[];
-	detached: string[];
+	/** Pane and endpoint of every `detachTerminalLeaves`, in order (issue #66). */
+	detached: { paneId: string; endpointId: string }[];
 	responses: Map<string, unknown>;
 	taken: Set<string>;
 	clock: { now: number };
+	/** Replaces the client, as a reconnect does, without telling the caller. */
+	reconnect(): void;
 }
 
 function fake(options: {
@@ -93,24 +99,34 @@ function fake(options: {
 	agentPanes?: AgentPaneSummary[];
 } = {}): Fake {
 	const calls: { method: string; params: unknown }[] = [];
+	const generations: number[] = [];
 	const notices: string[] = [];
 	const opened: string[] = [];
-	const detached: string[] = [];
+	const detached: { paneId: string; endpointId: string }[] = [];
 	const taken = new Set<string>();
 	const clock = { now: 0 };
+	const client = { generation: 0 };
 	const responses = new Map<string, unknown>(
 		Object.entries(options.responses ?? {}),
 	);
-	const host: ActionHost = {
-		settings: () => options.settings ?? settings(),
-		workspaceId: () => (options.workspaceId === undefined ? 'w4' : options.workspaceId),
-		request: async <T,>(method: string, params: unknown): Promise<T> => {
+	// One connection, captured: calls made through it record the generation they
+	// went out on, so a reconnect mid-action is visible in the transcript.
+	const over =
+		(generation: number): Requester =>
+		async <T,>(method: string, params: unknown): Promise<T> => {
 			calls.push({ method, params });
+			generations.push(generation);
 			const entry = responses.get(method);
 			const value = typeof entry === 'function' ? (entry as () => unknown)() : entry;
 			if (value instanceof Error) throw value;
 			return value as T;
-		},
+		};
+	const host: ActionHost = {
+		settings: () => options.settings ?? settings(),
+		workspaceId: () => (options.workspaceId === undefined ? 'w4' : options.workspaceId),
+		request: <T,>(method: string, params: unknown): Promise<T> =>
+			over(client.generation)<T>(method, params),
+		connection: () => over(client.generation),
 		takenAgentNames: () => new Set(taken),
 		agentPanes: () => options.agentPanes ?? [],
 		vaultName: () => 'hvelv',
@@ -118,8 +134,8 @@ function fake(options: {
 		openTerminal: async (paneId) => {
 			opened.push(paneId);
 		},
-		detachTerminalLeaves: (paneId) => {
-			detached.push(paneId);
+		detachTerminalLeaves: (paneId, endpointId) => {
+			detached.push({ paneId, endpointId });
 		},
 		sleep: async (ms) => {
 			clock.now += ms;
@@ -130,12 +146,16 @@ function fake(options: {
 		host,
 		actions: new HerdrActions(host),
 		calls,
+		generations,
 		notices,
 		opened,
 		detached,
 		responses,
 		taken,
 		clock,
+		reconnect: () => {
+			client.generation++;
+		},
 	};
 }
 
@@ -650,7 +670,7 @@ describe('HerdrActions.startAgentHere splitting an existing tab (issue #29)', ()
 describe('closePane (issue #35)', () => {
 	it('sends pane.close with the pane id', async () => {
 		const f = fake({ responses: { 'pane.close': {} } });
-		expect(await f.actions.closePane('w4:p3')).toBe(true);
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(true);
 		expect(f.calls).toEqual([{ method: 'pane.close', params: { pane_id: 'w4:p3' } }]);
 		expect(f.notices).toEqual([]);
 	});
@@ -659,7 +679,7 @@ describe('closePane (issue #35)', () => {
 		const f = fake({
 			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
 		});
-		expect(await f.actions.closePane('w4:p3')).toBe(false);
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(false);
 		expect(f.notices).toEqual([
 			'Herdr: could not close the pane. pane w4:p3 not found (pane_not_found)',
 		]);
@@ -668,15 +688,26 @@ describe('closePane (issue #35)', () => {
 	// Issue #66: a menu-driven terminate takes the terminal tab with it.
 	it('detaches the pane’s terminal leaves once the close succeeds', async () => {
 		const f = fake({ responses: { 'pane.close': {} } });
-		expect(await f.actions.closePane('w4:p3')).toBe(true);
-		expect(f.detached).toEqual(['w4:p3']);
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(true);
+		expect(f.detached).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
+	});
+
+	// PR #89: pane ids alias across herdrs (issue #54), and the endpoint can be
+	// switched from the toolbar while `pane.close` is in flight. The leaves that
+	// go are the ones on the herdr the close was aimed at, not on whichever the
+	// plugin happens to be showing when it answers.
+	it('detaches on the endpoint the close was aimed at, not the current one', async () => {
+		const f = fake({ responses: { 'pane.close': {} } });
+		const remote = 'ssh:lasse@xl:/home/lasse/.config/herdr/herdr.sock';
+		expect(await f.actions.closePane('w4:p3', remote)).toBe(true);
+		expect(f.detached).toEqual([{ paneId: 'w4:p3', endpointId: remote }]);
 	});
 
 	it('does not detach any terminal leaf when the close fails', async () => {
 		const f = fake({
 			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
 		});
-		expect(await f.actions.closePane('w4:p3')).toBe(false);
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(false);
 		expect(f.detached).toEqual([]);
 	});
 });
@@ -710,6 +741,24 @@ describe('renameAgent (issue #35)', () => {
 		expect(f.notices).toEqual([
 			'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
 		]);
+	});
+
+	// PR #89: `agent.rename` is awaited, and the event connection can be replaced
+	// while it is. Both requests belong to the connection the rename started on.
+	it('sends the fallback over the connection agent.rename went out on', async () => {
+		const f = fake({ responses: { 'pane.rename': {} } });
+		f.responses.set('agent.rename', () => {
+			// herdr restarted while it was answering; the plugin reconnected.
+			f.reconnect();
+			return unsupported;
+		});
+
+		expect(await f.actions.renameAgent('w4:p3', 'notes-2')).toEqual({
+			method: 'pane.rename',
+			name: 'notes-2',
+		});
+		expect(f.calls.map((call) => call.method)).toEqual(['agent.rename', 'pane.rename']);
+		expect(f.generations).toEqual([0, 0]);
 	});
 
 	it('does not fall back on a genuine refusal', async () => {

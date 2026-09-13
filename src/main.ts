@@ -26,10 +26,12 @@ import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
+	EndpointSessions,
 	endpointLabel,
 	endpointOf,
 	resolveEndpoint,
 	type Endpoint,
+	type EndpointSession,
 } from './connection';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { TabLabelCache } from './tabLabels';
@@ -45,6 +47,7 @@ import {
 	parseTerminalState,
 	stateMatchesPane,
 } from './views/terminalView';
+import type { TerminalSetting } from './views/paneTerminal';
 import { decideOpenTarget, decidePlacement } from './terminalPlacement';
 import { ExplorerFolderButtons } from './explorerButtons';
 
@@ -80,11 +83,8 @@ export default class HerdrPlugin extends Plugin {
 				this.connectError = message;
 			},
 			onReplaced: () => {
-				// The label cache belongs to the connection that just went (#43).
-				if (this.tabLabelCache && this.tabLabelCache.scope !== this.connection.current?.scope) {
-					this.tabLabelCache.cache.dispose();
-					this.tabLabelCache = null;
-				}
+				// The caches belong to the connection that just went (#43, #81).
+				this.sessions.sync();
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
@@ -106,54 +106,55 @@ export default class HerdrPlugin extends Plugin {
 		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
 	}
 	/**
-	 * The current scope only when it belongs to `endpointId`; a terminal pinned
-	 * to the other herdr must not read titles from this one (issue #54).
+	 * The endpoint-match rule, in one place (issue #81): everything a view
+	 * pinned to an endpoint may read from the published connection — its
+	 * endpoint snapshot, client, scope and tab-label cache — or null when the
+	 * connection is elsewhere. The tab-label cache is built here, on first read,
+	 * because it needs both the client and the scope and the coordinator creates
+	 * them apart; it is retired with its connection (issue #43), and views never
+	 * fetch labels themselves.
 	 */
-	scopeFor(endpointId: string): WorkspaceScope | null {
-		const current = this.connection.current;
-		return current && current.endpoint.id === endpointId ? current.scope : null;
-	}
-	/**
-	 * The tab-label cache of the published connection, when it is the one
-	 * `endpointId` names (issue #43). Built on first use, because the cache
-	 * needs both the client and the scope and the coordinator creates them
-	 * apart; one per connection, keyed by its scope, and retired with it in
-	 * `onReplaced`. Views never fetch labels themselves.
-	 */
-	tabLabelsFor(endpointId: string): TabLabelCache | null {
-		const current = this.connection.current;
-		if (!current || current.endpoint.id !== endpointId) return null;
-		if (this.tabLabelCache?.scope !== current.scope) {
-			this.tabLabelCache?.cache.dispose();
-			const { client, scope } = current;
-			this.tabLabelCache = {
-				scope,
-				cache: new TabLabelCache({
-					client,
-					scope: {
-						get workspaceId() {
-							return scope.workspaceId;
-						},
-						tabIds: () => scope.list().map((pane) => pane.tabId),
-						onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+	private readonly sessions = new EndpointSessions<
+		HerdrClient,
+		WorkspaceScope,
+		TabLabelCache,
+		SshTunnel
+	>({
+		current: () => this.connection.current,
+		createTabLabels: (connection) => {
+			const { client, scope } = connection;
+			return new TabLabelCache({
+				client,
+				scope: {
+					get workspaceId() {
+						return scope.workspaceId;
 					},
-					alive: () => this.connection.current === current,
-				}),
-			};
-		}
-		return this.tabLabelCache.cache;
+					tabIds: () => scope.list().map((pane) => pane.tabId),
+					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+				},
+				alive: () => this.connection.current === connection,
+			});
+		},
+	});
+	/**
+	 * What `endpointId` names on the published connection, or null when that
+	 * connection is another herdr's: a terminal pinned to one must not read
+	 * titles or labels from the other (issue #54).
+	 */
+	endpointSession(
+		endpointId: string,
+	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+		return this.sessions.for(endpointId);
 	}
-	/** The one live cache and the scope it belongs to; see `tabLabelsFor`. */
-	private tabLabelCache: { scope: WorkspaceScope; cache: TabLabelCache } | null = null;
 	/**
 	 * The endpoint an id names: the published connection's own snapshot when it
 	 * matches, else one rebuilt from the settings as they are now, else null
-	 * when the settings no longer describe it.
+	 * when the settings no longer describe it. The settings half is the plugin's
+	 * because a restored or pinned terminal starts without any connection.
 	 */
 	endpointFor(endpointId: string): Endpoint | null {
-		const current = this.connection.current;
-		if (current && current.endpoint.id === endpointId) return current.endpoint;
-		return resolveEndpoint(endpointId, this.settings.remote);
+		const session = this.endpointSession(endpointId);
+		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings.remote);
 	}
 	/** Non-null only while a remote profile is enabled (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -242,8 +243,7 @@ export default class HerdrPlugin extends Plugin {
 		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
-		this.tabLabelCache?.cache.dispose();
-		this.tabLabelCache = null;
+		this.sessions.dispose();
 		this.scopeListeners.clear();
 		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
 		this.agentNameTimer = 0;
@@ -435,48 +435,19 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Repaints every open terminal with the current colour theme (issue #26). The
-	 * settings tab calls this after the theme dropdown changes, so open terminals
-	 * switch palette without being reopened. Deferred leaves are skipped: they read
-	 * the setting when they mount.
+	 * A terminal setting changed: tell every open terminal which one (issue #84).
+	 *
+	 * The only terminal fan-out there is. What a setting costs — a repaint, a
+	 * cursor, a rebuild on the other engine, a retitle, or nothing until the next
+	 * mount — is the matrix's decision (`TERMINAL_SETTING_EFFECTS`), not this
+	 * method's and not the settings tab's; `cssVariables` comes from the view's
+	 * own `css-change` handler rather than from here. Deferred leaves are skipped:
+	 * they read every setting when they mount.
 	 */
-	refreshTerminals(): void {
+	applyTerminalSetting(setting: TerminalSetting): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
 			const view = leaf.view;
-			if (view instanceof TerminalView) view.applyTheme(this.settings.terminalTheme);
-		}
-	}
-
-	/** Retitles every open terminal after the title setting changed (issue #43). */
-	refreshTerminalTitles(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) view.refreshTitle();
-		}
-	}
-
-	/**
-	 * Rebuilds every open terminal on the engine the settings now name (issue
-	 * #27). Unlike a theme change, this cannot be applied in place: the renderer
-	 * is a different library, so each view snapshots its scrollback, disposes and
-	 * starts again. Deferred leaves are skipped; they read the setting when they
-	 * mount.
-	 */
-	rebuildTerminals(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) void view.rebuildRenderer();
-		}
-	}
-
-	/**
-	 * Applies the cursor style and blink settings to every open terminal (issue
-	 * #52). Both engines take these in place, so nothing is rebuilt or restarted.
-	 */
-	refreshTerminalCursors(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) view.applyCursor();
+			if (view instanceof TerminalView) view.applySetting(setting);
 		}
 	}
 
@@ -507,13 +478,13 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Detaches every terminal leaf open for `paneId` on the connected endpoint
-	 * (issue #66). Same endpoint-aware match as {@link terminalLeaf}, but over
-	 * every matching leaf instead of the first: a leaf pinned to another
-	 * endpoint with the same pane id is left alone.
+	 * Detaches every terminal leaf open for `paneId` on `endpointId` (issue #66).
+	 * Same endpoint-aware match as {@link terminalLeaf}, but over every matching
+	 * leaf instead of the first: a leaf pinned to another endpoint with the same
+	 * pane id is left alone. The endpoint is the caller's, captured before the
+	 * close it follows, not `this.endpoint` as it is now (PR #89).
 	 */
-	private detachTerminalLeaves(paneId: string): void {
-		const endpointId = this.endpoint.id;
+	private detachTerminalLeaves(paneId: string, endpointId: string): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
 			if (stateMatchesPane(leaf.getViewState().state, paneId, endpointId)) leaf.detach();
 		}
@@ -531,6 +502,13 @@ export default class HerdrPlugin extends Plugin {
 				if (!client) return Promise.reject(new Error('not connected to herdr'));
 				return client.request<T>(method, params);
 			},
+			// The client itself, so a two-request action keeps the connection it
+			// started on even if a reconnect replaces ours in between (PR #89).
+			connection: () => {
+				const client = this.client;
+				if (!client) return null;
+				return <T,>(method: string, params: unknown) => client.request<T>(method, params);
+			},
 			// Real agent names from `agent.list`, session-wide: herdr rejects a
 			// duplicate name anywhere, not just in this workspace (PRD M20).
 			takenAgentNames: () => this.scope?.agentNames() ?? new Set<string>(),
@@ -542,7 +520,8 @@ export default class HerdrPlugin extends Plugin {
 				new Notice(message);
 			},
 			openTerminal: (paneId: string) => this.openTerminal(paneId),
-			detachTerminalLeaves: (paneId: string) => this.detachTerminalLeaves(paneId),
+			detachTerminalLeaves: (paneId: string, endpointId: string) =>
+				this.detachTerminalLeaves(paneId, endpointId),
 			sleep: (ms: number) =>
 				new Promise<void>((resolve) => {
 					window.setTimeout(resolve, ms);
