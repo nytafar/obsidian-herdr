@@ -3,6 +3,7 @@ import type HerdrPlugin from './main';
 import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
 import type { RowClickAction } from './views/rowModel';
+import type { TerminalSetting } from './views/paneTerminal';
 import {
 	DEFAULT_CURSOR_STYLE,
 	DEFAULT_TERMINAL_ENGINE,
@@ -496,6 +497,638 @@ export function renderConnectionStatus(
 	if (status.error) line(status.error, true);
 }
 
+/**
+ * What a section builder may do besides write into the settings object it was
+ * handed. The tab owns the plugin; a builder never sees it, so every effect a
+ * control has is one of these — which is what makes a section buildable on a
+ * bare container in a test (issue #85).
+ */
+export interface SettingsCallbacks {
+	/** Persist the settings as they now are. */
+	save: () => Promise<void>;
+	/** Persist, then rebuild the connection from them. Connection fields only. */
+	saveAndReconnect: () => Promise<void>;
+	/** Render the whole tab again, for a control that shows or hides fields. */
+	redisplay: () => void;
+	/** Repaint every open agent list (issue #20). */
+	refreshAgentList: () => void;
+	/** Add or remove the file explorer's folder hover buttons (issue #30). */
+	refreshFolderHoverButton: () => void;
+	/** Hand one changed setting to the open terminals (issue #84). */
+	applyTerminalSetting: (setting: TerminalSetting) => void;
+}
+
+/**
+ * Socket, binary, PATH and workspace: everything the connection is rebuilt
+ * from, so every field here saves and reconnects.
+ */
+export function buildConnectionSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Connection').setHeading();
+
+	new Setting(containerEl)
+		.setName('Socket path')
+		.setDesc(
+			'Unix socket of the running herdr server. Leave the default unless you start herdr with a custom socket.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder(DEFAULT_SETTINGS.socketPath)
+				.setValue(settings.socketPath)
+				.onChange(async (value) => {
+					settings.socketPath = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Herdr binary')
+		.setDesc(
+			'Absolute path to the herdr executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH. Set it if Obsidian was launched from the Dock and cannot find herdr.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('Auto-discover')
+				.setValue(settings.herdrBinary)
+				.onChange(async (value) => {
+					settings.herdrBinary = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Extra PATH entries')
+		.setDesc(
+			'Colon-separated directories appended to PATH when the plugin spawns herdr, for tools your agents need.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('/opt/homebrew/bin:/usr/local/bin')
+				.setValue(settings.extraPath)
+				.onChange(async (value) => {
+					settings.extraPath = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Workspace ID')
+		.setDesc(
+			'Pin the plugin to one herdr workspace. Leave empty to match the workspace labelled like the vault folder, then the one whose panes run inside the vault. Ids are opaque and change between servers.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('Auto-detect')
+				.setValue(settings.workspaceId)
+				.onChange(async (value) => {
+					settings.workspaceId = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+}
+
+/**
+ * The remote profile (PRD S5). The enable toggle is always here — turning the
+ * profile off must stay reachable — and only the four fields under it are
+ * conditional; the toggle redisplays the tab to show or hide them.
+ */
+export function buildRemoteSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Remote host').setHeading();
+
+	new Setting(containerEl)
+		.setName('Use a remote herdr')
+		.setDesc(
+			'Talk to herdr on another machine over SSH. The socket is forwarded locally and terminals are spawned through ssh.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.remote.enabled).onChange(async (value) => {
+				settings.remote.enabled = value;
+				await callbacks.saveAndReconnect();
+				callbacks.redisplay();
+			}),
+		);
+
+	if (!settings.remote.enabled) return;
+
+	new Setting(containerEl)
+		.setName('SSH host')
+		.setDesc(
+			'SSH destination, for example user@host or an alias from your SSH config. Key-based login without a passphrase prompt is required.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('user@host')
+				.setValue(settings.remote.host)
+				.onChange(async (value) => {
+					settings.remote.host = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Remote socket path')
+		.setDesc('Socket of the herdr server on the remote host.')
+		.addText((text) =>
+			text
+				.setPlaceholder(DEFAULT_SETTINGS.remote.remoteSocketPath)
+				.setValue(settings.remote.remoteSocketPath)
+				.onChange(async (value) => {
+					settings.remote.remoteSocketPath = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Remote herdr binary')
+		.setDesc(
+			'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder(DEFAULT_SETTINGS.remote.remoteBinary)
+				.setValue(settings.remote.remoteBinary)
+				.onChange(async (value) => {
+					settings.remote.remoteBinary = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Remote vault path')
+		.setDesc(
+			'Absolute path of this vault on the remote host. Folder actions resolve note paths against it.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('/home/user/vault')
+				.setValue(settings.remote.remoteVaultPath)
+				.onChange(async (value) => {
+					settings.remote.remoteVaultPath = value;
+					await callbacks.saveAndReconnect();
+				}),
+		);
+}
+
+/** The notice and system-notification pair for one transition. */
+function buildTransitionSettings(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+	transition: NotifiedTransition,
+	label: string,
+	when: string,
+): void {
+	const state = settings.notifications[transition];
+
+	new Setting(containerEl)
+		.setName(`${label}: notice`)
+		.setDesc(`Show a notice in Obsidian when ${when}.`)
+		.addToggle((toggle) =>
+			toggle.setValue(state.notice).onChange(async (value) => {
+				state.notice = value;
+				await callbacks.save();
+			}),
+		);
+
+	new Setting(containerEl)
+		.setName(`${label}: system notification`)
+		.setDesc(
+			`Send a system notification when ${when} and the Obsidian window is not focused.`,
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(state.os).onChange(async (value) => {
+				state.os = value;
+				await callbacks.save();
+			}),
+		);
+}
+
+/** Status bar counts and the two transitions that can notify (PRD M7-M9). */
+export function buildNotificationsSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Notifications').setHeading();
+
+	new Setting(containerEl)
+		.setName('Status bar counts')
+		.setDesc(
+			'Show how many agents in this vault are blocked or done, in the status bar.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.notifications.statusBar).onChange(async (value) => {
+				settings.notifications.statusBar = value;
+				await callbacks.save();
+			}),
+		);
+
+	buildTransitionSettings(
+		containerEl,
+		settings,
+		callbacks,
+		'blocked',
+		'Blocked',
+		'an agent stops and waits for you',
+	);
+	buildTransitionSettings(
+		containerEl,
+		settings,
+		callbacks,
+		'done',
+		'Done',
+		'an agent finishes its turn',
+	);
+}
+
+/**
+ * What "start agent here" does. The panes-per-tab cap only means something
+ * while agents share a herdr tab, so the toggle above it redisplays the tab.
+ */
+export function buildAgentsSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Agents').setHeading();
+
+	new Setting(containerEl)
+		.setName('Default agent kind')
+		.setDesc('Agent started by "Start agent here".')
+		.addDropdown((dropdown) => {
+			for (const kind of AGENT_KINDS) {
+				dropdown.addOption(kind, kind);
+			}
+			dropdown.setValue(settings.defaultAgentKind).onChange(async (value) => {
+				settings.defaultAgentKind = value as AgentKind;
+				await callbacks.save();
+			});
+		});
+
+	new Setting(containerEl)
+		.setName('Agent name pattern')
+		.setDesc(
+			'Name given to new agents. {folder} is the folder the agent starts in, {vault} the vault name, {n} a counter that avoids collisions.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder(DEFAULT_SETTINGS.agentNamePattern)
+				.setValue(settings.agentNamePattern)
+				.onChange(async (value) => {
+					settings.agentNamePattern = value;
+					await callbacks.save();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Open terminal after starting an agent')
+		.setDesc('Open the new agent as a terminal tab as soon as it starts.')
+		.addToggle((toggle) =>
+			toggle.setValue(settings.openTerminalAfterStart).onChange(async (value) => {
+				settings.openTerminalAfterStart = value;
+				await callbacks.save();
+			}),
+		);
+
+	new Setting(containerEl)
+		.setName('Share a herdr tab between agents in the same folder')
+		.setDesc(
+			'On: a second agent started in a folder splits that folder’s herdr tab instead of opening another tab. Off: every agent gets its own tab, matching how herdr is navigated. Group the agent list by folder to keep a folder’s agents together either way.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.splitIntoFolderTab).onChange(async (value) => {
+				settings.splitIntoFolderTab = value;
+				await callbacks.save();
+				// The cap below only means something while sharing is on.
+				callbacks.redisplay();
+			}),
+		);
+
+	if (!settings.splitIntoFolderTab) return;
+
+	new Setting(containerEl)
+		.setName('Panes per herdr tab')
+		.setDesc('How many agents share one herdr tab before the next one opens a new tab.')
+		.addSlider((slider) =>
+			slider
+				.setLimits(MIN_PANES_PER_TAB, MAX_PANES_PER_TAB, 1)
+				.setValue(clampPanesPerTab(settings.panesPerTab))
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					settings.panesPerTab = clampPanesPerTab(value);
+					await callbacks.save();
+				}),
+		);
+}
+
+/** The folder hover button (issue #30), which is injected or removed at once. */
+export function buildFileExplorerSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('File explorer').setHeading();
+
+	new Setting(containerEl)
+		.setName('Folder hover button')
+		.setDesc(
+			'Show a button on folder rows in the file explorer, on hover, that opens the herdr actions for that folder. The right-click menu has the same actions and is unaffected. Turn this off if an Obsidian update makes the button misbehave.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.folderHoverButton).onChange(async (value) => {
+				settings.folderHoverButton = value;
+				await callbacks.save();
+				callbacks.refreshFolderHoverButton();
+			}),
+		);
+}
+
+/** Row order, grouping and what a click does (issue #20). Each repaints the list. */
+export function buildAgentListSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Agent list').setHeading();
+
+	new Setting(containerEl)
+		.setName('Sort')
+		.setDesc(
+			'Row order inside each group. Priority is herdr’s own: blocked first, then finished but unseen, then working, then idle, with the most recent change first among equals.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('priority', 'Priority (same as herdr)')
+				.addOption('alphabetical', 'Alphabetical by name')
+				.setValue(settings.agentListSort)
+				.onChange(async (value) => {
+					settings.agentListSort = value as AgentListSort;
+					await callbacks.save();
+					callbacks.refreshAgentList();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Group by')
+		.setDesc(
+			'What rows are grouped under. Folder keeps a project’s agents together when herdr has spread them over several tabs.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('tab', 'Herdr tab')
+				.addOption('folder', 'Working directory')
+				.addOption('none', 'Nothing, one flat list')
+				.setValue(settings.agentListGroupBy)
+				.onChange(async (value) => {
+					settings.agentListGroupBy = value as AgentListGroupBy;
+					await callbacks.save();
+					callbacks.refreshAgentList();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Clicking an agent row')
+		.setDesc(
+			'What a click on the row itself does. The icon button on the row always does the other one, and its tooltip says which.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('terminal', 'Opens the terminal in Obsidian')
+				.addOption('focus', 'Focuses the pane in herdr')
+				.setValue(settings.agentListRowClick)
+				.onChange(async (value) => {
+					settings.agentListRowClick = value as RowClickAction;
+					await callbacks.save();
+					callbacks.refreshAgentList();
+				}),
+		);
+}
+
+/**
+ * The terminal view. Everything an open terminal can be told about goes through
+ * `applyTerminalSetting`, which names the setting and lets the effect matrix
+ * (issue #84) decide what that costs; the first three settings here are read at
+ * the next open instead, so they only save.
+ */
+export function buildTerminalSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Terminal').setHeading();
+
+	new Setting(containerEl)
+		.setName('Attach mode')
+		.setDesc(
+			'Control types into the agent and makes the herdr pane follow this window’s size while the view is open; closing it hands ownership back. Observe is read-only and leaves the pane alone.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('control', 'Control (type and resize)')
+				.addOption('observe', 'Observe (read-only)')
+				.setValue(settings.defaultAttachMode)
+				.onChange(async (value) => {
+					settings.defaultAttachMode = value as AttachMode;
+					await callbacks.save();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Terminal placement')
+		.setDesc(
+			'Where a terminal opens when the note you are looking at lives inside the agent’s working directory. Otherwise, and when that terminal is already open, nothing splits: the existing tab is revealed.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('split-right', 'Split to the right of the note')
+				.addOption('split-left', 'Split to the left of the note')
+				.addOption('tab', 'Always a new tab')
+				.setValue(normalizeTerminalPlacement(settings.terminalPlacement))
+				.onChange(async (value) => {
+					settings.terminalPlacement = normalizeTerminalPlacement(value);
+					await callbacks.save();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Terminal tab')
+		.setDesc(
+			'One terminal tab per agent, or a single tab that switches to whichever agent you open. Reusing one tab keeps a single terminal in memory instead of one per open agent — roughly five megabytes and a repaint loop each — at the cost of reconnecting the bridge on every switch.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('per-agent', 'One tab per agent')
+				.addOption('reuse', 'Reuse one tab')
+				.setValue(normalizeTerminalTab(settings.terminalTab))
+				.onChange(async (value) => {
+					settings.terminalTab = normalizeTerminalTab(value);
+					await callbacks.save();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Terminal tab title')
+		.setDesc(
+			'What names a terminal tab. Agent name is the name the agent list shows. Herdr tab label is the label of the herdr tab the agent runs in, as in herdr’s own tab bar; while a tab is shared by two agents the agent name is appended. Open terminals retitle at once.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('agent', 'Agent name')
+				.addOption('tab', 'Herdr tab label')
+				.setValue(normalizeTerminalTitleSource(settings.terminalTitleSource))
+				.onChange(async (value) => {
+					settings.terminalTitleSource = normalizeTerminalTitleSource(value);
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalTitleSource');
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Theme')
+		.setDesc(
+			'Colours for the terminal view. Follow Obsidian takes them from the vault’s theme and follows it when you switch; the others are fixed palettes. Open terminals repaint immediately.',
+		)
+		.addDropdown((dropdown) => {
+			for (const name of TERMINAL_THEMES) {
+				dropdown.addOption(name, TERMINAL_THEME_LABELS[name]);
+			}
+			dropdown
+				.setValue(normalizeThemeName(settings.terminalTheme))
+				.onChange(async (value) => {
+					settings.terminalTheme = normalizeThemeName(value);
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalTheme');
+				});
+		});
+
+	new Setting(containerEl)
+		.setName('Terminal engine')
+		.setDesc(
+			'Which library draws the terminal. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows. Open terminals are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
+		)
+		.addDropdown((dropdown) => {
+			for (const name of TERMINAL_ENGINES) {
+				dropdown.addOption(name, TERMINAL_ENGINE_LABELS[name]);
+			}
+			dropdown
+				.setValue(normalizeEngineName(settings.terminalEngine))
+				.onChange(async (value) => {
+					settings.terminalEngine = normalizeEngineName(value);
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalEngine');
+				});
+		});
+
+	new Setting(containerEl)
+		.setName('Cursor style')
+		.setDesc('Shape of the terminal cursor. Applies to open terminals immediately.')
+		.addDropdown((dropdown) => {
+			for (const style of TERMINAL_CURSOR_STYLES) {
+				dropdown.addOption(style, TERMINAL_CURSOR_STYLE_LABELS[style]);
+			}
+			dropdown
+				.setValue(normalizeCursorStyle(settings.terminalCursorStyle))
+				.onChange(async (value) => {
+					settings.terminalCursorStyle = normalizeCursorStyle(value);
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalCursorStyle');
+				});
+		});
+
+	new Setting(containerEl)
+		.setName('Blinking cursor')
+		.setDesc('Blink the terminal cursor. Applies to open terminals immediately.')
+		.addToggle((toggle) =>
+			toggle.setValue(settings.terminalCursorBlink !== false).onChange(async (value) => {
+				settings.terminalCursorBlink = value;
+				await callbacks.save();
+				callbacks.applyTerminalSetting('terminalCursorBlink');
+			}),
+		);
+
+	new Setting(containerEl)
+		.setName('Font family')
+		.setDesc(
+			'Font for the terminal view. Leave empty to follow the Obsidian monospace font.',
+		)
+		.addText((text) =>
+			text
+				.setPlaceholder('Follow Obsidian')
+				.setValue(settings.terminalFontFamily)
+				.onChange(async (value) => {
+					settings.terminalFontFamily = value;
+					await callbacks.save();
+					// A `next-mount` row in the matrix: open terminals keep the
+					// font they were built with, and the next mount reads this.
+					callbacks.applyTerminalSetting('terminalFontFamily');
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Scrollback memory budget')
+		.setDesc(
+			'Megabytes of scrollback each open terminal keeps. This is a memory budget, not a line count: roughly 600 lines per megabyte. The memory is shared by every open terminal and is only given back when Obsidian restarts.',
+		)
+		.addSlider((slider) =>
+			slider
+				.setLimits(MIN_SCROLLBACK_MB, MAX_SCROLLBACK_MB, 1)
+				.setValue(clampScrollbackMb(settings.terminalScrollbackMb))
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					settings.terminalScrollbackMb = clampScrollbackMb(value);
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalScrollbackMb');
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Font size')
+		.setDesc(
+			'Terminal font size in pixels. Set to 0 to follow the Obsidian monospace size.',
+		)
+		.addSlider((slider) =>
+			slider
+				.setLimits(0, 32, 1)
+				.setValue(settings.terminalFontSize)
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					settings.terminalFontSize = value;
+					await callbacks.save();
+					callbacks.applyTerminalSetting('terminalFontSize');
+				}),
+		);
+}
+
+/**
+ * The order the sections are rendered in. One entry per builder, so adding a
+ * section is adding a builder and a line here.
+ */
+export const SETTINGS_SECTIONS: readonly ((
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+) => void)[] = [
+	buildConnectionSection,
+	buildRemoteSection,
+	buildNotificationsSection,
+	buildAgentsSection,
+	buildFileExplorerSection,
+	buildAgentListSection,
+	buildTerminalSection,
+];
+
+/**
+ * The settings tab: the status block, then every section in order. The tab is
+ * the only thing here that knows the plugin — it turns it into the callback
+ * bundle the builders take.
+ */
 export class HerdrSettingTab extends PluginSettingTab {
 	private readonly plugin: HerdrPlugin;
 	private readonly renderStatus: RenderStatus;
@@ -506,545 +1139,31 @@ export class HerdrSettingTab extends PluginSettingTab {
 		this.renderStatus = renderStatus;
 	}
 
-	private async save(): Promise<void> {
-		await this.plugin.saveSettings();
-	}
-
-	/** For connection fields: save, then rebuild the connection from them. */
-	private async saveAndReconnect(): Promise<void> {
-		await this.plugin.saveSettings();
-		this.plugin.scheduleReconnect();
+	private callbacks(): SettingsCallbacks {
+		const { plugin } = this;
+		return {
+			save: () => plugin.saveSettings(),
+			/** For connection fields: save, then rebuild the connection from them. */
+			saveAndReconnect: async () => {
+				await plugin.saveSettings();
+				plugin.scheduleReconnect();
+			},
+			redisplay: () => this.display(),
+			refreshAgentList: () => plugin.refreshAgentList(),
+			refreshFolderHoverButton: () => plugin.refreshFolderHoverButton(),
+			applyTerminalSetting: (setting) => plugin.applyTerminalSetting(setting),
+		};
 	}
 
 	display(): void {
 		const { containerEl } = this;
 		const settings = this.plugin.settings;
+		const callbacks = this.callbacks();
 
 		containerEl.empty();
 
 		this.renderStatus(containerEl.createDiv({ cls: 'herdr-settings-status' }));
 
-		new Setting(containerEl).setName('Connection').setHeading();
-
-		new Setting(containerEl)
-			.setName('Socket path')
-			.setDesc(
-				'Unix socket of the running herdr server. Leave the default unless you start herdr with a custom socket.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder(DEFAULT_SETTINGS.socketPath)
-					.setValue(settings.socketPath)
-					.onChange(async (value) => {
-						settings.socketPath = value;
-						await this.saveAndReconnect();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Herdr binary')
-			.setDesc(
-				'Absolute path to the herdr executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH. Set it if Obsidian was launched from the Dock and cannot find herdr.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder('Auto-discover')
-					.setValue(settings.herdrBinary)
-					.onChange(async (value) => {
-						settings.herdrBinary = value;
-						await this.saveAndReconnect();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Extra PATH entries')
-			.setDesc(
-				'Colon-separated directories appended to PATH when the plugin spawns herdr, for tools your agents need.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder('/opt/homebrew/bin:/usr/local/bin')
-					.setValue(settings.extraPath)
-					.onChange(async (value) => {
-						settings.extraPath = value;
-						await this.saveAndReconnect();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Workspace ID')
-			.setDesc(
-				'Pin the plugin to one herdr workspace. Leave empty to match the workspace labelled like the vault folder, then the one whose panes run inside the vault. Ids are opaque and change between servers.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder('Auto-detect')
-					.setValue(settings.workspaceId)
-					.onChange(async (value) => {
-						settings.workspaceId = value;
-						await this.saveAndReconnect();
-					}),
-			);
-
-		new Setting(containerEl).setName('Remote host').setHeading();
-
-		new Setting(containerEl)
-			.setName('Use a remote herdr')
-			.setDesc(
-				'Talk to herdr on another machine over SSH. The socket is forwarded locally and terminals are spawned through ssh.',
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(settings.remote.enabled).onChange(async (value) => {
-					settings.remote.enabled = value;
-					await this.saveAndReconnect();
-					this.display();
-				}),
-			);
-
-		if (settings.remote.enabled) {
-			new Setting(containerEl)
-				.setName('SSH host')
-				.setDesc(
-					'SSH destination, for example user@host or an alias from your SSH config. Key-based login without a passphrase prompt is required.',
-				)
-				.addText((text) =>
-					text
-						.setPlaceholder('user@host')
-						.setValue(settings.remote.host)
-						.onChange(async (value) => {
-							settings.remote.host = value;
-							await this.saveAndReconnect();
-						}),
-				);
-
-			new Setting(containerEl)
-				.setName('Remote socket path')
-				.setDesc('Socket of the herdr server on the remote host.')
-				.addText((text) =>
-					text
-						.setPlaceholder(DEFAULT_SETTINGS.remote.remoteSocketPath)
-						.setValue(settings.remote.remoteSocketPath)
-						.onChange(async (value) => {
-							settings.remote.remoteSocketPath = value;
-							await this.saveAndReconnect();
-						}),
-				);
-
-			new Setting(containerEl)
-				.setName('Remote herdr binary')
-				.setDesc(
-					'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.',
-				)
-				.addText((text) =>
-					text
-						.setPlaceholder(DEFAULT_SETTINGS.remote.remoteBinary)
-						.setValue(settings.remote.remoteBinary)
-						.onChange(async (value) => {
-							settings.remote.remoteBinary = value;
-							await this.saveAndReconnect();
-						}),
-				);
-
-			new Setting(containerEl)
-				.setName('Remote vault path')
-				.setDesc(
-					'Absolute path of this vault on the remote host. Folder actions resolve note paths against it.',
-				)
-				.addText((text) =>
-					text
-						.setPlaceholder('/home/user/vault')
-						.setValue(settings.remote.remoteVaultPath)
-						.onChange(async (value) => {
-							settings.remote.remoteVaultPath = value;
-							await this.saveAndReconnect();
-						}),
-				);
-		}
-
-		new Setting(containerEl).setName('Notifications').setHeading();
-
-		new Setting(containerEl)
-			.setName('Status bar counts')
-			.setDesc(
-				'Show how many agents in this vault are blocked or done, in the status bar.',
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(settings.notifications.statusBar)
-					.onChange(async (value) => {
-						settings.notifications.statusBar = value;
-						await this.save();
-					}),
-			);
-
-		this.addTransitionSettings(
-			containerEl,
-			'blocked',
-			'Blocked',
-			'an agent stops and waits for you',
-		);
-		this.addTransitionSettings(
-			containerEl,
-			'done',
-			'Done',
-			'an agent finishes its turn',
-		);
-
-		new Setting(containerEl).setName('Agents').setHeading();
-
-		new Setting(containerEl)
-			.setName('Default agent kind')
-			.setDesc('Agent started by "Start agent here".')
-			.addDropdown((dropdown) => {
-				for (const kind of AGENT_KINDS) {
-					dropdown.addOption(kind, kind);
-				}
-				dropdown
-					.setValue(settings.defaultAgentKind)
-					.onChange(async (value) => {
-						settings.defaultAgentKind = value as AgentKind;
-						await this.save();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName('Agent name pattern')
-			.setDesc(
-				'Name given to new agents. {folder} is the folder the agent starts in, {vault} the vault name, {n} a counter that avoids collisions.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder(DEFAULT_SETTINGS.agentNamePattern)
-					.setValue(settings.agentNamePattern)
-					.onChange(async (value) => {
-						settings.agentNamePattern = value;
-						await this.save();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Open terminal after starting an agent')
-			.setDesc('Open the new agent as a terminal tab as soon as it starts.')
-			.addToggle((toggle) =>
-				toggle
-					.setValue(settings.openTerminalAfterStart)
-					.onChange(async (value) => {
-						settings.openTerminalAfterStart = value;
-						await this.save();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Share a herdr tab between agents in the same folder')
-			.setDesc(
-				'On: a second agent started in a folder splits that folder’s herdr tab instead of opening another tab. Off: every agent gets its own tab, matching how herdr is navigated. Group the agent list by folder to keep a folder’s agents together either way.',
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(settings.splitIntoFolderTab).onChange(async (value) => {
-					settings.splitIntoFolderTab = value;
-					await this.save();
-					// The cap below only means something while sharing is on.
-					this.display();
-				}),
-			);
-
-		if (settings.splitIntoFolderTab) {
-			new Setting(containerEl)
-				.setName('Panes per herdr tab')
-				.setDesc('How many agents share one herdr tab before the next one opens a new tab.')
-				.addSlider((slider) =>
-					slider
-						.setLimits(MIN_PANES_PER_TAB, MAX_PANES_PER_TAB, 1)
-						.setValue(clampPanesPerTab(settings.panesPerTab))
-						.setDynamicTooltip()
-						.onChange(async (value) => {
-							settings.panesPerTab = clampPanesPerTab(value);
-							await this.save();
-						}),
-				);
-		}
-
-		new Setting(containerEl).setName('File explorer').setHeading();
-
-		new Setting(containerEl)
-			.setName('Folder hover button')
-			.setDesc(
-				'Show a button on folder rows in the file explorer, on hover, that opens the herdr actions for that folder. The right-click menu has the same actions and is unaffected. Turn this off if an Obsidian update makes the button misbehave.',
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(settings.folderHoverButton).onChange(async (value) => {
-					settings.folderHoverButton = value;
-					await this.save();
-					this.plugin.refreshFolderHoverButton();
-				}),
-			);
-
-		new Setting(containerEl).setName('Agent list').setHeading();
-
-		new Setting(containerEl)
-			.setName('Sort')
-			.setDesc(
-				'Row order inside each group. Priority is herdr’s own: blocked first, then finished but unseen, then working, then idle, with the most recent change first among equals.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('priority', 'Priority (same as herdr)')
-					.addOption('alphabetical', 'Alphabetical by name')
-					.setValue(settings.agentListSort)
-					.onChange(async (value) => {
-						settings.agentListSort = value as AgentListSort;
-						await this.save();
-						this.plugin.refreshAgentList();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Group by')
-			.setDesc(
-				'What rows are grouped under. Folder keeps a project’s agents together when herdr has spread them over several tabs.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('tab', 'Herdr tab')
-					.addOption('folder', 'Working directory')
-					.addOption('none', 'Nothing, one flat list')
-					.setValue(settings.agentListGroupBy)
-					.onChange(async (value) => {
-						settings.agentListGroupBy = value as AgentListGroupBy;
-						await this.save();
-						this.plugin.refreshAgentList();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Clicking an agent row')
-			.setDesc(
-				'What a click on the row itself does. The icon button on the row always does the other one, and its tooltip says which.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('terminal', 'Opens the terminal in Obsidian')
-					.addOption('focus', 'Focuses the pane in herdr')
-					.setValue(settings.agentListRowClick)
-					.onChange(async (value) => {
-						settings.agentListRowClick = value as RowClickAction;
-						await this.save();
-						this.plugin.refreshAgentList();
-					}),
-			);
-
-		new Setting(containerEl).setName('Terminal').setHeading();
-
-		new Setting(containerEl)
-			.setName('Attach mode')
-			.setDesc(
-				'Control types into the agent and makes the herdr pane follow this window’s size while the view is open; closing it hands ownership back. Observe is read-only and leaves the pane alone.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('control', 'Control (type and resize)')
-					.addOption('observe', 'Observe (read-only)')
-					.setValue(settings.defaultAttachMode)
-					.onChange(async (value) => {
-						settings.defaultAttachMode = value as AttachMode;
-						await this.save();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Terminal placement')
-			.setDesc(
-				'Where a terminal opens when the note you are looking at lives inside the agent’s working directory. Otherwise, and when that terminal is already open, nothing splits: the existing tab is revealed.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('split-right', 'Split to the right of the note')
-					.addOption('split-left', 'Split to the left of the note')
-					.addOption('tab', 'Always a new tab')
-					.setValue(normalizeTerminalPlacement(settings.terminalPlacement))
-					.onChange(async (value) => {
-						settings.terminalPlacement = normalizeTerminalPlacement(value);
-						await this.save();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Terminal tab')
-			.setDesc(
-				'One terminal tab per agent, or a single tab that switches to whichever agent you open. Reusing one tab keeps a single terminal in memory instead of one per open agent — roughly five megabytes and a repaint loop each — at the cost of reconnecting the bridge on every switch.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('per-agent', 'One tab per agent')
-					.addOption('reuse', 'Reuse one tab')
-					.setValue(normalizeTerminalTab(settings.terminalTab))
-					.onChange(async (value) => {
-						settings.terminalTab = normalizeTerminalTab(value);
-						await this.save();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Terminal tab title')
-			.setDesc(
-				'What names a terminal tab. Agent name is the name the agent list shows. Herdr tab label is the label of the herdr tab the agent runs in, as in herdr’s own tab bar; while a tab is shared by two agents the agent name is appended. Open terminals retitle at once.',
-			)
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption('agent', 'Agent name')
-					.addOption('tab', 'Herdr tab label')
-					.setValue(normalizeTerminalTitleSource(settings.terminalTitleSource))
-					.onChange(async (value) => {
-						settings.terminalTitleSource = normalizeTerminalTitleSource(value);
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalTitleSource');
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Theme')
-			.setDesc(
-				'Colours for the terminal view. Follow Obsidian takes them from the vault’s theme and follows it when you switch; the others are fixed palettes. Open terminals repaint immediately.',
-			)
-			.addDropdown((dropdown) => {
-				for (const name of TERMINAL_THEMES) {
-					dropdown.addOption(name, TERMINAL_THEME_LABELS[name]);
-				}
-				dropdown
-					.setValue(normalizeThemeName(settings.terminalTheme))
-					.onChange(async (value) => {
-						settings.terminalTheme = normalizeThemeName(value);
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalTheme');
-					});
-			});
-
-		new Setting(containerEl)
-			.setName('Terminal engine')
-			.setDesc(
-				'Which library draws the terminal. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows. Open terminals are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
-			)
-			.addDropdown((dropdown) => {
-				for (const name of TERMINAL_ENGINES) {
-					dropdown.addOption(name, TERMINAL_ENGINE_LABELS[name]);
-				}
-				dropdown
-					.setValue(normalizeEngineName(settings.terminalEngine))
-					.onChange(async (value) => {
-						settings.terminalEngine = normalizeEngineName(value);
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalEngine');
-					});
-			});
-
-		new Setting(containerEl)
-			.setName('Cursor style')
-			.setDesc('Shape of the terminal cursor. Applies to open terminals immediately.')
-			.addDropdown((dropdown) => {
-				for (const style of TERMINAL_CURSOR_STYLES) {
-					dropdown.addOption(style, TERMINAL_CURSOR_STYLE_LABELS[style]);
-				}
-				dropdown
-					.setValue(normalizeCursorStyle(settings.terminalCursorStyle))
-					.onChange(async (value) => {
-						settings.terminalCursorStyle = normalizeCursorStyle(value);
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalCursorStyle');
-					});
-			});
-
-		new Setting(containerEl)
-			.setName('Blinking cursor')
-			.setDesc('Blink the terminal cursor. Applies to open terminals immediately.')
-			.addToggle((toggle) =>
-				toggle.setValue(settings.terminalCursorBlink !== false).onChange(async (value) => {
-					settings.terminalCursorBlink = value;
-					await this.save();
-					this.plugin.applyTerminalSetting('terminalCursorBlink');
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName('Font family')
-			.setDesc(
-				'Font for the terminal view. Leave empty to follow the Obsidian monospace font.',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder('Follow Obsidian')
-					.setValue(settings.terminalFontFamily)
-					.onChange(async (value) => {
-						settings.terminalFontFamily = value;
-						await this.save();
-						// A `next-mount` row in the matrix: open terminals keep the
-						// font they were built with, and the next mount reads this.
-						this.plugin.applyTerminalSetting('terminalFontFamily');
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Scrollback memory budget')
-			.setDesc(
-				'Megabytes of scrollback each open terminal keeps. This is a memory budget, not a line count: roughly 600 lines per megabyte. The memory is shared by every open terminal and is only given back when Obsidian restarts.',
-			)
-			.addSlider((slider) =>
-				slider
-					.setLimits(MIN_SCROLLBACK_MB, MAX_SCROLLBACK_MB, 1)
-					.setValue(clampScrollbackMb(settings.terminalScrollbackMb))
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						settings.terminalScrollbackMb = clampScrollbackMb(value);
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalScrollbackMb');
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Font size')
-			.setDesc(
-				'Terminal font size in pixels. Set to 0 to follow the Obsidian monospace size.',
-			)
-			.addSlider((slider) =>
-				slider
-					.setLimits(0, 32, 1)
-					.setValue(settings.terminalFontSize)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						settings.terminalFontSize = value;
-						await this.save();
-						this.plugin.applyTerminalSetting('terminalFontSize');
-					}),
-			);
-	}
-
-	private addTransitionSettings(
-		containerEl: HTMLElement,
-		transition: NotifiedTransition,
-		label: string,
-		when: string,
-	): void {
-		const state = this.plugin.settings.notifications[transition];
-
-		new Setting(containerEl)
-			.setName(`${label}: notice`)
-			.setDesc(`Show a notice in Obsidian when ${when}.`)
-			.addToggle((toggle) =>
-				toggle.setValue(state.notice).onChange(async (value) => {
-					state.notice = value;
-					await this.save();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName(`${label}: system notification`)
-			.setDesc(
-				`Send a system notification when ${when} and the Obsidian window is not focused.`,
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(state.os).onChange(async (value) => {
-					state.os = value;
-					await this.save();
-				}),
-			);
+		for (const section of SETTINGS_SECTIONS) section(containerEl, settings, callbacks);
 	}
 }
