@@ -26,10 +26,12 @@ import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
+	EndpointSessions,
 	endpointLabel,
 	endpointOf,
 	resolveEndpoint,
 	type Endpoint,
+	type EndpointSession,
 } from './connection';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
 import { TabLabelCache } from './tabLabels';
@@ -80,11 +82,8 @@ export default class HerdrPlugin extends Plugin {
 				this.connectError = message;
 			},
 			onReplaced: () => {
-				// The label cache belongs to the connection that just went (#43).
-				if (this.tabLabelCache && this.tabLabelCache.scope !== this.connection.current?.scope) {
-					this.tabLabelCache.cache.dispose();
-					this.tabLabelCache = null;
-				}
+				// The caches belong to the connection that just went (#43, #81).
+				this.sessions.sync();
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
@@ -106,54 +105,55 @@ export default class HerdrPlugin extends Plugin {
 		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
 	}
 	/**
-	 * The current scope only when it belongs to `endpointId`; a terminal pinned
-	 * to the other herdr must not read titles from this one (issue #54).
+	 * The endpoint-match rule, in one place (issue #81): everything a view
+	 * pinned to an endpoint may read from the published connection — its
+	 * endpoint snapshot, client, scope and tab-label cache — or null when the
+	 * connection is elsewhere. The tab-label cache is built here, on first read,
+	 * because it needs both the client and the scope and the coordinator creates
+	 * them apart; it is retired with its connection (issue #43), and views never
+	 * fetch labels themselves.
 	 */
-	scopeFor(endpointId: string): WorkspaceScope | null {
-		const current = this.connection.current;
-		return current && current.endpoint.id === endpointId ? current.scope : null;
-	}
-	/**
-	 * The tab-label cache of the published connection, when it is the one
-	 * `endpointId` names (issue #43). Built on first use, because the cache
-	 * needs both the client and the scope and the coordinator creates them
-	 * apart; one per connection, keyed by its scope, and retired with it in
-	 * `onReplaced`. Views never fetch labels themselves.
-	 */
-	tabLabelsFor(endpointId: string): TabLabelCache | null {
-		const current = this.connection.current;
-		if (!current || current.endpoint.id !== endpointId) return null;
-		if (this.tabLabelCache?.scope !== current.scope) {
-			this.tabLabelCache?.cache.dispose();
-			const { client, scope } = current;
-			this.tabLabelCache = {
-				scope,
-				cache: new TabLabelCache({
-					client,
-					scope: {
-						get workspaceId() {
-							return scope.workspaceId;
-						},
-						tabIds: () => scope.list().map((pane) => pane.tabId),
-						onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+	private readonly sessions = new EndpointSessions<
+		HerdrClient,
+		WorkspaceScope,
+		TabLabelCache,
+		SshTunnel
+	>({
+		current: () => this.connection.current,
+		createTabLabels: (connection) => {
+			const { client, scope } = connection;
+			return new TabLabelCache({
+				client,
+				scope: {
+					get workspaceId() {
+						return scope.workspaceId;
 					},
-					alive: () => this.connection.current === current,
-				}),
-			};
-		}
-		return this.tabLabelCache.cache;
+					tabIds: () => scope.list().map((pane) => pane.tabId),
+					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+				},
+				alive: () => this.connection.current === connection,
+			});
+		},
+	});
+	/**
+	 * What `endpointId` names on the published connection, or null when that
+	 * connection is another herdr's: a terminal pinned to one must not read
+	 * titles or labels from the other (issue #54).
+	 */
+	endpointSession(
+		endpointId: string,
+	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+		return this.sessions.for(endpointId);
 	}
-	/** The one live cache and the scope it belongs to; see `tabLabelsFor`. */
-	private tabLabelCache: { scope: WorkspaceScope; cache: TabLabelCache } | null = null;
 	/**
 	 * The endpoint an id names: the published connection's own snapshot when it
 	 * matches, else one rebuilt from the settings as they are now, else null
-	 * when the settings no longer describe it.
+	 * when the settings no longer describe it. The settings half is the plugin's
+	 * because a restored or pinned terminal starts without any connection.
 	 */
 	endpointFor(endpointId: string): Endpoint | null {
-		const current = this.connection.current;
-		if (current && current.endpoint.id === endpointId) return current.endpoint;
-		return resolveEndpoint(endpointId, this.settings.remote);
+		const session = this.endpointSession(endpointId);
+		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings.remote);
 	}
 	/** Non-null only while a remote profile is enabled (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -242,8 +242,7 @@ export default class HerdrPlugin extends Plugin {
 		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
-		this.tabLabelCache?.cache.dispose();
-		this.tabLabelCache = null;
+		this.sessions.dispose();
 		this.scopeListeners.clear();
 		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
 		this.agentNameTimer = 0;

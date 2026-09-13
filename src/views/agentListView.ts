@@ -43,6 +43,10 @@
 
 import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
+import type { EndpointSession } from '../connection';
+import type { HerdrClient } from '../herdr/client';
+import type { WorkspaceScope } from '../herdr/scope';
+import type { TabLabelCache } from '../tabLabels';
 import { pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
 import { ConfirmModal, PromptModal } from './modals';
 import { closeConfirmation, renamePrompt, rowMenuItems, type RowMenuItem, type RowMenuRow } from './rowMenu';
@@ -281,6 +285,15 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
+	 * The connection the list shows: the published one, whichever endpoint that
+	 * is (issue #81). One lookup answers with the scope, the tab labels and the
+	 * endpoint together; null means nothing is connected.
+	 */
+	private session(): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+		return this.plugin.endpointSession(this.plugin.endpoint.id);
+	}
+
+	/**
 	 * Subscribes to the plugin's current scope and its tab-label cache, dropping
 	 * the previous pair. Tab labels are the cache's business (issue #43): it
 	 * fetches once per workspace for every view on the connection, applies
@@ -290,8 +303,9 @@ export class AgentListView extends ItemView {
 	 */
 	private bindScope(): void {
 		for (const off of this.unbindScope.splice(0)) off();
-		const scope = this.plugin.scope;
-		const labels = this.plugin.tabLabelsFor(this.plugin.endpoint.id);
+		const session = this.session();
+		const scope = session?.scope;
+		const labels = session?.tabLabels;
 		if (scope) {
 			this.unbindScope.push(
 				scope.on('added', (pane) => {
@@ -345,7 +359,8 @@ export class AgentListView extends ItemView {
 		// and the settings tab's own toggle flips the same flag.
 		this.updateEndpointToggle();
 
-		const scope = this.plugin.scope;
+		const session = this.session();
+		const scope = session?.scope;
 		if (!scope || !scope.workspaceId) {
 			list.createDiv({
 				cls: 'herdr-empty',
@@ -365,7 +380,7 @@ export class AgentListView extends ItemView {
 		// grouping reorders the list on the next render and never reconnects.
 		const settings = this.plugin.settings;
 		// Labels are read, never fetched, from here (issue #43).
-		const tabLabels = this.plugin.tabLabelsFor(this.plugin.endpoint.id)?.labels() ?? new Map<string, string>();
+		const tabLabels = session.tabLabels.labels();
 		const groups = buildRows(panes, tabLabels, this.plugin.herdrVaultPath(), {
 			groupBy: settings.agentListGroupBy,
 			sort: settings.agentListSort,
@@ -480,7 +495,7 @@ export class AgentListView extends ItemView {
 		const rowEl = target?.closest<HTMLElement>('[data-pane-id]');
 		const paneId = rowEl?.dataset.paneId;
 		if (!paneId) return;
-		const pane = this.plugin.scope?.get(paneId);
+		const pane = this.session()?.scope.get(paneId);
 		if (!pane) return;
 		event.preventDefault();
 		const row: RowMenuRow = {

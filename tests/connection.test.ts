@@ -11,6 +11,7 @@ import type { HerdrEvent } from '../src/herdr/client';
 import type { SessionSnapshot } from '../src/herdr/types.gen';
 import {
 	ConnectionCoordinator,
+	EndpointSessions,
 	endpointIdOf,
 	endpointLabel,
 	endpointOf,
@@ -612,5 +613,129 @@ describe('endpoint identity (issue #54)', () => {
 		const local = harness();
 		await connected(local);
 		expect(local.coordinator.current?.endpoint.id).toBe(LOCAL_ENDPOINT_ID);
+	});
+});
+
+/** The tab-label cache as the session registry sees it: something disposable. */
+class FakeLabels {
+	disposed = false;
+	constructor(readonly client: FakeClient) {}
+	dispose(): void {
+		this.disposed = true;
+	}
+}
+
+/** An `EndpointSessions` over a coordinator harness, counting cache builds. */
+function sessionsOver(h: ReturnType<typeof harness>) {
+	const built: FakeLabels[] = [];
+	const sessions = new EndpointSessions<FakeClient, FakeScope, FakeLabels, FakeTunnel>({
+		current: () => h.coordinator.current as never,
+		createTabLabels: (connection) => {
+			const labels = new FakeLabels(connection.client);
+			built.push(labels);
+			return labels;
+		},
+	});
+	return { sessions, built };
+}
+
+describe('EndpointSessions: one lookup per connection generation (issue #81)', () => {
+	const REMOTE_ID = 'ssh:lasse@xl:~/.config/herdr/herdr.sock';
+
+	it('serves the published connection to the endpoint id it was opened for', async () => {
+		const h = harness();
+		const client = await connected(h);
+		const { sessions, built } = sessionsOver(h);
+
+		const session = sessions.for(LOCAL_ENDPOINT_ID);
+		expect(session?.endpoint.id).toBe(LOCAL_ENDPOINT_ID);
+		expect(session?.client).toBe(client);
+		expect(session?.scope).toBe(h.scopes[0]);
+		// The cache waits for someone to ask for a label, then is shared.
+		expect(built).toHaveLength(0);
+		expect(session?.tabLabels).toBe(built[0]);
+		expect(sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels).toBe(built[0]);
+		expect(built).toHaveLength(1);
+	});
+
+	it('serves nothing to another endpoint id and builds no cache for it', async () => {
+		const h = harness();
+		await connected(h);
+		const { sessions, built } = sessionsOver(h);
+
+		expect(sessions.for(REMOTE_ID)).toBeNull();
+		expect(built).toHaveLength(0);
+		// The local one is unaffected by the miss.
+		expect(sessions.for(LOCAL_ENDPOINT_ID)?.endpoint.id).toBe(LOCAL_ENDPOINT_ID);
+	});
+
+	it('answers before the first ping lands: published is published', async () => {
+		const h = harness();
+		const connecting = h.coordinator.connect();
+		await settle();
+		h.discoveries[0]?.resolve(DISCOVERY);
+		await settle();
+		const { sessions } = sessionsOver(h);
+
+		expect(sessions.for(LOCAL_ENDPOINT_ID)?.client).toBe(h.clients[0]);
+		h.clients[0]?.pings[0]?.resolve({ type: 'pong' });
+		await connecting;
+	});
+
+	it('keeps serving the published generation through a transport outage', async () => {
+		const h = harness();
+		const client = await connected(h);
+		const { sessions } = sessionsOver(h);
+		const labels = sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels;
+
+		// The stream dropped; the coordinator reports it and keeps the connection.
+		client.emit('disconnected', new Error('socket closed'));
+		expect(h.errors.at(-1)).toBe('socket closed');
+		expect(h.coordinator.current?.client).toBe(client);
+		expect(sessions.for(LOCAL_ENDPOINT_ID)?.client).toBe(client);
+		expect(labels?.disposed).toBe(false);
+		// And the same cache survives the reconnect edge.
+		client.emit('connected');
+		expect(sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels).toBe(labels);
+	});
+
+	it('disposes the old session when a new connection takes the same endpoint', async () => {
+		const h = harness();
+		const first = await connected(h);
+		const { sessions, built } = sessionsOver(h);
+		const stale = sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels;
+		expect(stale?.client).toBe(first);
+
+		const second = await connected(h);
+		expect(second).not.toBe(first);
+		const session = sessions.for(LOCAL_ENDPOINT_ID);
+		expect(stale?.disposed).toBe(true);
+		expect(session?.client).toBe(second);
+		expect(session?.scope).toBe(h.scopes[1]);
+		expect(session?.tabLabels).not.toBe(stale);
+		expect(built).toHaveLength(2);
+	});
+
+	it('drops the session as soon as the connection is retired, not on next lookup', async () => {
+		const h = harness();
+		await connected(h);
+		const { sessions } = sessionsOver(h);
+		const labels = sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels;
+
+		h.coordinator.dispose();
+		// What the plugin does from `onReplaced`; the caches go with the connection.
+		sessions.sync();
+		expect(labels?.disposed).toBe(true);
+		expect(sessions.for(LOCAL_ENDPOINT_ID)).toBeNull();
+	});
+
+	it('drops the session on unload whatever the coordinator reports', async () => {
+		const h = harness();
+		await connected(h);
+		const { sessions } = sessionsOver(h);
+		const labels = sessions.for(LOCAL_ENDPOINT_ID)?.tabLabels;
+
+		sessions.dispose();
+		expect(labels?.disposed).toBe(true);
 	});
 });
