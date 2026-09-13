@@ -1,8 +1,10 @@
 # obsidian-herdr — working rules
 
-Read `../PRD.md` first, then `../RESEARCH.md`. The PRD's section 7 is the verified
-herdr integration contract; do not re-derive it, extend it with new verified facts.
-`AGENTS.md` (from the Obsidian sample plugin) holds general plugin conventions.
+Read `docs/architecture.md` first: it is the verified herdr integration contract
+(two seams, measured facts). Do not re-derive it, extend it with new verified
+facts. Project docs beyond the repo live in the vault docs root named in
+`docs/agents/domain.md`. `AGENTS.md` (from the Obsidian sample plugin) holds
+general plugin conventions.
 
 ## Hard rules
 
@@ -10,7 +12,8 @@ herdr integration contract; do not re-derive it, extend it with new verified fac
   `manifest.json`, `styles.css`. No helper files, no Python, no native addons.
 - Terminal seam is `herdr terminal session control|observe` over child_process
   pipes with NDJSON. Not a PTY, not `herdr agent attach`, not the binary client
-  socket. If the seam proves insufficient, write it up in the PRD before changing it.
+  socket. If the seam proves insufficient, write it up as a finding in the docs
+  root before changing it.
 - No code from Whip (KaminariOS/whip, AGPL). Read it for behaviour only.
 - Obsidian guidelines are rules: `this.app` never global `app`; `registerEvent`,
   `registerDomEvent`, `registerInterval` for everything that must be torn down;
@@ -61,15 +64,17 @@ herdr integration contract; do not re-derive it, extend it with new verified fac
 
 ## Where things are
 
-- `../PRD.md` — v1 decisions and, in section 7, the **verified herdr contract**.
+- `docs/architecture.md` — the **verified herdr contract**: the JSON API seam,
+  the terminal session seam and the facts measured against real herdr builds.
   Authoritative. Extend it with new verified facts; do not re-derive it.
-- `../notes/` — verified API facts gathered by an exploration pass: herdr's JSON
-  API and event shapes, the terminal bridge contract, Obsidian API signatures
-  with line numbers, ghostty-web, Electron/node access, and the memory
-  diagnosis. Read these instead of re-exploring.
-- `../RESEARCH.md` — historical. Its fork recommendation was overturned.
+- `~/hvelv/repos/obsidian-herdr/` — the vault docs root (see
+  `docs/agents/domain.md`): `adr/` for hard decisions, `findings/` for
+  discussions and verified facts per topic. The v1 PRD, its research file and
+  the exploration notes predate this layout and are not on every machine; when
+  found, they belong here, not beside the repo.
 - **Issue #32** — the v0.2 roadmap: build order, what blocks what, and why.
-  The single source for what to work on next.
+  The single source for what to work on next. `docs/agents/issue-tracker.md`
+  has the label vocabulary.
 - `AGENTS.md` — generic Obsidian plugin conventions from the sample template.
 
 ## How work gets done here
@@ -93,7 +98,7 @@ beat three branches racing on the same render path. Split only where the files
 genuinely do not overlap.
 
 **Pass pointers, not content.** Give an agent the issue number to run
-`gh issue view` on, the PRD path, and the specific note files. Do not paste
+`gh issue view` on, the doc path, and the specific finding files. Do not paste
 requirements into the prompt; they go stale and cost context twice.
 
 **Expect conflicts in exactly two places.** `src/main.ts`, which every feature
