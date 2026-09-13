@@ -68,7 +68,12 @@ import {
 	type TerminalTitleSource,
 } from '../settings';
 import { terminalArgvPrefix } from '../herdr/ssh';
-import { endpointLabel, LOCAL_ENDPOINT_ID, type Endpoint } from '../connection';
+import {
+	endpointLabel,
+	LOCAL_ENDPOINT_ID,
+	type Endpoint,
+	type EndpointSession,
+} from '../connection';
 import {
 	TerminalSession,
 	type ScrollDirection,
@@ -76,7 +81,9 @@ import {
 } from '../bridge/terminalSession';
 import { createRenderer } from './renderer/create';
 import { agentDisplayName } from './rowModel';
-import type { PaneState } from '../herdr/scope';
+import type { PaneState, WorkspaceScope } from '../herdr/scope';
+import type { HerdrClient } from '../herdr/client';
+import type { TabLabelCache } from '../tabLabels';
 import type { CellCoordinates, TerminalRenderer } from './renderer/TerminalRenderer';
 import {
 	DEFAULT_HOST_KEY_POLICY,
@@ -667,6 +674,16 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * The published connection when it is the herdr this view is pinned to
+	 * (issue #81), with its scope, tab labels and endpoint snapshot; null while
+	 * the list is connected elsewhere, or to nothing. The one place this view
+	 * asks that question.
+	 */
+	private endpointSession(): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+		return this.plugin.endpointSession(this.endpointId);
+	}
+
+	/**
 	 * Agent name of the pane, or the herdr tab label when the setting says so
 	 * (PRD M13, issues #36, #43), falling back to the pane id.
 	 */
@@ -674,7 +691,7 @@ export class TerminalView extends ItemView {
 		// Only the pinned endpoint's scope may name this pane: the other herdr's
 		// `w4:p1` is a different agent (issue #54). While the list is connected
 		// elsewhere the last title that scope gave stays, rather than the id.
-		const scope = this.paneId ? this.plugin.scopeFor(this.endpointId) : null;
+		const scope = this.paneId ? this.endpointSession()?.scope : null;
 		const pane = scope?.get(this.paneId);
 		if (pane) this.lastTitle = terminalTabTitle(pane, this.paneId, this.titleContext(pane));
 		return this.lastTitle || terminalTabTitle(pane, this.paneId);
@@ -689,13 +706,13 @@ export class TerminalView extends ItemView {
 		const settings = this.plugin.settings;
 		const source = normalizeTerminalTitleSource(settings.terminalTitleSource);
 		if (source !== 'tab') return { source, tabLabel: undefined, sharing: false, agentsInTab: 1 };
-		const scope = this.plugin.scopeFor(this.endpointId);
-		const agentsInTab = scope
-			? scope.list().filter((other) => other.tabId === pane.tabId).length
+		const session = this.endpointSession();
+		const agentsInTab = session
+			? session.scope.list().filter((other) => other.tabId === pane.tabId).length
 			: 1;
 		return {
 			source,
-			tabLabel: this.plugin.tabLabelsFor(this.endpointId)?.get(pane.tabId),
+			tabLabel: session?.tabLabels.get(pane.tabId),
 			sharing: settings.splitIntoFolderTab,
 			agentsInTab,
 		};
@@ -703,7 +720,7 @@ export class TerminalView extends ItemView {
 
 	/** Re-reads the title after the title setting changed (issue #43). */
 	refreshTitle(): void {
-		this.plugin.tabLabelsFor(this.endpointId)?.ensure();
+		this.endpointSession()?.tabLabels.ensure();
 		this.scheduleHeader();
 	}
 
@@ -866,11 +883,12 @@ export class TerminalView extends ItemView {
 	 */
 	private bindScope(): void {
 		for (const off of this.unbindScope.splice(0)) off();
-		const scope = this.plugin.scopeFor(this.endpointId);
-		if (!scope) return;
+		const session = this.endpointSession();
+		if (!session) return;
+		const scope = session.scope;
 		// The tab label comes from the shared cache (issue #43); this is where the
 		// view asks it to cover the pane's tab, so `getDisplayText` never does.
-		const labels = this.plugin.tabLabelsFor(this.endpointId);
+		const labels = session.tabLabels;
 		this.unbindScope.push(
 			// `added` is the interesting one: a pane opened from the file pane is
 			// shown before `agent.list` has answered, so its name arrives late.
@@ -878,7 +896,7 @@ export class TerminalView extends ItemView {
 			// decides whether the agent name is appended to the tab label.
 			scope.on('added', (pane) => {
 				if (pane.paneId === this.paneId) {
-					labels?.ensure(pane.tabId);
+					labels.ensure(pane.tabId);
 					this.scheduleHeader();
 				} else if (pane.tabId === scope.get(this.paneId)?.tabId) {
 					this.scheduleHeader();
@@ -891,10 +909,8 @@ export class TerminalView extends ItemView {
 				if (pane.tabId === scope.get(this.paneId)?.tabId) this.scheduleHeader();
 			}),
 		);
-		if (labels) {
-			this.unbindScope.push(labels.subscribe(() => this.scheduleHeader()));
-			labels.ensure(scope.get(this.paneId)?.tabId);
-		}
+		this.unbindScope.push(labels.subscribe(() => this.scheduleHeader()));
+		labels.ensure(scope.get(this.paneId)?.tabId);
 		this.scheduleHeader();
 	}
 
@@ -1063,7 +1079,11 @@ export class TerminalView extends ItemView {
 		} catch (error) {
 			// A restored tab opens before `connect()` has discovered the binary
 			// (discovery is async); the plugin announces the connection through
-			// `onScopeReplaced`, which retries this start once.
+			// `onScopeReplaced`, which retries this start once. The question here
+			// is whether the plugin has connected to *anything* yet, so it reads
+			// the client of the published connection, not this endpoint's session:
+			// a connection to the other herdr still means the binary was found,
+			// and the error above is then the honest answer.
 			this.awaitingConnection = !this.plugin.client;
 			this.closedReason = this.awaitingConnection
 				? 'waiting for herdr'

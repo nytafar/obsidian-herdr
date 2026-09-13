@@ -25,8 +25,8 @@
  *   does not support it, leaves an *empty* entry rather than the previous one,
  *   so a closed tab's label cannot outlive it.
  * - **Keyed by connection plus workspace.** The cache is built per connection
- *   (see `HerdrPlugin.tabLabelsFor`), and inside it entries are keyed by
- *   workspace id, so a workspace re-resolution starts from a blank map.
+ *   (see `EndpointSessions` in `src/connection.ts`), and inside it entries are
+ *   keyed by workspace id, so a workspace re-resolution starts from a blank map.
  * - **No I/O in render.** `labels()` and `get()` never fetch. Views ask for a
  *   fetch from their bind and `added` handlers through `ensure()`, which is
  *   bounded: a tab id already asked for is not asked again even when herdr's
