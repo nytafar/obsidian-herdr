@@ -478,13 +478,13 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Detaches every terminal leaf open for `paneId` on the connected endpoint
-	 * (issue #66). Same endpoint-aware match as {@link terminalLeaf}, but over
-	 * every matching leaf instead of the first: a leaf pinned to another
-	 * endpoint with the same pane id is left alone.
+	 * Detaches every terminal leaf open for `paneId` on `endpointId` (issue #66).
+	 * Same endpoint-aware match as {@link terminalLeaf}, but over every matching
+	 * leaf instead of the first: a leaf pinned to another endpoint with the same
+	 * pane id is left alone. The endpoint is the caller's, captured before the
+	 * close it follows, not `this.endpoint` as it is now (PR #89).
 	 */
-	private detachTerminalLeaves(paneId: string): void {
-		const endpointId = this.endpoint.id;
+	private detachTerminalLeaves(paneId: string, endpointId: string): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
 			if (stateMatchesPane(leaf.getViewState().state, paneId, endpointId)) leaf.detach();
 		}
@@ -502,6 +502,13 @@ export default class HerdrPlugin extends Plugin {
 				if (!client) return Promise.reject(new Error('not connected to herdr'));
 				return client.request<T>(method, params);
 			},
+			// The client itself, so a two-request action keeps the connection it
+			// started on even if a reconnect replaces ours in between (PR #89).
+			connection: () => {
+				const client = this.client;
+				if (!client) return null;
+				return <T,>(method: string, params: unknown) => client.request<T>(method, params);
+			},
 			// Real agent names from `agent.list`, session-wide: herdr rejects a
 			// duplicate name anywhere, not just in this workspace (PRD M20).
 			takenAgentNames: () => this.scope?.agentNames() ?? new Set<string>(),
@@ -513,7 +520,8 @@ export default class HerdrPlugin extends Plugin {
 				new Notice(message);
 			},
 			openTerminal: (paneId: string) => this.openTerminal(paneId),
-			detachTerminalLeaves: (paneId: string) => this.detachTerminalLeaves(paneId),
+			detachTerminalLeaves: (paneId: string, endpointId: string) =>
+				this.detachTerminalLeaves(paneId, endpointId),
 			sleep: (ms: number) =>
 				new Promise<void>((resolve) => {
 					window.setTimeout(resolve, ms);

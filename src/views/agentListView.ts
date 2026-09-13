@@ -523,7 +523,10 @@ export class AgentListView extends ItemView {
 			},
 			closePane: async (ref) => {
 				if (!onCurrentEndpoint(ref)) return false;
-				return await plugin.actions.closePane(ref.paneId);
+				// The ref's endpoint, not the plugin's: the toolbar can switch
+				// herdrs while `pane.close` is in flight, and the terminal leaves
+				// that go with the pane are the ones on this herdr (PR #89).
+				return await plugin.actions.closePane(ref.paneId, ref.endpointId);
 			},
 			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
 			promptRename: (text) => new PromptModal(this.app, text).ask(),
