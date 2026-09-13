@@ -137,7 +137,7 @@ type SortBy = Required<RowModelOptions>['sort'];
  * What a row calls an agent (PRD M8): its herdr name, else the stripped terminal
  * title, else the pane id. Never `pane.agent`, which is only the kind.
  */
-export function agentDisplayName(pane: PaneState): string {
+export function agentDisplayName(pane: Pick<PaneState, 'paneId' | 'name' | 'title'>): string {
 	return pane.name.trim() || pane.title.trim() || pane.paneId;
 }
 

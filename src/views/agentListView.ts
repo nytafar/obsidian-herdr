@@ -30,10 +30,13 @@
  * `settings.remote.enabled` and reconnects. Terminals already open stay pinned
  * to the endpoint they started on.
  *
- * A right-click on a row opens its context menu (issue #35): pin the row to the
- * top of its group, rename the agent, close the pane. `rowMenu.ts` says what
- * the menu holds and what the two modals say; this file only draws the `Menu`,
- * shows the modal, and calls the plugin.
+ * What an event on a row *does* is `rowDispatch.ts` (issue #82): click,
+ * right-click and keyboard activation all go there, and it decides between
+ * opening the terminal, focusing the pane and the row menu with pin, rename
+ * and close (issue #35). This file binds the three delegated listeners and
+ * implements the host the dispatcher acts through — the `Menu`, the two
+ * modals from `modals.ts`, and the plugin calls — so no decision is taken
+ * here and the dispatcher is testable without a view.
  *
  * Guidelines followed here: no `innerHTML` (everything via `createEl`), no inline
  * styles (see `styles.css`), one delegated `registerDomEvent` instead of a
@@ -41,20 +44,20 @@
  * this view with `getLeavesOfType`.
  */
 
-import { ItemView, Menu, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
+import { ItemView, Menu, Notice, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import type { EndpointSession } from '../connection';
 import type { HerdrClient } from '../herdr/client';
 import type { WorkspaceScope } from '../herdr/scope';
 import type { TabLabelCache } from '../tabLabels';
-import { pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
+import { isPanePinned, pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
 import { ConfirmModal, PromptModal } from './modals';
-import { closeConfirmation, renamePrompt, rowMenuItems, type RowMenuItem, type RowMenuRow } from './rowMenu';
+import type { RowMenuItem } from './rowMenu';
+import { RowDispatcher, type RowDispatchHost } from './rowDispatch';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
-import { buildRows, isRowClickAction, rowActions, type RowGroup, type RowModel } from './rowModel';
+import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
-import { asElement } from './dom';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -93,10 +96,13 @@ export class AgentListView extends ItemView {
 	private pendingRender = 0;
 	/** Unsubscribes from the scope and label cache bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
+	/** Turns an event on a row into an effect (issue #82). */
+	private readonly rows: RowDispatcher<MouseEvent>;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
 		this.plugin = plugin;
+		this.rows = new RowDispatcher<MouseEvent>(this.rowDispatchHost());
 	}
 
 	getViewType(): string {
@@ -120,9 +126,9 @@ export class AgentListView extends ItemView {
 
 		// One delegated listener beats one per row: rows are rebuilt on every
 		// scope event, and per-row registrations would pile up on the component.
-		this.registerDomEvent(container, 'click', (event) => this.onClick(event));
-		this.registerDomEvent(container, 'keydown', (event) => this.onKeyDown(event));
-		this.registerDomEvent(container, 'contextmenu', (event) => this.onContextMenu(event));
+		this.registerDomEvent(container, 'click', (event) => this.rows.click(event));
+		this.registerDomEvent(container, 'keydown', (event) => this.rows.keyDown(event));
+		this.registerDomEvent(container, 'contextmenu', (event) => this.rows.contextMenu(event));
 
 		this.bindScope();
 		// The sidebar is usually restored before `connect()` has built a scope, and
@@ -476,107 +482,66 @@ export class AgentListView extends ItemView {
 		button.setAttribute('aria-label', actions.buttonLabel);
 	}
 
-	private onClick(event: MouseEvent): void {
-		const target = asElement(event.target);
-		if (!target) return;
-		const row = target.closest<HTMLElement>('[data-pane-id]');
-		const paneId = row?.dataset.paneId;
-		if (!paneId) return;
-		event.preventDefault();
-		this.runRowAction(target, paneId);
+	/**
+	 * The seam the row dispatcher acts through (issue #82): the plugin, the
+	 * `Menu` and the two modals, behind one flat interface. Everything read
+	 * from the connection goes through the endpoint session lookup, so a row
+	 * effect and the render it came from always mean the same herdr.
+	 *
+	 * `target()` is what makes a rename or a close confirmed after an endpoint
+	 * switch or a reconnect droppable: the session object is per connection
+	 * generation (issue #81), so comparing it by identity answers both
+	 * questions at once.
+	 */
+	private rowDispatchHost(): RowDispatchHost<MouseEvent> {
+		const plugin = this.plugin;
+		return {
+			target: () => ({ endpointId: plugin.endpoint.id, connection: this.session() }),
+			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
+			rowClick: () => plugin.settings.agentListRowClick,
+			pinned: (ref) => isPanePinned(plugin.settings, ref.endpointId, ref.paneId),
+			setPinned: async (ref, pinned) => {
+				if (isPanePinned(plugin.settings, ref.endpointId, ref.paneId) !== pinned) {
+					togglePanePin(plugin.settings, ref.endpointId, ref.paneId);
+				}
+				await plugin.saveSettings();
+			},
+			// Rows come from the published connection, which is the endpoint the
+			// terminal is opened on and pinned to (issue #54).
+			openTerminal: (ref) => void plugin.openTerminal(ref.paneId),
+			focusPane: (ref) => void plugin.actions.focusPane(ref.paneId),
+			renameAgent: async (ref, name) => {
+				await plugin.actions.renameAgent(ref.paneId, name);
+			},
+			closePane: (ref) => plugin.actions.closePane(ref.paneId),
+			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
+			promptRename: (text) => new PromptModal(this.app, text).ask(),
+			// The one confirmation in the list, and it destroys a pane.
+			confirmClose: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
+			refreshList: () => plugin.refreshAgentList(),
+			notice: (message) => {
+				new Notice(message);
+			},
+		};
 	}
 
-	/**
-	 * Right-click on a row: the row menu (issue #35). Anywhere else in the view
-	 * is left to the browser, so the toolbar keeps its default menu.
-	 */
-	private onContextMenu(event: MouseEvent): void {
-		const target = asElement(event.target);
-		const rowEl = target?.closest<HTMLElement>('[data-pane-id]');
-		const paneId = rowEl?.dataset.paneId;
-		if (!paneId) return;
-		const pane = this.session()?.scope.get(paneId);
-		if (!pane) return;
-		event.preventDefault();
-		const row: RowMenuRow = {
-			paneId,
-			displayName: rowEl.querySelector('.herdr-agent-name')?.textContent ?? paneId,
-			pinned: rowEl.hasClass('is-pinned'),
-			name: pane.name,
-		};
+	/** Draws the row menu at the pointer; what it holds is `rowMenu.ts`. */
+	private showRowMenu(
+		event: MouseEvent,
+		items: RowMenuItem[],
+		choose: (item: RowMenuItem) => void,
+	): void {
 		const menu = new Menu();
-		for (const item of rowMenuItems(row)) {
+		for (const item of items) {
 			if (item.separatorBefore) menu.addSeparator();
 			menu.addItem((entry) => {
 				entry
 					.setTitle(item.label)
 					.setIcon(item.icon)
-					.onClick(() => void this.runRowMenuAction(item, row));
+					.onClick(() => choose(item));
 				if (item.warning) entry.setWarning(true);
 			});
 		}
 		menu.showAtMouseEvent(event);
-	}
-
-	/** Runs one row menu entry: asks where the entry asks, then calls the plugin. */
-	private async runRowMenuAction(item: RowMenuItem, row: RowMenuRow): Promise<void> {
-		const plugin = this.plugin;
-		switch (item.action) {
-			case 'pin':
-			case 'unpin':
-				togglePanePin(plugin.settings, plugin.endpoint.id, row.paneId);
-				await plugin.saveSettings();
-				plugin.refreshAgentList();
-				return;
-			case 'rename': {
-				const name = await new PromptModal(this.app, renamePrompt(row)).ask();
-				if (name === null) return;
-				await plugin.actions.renameAgent(row.paneId, name);
-				return;
-			}
-			case 'close': {
-				const text = closeConfirmation(row);
-				const yes = await new ConfirmModal(this.app, { ...text, warning: true }).ask();
-				if (!yes) return;
-				if (await plugin.actions.closePane(row.paneId)) {
-					// A closed pane's id is gone for good; keep the pin list honest.
-					if (row.pinned) {
-						togglePanePin(plugin.settings, plugin.endpoint.id, row.paneId);
-						await plugin.saveSettings();
-					}
-				}
-				return;
-			}
-		}
-	}
-
-	/** Keyboard mirrors the pointer, including which half of the pair fires. */
-	private onKeyDown(event: KeyboardEvent): void {
-		if (event.key !== 'Enter' && event.key !== ' ') return;
-		const target = asElement(event.target);
-		if (!target) return;
-		const row = target.closest<HTMLElement>('[data-pane-id]');
-		const paneId = row?.dataset.paneId;
-		if (!paneId) return;
-		// Also stops the browser turning Enter on the button into a second click.
-		event.preventDefault();
-		this.runRowAction(target, paneId);
-	}
-
-	/**
-	 * Runs the action the clicked element carries: the icon button's own, when
-	 * the event came from it, and the row body's otherwise (issue #21).
-	 *
-	 * `Element`, not `HTMLElement`: a click that lands on the button's Lucide
-	 * glyph has an `SVGPathElement` as its target, and an `HTMLElement` guard
-	 * would drop exactly the clicks this issue is about.
-	 */
-	private runRowAction(target: Element, paneId: string): void {
-		const drawn = target.closest<HTMLElement>('[data-herdr-action]')?.dataset.herdrAction;
-		const action = isRowClickAction(drawn)
-			? drawn
-			: rowActions(this.plugin.settings.agentListRowClick).body;
-		if (action === 'terminal') void this.plugin.openTerminal(paneId);
-		else void this.plugin.actions.focusPane(paneId);
 	}
 }

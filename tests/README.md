@@ -243,9 +243,11 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    terminal title and the cwd relative to the vault. Clicking a row focuses that
    pane in herdr; the terminal button opens the terminal view (below). All of
    that comes from `buildRows`, so `tests/rowModel.test.ts` already covers the
-   ordering, the grouping and the labels; what is left to eyeball here is the
-   DOM. `tests/agentListView.test.ts` only guards the module surface, since the
-   view itself needs a document.
+   ordering, the grouping and the labels; what a click, a right-click or a key
+   on a row then *does* is `tests/rowDispatch.test.ts`, which drives the
+   dispatcher with a fake host and no view at all (issue #82). What is left to
+   eyeball here is the DOM. `tests/agentListView.test.ts` only guards the module
+   surface, since the view itself needs a document.
    Tab labels arrive from one `tab.list` per workspace resolution, never from
    the render path: with the devtools network-free view open, adding a pane
    should cause at most one extra `tab.list`, and repainting none at all.
