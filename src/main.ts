@@ -47,6 +47,7 @@ import {
 	parseTerminalState,
 	stateMatchesPane,
 } from './views/terminalView';
+import type { TerminalSetting } from './views/paneTerminal';
 import { decideOpenTarget, decidePlacement } from './terminalPlacement';
 import { ExplorerFolderButtons } from './explorerButtons';
 
@@ -434,48 +435,19 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Repaints every open terminal with the current colour theme (issue #26). The
-	 * settings tab calls this after the theme dropdown changes, so open terminals
-	 * switch palette without being reopened. Deferred leaves are skipped: they read
-	 * the setting when they mount.
+	 * A terminal setting changed: tell every open terminal which one (issue #84).
+	 *
+	 * The only terminal fan-out there is. What a setting costs — a repaint, a
+	 * cursor, a rebuild on the other engine, a retitle, or nothing until the next
+	 * mount — is the matrix's decision (`TERMINAL_SETTING_EFFECTS`), not this
+	 * method's and not the settings tab's; `cssVariables` comes from the view's
+	 * own `css-change` handler rather than from here. Deferred leaves are skipped:
+	 * they read every setting when they mount.
 	 */
-	refreshTerminals(): void {
+	applyTerminalSetting(setting: TerminalSetting): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
 			const view = leaf.view;
-			if (view instanceof TerminalView) view.applyTheme(this.settings.terminalTheme);
-		}
-	}
-
-	/** Retitles every open terminal after the title setting changed (issue #43). */
-	refreshTerminalTitles(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) view.refreshTitle();
-		}
-	}
-
-	/**
-	 * Rebuilds every open terminal on the engine the settings now name (issue
-	 * #27). Unlike a theme change, this cannot be applied in place: the renderer
-	 * is a different library, so each view snapshots its scrollback, disposes and
-	 * starts again. Deferred leaves are skipped; they read the setting when they
-	 * mount.
-	 */
-	rebuildTerminals(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) void view.rebuildRenderer();
-		}
-	}
-
-	/**
-	 * Applies the cursor style and blink settings to every open terminal (issue
-	 * #52). Both engines take these in place, so nothing is rebuilt or restarted.
-	 */
-	refreshTerminalCursors(): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView) view.applyCursor();
+			if (view instanceof TerminalView) view.applySetting(setting);
 		}
 	}
 

@@ -897,7 +897,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalTitleSource = normalizeTerminalTitleSource(value);
 						await this.save();
-						this.plugin.refreshTerminalTitles();
+						this.plugin.applyTerminalSetting('terminalTitleSource');
 					}),
 			);
 
@@ -915,7 +915,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalTheme = normalizeThemeName(value);
 						await this.save();
-						this.plugin.refreshTerminals();
+						this.plugin.applyTerminalSetting('terminalTheme');
 					});
 			});
 
@@ -933,7 +933,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalEngine = normalizeEngineName(value);
 						await this.save();
-						this.plugin.rebuildTerminals();
+						this.plugin.applyTerminalSetting('terminalEngine');
 					});
 			});
 
@@ -949,7 +949,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalCursorStyle = normalizeCursorStyle(value);
 						await this.save();
-						this.plugin.refreshTerminalCursors();
+						this.plugin.applyTerminalSetting('terminalCursorStyle');
 					});
 			});
 
@@ -960,7 +960,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 				toggle.setValue(settings.terminalCursorBlink !== false).onChange(async (value) => {
 					settings.terminalCursorBlink = value;
 					await this.save();
-					this.plugin.refreshTerminalCursors();
+					this.plugin.applyTerminalSetting('terminalCursorBlink');
 				}),
 			);
 
@@ -976,6 +976,9 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalFontFamily = value;
 						await this.save();
+						// A `next-mount` row in the matrix: open terminals keep the
+						// font they were built with, and the next mount reads this.
+						this.plugin.applyTerminalSetting('terminalFontFamily');
 					}),
 			);
 
@@ -992,6 +995,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalScrollbackMb = clampScrollbackMb(value);
 						await this.save();
+						this.plugin.applyTerminalSetting('terminalScrollbackMb');
 					}),
 			);
 
@@ -1008,6 +1012,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						settings.terminalFontSize = value;
 						await this.save();
+						this.plugin.applyTerminalSetting('terminalFontSize');
 					}),
 			);
 	}
