@@ -1,25 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-	attachFor,
-	debounce,
-	FrameBuffer,
-	PerfCounter,
-	isRecoverable,
 	parseTerminalState,
-	planThemeUpdate,
-	spawnEnv,
 	stateMatchesPane,
-	statusLine,
 	terminalTabTitle,
 	HIDE_GRACE_MS,
 	hostKeyPolicyApplies,
 	keymapReturn,
 	VisibilityTracker,
-	summariseStderr,
 	TERMINAL_VIEW_TYPE,
-	type DebounceTimers,
 	type TitleContext,
 } from '../src/views/terminalView';
+// The session-and-renderer half of the view moved to the lifecycle module (#83);
+// its pure decisions moved with it.
+import {
+	attachFor,
+	debounce,
+	FrameBuffer,
+	PerfCounter,
+	isRecoverable,
+	planThemeUpdate,
+	spawnEnv,
+	statusLine,
+	summariseStderr,
+	type DebounceTimers,
+} from '../src/views/paneTerminal';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
 
