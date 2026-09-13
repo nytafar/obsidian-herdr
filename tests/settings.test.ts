@@ -125,6 +125,58 @@ describe('renderConnectionStatus', () => {
 			warning: true,
 		});
 	});
+
+	it('warns when the chosen binary speaks another protocol than the server (#87)', () => {
+		const lines = render(
+			settings(),
+			status({
+				discovery: {
+					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
+					socketPath: '/tmp/herdr.sock',
+					status: { status: 'running', version: '0.8.2', protocol: 20 },
+					identity: { version: '0.8.0', protocol: 19 },
+					error: null,
+				} as unknown as ConnectionStatus['discovery'],
+			}),
+		);
+		const warning = lines.find((line) => line.text.startsWith('Binary protocol mismatch'));
+		expect(warning?.warning).toBe(true);
+		expect(warning?.text).toContain('/Users/test/.local/bin/herdr');
+		expect(warning?.text).toContain('protocol 19');
+		expect(warning?.text).toContain('the server speaks 20');
+	});
+
+	it('says nothing about the binary protocol when it matches the server', () => {
+		const lines = render(
+			settings(),
+			status({
+				discovery: {
+					binary: { path: '/usr/bin/herdr', source: 'login-shell' },
+					socketPath: '/tmp/herdr.sock',
+					status: { status: 'running', version: '0.8.2', protocol: 20 },
+					identity: { version: '0.8.2', protocol: 20 },
+					error: null,
+				} as unknown as ConnectionStatus['discovery'],
+			}),
+		);
+		expect(lines.some((line) => line.text.startsWith('Binary protocol mismatch'))).toBe(false);
+	});
+
+	it('stays quiet about the local binary protocol under a remote profile', () => {
+		const lines = render(
+			settings({ enabled: true, host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
+			status({
+				discovery: {
+					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
+					socketPath: '/tmp/herdr.sock',
+					status: { status: 'running', version: '0.8.2', protocol: 20 },
+					identity: { version: '0.8.0', protocol: 19 },
+					error: null,
+				} as unknown as ConnectionStatus['discovery'],
+			}),
+		);
+		expect(lines.some((line) => line.text.startsWith('Binary protocol mismatch'))).toBe(false);
+	});
 });
 
 describe('scrollback budget (#15 item 2)', () => {

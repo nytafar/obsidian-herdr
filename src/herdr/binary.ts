@@ -3,7 +3,10 @@
  *
  * Obsidian launched from the Dock does not inherit the login PATH, so the
  * search order is: settings override, `/opt/homebrew/bin`, `/usr/local/bin`,
- * `~/.local/bin`, then a PATH obtained by asking the user's login shell.
+ * `~/.local/bin`, then a PATH obtained by asking the user's login shell. That
+ * order says where herdr tends to live, not which copy belongs to the running
+ * server, so `discoverHerdr` reorders it when a later candidate speaks the
+ * server's protocol and the first does not (issue #87).
  *
  * The probe is `herdr status server --json`, which reports version, protocol
  * and the API socket path in one call. Note that the socket it reports is the
@@ -131,7 +134,66 @@ export async function loginShellPath(
 }
 
 /**
+ * Every herdr in the fixed directories and the settings extras, in search
+ * order and deduplicated. Filesystem probes only; it never spawns anything.
+ */
+export function localCandidates(
+	options: ResolveOptions = {},
+	deps: DiscoveryDeps = defaultDeps(),
+): ResolvedBinary[] {
+	const found: ResolvedBinary[] = [];
+	const seen = new Set<string>();
+	const add = (directory: string, source: BinarySource): void => {
+		const path = join(expandHome(directory, deps.home), 'herdr');
+		if (seen.has(path) || !deps.isExecutable(path)) return;
+		seen.add(path);
+		found.push({ path, source });
+	};
+	for (const directory of BINARY_DIRECTORIES) add(directory, 'directory');
+	for (const directory of splitPath(options.extraPath ?? '')) add(directory, 'extra-path');
+	return found;
+}
+
+/** Every herdr on the login shell's PATH, in order. Spawns a shell. */
+export async function loginShellCandidates(
+	options: ResolveOptions = {},
+	deps: DiscoveryDeps = defaultDeps(),
+): Promise<ResolvedBinary[]> {
+	if (options.skipLoginShell) return [];
+	const shellPath = await loginShellPath(deps, options.loginShellTimeoutMs);
+	const found: ResolvedBinary[] = [];
+	const seen = new Set<string>();
+	for (const directory of splitPath(shellPath ?? '')) {
+		const path = join(expandHome(directory, deps.home), 'herdr');
+		if (seen.has(path) || !deps.isExecutable(path)) continue;
+		seen.add(path);
+		found.push({ path, source: 'login-shell' });
+	}
+	return found;
+}
+
+/**
+ * The settings override, which wins unconditionally. An override that is not
+ * executable is still what the user asked for, so this reports a null binary
+ * rather than letting the search continue; settings then says "this path is
+ * not executable".
+ */
+function overrideBinary(
+	options: ResolveOptions,
+	deps: DiscoveryDeps,
+): { binary: ResolvedBinary | null } | null {
+	const override = options.override?.trim();
+	if (!override) return null;
+	const path = expandHome(override, deps.home);
+	return { binary: deps.isExecutable(path) ? { path, source: 'setting' } : null };
+}
+
+/**
  * Finds the herdr binary (PRD M2).
+ *
+ * The first candidate wins here, and the login shell is only asked when the
+ * cheap directories come up empty. Only {@link discoverHerdr} looks past the
+ * first candidate, because only it knows what the running server speaks.
  *
  * @returns null when nothing was found; the caller shows the settings error
  *   and the `Notice`.
@@ -140,31 +202,12 @@ export async function resolveHerdrBinary(
 	options: ResolveOptions = {},
 	deps: DiscoveryDeps = defaultDeps(),
 ): Promise<ResolvedBinary | null> {
-	const override = options.override?.trim();
-	if (override) {
-		const path = expandHome(override, deps.home);
-		// An override that does not work is still what the user asked for; report
-		// it back so settings can say "this path is not executable".
-		return deps.isExecutable(path) ? { path, source: 'setting' } : null;
-	}
+	const override = overrideBinary(options, deps);
+	if (override) return override.binary;
 
-	for (const directory of BINARY_DIRECTORIES) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
-		if (deps.isExecutable(path)) return { path, source: 'directory' };
-	}
-
-	for (const directory of splitPath(options.extraPath ?? '')) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
-		if (deps.isExecutable(path)) return { path, source: 'extra-path' };
-	}
-
-	if (options.skipLoginShell) return null;
-	const shellPath = await loginShellPath(deps, options.loginShellTimeoutMs);
-	for (const directory of splitPath(shellPath ?? '')) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
-		if (deps.isExecutable(path)) return { path, source: 'login-shell' };
-	}
-	return null;
+	const local = localCandidates(options, deps);
+	if (local.length > 0) return local[0] ?? null;
+	return (await loginShellCandidates(options, deps))[0] ?? null;
 }
 
 function splitPath(value: string): string[] {
@@ -294,6 +337,79 @@ export async function probeServer(
 	};
 }
 
+/** What a candidate binary says about itself, as opposed to about the server. */
+export interface BinaryIdentity {
+	version: string | null;
+	protocol: number | null;
+}
+
+/** Pulls a semantic version out of `herdr --version` ("herdr 0.8.2"). */
+export function parseVersionOutput(text: string): string | null {
+	const match = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/.exec(text);
+	return match ? match[0] : null;
+}
+
+/**
+ * Asks a candidate binary what it is (issue #87). `status client --json`
+ * reports the CLI's own version and protocol; `--version` is the fallback for
+ * a build that does not know that subcommand, and yields no protocol.
+ *
+ * Never throws: an unknown binary is simply an unknown identity.
+ */
+export async function probeBinary(
+	binary: string,
+	deps: DiscoveryDeps = defaultDeps(),
+	timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
+): Promise<BinaryIdentity> {
+	try {
+		const result = await deps.run(binary, ['status', 'client', '--json'], {
+			timeoutMs,
+			env: deps.env,
+		});
+		const stdout = result.stdout.trim();
+		if (stdout.startsWith('{')) {
+			const parsed: unknown = JSON.parse(stdout);
+			if (typeof parsed === 'object' && parsed !== null) {
+				const fields = parsed as Record<string, unknown>;
+				const version = typeof fields.version === 'string' ? fields.version : null;
+				const protocol = typeof fields.protocol === 'number' ? fields.protocol : null;
+				if (version !== null || protocol !== null) return { version, protocol };
+			}
+		}
+	} catch {
+		// fall through to `--version`
+	}
+	try {
+		const result = await deps.run(binary, ['--version'], { timeoutMs, env: deps.env });
+		return { version: parseVersionOutput(result.stdout), protocol: null };
+	} catch {
+		return { version: null, protocol: null };
+	}
+}
+
+/** True when the server reports something a candidate can be compared against. */
+function serverIsComparable(status: ServerStatus | null): boolean {
+	return Boolean(status && (status.protocol !== null || status.version !== null));
+}
+
+/**
+ * Whether a candidate binary speaks what the server speaks. Protocol first,
+ * version as the fallback for a binary that only answered `--version`. An
+ * identity we could not read counts as not matching, so a candidate that
+ * demonstrably matches is preferred over one that stays silent.
+ */
+export function binaryMatchesServer(
+	identity: BinaryIdentity,
+	status: ServerStatus | null,
+): boolean {
+	if (!status) return false;
+	if (status.protocol !== null && identity.protocol !== null)
+		return identity.protocol === status.protocol;
+	if (status.version !== null && identity.version !== null)
+		return identity.version === status.version;
+	return false;
+}
+
 /**
  * Socket path to connect to, in the order PRD M1 asks for: settings override,
  * then what the server reports, then `HERDR_SOCKET_PATH`, then the default.
@@ -318,6 +434,8 @@ export function resolveSocketPath(
 export interface DiscoveryResult {
 	binary: ResolvedBinary | null;
 	status: ServerStatus | null;
+	/** The chosen binary's own version and protocol, when it could be asked. */
+	identity: BinaryIdentity | null;
 	socketPath: string;
 	/** Human-readable reason the binary or the probe failed. */
 	error: string | null;
@@ -326,26 +444,74 @@ export interface DiscoveryResult {
 /**
  * One call for the plugin's load path and the settings tab: find the binary,
  * probe the server, decide the socket path. Never throws.
+ *
+ * Discovery happens before the client connects, so the protocol compared
+ * against is the one `herdr status server` reports rather than the one `ping`
+ * will: the same daemon, and known early enough to choose a binary with. A
+ * stale CLI still reports the running server correctly (verified against 0.8.0
+ * talking to a 0.8.2 server), which is what makes one probe enough to judge
+ * every candidate.
  */
 export async function discoverHerdr(
 	options: ResolveOptions & { socketOverride?: string } = {},
 	deps: DiscoveryDeps = defaultDeps(),
 ): Promise<DiscoveryResult> {
-	const binary = await resolveHerdrBinary(options, deps);
-	if (!binary) {
+	const override = overrideBinary(options, deps);
+	const local = override ? [] : localCandidates(options, deps);
+	let candidates = override?.binary ? [override.binary] : local;
+	// The login shell is the only way to see a PATH install; ask it now only
+	// when the cheap directories found nothing at all.
+	if (candidates.length === 0 && !override)
+		candidates = await loginShellCandidates(options, deps);
+	const first = candidates[0];
+	if (!first) {
 		return {
 			binary: null,
 			status: null,
+			identity: null,
 			socketPath: resolveSocketPath({ override: options.socketOverride }, deps),
 			error: options.override?.trim()
 				? `herdr is not executable at ${options.override.trim()}`
 				: 'herdr was not found in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or the login shell PATH',
 		};
 	}
-	const probe = await probeServer(binary.path, deps);
+
+	let binary: ResolvedBinary = first;
+	let probe = await probeServer(binary.path, deps);
+	let identity = await probeBinary(binary.path, deps);
+
+	// The search order is about where herdr tends to live, not about which copy
+	// belongs to the running server. When the first candidate speaks a different
+	// protocol, a later one that matches wins (issue #87); the settings override
+	// is exempt, and so is the case where the server told us nothing to compare.
+	const shouldLookFurther =
+		!override && serverIsComparable(probe.status) && !binaryMatchesServer(identity, probe.status);
+	if (shouldLookFurther) {
+		const seen = new Set(candidates.map((candidate) => candidate.path));
+		const pool = candidates.slice(1);
+		// Widen to the login shell's PATH, where a package-manager install in a
+		// directory the fixed list does not cover shows up.
+		if (candidates === local) {
+			for (const candidate of await loginShellCandidates(options, deps))
+				if (!seen.has(candidate.path)) pool.push(candidate);
+		}
+		for (const candidate of pool) {
+			const candidateIdentity = await probeBinary(candidate.path, deps);
+			if (!binaryMatchesServer(candidateIdentity, probe.status)) continue;
+			binary = candidate;
+			identity = candidateIdentity;
+			// Re-probe through the binary we will actually spawn: `compatible`
+			// and `restart_needed` are the CLI's view, not the server's.
+			const reprobe = await probeServer(binary.path, deps);
+			if (reprobe.status) probe = reprobe;
+			break;
+		}
+	}
+
 	return {
 		binary,
 		status: probe.status,
+		identity,
 		socketPath: resolveSocketPath({ override: options.socketOverride, status: probe.status }, deps),
 		error: probe.error,
 	};
