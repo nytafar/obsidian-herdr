@@ -490,6 +490,19 @@ export function renderConnectionStatus(
 			true,
 		);
 	}
+	// The binary runs every terminal session, so an old one beside a newer
+	// server is worth saying out loud (issue #87). With a remote profile the
+	// local server is the wrong machine to compare against, as above.
+	const binaryProtocol = discovery.identity?.protocol ?? null;
+	const serverProtocol = discovery.status?.protocol ?? null;
+	const binaryProtocolDiffers =
+		binaryProtocol !== null && serverProtocol !== null && binaryProtocol !== serverProtocol;
+	if (!remote.enabled && binaryProtocolDiffers) {
+		line(
+			`Binary protocol mismatch: ${discovery.binary?.path ?? 'the herdr binary'} speaks protocol ${binaryProtocol} (version ${discovery.identity?.version ?? 'unknown'}), the server speaks ${serverProtocol}. Terminal sessions run through this binary; point the binary path at the server's herdr.`,
+			true,
+		);
+	}
 	if (status.workspace) {
 		const { id, label, method, agentCount } = status.workspace;
 		line(`Workspace: ${label ?? id} (${id}, matched by ${method}), ${agentCount} agent panes`);

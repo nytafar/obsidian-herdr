@@ -209,6 +209,168 @@ describe('resolveSocketPath (M1)', () => {
 	});
 });
 
+/** `herdr status server --json` for a server at this version and protocol. */
+function serverJson(version: string, protocol: number, compatible = true): RunResult {
+	return {
+		stdout: JSON.stringify({
+			status: 'running',
+			running: true,
+			version,
+			protocol,
+			compatible,
+			socket: `${HOME}/.config/herdr/herdr.sock`,
+		}),
+		stderr: '',
+		code: 0,
+	};
+}
+
+/** `herdr status client --json`: what a candidate binary says about itself. */
+function clientJson(version: string, protocol: number): RunResult {
+	return { stdout: JSON.stringify({ version, protocol, channel: 'stable' }), stderr: '', code: 0 };
+}
+
+describe('discoverHerdr picks the binary that matches the server (#87)', () => {
+	it('prefers a login-shell binary whose protocol matches over an older fixed-directory one', async () => {
+		const calls: Call[] = [];
+		const result = await discoverHerdr(
+			{},
+			deps(['/usr/local/bin/herdr', '/usr/bin/herdr'], {
+				env: { SHELL: '/bin/zsh' },
+				calls,
+				responses: {
+					'/bin/zsh -lic printf %s "$PATH"': {
+						stdout: '/usr/bin:/usr/local/bin',
+						stderr: '',
+						code: 0,
+					},
+					'/usr/local/bin/herdr status server --json': serverJson('0.8.2', 20, false),
+					'/usr/local/bin/herdr status client --json': clientJson('0.8.0', 19),
+					'/usr/bin/herdr status server --json': serverJson('0.8.2', 20, true),
+					'/usr/bin/herdr status client --json': clientJson('0.8.2', 20),
+				},
+			}),
+		);
+		expect(result.binary).toEqual({ path: '/usr/bin/herdr', source: 'login-shell' });
+		expect(result.identity).toEqual({ version: '0.8.2', protocol: 20 });
+		// Re-probed through the binary that will actually be spawned, so
+		// `compatible` describes that one.
+		expect(result.status?.compatible).toBe(true);
+		expect(calls.some((call) => call.file === '/bin/zsh')).toBe(true);
+	});
+
+	it('reorders two fixed directories, later one first, when only it matches', async () => {
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps(['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'], {
+				responses: {
+					'/opt/homebrew/bin/herdr status server --json': serverJson('0.8.2', 20, false),
+					'/opt/homebrew/bin/herdr status client --json': clientJson('0.8.0', 19),
+					'/usr/local/bin/herdr status server --json': serverJson('0.8.2', 20, true),
+					'/usr/local/bin/herdr status client --json': clientJson('0.8.2', 20),
+				},
+			}),
+		);
+		expect(result.binary?.path).toBe('/usr/local/bin/herdr');
+	});
+
+	it('matches on version when the binary only answers --version', async () => {
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps(['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'], {
+				responses: {
+					'/opt/homebrew/bin/herdr status server --json': serverJson('0.8.2', 20, false),
+					'/opt/homebrew/bin/herdr --version': { stdout: 'herdr 0.8.0\n', stderr: '', code: 0 },
+					'/usr/local/bin/herdr --version': { stdout: 'herdr 0.8.2\n', stderr: '', code: 0 },
+					'/usr/local/bin/herdr status server --json': serverJson('0.8.2', 20, true),
+				},
+			}),
+		);
+		expect(result.binary?.path).toBe('/usr/local/bin/herdr');
+		expect(result.identity).toEqual({ version: '0.8.2', protocol: null });
+	});
+
+	it('keeps the first candidate when no other one matches either', async () => {
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps(['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'], {
+				responses: {
+					'/opt/homebrew/bin/herdr status server --json': serverJson('0.8.2', 20, false),
+					'/opt/homebrew/bin/herdr status client --json': clientJson('0.8.0', 19),
+					'/usr/local/bin/herdr status client --json': clientJson('0.7.9', 18),
+				},
+			}),
+		);
+		expect(result.binary?.path).toBe('/opt/homebrew/bin/herdr');
+		expect(result.identity).toEqual({ version: '0.8.0', protocol: 19 });
+	});
+
+	it('leaves a single candidate alone, mismatch or not, and records its identity', async () => {
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps([`${HOME}/.local/bin/herdr`], {
+				responses: {
+					[`${HOME}/.local/bin/herdr status server --json`]: serverJson('0.8.2', 20, false),
+					[`${HOME}/.local/bin/herdr status client --json`]: clientJson('0.8.0', 19),
+				},
+			}),
+		);
+		expect(result.binary).toEqual({ path: `${HOME}/.local/bin/herdr`, source: 'directory' });
+		expect(result.identity).toEqual({ version: '0.8.0', protocol: 19 });
+		expect(result.status?.protocol).toBe(20);
+		expect(result.error).toBeNull();
+	});
+
+	it('does not probe further candidates once the first one matches', async () => {
+		const calls: Call[] = [];
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps(['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'], {
+				calls,
+				responses: {
+					'/opt/homebrew/bin/herdr status server --json': serverJson('0.8.2', 20),
+					'/opt/homebrew/bin/herdr status client --json': clientJson('0.8.2', 20),
+				},
+			}),
+		);
+		expect(result.binary?.path).toBe('/opt/homebrew/bin/herdr');
+		expect(calls.every((call) => call.file === '/opt/homebrew/bin/herdr')).toBe(true);
+	});
+
+	it('keeps the settings override even when it does not match the server', async () => {
+		const calls: Call[] = [];
+		const result = await discoverHerdr(
+			{ override: '~/.local/bin/herdr' },
+			deps([`${HOME}/.local/bin/herdr`, '/usr/local/bin/herdr'], {
+				env: { SHELL: '/bin/zsh' },
+				calls,
+				responses: {
+					[`${HOME}/.local/bin/herdr status server --json`]: serverJson('0.8.2', 20, false),
+					[`${HOME}/.local/bin/herdr status client --json`]: clientJson('0.8.0', 19),
+					'/usr/local/bin/herdr status client --json': clientJson('0.8.2', 20),
+				},
+			}),
+		);
+		expect(result.binary).toEqual({ path: `${HOME}/.local/bin/herdr`, source: 'setting' });
+		expect(calls.every((call) => call.file === `${HOME}/.local/bin/herdr`)).toBe(true);
+	});
+
+	it('keeps the first candidate when the server says nothing to compare', async () => {
+		const result = await discoverHerdr(
+			{ skipLoginShell: true },
+			deps(['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'], {
+				responses: {
+					'/opt/homebrew/bin/herdr status client --json': clientJson('0.8.0', 19),
+					'/usr/local/bin/herdr status client --json': clientJson('0.8.2', 20),
+				},
+			}),
+		);
+		expect(result.binary?.path).toBe('/opt/homebrew/bin/herdr');
+		expect(result.status).toBeNull();
+		expect(result.error).toBe('not found');
+	});
+});
+
 describe('discoverHerdr', () => {
 	it('reports a clear error when the binary is missing (M2)', async () => {
 		const result = await discoverHerdr({ skipLoginShell: true }, deps([], { env: {} }));

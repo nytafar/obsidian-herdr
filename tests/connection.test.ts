@@ -45,6 +45,7 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 const DISCOVERY: DiscoveryResult = {
 	binary: { path: '/fake/herdr', source: 'setting' },
 	status: null,
+	identity: null,
 	socketPath: '/fake/api.sock',
 	error: null,
 };
