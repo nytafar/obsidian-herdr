@@ -316,6 +316,9 @@ describe('HerdrClient events', () => {
 
 		client.subscribe([{ type: 'pane.updated' }, { type: 'pane.created' }]);
 		await waitFor(() => server.subscriberCount === 1);
+		// The server sees the subscriber before its ack reaches the client and
+		// flips the stream to open; wait for that edge instead of asserting it.
+		await waitFor(() => client.eventStreamState === 'open');
 		expect(client.eventStreamState).toBe('open');
 
 		server.push('pane_updated', { type: 'pane_updated', pane: { pane_id: 'w4:p1' } });
