@@ -39,8 +39,11 @@
  * carried-over scrollback into it would aim both at a terminal nobody is
  * looking at — and would eat the snapshot the next mount is there to restore.
  *
- * Settings-driven effects (theme, cursor, engine, scrollback) are still read
- * per mount from {@link PaneTerminalHost}; issue #84 consolidates them.
+ * Settings-driven effects come in through one door (issue #84):
+ * {@link TERMINAL_SETTING_EFFECTS} maps each setting to a named effect and
+ * {@link PaneTerminal.apply} runs it. Everything the renderer is built from is
+ * still read per mount from {@link PaneTerminalHost}, so an effect that defers
+ * costs nothing: the next mount reads the setting anyway.
  */
 
 import { endpointLabel, type Endpoint } from '../connection';
@@ -52,7 +55,7 @@ import type {
 	TerminalSessionMode,
 	TerminalSessionOptions,
 } from '../bridge/terminalSession';
-import type { AttachMode } from '../settings';
+import type { AttachMode, HerdrSettings } from '../settings';
 import type {
 	CellCoordinates,
 	CursorOptions,
@@ -340,6 +343,142 @@ export function planThemeUpdate(input: ThemeUpdateInput): ThemeUpdatePlan {
 }
 
 /**
+ * The settings-effect matrix (issue #84).
+ *
+ * Every setting an open terminal reacts to maps to exactly one **named
+ * effect**, and that effect — not the setting — is what the lifecycle runs. The
+ * table below is the whole of it, and `tests/paneTerminal.test.ts` asserts it
+ * row by row, so "which setting restarts the bridge?" is answered here instead
+ * of by reading four fan-out methods in `main.ts`.
+ *
+ * The effects:
+ *
+ * - `theme`: repaint with the colours and fonts the settings hold now. The
+ *   renderer is remounted when its engine cannot repaint in place
+ *   ({@link planThemeUpdate}); the session is never touched either way.
+ * - `cursor`: shape and blink, in place on both engines.
+ * - `engine`: the renderer is a different library, so it is mounted afresh and
+ *   the bridge restarted around it. The one effect that does not keep the
+ *   session; preserving it across an engine switch would be a behaviour change
+ *   and is deliberately out of #84.
+ * - `title`: the tab's name and the view header. The view's work, not the
+ *   lifecycle's, and the only effect a hidden leaf still applies at once — a
+ *   background tab's header is on screen even when its content is not.
+ * - `next-mount`: nothing to do now. Font, size and scrollback are read by
+ *   {@link PaneTerminalHost.rendererOptions} on every mount, so the setting
+ *   lands the next time the terminal is built; routing them through a rebuild
+ *   would throw away a live terminal for a value nobody asked to see applied.
+ */
+export type TerminalEffect = 'theme' | 'cursor' | 'engine' | 'title' | 'next-mount';
+
+/**
+ * The settings an open terminal reacts to. Checked against `HerdrSettings`, so
+ * a renamed setting fails the build here instead of silently losing its effect.
+ */
+export const TERMINAL_SETTING_KEYS = [
+	'terminalTheme',
+	'terminalCursorStyle',
+	'terminalCursorBlink',
+	'terminalEngine',
+	'terminalFontFamily',
+	'terminalFontSize',
+	'terminalScrollbackMb',
+	'terminalTitleSource',
+] as const satisfies readonly (keyof HerdrSettings)[];
+
+/**
+ * A setting, or `cssVariables` for Obsidian's `css-change`: not a setting of
+ * ours at all, but the same question — the colours and fonts the renderer was
+ * handed have changed underneath it.
+ */
+export type TerminalSetting = (typeof TERMINAL_SETTING_KEYS)[number] | 'cssVariables';
+
+/** One row of the matrix: what a setting does to a terminal. */
+export interface TerminalEffectSpec {
+	/** The effect the lifecycle — or, for `title`, the view — runs. */
+	effect: TerminalEffect;
+	/**
+	 * Whether the running bridge survives. False means the pane is released and
+	 * attached again, which on a control terminal re-sends `--takeover`.
+	 */
+	keepsSession: boolean;
+	/**
+	 * Whether a hidden leaf holds the effect until it is revealed. True for
+	 * everything the renderer shows: a hidden leaf either has no renderer at all
+	 * (suspended, #15) or one nobody can see, and remounting it would spend a
+	 * WASM terminal on a tab in the background.
+	 */
+	defersWhenHidden: boolean;
+}
+
+/**
+ * The matrix itself. The plugin names a setting, this decides the effect; no
+ * caller anywhere else picks one.
+ */
+export const TERMINAL_SETTING_EFFECTS: Readonly<Record<TerminalSetting, TerminalEffectSpec>> = {
+	// #26/#53: a palette change must never reclaim a pane or reconnect a closed
+	// tab, so it stops at the renderer.
+	terminalTheme: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
+	// #52: both engines take these in place.
+	terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+	terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+	// #27: another library draws it, so the terminal is built again and the
+	// bridge with it.
+	terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
+	terminalFontFamily: { effect: 'next-mount', keepsSession: true, defersWhenHidden: true },
+	terminalFontSize: { effect: 'next-mount', keepsSession: true, defersWhenHidden: true },
+	terminalScrollbackMb: { effect: 'next-mount', keepsSession: true, defersWhenHidden: true },
+	// #43: the header, which a hidden leaf still shows.
+	terminalTitleSource: { effect: 'title', keepsSession: true, defersWhenHidden: false },
+	// PRD S18: the vault's theme changed every colour the renderer was handed.
+	// Refreshed whatever the settings say, since none of them moved.
+	cssVariables: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
+};
+
+/** The row for a setting. Total over {@link TerminalSetting} by construction. */
+export function effectOf(setting: TerminalSetting): TerminalEffectSpec {
+	return TERMINAL_SETTING_EFFECTS[setting];
+}
+
+/** What a leaf does with a setting change right now (issue #84). */
+export type SettingEffectPlan = 'run' | 'queue' | 'drop';
+
+/**
+ * Whether a setting change runs now, waits for the leaf to be revealed, or is
+ * not worth remembering at all.
+ *
+ * A hidden leaf defers every effect the renderer would show; `title` is not one
+ * of them, since a background tab's header is on screen. And a leaf the grace
+ * period already suspended (#15) drops the effect instead of queueing it: it has
+ * no renderer, and the one it mounts on reveal is built from the settings as
+ * they are then.
+ */
+export function planSettingEffect(input: {
+	setting: TerminalSetting;
+	/** The leaf has no box on screen (`VisibilityTracker.hidden`). */
+	hidden: boolean;
+	/** The lifecycle gave the renderer and the session up (`PaneTerminal.suspended`). */
+	suspended: boolean;
+}): SettingEffectPlan {
+	if (!effectOf(input.setting).defersWhenHidden || !input.hidden) return 'run';
+	return input.suspended ? 'drop' : 'queue';
+}
+
+/**
+ * What a leaf that deferred effects runs when it is revealed, in order.
+ *
+ * An `engine` swallows the rest: it mounts a terminal from every current
+ * setting, so a `theme` or a `cursor` queued beside it is already in the options
+ * it is built with. Otherwise the theme goes first, since a remount would undo a
+ * cursor applied before it, and effects that never defer are dropped.
+ */
+export function collapseEffects(effects: Iterable<TerminalEffect>): TerminalEffect[] {
+	const queued = new Set(effects);
+	if (queued.has('engine')) return ['engine'];
+	return (['theme', 'cursor'] as const).filter((effect) => queued.has(effect));
+}
+
+/**
  * Which pane, on which herdr, in which mode. The whole of what a terminal is
  * pointed at; a pane id alone aliases across endpoints (issue #54).
  */
@@ -452,7 +591,7 @@ export class PaneTerminal {
 	private exited = false;
 	private stderr: string[] = [];
 	/** True while the renderer and the session are given up for a hidden leaf. */
-	private suspended = false;
+	private isSuspended = false;
 	/** The last start failed before the plugin had found herdr; retried on connect. */
 	private awaitingConnection = false;
 	/** Scrollback carried across a suspend, as plain text. Null when there is none. */
@@ -524,6 +663,16 @@ export class PaneTerminal {
 		return this.session?.mode ?? null;
 	}
 
+	/**
+	 * True while the session and the renderer are given up for a hidden leaf
+	 * (#15). The view asks before it queues a deferred effect (#84): a suspended
+	 * terminal reads every setting again on its next mount, so there is nothing
+	 * worth remembering for it.
+	 */
+	get suspended(): boolean {
+		return this.isSuspended;
+	}
+
 	/** What the status strip says right now. */
 	status(): StatusLine {
 		const identity = this.paneIdentity;
@@ -554,7 +703,7 @@ export class PaneTerminal {
 		// re-checks the generation and stops before it spawns.
 		this.generation++;
 		this.snapshot = null;
-		this.suspended = false;
+		this.isSuspended = false;
 		this.scheduleFit.cancel();
 		this.cancelFlush();
 		this.cancelWheel();
@@ -640,15 +789,50 @@ export class PaneTerminal {
 	}
 
 	/**
+	 * The one thing a settings change asks of a terminal (issue #84): run the
+	 * effect {@link TERMINAL_SETTING_EFFECTS} chose for the setting that moved.
+	 *
+	 * The view calls this and nothing else; which setting it was, and whether a
+	 * hidden leaf should have held the effect back, are both decided before the
+	 * call. `title` and `next-mount` are listed and do nothing here on purpose:
+	 * the title belongs to the view, and the rest of the renderer options are
+	 * read fresh by the next mount.
+	 */
+	async apply(effect: TerminalEffect): Promise<void> {
+		switch (effect) {
+			case 'theme':
+				this.applyTheme();
+				return;
+			case 'cursor':
+				this.applyCursor();
+				return;
+			case 'engine':
+				await this.rebuildRenderer();
+				return;
+			case 'title':
+			case 'next-mount':
+				return;
+		}
+	}
+
+	/**
 	 * Repaints with the theme the settings now hold (issue #26, fixed in #53).
 	 * Which of the two paths runs is `planThemeUpdate`'s decision; neither touches
 	 * the session, so no takeover is re-sent and a closed tab stays closed.
+	 *
+	 * The theme name comes from the host rather than from the caller: the
+	 * renderer was mounted with whatever the setting said, so a `css-change`
+	 * passing the same name re-reads the vault's colours exactly as a bare
+	 * `refreshTheme()` used to (#84). Nothing is compared against the value the
+	 * renderer already has, which is what makes a CSS variable change repaint
+	 * even though no setting of ours moved.
 	 */
-	applyTheme(theme?: string): void {
+	private applyTheme(): void {
+		const theme = this.host.rendererOptions().theme;
 		const renderer = this.renderer;
 		const plan = planThemeUpdate({
 			opened: this.opened,
-			suspended: this.suspended,
+			suspended: this.isSuspended,
 			hasRenderer: renderer !== null,
 			// A renderer without the method is taken at its word: `refreshTheme`
 			// implies it repaints.
@@ -666,7 +850,7 @@ export class PaneTerminal {
 	}
 
 	/** Cursor shape and blink from the settings (issue #52); in place on both. */
-	applyCursor(): void {
+	private applyCursor(): void {
 		this.renderer?.applyCursor?.(this.host.cursorOptions());
 	}
 
@@ -674,8 +858,8 @@ export class PaneTerminal {
 	 * The engine setting changed (#27): the renderer is a different library now,
 	 * so the bridge is restarted around a fresh mount.
 	 */
-	async rebuildRenderer(): Promise<void> {
-		if (!this.opened || this.suspended) return;
+	private async rebuildRenderer(): Promise<void> {
+		if (!this.opened || this.isSuspended) return;
 		// Invalidates any `start()` still in flight, so nothing can go on using
 		// the renderer this is about to dispose. `start()` below bumps it again.
 		this.generation++;
@@ -716,9 +900,9 @@ export class PaneTerminal {
 	 * stops ghostty-web's repaint loop and frees its canvas.
 	 */
 	private async suspend(): Promise<void> {
-		if (!this.opened || this.suspended) return;
+		if (!this.opened || this.isSuspended) return;
 		if (!this.renderer && !this.session) {
-			this.suspended = true;
+			this.isSuspended = true;
 			return;
 		}
 		// Invalidates any `start()` still in flight: it re-checks the generation
@@ -726,7 +910,7 @@ export class PaneTerminal {
 		const generation = ++this.generation;
 		// Set before the await, so a reveal arriving while the child goes down sees
 		// a suspended terminal and restarts it (which bumps the generation again).
-		this.suspended = true;
+		this.isSuspended = true;
 		this.cancelFlush();
 		this.frames.clear();
 		this.perf = null;
@@ -759,8 +943,8 @@ export class PaneTerminal {
 
 	/** The leaf is back: mount a fresh renderer, replay the snapshot, reattach. */
 	private async resume(): Promise<void> {
-		if (!this.opened || !this.suspended) return;
-		this.suspended = false;
+		if (!this.opened || !this.isSuspended) return;
+		this.isSuspended = false;
 		if (!this.paneIdentity.paneId) return;
 		await this.start();
 	}
@@ -776,7 +960,7 @@ export class PaneTerminal {
 		const generation = ++this.generation;
 		// Whatever the reason for this start — reconnect, mode toggle, reveal — the
 		// terminal is live again from here on.
-		this.suspended = false;
+		this.isSuspended = false;
 		await this.stopSession();
 		if (generation !== this.generation) return;
 
@@ -907,7 +1091,7 @@ export class PaneTerminal {
 	 */
 	private async remountRenderer(): Promise<void> {
 		const hostEl = this.hostEl;
-		if (!this.opened || this.suspended || !hostEl) return;
+		if (!this.opened || this.isSuspended || !hostEl) return;
 		const renderer = this.renderer;
 		if (!renderer) return;
 		this.cancelFlush();

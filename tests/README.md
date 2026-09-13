@@ -16,7 +16,13 @@ decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
 `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
 canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
 machine with injected timers, so the decision to free a hidden terminal is tested
-without a DOM; what a measurement *is* (a host with no box) is not. The settings
+without a DOM; what a measurement *is* (a host with no box) is not. What a
+settings change costs an open terminal is a table rather than a call path
+(`TERMINAL_SETTING_EFFECTS`, `planSettingEffect`, `collapseEffects` in
+`src/views/paneTerminal.ts`, issue #84), so it is asserted row by row in
+`tests/paneTerminal.test.ts` alongside the effects themselves running on the
+lifecycle: a theme remount that keeps the session, an engine change that does
+not, and an observe-mode bridge that no rebuild takes over. The settings
 side owns the scrollback budget (`clampScrollbackMb`, `scrollbackBytes`) and the
 panes-per-tab cap (`clampPanesPerTab`). The
 terminal renderers

@@ -15,18 +15,25 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+	collapseEffects,
+	effectOf,
 	PaneTerminal,
+	planSettingEffect,
+	TERMINAL_SETTING_EFFECTS,
+	TERMINAL_SETTING_KEYS,
 	type PaneIdentity,
 	type PaneSession,
 	type PaneTerminalHost,
 	type PaneTerminalScheduler,
 	type StatusLine,
+	type TerminalSetting,
 } from '../src/views/paneTerminal';
 import type {
 	TerminalSessionEventMap,
 	TerminalSessionOptions,
 } from '../src/bridge/terminalSession';
 import type {
+	CursorOptions,
 	FitResult,
 	RendererOptions,
 	TerminalRenderer,
@@ -75,6 +82,15 @@ class FakeRenderer implements TerminalRenderer {
 	fitResult: FitResult = { cols: 100, rows: 40, cellWidthPx: 8, cellHeightPx: 16 };
 	/** Lines this renderer claims to hold when it is snapshotted. */
 	lines: string[] = [];
+	/** Theme names `refreshTheme` was handed, in order (#84). */
+	readonly themeRefreshes: (string | undefined)[] = [];
+	/** Cursor options `applyCursor` was handed, in order (#52). */
+	readonly cursors: CursorOptions[] = [];
+	/**
+	 * What `canUpdateThemeInPlace()` answers. False by default, like ghostty-web,
+	 * whose theme option is inert after `open()` — the engine the harness mounts.
+	 */
+	inPlaceTheme = false;
 	private readonly gate = deferred<void>();
 	private readonly deferMount: boolean;
 
@@ -127,6 +143,18 @@ class FakeRenderer implements TerminalRenderer {
 
 	focus(): void {
 		this.focused++;
+	}
+
+	canUpdateThemeInPlace(): boolean {
+		return this.inPlaceTheme;
+	}
+
+	refreshTheme(theme?: string): void {
+		this.themeRefreshes.push(theme);
+	}
+
+	applyCursor(cursor: CursorOptions): void {
+		this.cursors.push(cursor);
 	}
 
 	snapshotLines(): string[] {
@@ -277,12 +305,16 @@ function harness(options: HarnessOptions = {}) {
 		endpoint: LOCAL as Endpoint | null,
 		command: ['/usr/bin/herdr'] as string[] | null,
 		connected: true,
+		// What the settings say right now; read fresh on every mount and on every
+		// effect, exactly as the view's host does (#84).
+		rendererOptions: { engine: 'ghostty-web', theme: 'obsidian' } as RendererOptions,
+		cursor: { cursorStyle: 'block', cursorBlink: false } as CursorOptions,
 	};
 	const hostEl = { empty: vi.fn() } as unknown as HTMLElement;
 
 	const host: PaneTerminalHost = {
-		rendererOptions: () => ({ engine: 'ghostty-web' }),
-		cursorOptions: () => ({ cursorStyle: 'block', cursorBlink: false }),
+		rendererOptions: () => ({ ...state.rendererOptions }),
+		cursorOptions: () => ({ ...state.cursor }),
 		env: () => ({ PATH: '/usr/bin' }),
 		endpointFor: () => state.endpoint,
 		commandFor: () => {
@@ -680,5 +712,264 @@ describe('PaneTerminal.resize', () => {
 		h.scheduler.runTimers();
 
 		expect(h.session().resizes).toHaveLength(1);
+	});
+});
+
+describe('the settings-effect matrix (issue #84)', () => {
+	it('is one table: setting, effect, whether the session survives, whether a hidden leaf defers', () => {
+		expect(TERMINAL_SETTING_EFFECTS).toEqual({
+			terminalTheme: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
+			terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+			terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+			terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
+			terminalFontFamily: {
+				effect: 'next-mount',
+				keepsSession: true,
+				defersWhenHidden: true,
+			},
+			terminalFontSize: { effect: 'next-mount', keepsSession: true, defersWhenHidden: true },
+			terminalScrollbackMb: {
+				effect: 'next-mount',
+				keepsSession: true,
+				defersWhenHidden: true,
+			},
+			terminalTitleSource: { effect: 'title', keepsSession: true, defersWhenHidden: false },
+			cssVariables: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
+		});
+	});
+
+	it('has a row for every setting a terminal reads, and for the CSS variables', () => {
+		expect(Object.keys(TERMINAL_SETTING_EFFECTS).sort()).toEqual(
+			[...TERMINAL_SETTING_KEYS, 'cssVariables'].sort(),
+		);
+		for (const setting of TERMINAL_SETTING_KEYS) {
+			expect(effectOf(setting)).toBe(TERMINAL_SETTING_EFFECTS[setting]);
+		}
+	});
+
+	it('restarts the session for the engine and for nothing else', () => {
+		const restarts = Object.entries(TERMINAL_SETTING_EFFECTS)
+			.filter(([, spec]) => !spec.keepsSession)
+			.map(([setting]) => setting);
+		expect(restarts).toEqual(['terminalEngine']);
+	});
+
+	it('defers everything the renderer shows while a leaf is hidden, but never the title', () => {
+		const immediate = Object.entries(TERMINAL_SETTING_EFFECTS)
+			.filter(([, spec]) => !spec.defersWhenHidden)
+			.map(([setting]) => setting);
+		expect(immediate).toEqual(['terminalTitleSource']);
+	});
+
+	it('runs now when the leaf is visible, whatever the setting', () => {
+		for (const setting of Object.keys(TERMINAL_SETTING_EFFECTS) as TerminalSetting[]) {
+			expect(planSettingEffect({ setting, hidden: false, suspended: false })).toBe('run');
+		}
+	});
+
+	it('queues a hidden leaf’s effects and runs the title through anyway', () => {
+		expect(
+			planSettingEffect({ setting: 'terminalTheme', hidden: true, suspended: false }),
+		).toBe('queue');
+		expect(planSettingEffect({ setting: 'cssVariables', hidden: true, suspended: false })).toBe(
+			'queue',
+		);
+		expect(
+			planSettingEffect({ setting: 'terminalTitleSource', hidden: true, suspended: false }),
+		).toBe('run');
+	});
+
+	it('drops what a suspended leaf would have queued: its next mount reads the setting', () => {
+		expect(planSettingEffect({ setting: 'terminalTheme', hidden: true, suspended: true })).toBe(
+			'drop',
+		);
+		expect(
+			planSettingEffect({ setting: 'terminalEngine', hidden: true, suspended: true }),
+		).toBe('drop');
+	});
+});
+
+describe('collapseEffects (issue #84)', () => {
+	it('lets an engine change swallow the effects queued beside it', () => {
+		expect(collapseEffects(['theme', 'engine', 'cursor'])).toEqual(['engine']);
+	});
+
+	it('repaints before it recursors, so the remount cannot undo the cursor', () => {
+		expect(collapseEffects(['cursor', 'theme'])).toEqual(['theme', 'cursor']);
+	});
+
+	it('collapses a burst of the same effect into one', () => {
+		expect(collapseEffects(['theme', 'theme', 'theme'])).toEqual(['theme']);
+	});
+
+	it('drops effects that are never queued, and has nothing to do for an empty set', () => {
+		expect(collapseEffects(['title', 'next-mount'])).toEqual([]);
+		expect(collapseEffects([])).toEqual([]);
+	});
+});
+
+describe('PaneTerminal.apply (issue #84)', () => {
+	it('remounts the renderer for a theme and leaves the session running', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.state.rendererOptions = { engine: 'ghostty-web', theme: 'dracula' };
+
+		await h.terminal.apply('theme');
+		await settle();
+
+		// ghostty-web cannot repaint in place, so a fresh terminal carries the
+		// palette — and the bridge is untouched, so no takeover is re-sent.
+		expect(h.renderers).toHaveLength(2);
+		expect(h.renderer(0).disposed).toBe(1);
+		expect(h.renderer(0).themeRefreshes).toEqual(['dracula']);
+		expect(h.renderer(1).options.theme).toBe('dracula');
+		expect(h.sessions).toHaveLength(1);
+		expect(h.session().disposed).toBe(0);
+	});
+
+	it('repaints in place on an engine that can, and mounts nothing', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.renderer(0).inPlaceTheme = true;
+		h.state.rendererOptions = { engine: 'xterm.js', theme: 'nord' };
+
+		await h.terminal.apply('theme');
+		await settle();
+
+		expect(h.renderer(0).themeRefreshes).toEqual(['nord']);
+		expect(h.renderers).toHaveLength(1);
+		expect(h.renderer(0).disposed).toBe(0);
+	});
+
+	it('refreshes on a CSS variable change even though no setting differs', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+
+		// Twice, with the settings untouched: the vault's variables moved under
+		// the renderer, which no comparison of our own values would notice.
+		await h.terminal.apply('theme');
+		await settle();
+		await h.terminal.apply('theme');
+		await settle();
+
+		expect(h.renderers).toHaveLength(3);
+		expect(h.sessions).toHaveLength(1);
+	});
+
+	it('applies the cursor in place, touching neither the renderer nor the bridge', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.state.cursor = { cursorStyle: 'bar', cursorBlink: true };
+
+		await h.terminal.apply('cursor');
+
+		expect(h.renderer(0).cursors).toEqual([{ cursorStyle: 'bar', cursorBlink: true }]);
+		expect(h.renderers).toHaveLength(1);
+		expect(h.sessions).toHaveLength(1);
+		expect(h.session().disposed).toBe(0);
+	});
+
+	it('mounts the other library for an engine change and restarts the bridge', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.state.rendererOptions = { engine: 'xterm.js', theme: 'obsidian' };
+
+		await h.terminal.apply('engine');
+
+		expect(h.renderers).toHaveLength(2);
+		expect(h.renderer(1).options.engine).toBe('xterm.js');
+		expect(h.sessions).toHaveLength(2);
+		expect(h.session(0).disposed).toBe(1);
+		expect(h.session(1).started).toBe(1);
+	});
+
+	it('leaves one renderer and one live bridge after rapid engine changes', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+
+		// Both without awaiting: the second lands inside the first's `stopSession`.
+		const first = h.terminal.apply('engine');
+		const second = h.terminal.apply('engine');
+		await Promise.all([first, second]);
+		await settle();
+
+		// The overtaken start re-checks the generation and never spawns, so the
+		// tab is left with exactly one bridge and one terminal.
+		expect(h.sessions).toHaveLength(2);
+		expect(h.session(0).disposed).toBe(1);
+		expect(h.session(1).disposed).toBe(0);
+		expect(h.session(1).started).toBe(1);
+		expect(h.renderers.filter((renderer) => renderer.disposed === 0)).toHaveLength(1);
+	});
+
+	it('writes frames that arrive during a remount into the terminal on screen', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		// The replacement holds its mount open, which is where the frame lands.
+		h.state.deferMounts = true;
+
+		void h.terminal.apply('theme');
+		await settle();
+		h.session().emit('frame', ...frame('hello', 2));
+		h.scheduler.runFrames();
+
+		expect(h.renderer(1).writes).toEqual(['hello']);
+		expect(h.renderer(0).writes).toEqual([]);
+
+		h.renderer(1).finishMount();
+		await settle();
+		expect(h.sessions).toHaveLength(1);
+	});
+
+	it('never takes a pane over on behalf of an observer', async () => {
+		const h = harness({ identity: { mode: 'observe' } });
+		await h.terminal.attach(h.hostEl);
+
+		await h.terminal.apply('theme');
+		await settle();
+		await h.terminal.apply('cursor');
+
+		// The rebuild stopped at the renderer: the same observing bridge, still
+		// spawned without `--takeover`.
+		expect(h.sessions).toHaveLength(1);
+		expect(h.session().disposed).toBe(0);
+		expect(h.session().options.mode).toBe('observe');
+		expect(h.session().options.takeover).toBe(false);
+
+		// And the engine change, which does respawn, respawns as an observer.
+		await h.terminal.apply('engine');
+		expect(h.sessions).toHaveLength(2);
+		expect(h.session(1).options.mode).toBe('observe');
+		expect(h.session(1).options.takeover).toBe(false);
+	});
+
+	it('does nothing at all for a suspended terminal', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		await h.terminal.setVisible(false);
+		expect(h.terminal.suspended).toBe(true);
+
+		await h.terminal.apply('theme');
+		await h.terminal.apply('cursor');
+		await h.terminal.apply('engine');
+		await settle();
+
+		// Nothing mounted, nothing spawned: the mount on reveal reads the settings.
+		expect(h.renderers).toHaveLength(1);
+		expect(h.sessions).toHaveLength(1);
+	});
+
+	it('leaves the title and the next-mount settings to the view and to the next mount', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+
+		await h.terminal.apply('title');
+		await h.terminal.apply('next-mount');
+		await settle();
+
+		expect(h.renderers).toHaveLength(1);
+		expect(h.sessions).toHaveLength(1);
+		expect(h.renderer(0).themeRefreshes).toEqual([]);
+		expect(h.renderer(0).cursors).toEqual([]);
 	});
 });

@@ -20,6 +20,10 @@
  * - **The title.** `getDisplayText` asks the pinned endpoint's scope what the
  *   pane is called (#36, #43), and a burst of scope events is coalesced into
  *   one `updateHeader` per animation frame.
+ * - **Settings effects.** `applySetting` is the only thing the plugin calls
+ *   when a setting changes (#84). The matrix in `./paneTerminal.ts` names the
+ *   effect; this decides where it runs — the title here, the rest on the
+ *   lifecycle — and holds it back while the leaf is hidden.
  * - **Keys Obsidian would swallow.** Obsidian's keymap listens for `keydown` on
  *   `window` in the capture phase and ignores `defaultPrevented`, so no DOM
  *   listener of ours can run first; the workspace scope, however, defers to the
@@ -69,11 +73,16 @@ import { TerminalSession, type TerminalSessionMode } from '../bridge/terminalSes
 import { createRenderer } from './renderer/create';
 import { agentDisplayName } from './rowModel';
 import {
+	collapseEffects,
+	effectOf,
 	PaneTerminal,
+	planSettingEffect,
 	spawnEnv,
 	type DebounceTimers,
 	type PaneTerminalHost,
 	type StatusLine,
+	type TerminalEffect,
+	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState, WorkspaceScope } from '../herdr/scope';
 import type { HerdrClient } from '../herdr/client';
@@ -301,6 +310,12 @@ export class TerminalView extends ItemView {
 	private unbindScope: (() => void)[] = [];
 	/** Pending `updateHeader` frame, so a burst of `changed` retitles once (#36). */
 	private pendingHeader = 0;
+	/**
+	 * Effects a settings change asked for while this leaf was hidden (#84), run
+	 * on reveal. Deduplicated by the set and collapsed by `collapseEffects`, so
+	 * five theme switches behind a background tab cost one remount.
+	 */
+	private readonly pendingEffects = new Set<TerminalEffect>();
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -440,12 +455,6 @@ export class TerminalView extends ItemView {
 		};
 	}
 
-	/** Re-reads the title after the title setting changed (issue #43). */
-	refreshTitle(): void {
-		this.endpointSession()?.tabLabels.ensure();
-		this.scheduleHeader();
-	}
-
 	override getIcon(): string {
 		return 'square-terminal';
 	}
@@ -507,9 +516,11 @@ export class TerminalView extends ItemView {
 			this.pendingHeader = 0;
 		});
 		// A theme switch changes every colour the renderer was handed (PRD S18).
-		// `css-change` passes nothing, which keeps the current theme name and only
-		// re-reads Obsidian's colours and fonts.
-		this.registerEvent(this.app.workspace.on('css-change', () => this.terminal.applyTheme()));
+		// The same `theme` effect as the setting, and it runs whether or not any
+		// value differs: the vault's variables moved under the renderer (#84).
+		this.registerEvent(
+			this.app.workspace.on('css-change', () => this.applySetting('cssVariables')),
+		);
 
 		this.visibility = new VisibilityTracker(HIDE_GRACE_MS, () => this.onGraceExpired(), {
 			setTimeout: (cb, ms) => this.containerEl.win.setTimeout(cb, ms),
@@ -534,6 +545,7 @@ export class TerminalView extends ItemView {
 	protected override async onClose(): Promise<void> {
 		this.visibility?.cancel();
 		this.visibility = null;
+		this.pendingEffects.clear();
 		await this.terminal.detach();
 		this.hostEl = null;
 		this.statusEl = null;
@@ -630,7 +642,12 @@ export class TerminalView extends ItemView {
 		const visible = this.hostVisible();
 		if (visible === null) return;
 		if (tracker.update(visible) === 'revealed') {
-			this.detached('resume', () => this.terminal.setVisible(true));
+			this.detached('resume', async () => {
+				await this.terminal.setVisible(true);
+				// #84: whatever the settings changed while this tab was in the
+				// background lands now, on a terminal someone can see.
+				await this.flushPendingEffects();
+			});
 		}
 	}
 
@@ -645,6 +662,9 @@ export class TerminalView extends ItemView {
 			this.visibility?.update(true);
 			return;
 		}
+		// Nothing queued survives the suspend: the renderer is given up, and the
+		// one mounted on reveal reads every setting fresh (#84).
+		this.pendingEffects.clear();
 		this.detached('suspend', () => this.terminal.setVisible(false));
 	}
 
@@ -656,22 +676,53 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * Repaints with the theme the settings now hold (issue #26, fixed in #53).
-	 * `HerdrPlugin.refreshTerminals()` calls this after the setting changes, so an
-	 * open terminal switches palette without being reopened.
+	 * The one entry point a settings change uses (issue #84).
+	 * `HerdrPlugin.applyTerminalSetting()` names the setting that moved — or
+	 * `cssVariables` for a vault theme switch — and the matrix decides what this
+	 * terminal does about it: repaint, recursor, rebuild on the other engine,
+	 * retitle, or wait for the next mount.
+	 *
+	 * A hidden leaf holds the renderer effects back. One that is merely hidden
+	 * queues them until it is revealed; one the grace period already suspended
+	 * (#15) drops them, because its next mount reads every setting again.
 	 */
-	applyTheme(theme: string): void {
-		this.terminal.applyTheme(theme);
+	applySetting(setting: TerminalSetting): void {
+		const plan = planSettingEffect({
+			setting,
+			hidden: this.visibility?.hidden === true,
+			suspended: this.terminal.suspended,
+		});
+		if (plan === 'drop') return;
+		const { effect } = effectOf(setting);
+		if (plan === 'queue') this.pendingEffects.add(effect);
+		else this.runEffect(effect);
 	}
 
-	/** Cursor shape and blink from the settings (issue #52). */
-	applyCursor(): void {
-		this.terminal.applyCursor();
+	/** One named effect, on the half of the tab that owns it. */
+	private runEffect(effect: TerminalEffect): void {
+		if (effect === 'title') {
+			this.retitle();
+			return;
+		}
+		this.detached(`${effect} change`, () => this.terminal.apply(effect));
 	}
 
-	/** The engine setting changed (#27): mount the other library's terminal. */
-	async rebuildRenderer(): Promise<void> {
-		await this.terminal.rebuildRenderer();
+	/** Re-reads the title after the title setting changed (issue #43). */
+	private retitle(): void {
+		this.endpointSession()?.tabLabels.ensure();
+		this.scheduleHeader();
+	}
+
+	/**
+	 * The leaf is back on screen: run what it deferred, collapsed to the least
+	 * work that lands every queued effect. Called after the resume, so a terminal
+	 * the grace period had suspended has already remounted from the current
+	 * settings and has nothing left queued to run.
+	 */
+	private async flushPendingEffects(): Promise<void> {
+		const effects = collapseEffects(this.pendingEffects);
+		this.pendingEffects.clear();
+		for (const effect of effects) await this.terminal.apply(effect);
 	}
 
 	/**

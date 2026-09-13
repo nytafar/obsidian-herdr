@@ -47,3 +47,12 @@ ship: ghostty-web (libghostty's VT in WebAssembly, canvas output) and xterm.js.
 ghostty-web is the default; its WebAssembly memory is shared and only grows, so
 hidden tabs are torn down after thirty seconds to cap it. The benchmark that
 compares them is `scripts/bench-renderers.mjs`.
+
+What a settings change does to an open terminal is a table, not a call path:
+`TERMINAL_SETTING_EFFECTS` in `src/views/paneTerminal.ts` maps each setting to
+one named effect — `theme`, `cursor`, `engine`, `title`, `next-mount` — and the
+plugin calls one entry point per terminal leaf with the setting that moved.
+Theme and cursor keep the running bridge, so a palette change can never reclaim
+a pane another controller took over; only an engine change restarts it. A hidden
+leaf holds every effect the renderer would show until it is revealed, except the
+title, whose tab header is on screen anyway.
