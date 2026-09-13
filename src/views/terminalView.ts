@@ -73,10 +73,8 @@ import { TerminalSession, type TerminalSessionMode } from '../bridge/terminalSes
 import { createRenderer } from './renderer/create';
 import { agentDisplayName } from './rowModel';
 import {
-	collapseEffects,
-	effectOf,
 	PaneTerminal,
-	planSettingEffect,
+	SettingEffectQueue,
 	spawnEnv,
 	type DebounceTimers,
 	type PaneTerminalHost,
@@ -312,10 +310,9 @@ export class TerminalView extends ItemView {
 	private pendingHeader = 0;
 	/**
 	 * Effects a settings change asked for while this leaf was hidden (#84), run
-	 * on reveal. Deduplicated by the set and collapsed by `collapseEffects`, so
-	 * five theme switches behind a background tab cost one remount.
+	 * on reveal. The queue itself is DOM-free and lives in `./paneTerminal.ts`.
 	 */
-	private readonly pendingEffects = new Set<TerminalEffect>();
+	private readonly pendingEffects = new SettingEffectQueue();
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -689,15 +686,11 @@ export class TerminalView extends ItemView {
 	 * (#15) drops them, because its next mount reads every setting again.
 	 */
 	applySetting(setting: TerminalSetting): void {
-		const plan = planSettingEffect({
-			setting,
+		const effect = this.pendingEffects.apply(setting, {
 			hidden: this.visibility?.hidden === true,
 			suspended: this.terminal.suspended,
 		});
-		if (plan === 'drop') return;
-		const { effect } = effectOf(setting);
-		if (plan === 'queue') this.pendingEffects.add(effect);
-		else this.runEffect(effect);
+		if (effect) this.runEffect(effect);
 	}
 
 	/** One named effect, on the half of the tab that owns it. */
@@ -706,6 +699,9 @@ export class TerminalView extends ItemView {
 			this.retitle();
 			return;
 		}
+		// The next mount reads the setting itself, so there is nothing to run and
+		// nothing that could fail.
+		if (effect === 'next-mount') return;
 		this.detached(`${effect} change`, () => this.terminal.apply(effect));
 	}
 
@@ -722,9 +718,7 @@ export class TerminalView extends ItemView {
 	 * settings and has nothing left queued to run.
 	 */
 	private async flushPendingEffects(): Promise<void> {
-		const effects = collapseEffects(this.pendingEffects);
-		this.pendingEffects.clear();
-		for (const effect of effects) await this.terminal.apply(effect);
+		for (const effect of this.pendingEffects.flush()) await this.terminal.apply(effect);
 	}
 
 	/**

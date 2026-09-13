@@ -56,3 +56,15 @@ Theme and cursor keep the running bridge, so a palette change can never reclaim
 a pane another controller took over; only an engine change restarts it. A hidden
 leaf holds every effect the renderer would show until it is revealed, except the
 title, whose tab header is on screen anyway.
+
+## The settings tab
+
+The tab itself is an assembler. Seven section builders — connection, remote,
+notifications, agents, file explorer, agent list, terminal — are plain functions
+over a container, the settings object and a bundle of callbacks, listed in
+`SETTINGS_SECTIONS` in `src/settings.ts`; none of them ever sees the plugin. The
+callbacks bundle is the whole of what a control may do besides write into the
+settings: save, save and reconnect, redisplay, refresh the agent list or the
+folder hover buttons, or hand one changed setting to the open terminals. The tab
+builds that bundle from the plugin once and then just runs the list, which is
+what makes a section renderable on a bare container in a test.

@@ -19,6 +19,7 @@ import {
 	effectOf,
 	PaneTerminal,
 	planSettingEffect,
+	SettingEffectQueue,
 	TERMINAL_SETTING_EFFECTS,
 	TERMINAL_SETTING_KEYS,
 	type PaneIdentity,
@@ -817,6 +818,75 @@ describe('collapseEffects (issue #84)', () => {
 	it('drops effects that are never queued, and has nothing to do for an empty set', () => {
 		expect(collapseEffects(['title', 'next-mount'])).toEqual([]);
 		expect(collapseEffects([])).toEqual([]);
+	});
+});
+
+describe('SettingEffectQueue (issue #84)', () => {
+	const visible = { hidden: false, suspended: false };
+	const hidden = { hidden: true, suspended: false };
+	const suspended = { hidden: true, suspended: true };
+
+	it('runs a visible leaf’s effects at once and queues nothing', () => {
+		const queue = new SettingEffectQueue();
+
+		expect(queue.apply('terminalTheme', visible)).toBe('theme');
+		expect(queue.apply('terminalEngine', visible)).toBe('engine');
+		expect(queue.apply('terminalFontSize', visible)).toBe('next-mount');
+		expect([...queue.queued]).toEqual([]);
+		expect(queue.flush()).toEqual([]);
+	});
+
+	it('queues what a hidden leaf defers and flushes it collapsed when revealed', () => {
+		const queue = new SettingEffectQueue();
+
+		expect(queue.apply('terminalCursorStyle', hidden)).toBeNull();
+		expect(queue.apply('terminalTheme', hidden)).toBeNull();
+		expect(queue.apply('cssVariables', hidden)).toBeNull();
+
+		// Collapsed order, not arrival order: a remount would undo a cursor
+		// applied before it, and the two theme changes cost one repaint.
+		expect(queue.flush()).toEqual(['theme', 'cursor']);
+		// Flushing empties it: a second reveal owes nothing.
+		expect(queue.flush()).toEqual([]);
+	});
+
+	it('lets an engine change queued while hidden swallow the rest', () => {
+		const queue = new SettingEffectQueue();
+
+		queue.apply('terminalTheme', hidden);
+		queue.apply('terminalEngine', hidden);
+		queue.apply('terminalCursorBlink', hidden);
+
+		expect(queue.flush()).toEqual(['engine']);
+	});
+
+	it('runs the title through a hidden leaf: a background tab’s header is on screen', () => {
+		const queue = new SettingEffectQueue();
+
+		expect(queue.apply('terminalTitleSource', hidden)).toBe('title');
+		expect([...queue.queued]).toEqual([]);
+		expect(queue.flush()).toEqual([]);
+	});
+
+	it('drops what a suspended leaf would have queued: its next mount reads the setting', () => {
+		const queue = new SettingEffectQueue();
+
+		expect(queue.apply('terminalTheme', suspended)).toBeNull();
+		expect(queue.apply('terminalEngine', suspended)).toBeNull();
+		expect(queue.flush()).toEqual([]);
+	});
+
+	it('forgets the queue on a suspend or a close, whatever was waiting', () => {
+		const queue = new SettingEffectQueue();
+
+		queue.apply('terminalTheme', hidden);
+		queue.apply('terminalCursorStyle', hidden);
+		expect([...queue.queued].sort()).toEqual(['cursor', 'theme']);
+
+		queue.clear();
+
+		expect([...queue.queued]).toEqual([]);
+		expect(queue.flush()).toEqual([]);
 	});
 });
 

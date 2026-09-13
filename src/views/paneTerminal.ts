@@ -478,6 +478,65 @@ export function collapseEffects(effects: Iterable<TerminalEffect>): TerminalEffe
 	return (['theme', 'cursor'] as const).filter((effect) => queued.has(effect));
 }
 
+/** What a leaf is doing right now, as far as a settings change is concerned. */
+export interface SettingEffectState {
+	/** The leaf has no box on screen (`VisibilityTracker.hidden`). */
+	hidden: boolean;
+	/** The lifecycle gave the renderer and the session up (`PaneTerminal.suspended`). */
+	suspended: boolean;
+}
+
+/**
+ * The queue behind a leaf's `applySetting` (issue #84): the whole of what a tab
+ * remembers about settings that moved while nobody could see it. DOM-free on
+ * purpose, so the queue-while-hidden and flush-on-reveal wiring is a test rather
+ * than a reading of the view.
+ *
+ * {@link apply} answers with the effect to run now, or null when the change was
+ * queued or dropped; {@link flush} hands back what a reveal owes, collapsed to
+ * the least work that lands every queued effect; {@link clear} forgets it all,
+ * which is what a suspend and a close both do.
+ */
+export class SettingEffectQueue {
+	/**
+	 * Effects a settings change asked for while the leaf was hidden. Deduplicated
+	 * by the set and collapsed on the way out, so five theme switches behind a
+	 * background tab cost one remount.
+	 */
+	private readonly pending = new Set<TerminalEffect>();
+
+	/**
+	 * A setting moved. Returns the effect the caller runs now, or null when the
+	 * leaf held it back (queued for the reveal) or threw it away (suspended: its
+	 * next mount reads every setting again).
+	 */
+	apply(setting: TerminalSetting, state: SettingEffectState): TerminalEffect | null {
+		const plan = planSettingEffect({ setting, ...state });
+		if (plan === 'drop') return null;
+		const { effect } = effectOf(setting);
+		if (plan !== 'queue') return effect;
+		this.pending.add(effect);
+		return null;
+	}
+
+	/** What the reveal runs, in order, emptying the queue as it goes. */
+	flush(): TerminalEffect[] {
+		const effects = collapseEffects(this.pending);
+		this.pending.clear();
+		return effects;
+	}
+
+	/** Forget everything queued. Nothing survives a suspend or a close. */
+	clear(): void {
+		this.pending.clear();
+	}
+
+	/** What is queued, for tests and for the view's own assertions. */
+	get queued(): ReadonlySet<TerminalEffect> {
+		return this.pending;
+	}
+}
+
 /**
  * Which pane, on which herdr, in which mode. The whole of what a terminal is
  * pointed at; a pane id alone aliases across endpoints (issue #54).
