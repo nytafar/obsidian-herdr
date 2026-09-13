@@ -646,7 +646,7 @@ describe('PaneTerminal.setIdentity', () => {
 
 		// Erase display, then erase scrollback: the previous agent's output is
 		// not this agent's.
-		expect(h.renderer().writes).toEqual(['[H[2J[3J']);
+		expect(h.renderer().writes).toEqual(['\x1b[H\x1b[2J\x1b[3J']);
 		expect(h.sessions).toHaveLength(2);
 		expect(h.session(1).options.target).toBe('w4:p9');
 		expect(h.identityChanges).toEqual([true]);
@@ -712,6 +712,18 @@ describe('PaneTerminal.resize', () => {
 		h.scheduler.runTimers();
 
 		expect(h.session().resizes).toHaveLength(1);
+	});
+
+	it('arms no timer once the terminal is detached', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		await h.terminal.detach();
+
+		// An `onResize` can still arrive between detach and the view's teardown;
+		// it must not leave a debounce timer nothing will cancel.
+		h.terminal.resize();
+
+		expect(h.scheduler.pending).toBe(0);
 	});
 });
 

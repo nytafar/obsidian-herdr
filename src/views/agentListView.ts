@@ -53,7 +53,7 @@ import type { TabLabelCache } from '../tabLabels';
 import { isPanePinned, pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
 import { ConfirmModal, PromptModal } from './modals';
 import type { RowMenuItem } from './rowMenu';
-import { RowDispatcher, type RowDispatchHost } from './rowDispatch';
+import { RowDispatcher, type PaneRef, type RowDispatchHost } from './rowDispatch';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
@@ -495,6 +495,8 @@ export class AgentListView extends ItemView {
 	 */
 	private rowDispatchHost(): RowDispatchHost<MouseEvent> {
 		const plugin = this.plugin;
+		const onCurrentEndpoint = (ref: PaneRef): boolean =>
+			ref.endpointId === plugin.endpoint.id;
 		return {
 			target: () => ({ endpointId: plugin.endpoint.id, connection: this.session() }),
 			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
@@ -506,14 +508,23 @@ export class AgentListView extends ItemView {
 				}
 				await plugin.saveSettings();
 			},
-			// Rows come from the published connection, which is the endpoint the
-			// terminal is opened on and pinned to (issue #54).
-			openTerminal: (ref) => void plugin.openTerminal(ref.paneId),
-			focusPane: (ref) => void plugin.actions.focusPane(ref.paneId),
+			// The plugin acts on the published connection, so a ref captured on
+			// another endpoint must not be handed to it (issue #54). The dispatcher
+			// already notices on a stale target; these just refuse to act.
+			openTerminal: (ref) => {
+				if (onCurrentEndpoint(ref)) void plugin.openTerminal(ref.paneId);
+			},
+			focusPane: (ref) => {
+				if (onCurrentEndpoint(ref)) void plugin.actions.focusPane(ref.paneId);
+			},
 			renameAgent: async (ref, name) => {
+				if (!onCurrentEndpoint(ref)) return;
 				await plugin.actions.renameAgent(ref.paneId, name);
 			},
-			closePane: (ref) => plugin.actions.closePane(ref.paneId),
+			closePane: async (ref) => {
+				if (!onCurrentEndpoint(ref)) return false;
+				return await plugin.actions.closePane(ref.paneId);
+			},
 			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
 			promptRename: (text) => new PromptModal(this.app, text).ask(),
 			// The one confirmation in the list, and it destroys a pane.

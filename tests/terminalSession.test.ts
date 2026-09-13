@@ -161,7 +161,7 @@ describe('TerminalSession against the fake herdr', () => {
 		expect(session.input(new Uint8Array([0x03]))).toBe(true);
 		await waitFor(() => rec.frames.length >= 3);
 		expect(rec.frames[1]!.text).toBe('ls -la\r');
-		expect(rec.frames[2]!.text).toBe('');
+		expect(rec.frames[2]!.text).toBe('\x03');
 		await session.dispose();
 	});
 

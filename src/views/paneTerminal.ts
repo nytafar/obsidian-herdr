@@ -567,7 +567,7 @@ export interface PaneTerminalOptions {
 }
 
 /** The erase-display a pane switch writes: the screen, then the scrollback. */
-const ERASE_DISPLAY = '[H[2J[3J';
+const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
 
 export class PaneTerminal {
 	private readonly host: PaneTerminalHost;
@@ -765,6 +765,10 @@ export class PaneTerminal {
 
 	/** The container changed size. Debounced: herdr sees one resize, not sixty. */
 	resize(): void {
+		// A detached terminal takes no resize: an `onResize` arriving between
+		// `detach` and the view's teardown would otherwise arm a debounce timer
+		// that nothing is left to cancel.
+		if (!this.opened) return;
 		this.scheduleFit();
 	}
 

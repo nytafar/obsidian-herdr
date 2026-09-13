@@ -522,6 +522,8 @@ export class TerminalView extends ItemView {
 			this.app.workspace.on('css-change', () => this.applySetting('cssVariables')),
 		);
 
+		// The grace timer lives on the leaf's own window, not the global one, so a
+		// pop-out closing takes it down with it.
 		this.visibility = new VisibilityTracker(HIDE_GRACE_MS, () => this.onGraceExpired(), {
 			setTimeout: (cb, ms) => this.containerEl.win.setTimeout(cb, ms),
 			clearTimeout: (handle) => this.containerEl.win.clearTimeout(handle),
