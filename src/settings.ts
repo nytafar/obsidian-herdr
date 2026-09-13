@@ -39,6 +39,7 @@ export const AGENT_KINDS = [
 	'droid',
 	'grok',
 	'qwen',
+	'muse',
 ] as const;
 
 export type AgentKind = (typeof AGENT_KINDS)[number];

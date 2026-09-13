@@ -92,6 +92,8 @@ export const KIND_ICON_SVGS: Readonly<Record<string, string>> = {
 	grok: letterMark('X'),
 	// qwen arrived with herdr 0.8.2 (protocol 20).
 	qwen: letterMark('Q'),
+	// muse arrived with herdr 0.9.0 (protocol 22).
+	muse: letterMark('M'),
 };
 
 /** Normalised lookup key for a `pane.agent` value. */
