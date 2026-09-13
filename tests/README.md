@@ -11,7 +11,9 @@ including the choice of which herdr tab a new agent is split into,
 `chooseSplitTarget`).
 `obsidian` has no runtime entry point outside the app, so `vitest.config.ts`
 aliases it to `tests/fixtures/obsidian.ts`; `tsc` still checks against the real
-`obsidian.d.ts`. The terminal view is unit tested the same way: only its exported
+`obsidian.d.ts`. Most of that fixture only has to be loadable, but `Setting` is
+a working recorder (see "The `Setting` fixture" below). The terminal view is
+unit tested the same way: only its exported
 decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
 `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
 canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
@@ -50,6 +52,34 @@ wheel payload. The router suite pins the shipped policy: shift+enter and
 alt+enter are `ESC CR` (#18), plain enter and every other key are the renderer's,
 and a wheel notch is always a `terminal.scroll` carrying the cell and herdr's
 crossterm modifier bits rather than an SGR report the plugin built (#25).
+
+## The `Setting` fixture and the settings tab (#85)
+
+The settings tab is a status block plus seven sections, and each section is a
+plain function over a container, the settings object and a bundle of callbacks
+(`save`, `saveAndReconnect`, `redisplay`, `refreshAgentList`,
+`refreshFolderHoverButton`, `applyTerminalSetting`). No builder sees the plugin,
+so `tests/settingsSections.test.ts` renders a section on a bare container and
+asserts three things: the rows it puts up, what a change writes into the
+settings, and which callbacks run in which order — save before the refresh, and
+the redisplay last where a control shows or hides other fields. Both conditional
+groups are covered: the remote fields, which only exist while the profile is on
+(the enable toggle itself is always there), and the panes-per-tab cap, which
+only exists while agents share a herdr tab.
+
+That works because `Setting` in `tests/fixtures/obsidian.ts` is a recorder
+rather than a stub. It records `setName`, `setDesc`, `setHeading` and `setClass`,
+and `addToggle`, `addText`, `addTextArea`, `addDropdown`, `addSlider`,
+`addButton` and `addExtraButton` each build a component that records what it was
+configured with — value, placeholder, dropdown options in order, slider limits,
+button text — and keeps the handler passed to `onChange` (or `onClick`).
+`component.change(value)` is what a test drives: it stores the new value, runs
+the handler and returns its result, so an async handler can be awaited. Nothing
+touches a DOM; the container is only an identity, which is what
+`settingsContainer()` returns. Read a container back with `builtSettings`,
+`settingNames` or `settingNamed(container, name)`, and `setting.control()` for
+the single control of a row. `inputEl`, `selectEl` and `sliderEl` are
+`FakeElement`s that record listeners, for code that attaches one.
 
 ## Smoking shift+enter, mouse and scroll (#18, #25, #33)
 
