@@ -90,6 +90,8 @@ export const KIND_ICON_SVGS: Readonly<Record<string, string>> = {
 	droid: letterMark('D'),
 	// grok is xAI's; "X" also keeps it apart from gemini's "G".
 	grok: letterMark('X'),
+	// qwen arrived with herdr 0.8.2 (protocol 20).
+	qwen: letterMark('Q'),
 };
 
 /** Normalised lookup key for a `pane.agent` value. */

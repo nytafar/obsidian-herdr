@@ -1,18 +1,18 @@
 /**
  * GENERATED FILE — do not edit. Run `npm run gen:types` (PRD N3).
- * Source: `herdr api schema --json` from herdr 0.8.0.
- * Protocol 19, schema version 1.
+ * Source: `herdr api schema --json` from herdr 0.8.2.
+ * Protocol 20, schema version 1.
  *
  * Unknown fields are tolerated at runtime: these types describe what the
  * server promised at generation time, never what a newer server may add.
  */
 
 /** herdr JSON API protocol number this bundle was generated against. */
-export const HERDR_PROTOCOL = 19;
+export const HERDR_PROTOCOL = 20;
 /** `schema_version` of the schema document used for generation. */
 export const HERDR_SCHEMA_VERSION = 1;
 /** herdr build the schema was read from. Informational only. */
-export const HERDR_SCHEMA_SOURCE_VERSION = 'herdr 0.8.0';
+export const HERDR_SCHEMA_SOURCE_VERSION = 'herdr 0.8.2';
 
 export interface AgentInfo {
 	agent?: string | null;
@@ -473,7 +473,7 @@ export interface IntegrationInstallResult {
 	messages: string[];
 }
 
-export type IntegrationTarget = 'pi' | 'omp' | 'claude' | 'codex' | 'copilot' | 'devin' | 'droid' | 'kimi' | 'opencode' | 'kilo' | 'hermes' | 'qodercli' | 'cursor' | 'mastracode' | 'antigravity_cli' | 'grok';
+export type IntegrationTarget = 'pi' | 'omp' | 'claude' | 'codex' | 'copilot' | 'devin' | 'droid' | 'kimi' | 'opencode' | 'kilo' | 'hermes' | 'qodercli' | 'qwen' | 'cursor' | 'mastracode' | 'antigravity_cli' | 'grok';
 
 export interface IntegrationUninstallParams {
 	target: IntegrationTarget;
@@ -602,10 +602,11 @@ export interface PaneFocusDirectionResult {
 }
 
 export interface PaneGraphicsClearParams {
+	layer_id?: string | null;
 	pane_id: string;
 }
 
-export type PaneGraphicsFormat = 'png' | 'rgb' | 'rgba';
+export type PaneGraphicsFormat = 'png' | 'rgb' | 'rgba' | 'bgra';
 
 export interface PaneGraphicsPlacementParams {
 	grid_cols?: number;
@@ -619,8 +620,10 @@ export interface PaneGraphicsSetParams {
 	format: PaneGraphicsFormat;
 	image_height: number;
 	image_width: number;
+	layer_id?: string | null;
 	pane_id: string;
 	placement?: PaneGraphicsPlacementParams;
+	z_index?: number;
 }
 
 export interface PaneInfo {
@@ -643,6 +646,11 @@ export interface PaneInfo {
 	title?: string | null;
 	tokens?: Record<string, string>;
 	workspace_id: string;
+}
+
+export interface PaneInputSetParams {
+	pane_id: string;
+	right_click: PaneRightClickTarget;
 }
 
 export interface PaneLayoutPane {
@@ -849,6 +857,8 @@ export interface PaneResizeResult {
 	reason?: PaneResizeReason | null;
 }
 
+export type PaneRightClickTarget = 'herdr' | 'pane';
+
 export interface PaneScrollChangedEvent {
 	pane_id: string;
 	scroll: PaneScrollInfo;
@@ -883,6 +893,7 @@ export interface PaneSplitParams {
 	env?: Record<string, string>;
 	focus?: boolean;
 	ratio?: number | null;
+	right_click?: PaneRightClickTarget;
 	target_pane_id?: string | null;
 	workspace_id?: string | null;
 }
@@ -1267,8 +1278,22 @@ export type ResponseResult =
 		type: 'pane_read';
 	}
 	| {
+		revision: number;
+		sequence: number;
+		type: 'pane_graphics_frame_ack';
+	}
+	| {
 		cell_height_px: number;
 		cell_width_px: number;
+		file_frame_damage?: boolean;
+		file_frame_direct_max_bytes?: number | null;
+		file_frame_directory?: string | null;
+		file_frame_formats?: string[];
+		file_frame_max_bytes?: number | null;
+		file_frame_transport?: string | null;
+		max_layers_per_pane?: number;
+		pane_visible: boolean;
+		pixel_mouse?: boolean;
 		type: 'pane_graphics_info';
 	}
 	| {
@@ -1671,6 +1696,7 @@ export interface HerdrMethodParams {
 	'pane.graphics.clear': PaneGraphicsClearParams;
 	'pane.graphics.info': PaneTarget;
 	'pane.graphics.set': PaneGraphicsSetParams;
+	'pane.input.set': PaneInputSetParams;
 	'pane.layout': PaneLayoutParams;
 	'pane.list': PaneListParams;
 	'pane.move': PaneMoveParams;
@@ -1885,9 +1911,23 @@ export interface HerdrResultByType {
 		read: PaneReadResult;
 		type: 'pane_read';
 	};
+	'pane_graphics_frame_ack': {
+		revision: number;
+		sequence: number;
+		type: 'pane_graphics_frame_ack';
+	};
 	'pane_graphics_info': {
 		cell_height_px: number;
 		cell_width_px: number;
+		file_frame_damage?: boolean;
+		file_frame_direct_max_bytes?: number | null;
+		file_frame_directory?: string | null;
+		file_frame_formats?: string[];
+		file_frame_max_bytes?: number | null;
+		file_frame_transport?: string | null;
+		max_layers_per_pane?: number;
+		pane_visible: boolean;
+		pixel_mouse?: boolean;
 		type: 'pane_graphics_info';
 	};
 	'agent_explain': {
