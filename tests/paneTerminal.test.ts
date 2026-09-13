@@ -219,6 +219,9 @@ class FakeSession implements PaneSession {
 		return true;
 	}
 
+	/** Makes `dispose()` reject, like a bridge that will not go down (#89). */
+	disposeError: Error | null = null;
+
 	/** Holds the next `dispose()` open until {@link finishDispose}. */
 	holdDispose(): void {
 		this.release = null;
@@ -235,6 +238,7 @@ class FakeSession implements PaneSession {
 
 	dispose(): Promise<void> {
 		this.disposed++;
+		if (this.disposeError) return Promise.reject(this.disposeError);
 		if (!this.held) return Promise.resolve();
 		return new Promise<void>((resolve) => {
 			this.release = resolve;
@@ -995,11 +999,14 @@ describe('PaneTerminal.apply (issue #84)', () => {
 		h.session().emit('frame', ...frame('hello', 2));
 		h.scheduler.runFrames();
 
-		expect(h.renderer(1).writes).toEqual(['hello']);
+		// Held while the replacement is still mounting (#89): a write that beat
+		// the snapshot replay into it would print new output above old.
+		expect(h.renderer(1).writes).toEqual([]);
 		expect(h.renderer(0).writes).toEqual([]);
 
 		h.renderer(1).finishMount();
 		await settle();
+		expect(h.renderer(1).writes).toEqual(['hello']);
 		expect(h.sessions).toHaveLength(1);
 	});
 
@@ -1053,5 +1060,103 @@ describe('PaneTerminal.apply (issue #84)', () => {
 		expect(h.sessions).toHaveLength(1);
 		expect(h.renderer(0).themeRefreshes).toEqual([]);
 		expect(h.renderer(0).cursors).toEqual([]);
+	});
+});
+
+/**
+ * The lifecycle races the review of PR #89 turned up: a settings effect landing
+ * inside the first mount, bytes coalesced but not yet painted when the renderer
+ * is replaced, a release that rejects, and the order a replacement terminal is
+ * written in. Each is a full stop for the user — a blank tab, lost output, a
+ * leaked renderer, scrollback printed under the output that came after it.
+ */
+describe('PaneTerminal lifecycle races (PR #89 review)', () => {
+	it('spawns the bridge when a theme effect lands inside the first mount', async () => {
+		const h = harness({ deferMounts: true });
+		const attaching = h.terminal.attach(h.hostEl);
+		await settle();
+
+		// The vault's CSS changed while the first terminal was still mounting.
+		// The remount must not pull the renderer out from under the start, or
+		// nothing ever attaches and the leaf stays blank.
+		h.state.deferMounts = false;
+		void h.terminal.apply('theme');
+		await settle();
+		h.renderer(0).finishMount();
+		await attaching;
+		await settle();
+
+		expect(h.sessions).toHaveLength(1);
+		expect(h.session().started).toBe(1);
+		// And the terminal on screen is the one the theme change built.
+		expect(h.renderers).toHaveLength(2);
+		expect(h.renderer(0).disposed).toBe(1);
+		expect(h.renderer(1).disposed).toBe(0);
+		expect(h.renderer(1).dataCallbacks).toBe(1);
+	});
+
+	it('flushes coalesced bytes into the terminal a theme remount snapshots', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+
+		// A frame that arrived just before the theme change and never got its
+		// animation frame: it is in the buffer, not in the terminal.
+		h.session().emit('frame', ...frame('last word', 2));
+		await h.terminal.apply('theme');
+		await settle();
+
+		expect(h.renderer(0).writes).toEqual(['last word']);
+		expect(h.renderer(1).writes).toEqual([]);
+		expect(h.scheduler.pending).toBe(0);
+	});
+
+	it('flushes coalesced bytes before an engine rebuild snapshots the terminal', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+
+		h.session().emit('frame', ...frame('last word', 2));
+		h.state.rendererOptions = { engine: 'xterm.js', theme: 'obsidian' };
+		await h.terminal.apply('engine');
+		await settle();
+
+		expect(h.renderer(0).writes).toEqual(['last word']);
+		expect(h.renderer(1).writes).toEqual([]);
+	});
+
+	it('disposes the renderer even when releasing the session fails', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.session().disposeError = new Error('the bridge would not go down');
+
+		await expect(h.terminal.detach()).resolves.toBeUndefined();
+
+		expect(h.session().disposed).toBe(1);
+		expect(h.renderer().disposed).toBe(1);
+		expect(h.scheduler.pending).toBe(0);
+		expect(warn).toHaveBeenCalled();
+
+		// And nothing the abandoned bridge still shouts reaches the renderer.
+		h.session().emit('frame', ...frame('after close'));
+		h.scheduler.runFrames();
+		expect(h.renderer().writes).toEqual([]);
+		warn.mockRestore();
+	});
+
+	it('replays the carried scrollback before the frames that arrived during the remount', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.renderer(0).lines = ['old scrollback'];
+		h.state.deferMounts = true;
+
+		void h.terminal.apply('theme');
+		await settle();
+		// The pane kept talking while the replacement was mounting.
+		h.session().emit('frame', ...frame('live output', 2));
+		h.scheduler.runFrames();
+		h.renderer(1).finishMount();
+		await settle();
+
+		expect(h.renderer(1).writes).toEqual(['old scrollback\r\n', 'live output']);
 	});
 });

@@ -414,6 +414,12 @@ export interface TerminalEffectSpec {
 /**
  * The matrix itself. The plugin names a setting, this decides the effect; no
  * caller anywhere else picks one.
+ *
+ * Theme and cursor refresh the renderer, in place when the engine can and by
+ * remount otherwise; the session is preserved either way. Issue #84 recorded
+ * that as "remounts the renderer", which named the ghostty-web half of it —
+ * xterm.js repaints in place and always has, and spending a remount on an
+ * engine that does not need one would throw away a live terminal for nothing.
  */
 export const TERMINAL_SETTING_EFFECTS: Readonly<Record<TerminalSetting, TerminalEffectSpec>> = {
 	// #26/#53: a palette change must never reclaim a pane or reconnect a closed
@@ -645,6 +651,15 @@ export class PaneTerminal {
 	private hostEl: HTMLElement | null = null;
 	private renderer: TerminalRenderer | null = null;
 	private rendererReady: Promise<void> | null = null;
+	/**
+	 * Whether {@link renderer} has been through its mount continuation, i.e.
+	 * whether the carried-over scrollback has been replayed into it. Frames are
+	 * held back until it has: both renderers queue writes taken before `mount()`
+	 * resolves and drain that queue during the mount, so a frame written into a
+	 * terminal still mounting lands *above* the scrollback the replay is about to
+	 * write — new output printed before the history it followed.
+	 */
+	private rendererMounted = false;
 	private session: PaneSession | null = null;
 	private closedReason: string | null = null;
 	private exited = false;
@@ -768,7 +783,15 @@ export class PaneTerminal {
 		this.cancelWheel();
 		this.frames.clear();
 		this.perf = null;
-		await this.stopSession();
+		try {
+			await this.stopSession();
+		} catch (error) {
+			// As in `suspend()`: a child that will not die is herdr's problem, and
+			// no reason to leave a renderer — and ghostty-web's repaint loop, and
+			// its canvas — alive on a view that is closing. The view's `onClose`
+			// waits on this, so a rejection here would strand its teardown too.
+			console.warn('Herdr: releasing the terminal session failed', error);
+		}
 		this.renderer?.dispose();
 		this.renderer = null;
 		this.rendererReady = null;
@@ -928,6 +951,11 @@ export class PaneTerminal {
 		this.generation++;
 		const renderer = this.renderer;
 		if (renderer) {
+			// Bytes coalesced but not yet painted are output like any other: write
+			// them before the snapshot, or an engine switch loses whatever the pane
+			// said in the animation frame it happened in.
+			this.flush();
+			this.cancelFlush();
 			this.snapshot = renderer.snapshotLines?.() ?? null;
 			renderer.dispose();
 		}
@@ -1153,10 +1181,21 @@ export class PaneTerminal {
 	 * all — closed, or never started — just repaints its last frame.
 	 */
 	private async remountRenderer(): Promise<void> {
+		// A mount already in flight has a `start()` waiting on it, and swapping the
+		// renderer under that start makes its `ensureRenderer` answer null: it
+		// leaves without spawning, and this path only mounts a terminal, so the
+		// leaf would sit there attached to nothing. Let the mount finish first —
+		// the terminal it built is the one snapshotted below, so the user loses
+		// nothing by the wait. A mount that failed is awaited just the same; the
+		// rejection is `ensureRenderer`'s to report, not this path's.
+		await this.rendererReady?.catch(() => {});
 		const hostEl = this.hostEl;
 		if (!this.opened || this.isSuspended || !hostEl) return;
 		const renderer = this.renderer;
 		if (!renderer) return;
+		// Coalesced bytes belong in the snapshot, not in the buffer a replacement
+		// terminal may never be given a reason to drain.
+		this.flush();
 		this.cancelFlush();
 		this.snapshot = renderer.snapshotLines?.() ?? null;
 		renderer.dispose();
@@ -1184,6 +1223,9 @@ export class PaneTerminal {
 			const mounting = this.newRenderer(this.host.rendererOptions());
 			renderer = mounting;
 			this.renderer = mounting;
+			// Nothing is written into it until its mount continuation has replayed
+			// what the previous terminal held.
+			this.rendererMounted = false;
 			this.rendererReady = mounting.mount(hostEl).then(() => {
 				// The continuation of a mount nobody is waiting for any more: the
 				// terminal it would install callbacks on is disposed, and replaying
@@ -1191,6 +1233,10 @@ export class PaneTerminal {
 				if (this.renderer !== mounting) return;
 				mounting.onData((data) => this.onData(data));
 				this.replaySnapshot(mounting);
+				// The history is in; whatever the pane said while this was mounting
+				// goes in after it, in arrival order.
+				this.rendererMounted = true;
+				this.flush();
 				// #17/#18: keys pass the input layer before the renderer encodes
 				// them, so shift+enter can be sent as a line break. Optional on the
 				// interface; a renderer without it keeps its own encoding.
@@ -1254,7 +1300,9 @@ export class PaneTerminal {
 
 	private flush(): void {
 		const renderer = this.renderer;
-		if (!renderer) return;
+		// Held, not dropped, while a renderer is still mounting: the mount
+		// continuation flushes the buffer itself once the scrollback is replayed.
+		if (!renderer || !this.rendererMounted) return;
 		const batch = this.frames.take();
 		if (!batch) return;
 		renderer.write(batch);

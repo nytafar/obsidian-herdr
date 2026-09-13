@@ -105,7 +105,12 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	focusPane(ref: PaneRef): void;
 	/** `agent.rename`, with the pane-label fallback; reports its own failures. */
 	renameAgent(ref: PaneRef, name: string): Promise<void>;
-	/** `pane.close`; true when herdr closed it. Reports its own failures. */
+	/**
+	 * `pane.close`; true when herdr closed it. Reports its own failures. A
+	 * success also takes the pane's terminal leaves on `ref.endpointId` with it
+	 * (issue #66) — the captured endpoint, not the published one, since the
+	 * toolbar can switch herdrs while the close is in flight (PR #89).
+	 */
 	closePane(ref: PaneRef): Promise<boolean>;
 	/** Draws the row menu at the event and calls `choose` for the entry picked. */
 	showRowMenu(event: E, items: RowMenuItem[], choose: (item: RowMenuItem) => void): void;

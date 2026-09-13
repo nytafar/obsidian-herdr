@@ -46,14 +46,29 @@ const AGENT_START_POLL_MS = 100;
  */
 const PANE_NOT_READY_CODES = new Set(['agent_pane_unavailable', 'agent_pane_busy']);
 
+/**
+ * One JSON API call over a connection the caller has already captured. What
+ * {@link ActionHost.connection} hands out, so an action made of two requests
+ * cannot have the client swapped underneath it between them.
+ */
+export type Requester = <T>(method: string, params: unknown) => Promise<T>;
+
 /** The bits of the plugin an action needs. Everything Obsidian-shaped is here. */
 export interface ActionHost {
 	/** Live settings; read through a function because the object is replaced. */
 	settings(): HerdrSettings;
 	/** Scoped workspace id, or null when no herdr workspace matches this vault. */
 	workspaceId(): string | null;
-	/** One JSON API call. Rejects with `HerdrError`. */
+	/** One JSON API call, over the connection as it is now. Rejects with `HerdrError`. */
 	request<T>(method: string, params: unknown): Promise<T>;
+	/**
+	 * The connection as it is now, bound. An action that sends a second request
+	 * after herdr answered the first captures this once instead of calling
+	 * {@link request} twice: a reconnect in between replaces the client, and the
+	 * follow-up belongs to the connection the action was decided on. Null when
+	 * the plugin has no connection at all.
+	 */
+	connection(): Requester | null;
 	/** Agent names herdr already uses session-wide, for uniqueness (M20). */
 	takenAgentNames(): Set<string>;
 	/**
@@ -68,13 +83,15 @@ export interface ActionHost {
 	/** Opens the terminal view for a pane (a stub until T9). */
 	openTerminal(paneId: string): Promise<void>;
 	/**
-	 * Detaches every open terminal leaf for `paneId` on the connected endpoint
-	 * (issue #66). Called after a successful `pane.close` from the row menu, so
-	 * the tab disappears along with the row instead of sitting there showing
-	 * "Session closed". Never touches a leaf pinned to another endpoint with the
-	 * same pane id (issue #54's endpoint-aware lookup).
+	 * Detaches every open terminal leaf for `paneId` on `endpointId` (issue #66).
+	 * Called after a successful `pane.close` from the row menu, so the tab
+	 * disappears along with the row instead of sitting there showing "Session
+	 * closed". Never touches a leaf pinned to another endpoint with the same
+	 * pane id (issue #54's endpoint-aware lookup) — which is why the endpoint is
+	 * passed rather than read from the plugin: the toolbar may have switched
+	 * herdrs while `pane.close` was in flight (PR #89).
 	 */
-	detachTerminalLeaves(paneId: string): void;
+	detachTerminalLeaves(paneId: string, endpointId: string): void;
 	/** Sleep, injected so tests do not actually wait. */
 	sleep(ms: number): Promise<void>;
 	/** Clock, injected for the pane wait timeout. */
@@ -469,11 +486,16 @@ export class HerdrActions {
 	 * (issue #66): the row is going away, and a menu-driven terminate should take
 	 * its tab with it, unlike a pane that just exits on its own, which leaves the
 	 * tab showing "Session closed". A failed close leaves the tab untouched.
+	 *
+	 * The endpoint travels with the pane id, and the caller's endpoint is what is
+	 * detached on: pane ids alias across herdrs (issue #54), so resolving the
+	 * endpoint after the await could close a same-id tab on the herdr the list
+	 * switched to meanwhile (PR #89).
 	 */
-	async closePane(paneId: string): Promise<boolean> {
+	async closePane(paneId: string, endpointId: string): Promise<boolean> {
 		try {
 			await this.host.request('pane.close', { pane_id: paneId });
-			this.host.detachTerminalLeaves(paneId);
+			this.host.detachTerminalLeaves(paneId, endpointId);
 			return true;
 		} catch (error) {
 			this.reportFailure('close the pane', error);
@@ -492,6 +514,10 @@ export class HerdrActions {
 	 * The name is sent as typed, apart from trimming: herdr owns the naming rule
 	 * and answers `invalid_agent_name` when it minds, which the user then sees.
 	 * An empty name is refused here, since both calls read it as "clear".
+	 *
+	 * Both requests go over one captured connection (PR #89). A reconnect while
+	 * herdr answers the first would otherwise send the fallback to a client that
+	 * may not know this pane id at all.
 	 */
 	async renameAgent(paneId: string, name: string): Promise<RenameOutcome | null> {
 		const trimmed = name.trim();
@@ -499,8 +525,13 @@ export class HerdrActions {
 			this.host.notice('Herdr: the name cannot be empty.');
 			return null;
 		}
+		// Falls back to the plugin's own lookup when nothing is connected, which
+		// rejects with the same "not connected" error the first request would.
+		const send: Requester =
+			this.host.connection() ??
+			(<T,>(method: string, params: unknown) => this.host.request<T>(method, params));
 		try {
-			await this.host.request('agent.rename', { target: paneId, name: trimmed });
+			await send('agent.rename', { target: paneId, name: trimmed });
 			return { method: 'agent.rename', name: trimmed };
 		} catch (error) {
 			if (!(error instanceof HerdrError && error.isUnsupportedMethod)) {
@@ -509,7 +540,7 @@ export class HerdrActions {
 			}
 		}
 		try {
-			await this.host.request('pane.rename', { pane_id: paneId, label: trimmed });
+			await send('pane.rename', { pane_id: paneId, label: trimmed });
 			this.host.notice(
 				'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
 			);
