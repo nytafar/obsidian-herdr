@@ -367,8 +367,9 @@ real terminal.
    "Switch render mode"): the menu lists Ghostty web, xterm.js and Native view,
    with the current one checked.
 2. Choose Native view: the terminal is given back — `pgrep -fa 'terminal
-   session'` shows no bridge for that pane — and the tab shows "No session yet."
-   with the strip reading `Native view of <pane>. No session yet.`
+   session'` shows no bridge for that pane — and the tab shows the session's
+   history (#93), or "No session yet." on a pane whose Claude has taken no
+   prompt, with the strip reading `Native view of <pane>. No session yet.`
 3. Choose Ghostty web again: the bridge respawns and the pane renders as before.
 4. Restart Obsidian: a tab left in native mode comes back in native mode, and a
    tab that never chose follows **Default render mode** in the settings, so
@@ -386,3 +387,23 @@ herdr terminal session observe w4:p1 --cols 100 --rows 30 </dev/null | head -1
 
 matches what the view spawns in observe mode; the first line is a
 `terminal.frame` with `full: true` and the requested width/height.
+
+## Smoking the native view's history inside Obsidian (#93)
+
+The reducer, the transcript source, the session model and what the surface draws
+are unit tested (`tests/transcriptReducer.test.ts`, `tests/transcriptSource.test.ts`,
+`tests/sessionModel.test.ts`, `tests/nativeSurface.test.ts`, the first of them
+against the live transcript of whatever session runs them). What needs Obsidian
+is the Markdown: only the app can render a wikilink, a callout or an embed.
+
+1. Open a pane whose Claude has answered at least once in native mode. The whole
+   session so far is there: human prompts as plain pre-wrapped text, the
+   assistant's prose as Markdown, tool calls and thinking as one grey line each.
+2. A prompt that mentioned `[[a note]]` shows it as a link; clicking opens the
+   note, and ctrl/cmd-clicking opens it in a new tab.
+3. An answer containing a callout, an embed or a wikilink renders exactly as the
+   same text would in a note, in the vault's own theme and fonts.
+4. From the pane's own directory,
+   `ls ~/.claude/projects/"$(pwd | tr -c 'a-zA-Z0-9' '-' | sed 's/-$//')"/`
+   lists its transcripts; the one named by that pane's `agent_session.value` in
+   `herdr agent list` is the file the view is showing.

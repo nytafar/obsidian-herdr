@@ -480,8 +480,14 @@ export class TerminalView extends ItemView {
 	private createSurface(kind: PaneSurfaceKind): PaneSurface {
 		if (kind === 'terminal') return this.terminal;
 		return new NativePaneSurface({
+			// The view's own app, per the Obsidian guidelines, for the Markdown it
+			// renders and the links it opens (#93).
+			app: this.app,
 			identity: this.terminal.identity,
 			onStatus: (line) => this.renderStatus(line),
+			// Plugin-held and reference counted, so two tabs on one pane read one
+			// transcript (ADR-0003).
+			models: this.plugin.sessionModels,
 		});
 	}
 

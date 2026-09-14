@@ -1,0 +1,7 @@
+{"type":"mode","mode":"default","sessionId":"s1"}
+{"type":"atis-latch","atis":{"latched":false},"sessionId":"s1"}
+{"type":"file-history-snapshot","messageId":"msg_4","snapshot":{},"isSnapshotUpdate":false}
+{"parentUuid":null,"isSidechain":false,"type":"system","subtype":"turn_duration","content":"12s","level":"info","uuid":"s-1","timestamp":"2026-09-15T09:20:00.000Z","sessionId":"s1"}
+{"type":"compact_boundary","note":"shape unverified on this machine"}
+{"parentUuid":null,"isSidechain":false,"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"},"uuid":"u3","timestamp":"2026-09-15T09:20:01.000Z","sessionId":"s1"}
+{"half of a line, still being

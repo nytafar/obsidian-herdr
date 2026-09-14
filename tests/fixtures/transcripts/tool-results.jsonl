@@ -1,0 +1,5 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Run the tests"},"uuid":"u4","timestamp":"2026-09-15T09:30:00.000Z","origin":{"kind":"human"},"sessionId":"s1"}
+{"parentUuid":"u4","isSidechain":false,"type":"assistant","message":{"id":"msg_5","role":"assistant","content":[{"type":"text","text":"Running them."}]},"uuid":"a6","timestamp":"2026-09-15T09:30:01.000Z","sessionId":"s1"}
+{"parentUuid":"a6","isSidechain":false,"type":"assistant","message":{"id":"msg_5","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"npm test"}}]},"uuid":"a7","timestamp":"2026-09-15T09:30:02.000Z","sessionId":"s1"}
+{"parentUuid":"a7","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"3 passed"}]},"uuid":"u5","timestamp":"2026-09-15T09:30:09.000Z","toolUseResult":{"stdout":"3 passed"},"sessionId":"s1"}
+{"parentUuid":"u5","isSidechain":false,"type":"assistant","message":{"id":"msg_6","role":"assistant","content":[{"type":"text","text":"All green."}]},"uuid":"a8","timestamp":"2026-09-15T09:30:10.000Z","sessionId":"s1"}

@@ -1,0 +1,2 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Summarise [[native-view-design]] for me"},"uuid":"u1","timestamp":"2026-09-15T09:00:00.000Z","origin":{"kind":"human"},"promptSource":"user","cwd":"/home/lasse/hvelv","sessionId":"s1"}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"The design settles two seams."}]},"uuid":"a1","timestamp":"2026-09-15T09:00:02.000Z","sessionId":"s1"}
