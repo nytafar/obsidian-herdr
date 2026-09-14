@@ -357,6 +357,26 @@ below, which is the only place the memory the suspension exists for is visible.
    byte budget, not a line count). Raising it to 64 MB and opening several
    terminals is the worst case the ceiling exists for.
 
+## Smoking the render mode switch inside Obsidian (#92)
+
+The pane surface seam is unit tested with a fake factory
+(`tests/paneSurface.test.ts`); what needs Obsidian is the swap happening on a
+real terminal.
+
+1. With a terminal tab open, right-click its tab header (or use the palette's
+   "Switch render mode"): the menu lists Ghostty web, xterm.js and Native view,
+   with the current one checked.
+2. Choose Native view: the terminal is given back — `pgrep -fa 'terminal
+   session'` shows no bridge for that pane — and the tab shows "No session yet."
+   with the strip reading `Native view of <pane>. No session yet.`
+3. Choose Ghostty web again: the bridge respawns and the pane renders as before.
+4. Restart Obsidian: a tab left in native mode comes back in native mode, and a
+   tab that never chose follows **Default render mode** in the settings, so
+   switching that setting to Native view moves every such tab at once.
+5. With the remote profile on and a terminal opened on the remote endpoint, the
+   menu shows "Native view (local panes only)", greyed out, and clicking it does
+   nothing (ADR-0002).
+
 Read-only bridge check without Obsidian (observe only — never control against a
 pane someone is using):
 

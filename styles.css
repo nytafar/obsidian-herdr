@@ -352,6 +352,24 @@
 	white-space: nowrap;
 }
 
+/* Native view (issue #92) --------------------------------------------------- */
+
+/*
+ * The native render mode mounts inside the same host box as a terminal, so it
+ * scrolls itself rather than the leaf. `markdown-preview-view` on the same
+ * element brings the vault's reading-mode typography with it, which is the
+ * appearance the native view is meant to have.
+ */
+.herdr-native-view {
+	height: 100%;
+	overflow-y: auto;
+	padding: var(--size-4-4);
+}
+
+.herdr-native-empty {
+	color: var(--text-muted);
+}
+
 /* File explorer folder hover button (issue #30) ---------------------------- */
 
 /*
