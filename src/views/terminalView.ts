@@ -86,6 +86,12 @@ import type { PaneState, WorkspaceScope } from '../herdr/scope';
 import type { HerdrClient } from '../herdr/client';
 import type { TabLabelCache } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
+import {
+	engineForRenderMode,
+	isRenderMode,
+	normalizeRenderMode,
+	type RenderMode,
+} from '../native/renderMode';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -98,6 +104,11 @@ export interface TerminalViewState {
 	paneId: string;
 	mode: AttachMode;
 	endpointId: string;
+	/**
+	 * The tab's render mode (issue #92), or undefined while the tab has never
+	 * chosen one and follows the global default.
+	 */
+	renderMode?: RenderMode;
 }
 
 /**
@@ -105,7 +116,9 @@ export interface TerminalViewState {
  * anything). Returns null when there is no usable pane id; an unknown mode falls
  * back to control, which is the documented default (PRD M15). A state saved
  * before endpoints existed has no endpoint id and is treated as local, which
- * is the only endpoint a plugin of that age could have opened it on.
+ * is the only endpoint a plugin of that age could have opened it on. An
+ * unreadable or missing render mode is left unset (issue #92), which is how a
+ * tab says it follows the global default.
  */
 export function parseTerminalState(raw: unknown): TerminalViewState | null {
 	if (typeof raw !== 'object' || raw === null) return null;
@@ -117,6 +130,9 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
 		paneId,
 		mode: record.mode === 'observe' ? 'observe' : 'control',
 		endpointId: endpointId.length > 0 ? endpointId : LOCAL_ENDPOINT_ID,
+		// Deliberately not normalized to the default: a tab with no stored render
+		// mode follows the global one, and an unreadable value is such a tab.
+		...(isRenderMode(record.renderMode) ? { renderMode: record.renderMode } : {}),
 	};
 }
 
@@ -313,6 +329,11 @@ export class TerminalView extends ItemView {
 	 * on reveal. The queue itself is DOM-free and lives in `./paneTerminal.ts`.
 	 */
 	private readonly pendingEffects = new SettingEffectQueue();
+	/**
+	 * The render mode this tab chose for itself (#92), or null while it follows
+	 * the global default. Persisted in the view state, so it survives a restart.
+	 */
+	private storedRenderMode: RenderMode | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HerdrPlugin) {
 		super(leaf);
@@ -359,9 +380,11 @@ export class TerminalView extends ItemView {
 					fontSize: settings.terminalFontSize,
 					// Colours: `obsidian` by default, which is the CSS variables (#26).
 					theme: settings.terminalTheme,
-					// Which library draws it (#27); read fresh on every mount, so a
-					// rebuilt view picks up a changed setting.
-					engine: settings.terminalEngine,
+					// Which library draws it (#27, #92): the tab's own render mode,
+					// read fresh on every mount, so a switch or a changed default
+					// lands on the next rebuild. `native` never reaches a terminal
+					// surface, and would be the default engine if it did.
+					engine: engineForRenderMode(this.renderMode()),
 					// Cursor shape and blink (#52); both engines also take these in
 					// place, so a change never rebuilds anything.
 					...cursorOptions(settings),
@@ -404,6 +427,15 @@ export class TerminalView extends ItemView {
 	/** The pane this tab is pointed at; the lifecycle holds the whole identity. */
 	private get paneId(): string {
 		return this.terminal.identity.paneId;
+	}
+
+	/**
+	 * The render mode this tab renders in (#92): its own once it has switched,
+	 * else the global default, read fresh so a tab that never chose follows a
+	 * change to the setting.
+	 */
+	private renderMode(): RenderMode {
+		return this.storedRenderMode ?? normalizeRenderMode(this.plugin.settings.terminalEngine);
 	}
 
 	/**
@@ -458,13 +490,17 @@ export class TerminalView extends ItemView {
 
 	override getState(): Record<string, unknown> {
 		const { paneId, mode, endpointId } = this.terminal.identity;
-		return { paneId, mode, endpointId };
+		// Only a tab that chose stores a render mode: one that never did keeps
+		// following the global default across restarts (#92).
+		const renderMode = this.storedRenderMode;
+		return { paneId, mode, endpointId, ...(renderMode ? { renderMode } : {}) };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		await super.setState(state, result);
 		const parsed = parseTerminalState(state);
 		if (!parsed) return;
+		this.storedRenderMode = parsed.renderMode ?? null;
 		// A change clears the old pane's output, retitles through
 		// `onIdentityChanged` and restarts the bridge; anything else is a no-op.
 		await this.terminal.setIdentity(parsed);

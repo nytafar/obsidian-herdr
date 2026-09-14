@@ -350,7 +350,7 @@ describe('terminal section', () => {
 			'Terminal tab',
 			'Terminal tab title',
 			'Theme',
-			'Terminal engine',
+			'Default render mode',
 			'Cursor style',
 			'Blinking cursor',
 			'Font family',
@@ -380,6 +380,30 @@ describe('terminal section', () => {
 		expect(calls).toEqual(['save', 'save', 'save']);
 	});
 
+	it('offers all three render modes as the default for new tabs (#92)', () => {
+		const el = settingsContainer();
+		buildTerminalSection(el, settingsOf(), recorder().callbacks);
+
+		expect(dropdownOf(el, 'Default render mode').optionValues()).toEqual([
+			'ghostty-web',
+			'xterm.js',
+			'native',
+		]);
+		expect(dropdownOf(el, 'Default render mode').getValue()).toBe('ghostty-web');
+	});
+
+	it('stores the native render mode and tells open terminals (#92)', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildTerminalSection(el, settings, callbacks);
+
+		await dropdownOf(el, 'Default render mode').change('native');
+
+		expect(settings.terminalEngine).toBe('native');
+		expect(calls).toEqual(['save', 'applyTerminalSetting:terminalEngine']);
+	});
+
 	it('names the setting that moved when an open terminal has to react', async () => {
 		const el = settingsContainer();
 		const settings = settingsOf();
@@ -387,7 +411,7 @@ describe('terminal section', () => {
 		buildTerminalSection(el, settings, callbacks);
 
 		await dropdownOf(el, 'Theme').change('nord');
-		await dropdownOf(el, 'Terminal engine').change('xterm.js');
+		await dropdownOf(el, 'Default render mode').change('xterm.js');
 		await toggleOf(el, 'Blinking cursor').change(false);
 		await textOf(el, 'Font family').change('Iosevka');
 		await sliderOf(el, 'Font size').change(14);
@@ -421,15 +445,19 @@ describe('terminal section', () => {
 
 		await dropdownOf(el, 'Terminal placement').change('nonsense');
 		await dropdownOf(el, 'Theme').change('nonsense');
+		await dropdownOf(el, 'Default render mode').change('nonsense');
 		await sliderOf(el, 'Scrollback memory budget').change(9999);
 
 		expect(settings.terminalPlacement).toBe(DEFAULT_SETTINGS.terminalPlacement);
 		expect(settings.terminalTheme).toBe(DEFAULT_SETTINGS.terminalTheme);
+		expect(settings.terminalEngine).toBe(DEFAULT_SETTINGS.terminalEngine);
 		expect(settings.terminalScrollbackMb).toBe(MAX_SCROLLBACK_MB);
 		expect(calls).toEqual([
 			'save',
 			'save',
 			'applyTerminalSetting:terminalTheme',
+			'save',
+			'applyTerminalSetting:terminalEngine',
 			'save',
 			'applyTerminalSetting:terminalScrollbackMb',
 		]);

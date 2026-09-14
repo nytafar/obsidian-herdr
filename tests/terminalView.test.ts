@@ -65,6 +65,23 @@ describe('parseTerminalState', () => {
 	it('trims the pane id so a stray space still matches a leaf', () => {
 		expect(parseTerminalState({ paneId: ' w4:p1 ' })?.paneId).toBe('w4:p1');
 	});
+
+	it('reads the tab’s render mode (#92)', () => {
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'native' })?.renderMode).toBe(
+			'native',
+		);
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' })?.renderMode).toBe(
+			'xterm.js',
+		);
+	});
+
+	it('leaves the render mode unset when the tab never chose one (#92)', () => {
+		// Undefined, not the default: the global default render mode is read at
+		// mount, so a tab that never chose follows a change to it.
+		expect(parseTerminalState({ paneId: 'w4:p1' })?.renderMode).toBeUndefined();
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'wat' })?.renderMode).toBeUndefined();
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 7 })?.renderMode).toBeUndefined();
+	});
 });
 
 /** A pane as the scope holds it; only the name fields matter here. */
