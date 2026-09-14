@@ -33,10 +33,17 @@ export type RenderMode = (typeof RENDER_MODES)[number];
 /** What a tab renders when nothing has chosen: the v1 terminal (issue #27). */
 export const DEFAULT_RENDER_MODE: RenderMode = DEFAULT_TERMINAL_ENGINE;
 
-/** Dropdown and menu labels, sentence case per the Obsidian guidelines. */
+/** Settings dropdown labels, sentence case per the Obsidian guidelines. */
 export const RENDER_MODE_LABELS: Record<RenderMode, string> = {
 	...TERMINAL_ENGINE_LABELS,
 	[NATIVE_RENDER_MODE]: 'Native view (Markdown, no terminal)',
+};
+
+/** Short names, for the tab menu and the command, where the row is narrow. */
+export const RENDER_MODE_NAMES: Record<RenderMode, string> = {
+	'ghostty-web': 'Ghostty web',
+	'xterm.js': 'xterm.js',
+	[NATIVE_RENDER_MODE]: 'Native view',
 };
 
 /** Whether `value` is a render mode this build knows. */

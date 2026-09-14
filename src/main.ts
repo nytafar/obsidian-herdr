@@ -46,6 +46,7 @@ import {
 	TerminalView,
 	parseTerminalState,
 	stateMatchesPane,
+	switchRenderModeCommand,
 } from './views/terminalView';
 import type { TerminalSetting } from './views/paneTerminal';
 import { decideOpenTarget, decidePlacement } from './terminalPlacement';
@@ -554,6 +555,12 @@ export default class HerdrPlugin extends Plugin {
 			callback: () => {
 				void this.activateAgentList();
 			},
+		});
+		// The menu it opens, and who may open it, belong to the view (#92).
+		this.addCommand({
+			id: 'switch-render-mode',
+			name: 'Switch render mode',
+			checkCallback: (checking) => switchRenderModeCommand(this.app, checking),
 		});
 		this.addFolderCommand('new-tab-here', 'New tab here', (path) =>
 			this.actions.newTabHere(path),
