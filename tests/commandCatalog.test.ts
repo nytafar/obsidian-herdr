@@ -25,6 +25,7 @@ let home = '';
 let repo = '';
 let cwd = '';
 let elsewhere = '';
+let worktree = '';
 
 function write(path: string, body: string): void {
 	mkdirSync(join(path, '..'), { recursive: true });
@@ -43,8 +44,18 @@ beforeAll(() => {
 	repo = join(root, 'work', 'repo');
 	cwd = join(repo, 'src', 'deep');
 	elsewhere = join(root, 'elsewhere');
+	worktree = join(root, 'work', 'worktree');
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(join(repo, '.git'), { recursive: true });
+	// A checkout of the same repository as a worktree: its `.git` is a file
+	// pointing at the real repository, not a directory. It is a repository root
+	// all the same, and the project walk stops there.
+	mkdirSync(join(worktree, 'src'), { recursive: true });
+	write(join(worktree, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'wt')}\n`);
+	write(
+		join(worktree, '.claude', 'commands', 'worktree-only.md'),
+		commandFile('only this worktree'),
+	);
 
 	// User scope.
 	write(join(home, '.claude', 'commands', 'shared.md'), commandFile('the user copy'));
@@ -118,6 +129,22 @@ describe('projectCommandRoots', () => {
 			join(repo, 'src', '.claude'),
 			join(repo, '.claude'),
 		]);
+	});
+
+	it('stops at a worktree root, whose repository marker is a file (#98)', () => {
+		expect(projectCommandRoots(join(worktree, 'src'))).toEqual([
+			join(worktree, 'src', '.claude'),
+			join(worktree, '.claude'),
+		]);
+	});
+
+	it('offers a worktree no commands from above its root', () => {
+		// `work/.claude/commands/above-the-repo.md` sits one directory up.
+		const names = loadCommandCatalog({ home, cwd: join(worktree, 'src') }).map(
+			(entry) => entry.name,
+		);
+		expect(names).toContain('worktree-only');
+		expect(names).not.toContain('above-the-repo');
 	});
 });
 

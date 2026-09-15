@@ -109,13 +109,18 @@ export interface CommandCatalogOptions {
  * The `.claude` directories of the project scope, nearest first: the cwd and
  * every directory above it, stopping at the one that holds `.git` — the
  * repository root — or at the filesystem root when there is none.
+ *
+ * `.git` counts whether it is a directory or a file: in a Git worktree, and in
+ * a submodule, it is a file naming the real repository, and such a checkout is
+ * a repository root like any other. A walk that went past it would offer the
+ * commands of whatever directory the worktrees happen to sit in (#98).
  */
 export function projectCommandRoots(cwd: string): string[] {
 	const roots: string[] = [];
 	let dir = cwd;
 	for (let level = 0; level < MAX_PROJECT_LEVELS; level++) {
 		roots.push(join(dir, '.claude'));
-		if (isDirectory(join(dir, '.git'))) break;
+		if (exists(join(dir, '.git'))) break;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -304,6 +309,16 @@ function childNames(dir: string): string[] {
 		return readdirSync(dir).sort();
 	} catch {
 		return [];
+	}
+}
+
+/** True for anything on disk at `path`, whatever kind of thing it is. */
+function exists(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

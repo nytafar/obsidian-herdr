@@ -68,6 +68,18 @@ export interface PromptBoxOptions {
 	onInput?: (inputEl: HTMLTextAreaElement) => void;
 }
 
+/**
+ * What stays in the box once `sent` has gone out of it: nothing when the box
+ * still holds exactly what was sent, the tail when the user went on typing
+ * after it, and the whole draft when it is no longer that prompt at all. The
+ * text in the box is the only copy of what the user wrote, so nothing that was
+ * not sent is ever thrown away.
+ */
+export function remainingDraft(current: string, sent: string): string {
+	if (current === sent) return '';
+	return current.startsWith(sent) ? current.slice(sent.length) : current;
+}
+
 /** What a failed send says, with herdr's own message in the tail. */
 export function sendFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
@@ -161,8 +173,10 @@ export class PromptBox {
 		try {
 			await this.options.sender.send(this.options.paneId(), text);
 			// Nothing is echoed into the view: the prompt appears when the
-			// transcript says it did (ADR-0003).
-			if (this.inputEl) this.inputEl.value = '';
+			// transcript says it did (ADR-0003). Only what went out is taken out
+			// of the box: typing stays enabled during the request, so anything
+			// composed meanwhile is the user's next prompt, not this one.
+			if (this.inputEl) this.inputEl.value = remainingDraft(this.inputEl.value, text);
 		} catch (error) {
 			this.notify(sendFailureMessage(error));
 		} finally {

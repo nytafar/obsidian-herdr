@@ -129,6 +129,17 @@ scratch pane created with `tab create` and `agent start`.
   notification's `<output-file>` under `/tmp/claude-<uid>/…/tasks/` and in
   `<session>/subagents/agent-<id>.jsonl`. A synchronous `Agent` call puts the
   report straight into its `tool_result`.
+- **The shapes a tool call's outcome comes in.** Measured 2026-09-15 over every
+  transcript on this machine. A steer's queue enqueue always precedes its
+  `queued_command` attachment and carries the identical string, so the two pair
+  by content. An async `Agent` call's launch notice always opens with `Async
+  agent launched successfully.`, which is the only thing that tells it from a
+  synchronous call's report before the notification arrives. A task
+  notification's `<status>` is `completed`, `failed` or `killed`. A failed call
+  and one the user refused both arrive as a `tool_result` block with
+  `is_error: true`. A `WebSearch` result is a string that opens `Web search
+  results for query: "…"`, then one line `Links: [{"title":…,"url":…}, …]`, then
+  the model's prose: the sources are there and nowhere in the call's input.
 - **A process started by Claude Code can find its own transcript.** Every
   child gets `CLAUDE_CODE_SESSION_ID`, and its value matched the uuid of the
   live transcript of the session that ran the check, at

@@ -541,6 +541,27 @@
 	margin: var(--size-4-1) 0;
 }
 
+/*
+ * The pages a web search came back with, under the query it ran: one link per
+ * line, indented under it, so a turn's sources read as a short list (#95).
+ */
+.herdr-native-source-link {
+	display: block;
+	padding-left: var(--size-4-3);
+}
+
+/*
+ * A change that has not landed. The wording already says so (#91); these only
+ * make it as quiet, or as loud, as it deserves.
+ */
+.herdr-native-change.is-pending {
+	font-style: italic;
+}
+
+.herdr-native-change.is-error {
+	color: var(--text-error);
+}
+
 /* File explorer folder hover button (issue #30) ---------------------------- */
 
 /*

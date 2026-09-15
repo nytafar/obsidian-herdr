@@ -99,14 +99,27 @@ function surfaceOn(
 	return { surface, models, el, host, openLinkText };
 }
 
-/** A tool call as the reducer hands it over. */
+/**
+ * A tool call as the reducer hands it over: pending until a result answers it,
+ * done once one has, which is what the reducer writes (#91). A case that wants
+ * another status says so.
+ */
 function tool(
 	id: string,
 	name: string,
 	input: Record<string, unknown> = {},
 	result: string | null = null,
 ): ToolEntry {
-	return { kind: 'tool', id, name, input, result, notification: null, report: null };
+	return {
+		kind: 'tool',
+		id,
+		name,
+		input,
+		result,
+		status: result === null ? 'pending' : 'done',
+		notification: null,
+		report: null,
+	};
 }
 
 beforeEach(() => {
@@ -206,7 +219,8 @@ describe('NativePaneSurface: tool groups', () => {
 		return turn('u1', 'Work through it', [
 			{ kind: 'text', messageId: 'm1', text: 'Reading first.' },
 			tool('t1', 'Read', { file_path: `${VAULT}/a.md` }),
-			tool('t2', 'Write', { file_path: `${VAULT}/notes/b.md` }),
+			// With their results in: an answered call is a change that landed (#91).
+			tool('t2', 'Write', { file_path: `${VAULT}/notes/b.md` }, 'File created successfully.'),
 			tool('t3', 'Read', { file_path: `${VAULT}/c.md` }),
 			tool('t4', 'WebSearch', { query: 'herdr protocol' }),
 			tool('t5', 'Bash', { command: 'npm test' }),
@@ -274,8 +288,13 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push(
 			[
 				turn('u1', 'Edit both', [
-					tool('t1', 'Write', { file_path: `${VAULT}/repos/obsidian-herdr/CONTEXT.md` }),
-					tool('t2', 'Edit', { file_path: '/etc/hosts' }),
+					tool(
+						't1',
+						'Write',
+						{ file_path: `${VAULT}/repos/obsidian-herdr/CONTEXT.md` },
+						'File created successfully.',
+					),
+					tool('t2', 'Edit', { file_path: '/etc/hosts' }, 'The file has been updated.'),
 				]),
 			],
 			{ changedTurnIds: ['u1'], reset: false },
@@ -292,6 +311,91 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(outside?.findAll('internal-link')).toEqual([]);
 		// Every call escaped the group, so there is no group left to draw.
 		expect(el.findAll('herdr-native-tools')).toEqual([]);
+	});
+
+	it('lists the sources a web search returned, as links', async () => {
+		// A search's sources are in its `tool_result`, as a `Links:` line of
+		// title/url objects ahead of the prose — the shape every WebSearch result
+		// on this machine has (#95, #91 story 13). The input holds only a query,
+		// so a view that reads the input alone shows no source at all.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const search = tool(
+			't1',
+			'WebSearch',
+			{ query: 'herdr protocol' },
+			[
+				'Web search results for query: "herdr protocol"',
+				'',
+				'Links: [{"title":"Herdr documentation | herdr","url":"https://herdr.dev/docs/"},{"title":"herdr - crates.io","url":"https://crates.io/crates/herdr"}]',
+				'',
+				'Based on the search results, herdr is a terminal workspace manager.',
+			].join('\n'),
+		);
+
+		model.push([turn('u1', 'Look it up', [search])], { changedTurnIds: ['u1'], reset: false });
+
+		const source = el.find('herdr-native-source');
+		expect(source.children[0]?.textContent).toBe('Searched the web for “herdr protocol”');
+		const links = source.findAll('herdr-native-source-link');
+		expect(links.map((link) => link.textContent)).toEqual([
+			'Herdr documentation | herdr',
+			'herdr - crates.io',
+		]);
+		expect(links.map((link) => link.attrs.href)).toEqual([
+			'https://herdr.dev/docs/',
+			'https://crates.io/crates/herdr',
+		]);
+		expect([...(links[0]?.classList ?? [])]).toContain('external-link');
+	});
+
+	it('shows a web search with no sources yet as the query alone', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[turn('u1', 'Look it up', [tool('t1', 'WebSearch', { query: 'herdr protocol' })])],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.find('herdr-native-source').textContent).toBe(
+			'Searched the web for “herdr protocol”',
+		);
+		expect(el.find('herdr-native-source').findAll('herdr-native-source-link')).toEqual([]);
+	});
+
+	it('says what became of a change: updated, updating or refused', async () => {
+		// A vault change line reports the call's status (#91, #95): an edit that
+		// failed or has not answered yet must not read as one that landed.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const done = tool('t1', 'Write', { file_path: `${VAULT}/a.md` }, 'ok');
+		const pending = tool('t2', 'Edit', { file_path: `${VAULT}/b.md` });
+		const failed = tool('t3', 'Edit', { file_path: `${VAULT}/c.md` }, 'rejected');
+		failed.status = 'error';
+
+		model.push([turn('u1', 'Change three notes', [done, pending, failed])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
+
+		const changes = el.findAll('herdr-native-change');
+		expect(changes.map((line) => line.textContent)).toEqual([
+			'Updated a',
+			'Updating b…',
+			'Could not update c',
+		]);
+		// The state is in the class too, so `styles.css` can say it quietly.
+		expect([...(changes[1]?.classList ?? [])]).toEqual([
+			'herdr-native-change',
+			'is-pending',
+		]);
+		expect([...(changes[2]?.classList ?? [])]).toEqual(['herdr-native-change', 'is-error']);
+		// A note is still a link whatever became of the change.
+		expect(changes[2]?.find('internal-link').attrs['data-href']).toBe('c');
 	});
 
 	it('shows a thought collapsed, and shows nothing for a thought that is only a signature', async () => {
@@ -378,6 +482,42 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			'It settles **two** seams.',
 		]);
 		expect(el.find('herdr-native-report').textContent).toBe('It settles **two** seams.');
+	});
+
+	it('shows nothing for an asynchronous subagent that is still running', async () => {
+		// Between the launch and the completion notification there is no
+		// notification to recognise the call by, and its `tool_result` is the
+		// launch notice: internal metadata that says in so many words not to
+		// quote it (docs/architecture.md, #96). The text below is a real one,
+		// trimmed.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const launched = tool(
+			't1',
+			'Agent',
+			{ description: 'Check the styles' },
+			[
+				'Async agent launched successfully. (This tool result is internal metadata —',
+				'never quote or paste any part of it, including the agentId below, into a',
+				'user-facing reply.)',
+				'agentId: a043ce14b28b68b90 (internal ID - do not mention to user.)',
+				'The agent is working in the background. You will be notified automatically',
+				'when it completes.',
+			].join('\n'),
+		);
+		// What the reducer says of a call whose work went to the background.
+		launched.status = 'running';
+
+		model.push([turn('u1', 'Start the long job', [launched])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
+
+		expect(el.findAll('herdr-native-report')).toEqual([]);
+		expect(MarkdownRenderer.calls).toEqual([]);
+		// The call itself is still in the group, as any other call is.
+		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
 	});
 
 	it('renders an asynchronous subagent report once it has been read, and never the launch notice', async () => {

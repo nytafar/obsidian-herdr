@@ -100,11 +100,62 @@ describe('reduce: tool results', () => {
 				name: 'Bash',
 				input: { command: 'npm test' },
 				result: '3 passed',
+				status: 'done',
 				notification: null,
 				report: null,
 			},
 			{ kind: 'text', messageId: 'msg_6', text: 'All green.' },
 		]);
+	});
+});
+
+describe('reduce: a tool call’s status (#91)', () => {
+	it('is pending until a result answers, error when the result failed', () => {
+		// The four states of the normalized model are `pending`, `running`,
+		// `done` and `error` (#91). A rejected edit carries `is_error: true` on
+		// the result block, which is how a refused or failed call looks in every
+		// transcript on this machine.
+		const { state } = reduceFixture('tool-status');
+
+		expect(state.turns[0]?.entries).toEqual([
+			{
+				kind: 'tool',
+				id: 'toolu_e1',
+				name: 'Edit',
+				input: {
+					file_path: '/home/lasse/hvelv/notes/b.md',
+					old_string: 'one',
+					new_string: 'two',
+				},
+				result:
+					"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)",
+				status: 'error',
+				notification: null,
+				report: null,
+			},
+			{
+				kind: 'tool',
+				id: 'toolu_e2',
+				name: 'Write',
+				input: { file_path: '/home/lasse/hvelv/notes/c.md', content: 'A new note.' },
+				result: null,
+				status: 'pending',
+				notification: null,
+				report: null,
+			},
+		]);
+	});
+
+	it('is running while an async subagent is in the background, and done when it reports', () => {
+		const lines = fixtureLines('steer-and-notification');
+		// Up to and including the launch notice, but before the notification.
+		const launched = reduce(emptyTranscript(), lines.slice(0, 4));
+		const finished = reduce(launched.state, lines.slice(4));
+
+		const running = launched.state.turns[0]?.entries[1];
+		const done = finished.state.turns[0]?.entries[1];
+		expect(running?.kind === 'tool' && running.status).toBe('running');
+		expect(done?.kind === 'tool' && done.status).toBe('done');
 	});
 });
 
@@ -128,6 +179,8 @@ describe('reduce: steers and task notifications', () => {
 				// The launch result is internal metadata, never the report; the
 				// report is read from the notification's output file (#96).
 				result: 'Async agent launched successfully. agentId: a1f2',
+				// The notification says the background work finished (#91).
+				status: 'done',
 				notification: {
 					taskId: 'a1f2',
 					outputFile: '/tmp/claude-1000/-home-lasse-hvelv/s1/tasks/a1f2.output',
@@ -160,6 +213,25 @@ describe('reduce: steers and task notifications', () => {
 	});
 });
 
+describe('reduce: a prompt that repeats an earlier steer', () => {
+	it('opens a turn for it, because the steer consumed its own enqueue', () => {
+		// A steer is enqueued and then rendered from its `queued_command`
+		// attachment; no `user` line ever carries it (ADR-0003, and measured on
+		// this machine's transcripts: the enqueue always precedes the
+		// attachment). The enqueue must be consumed with it, or the next prompt
+		// of the same words is taken for injected content and vanishes.
+		const { state } = reduceFixture('steer-repeated-prompt');
+
+		expect(state.pendingQueue).toEqual([]);
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Start the long job', 'again']);
+		expect(state.turns[0]?.entries).toEqual([
+			{ kind: 'text', messageId: 'msg_1', text: 'Starting it.' },
+			{ kind: 'steer', text: 'again' },
+			{ kind: 'text', messageId: 'msg_2', text: 'Done twice.' },
+		]);
+	});
+});
+
 describe('reduce: a slash command run at the keyboard', () => {
 	it('shows the command the human ran, and not the caveat or the output around it', () => {
 		const { state } = reduceFixture('local-command');
@@ -186,6 +258,45 @@ describe('reduce: incremental', () => {
 			{ kind: 'text', messageId: 'msg_5', text: 'Running them.' },
 		]);
 		expect(second.state.turns[0]?.entries).toHaveLength(3);
+	});
+
+	it('names the turn that owns a tool call when its result lands late', () => {
+		// A background command answers after the next prompt has opened a turn.
+		// What the result changed is the turn holding the call, and that is the
+		// turn the view must redraw (#93, #94).
+		const lines = fixtureLines('late-tool-result');
+		const first = reduce(emptyTranscript(), lines.slice(0, -1));
+		const second = reduce(first.state, lines.slice(-1));
+
+		expect(first.state.turns.map((turn) => turn.id)).toEqual(['u1', 'u2']);
+		expect(second.changedTurnIds).toEqual(['u1']);
+		const call = second.state.turns[0]?.entries[0];
+		expect(call?.kind === 'tool' && call.result).toBe('3 passed');
+	});
+
+	it('leaves the entries of a snapshot it already returned untouched', () => {
+		// The reducer is pure: a turn this batch touches is copied entry by entry,
+		// so a view holding an older snapshot keeps seeing what it drew. Merging
+		// more of one message's text into it must not reach back.
+		const lines = fixtureLines('merged-blocks');
+		const first = reduce(emptyTranscript(), lines.slice(0, 3));
+		const firstEntries = JSON.stringify(first.state.turns[0]?.entries);
+
+		const second = reduce(first.state, lines.slice(3));
+
+		expect(JSON.stringify(first.state.turns[0]?.entries)).toBe(firstEntries);
+		expect(second.state.turns[0]?.entries).not.toEqual(first.state.turns[0]?.entries);
+	});
+
+	it('leaves an earlier snapshot’s tool call without the result that came later', () => {
+		const lines = fixtureLines('tool-results');
+		const first = reduce(emptyTranscript(), lines.slice(0, 3));
+		const second = reduce(first.state, lines.slice(3));
+
+		const before = first.state.turns[0]?.entries[1];
+		const after = second.state.turns[0]?.entries[1];
+		expect(before?.kind === 'tool' && before.result).toBeNull();
+		expect(after?.kind === 'tool' && after.result).toBe('3 passed');
 	});
 
 	it('reports a new turn once, however the lines are batched', () => {

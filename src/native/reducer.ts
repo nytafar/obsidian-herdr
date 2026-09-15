@@ -67,6 +67,21 @@ export interface TaskNotification {
 	outputFile: string;
 }
 
+/**
+ * Where a tool call has got to, in the four states of the normalized model
+ * (#91). What each means in a Claude Code transcript:
+ *
+ * - `pending` — the `tool_use` block is there and nothing has answered it.
+ * - `running` — the result came back but the work did not: an async subagent's
+ *   launch notice, whose real answer is the task notification later on.
+ * - `done` — a result answered, or the notification reported the background
+ *   work completed.
+ * - `error` — the result carried `is_error`, which is what a failed call and a
+ *   call the user refused both look like, or the notification reported
+ *   anything other than completion.
+ */
+export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
+
 /** A tool call and, once it lands, the result that answered it. */
 export interface ToolEntry {
 	kind: 'tool';
@@ -80,6 +95,8 @@ export interface ToolEntry {
 	input: Record<string, unknown>;
 	/** null until the `tool_result` line arrives. */
 	result: string | null;
+	/** How far the call has got; the view says so for a vault change (#95). */
+	status: ToolStatus;
 	/**
 	 * The task notification that reported this call finished, for the background
 	 * calls that get one; null for every other call.
@@ -199,15 +216,35 @@ function notificationField(content: string, tag: string): string {
  */
 function taskNotification(
 	content: string,
-): { toolUseId: string; notification: TaskNotification } | null {
+): { toolUseId: string; completed: boolean; notification: TaskNotification } | null {
 	if (!content.trimStart().startsWith('<task-notification>')) return null;
 	return {
 		toolUseId: notificationField(content, 'tool-use-id'),
+		// `completed`, `failed` and `killed` are the three values this machine's
+		// transcripts carry; only the first is the work having gone well.
+		completed: notificationField(content, 'status') === 'completed',
 		notification: {
 			taskId: notificationField(content, 'task-id'),
 			outputFile: notificationField(content, 'output-file'),
 		},
 	};
+}
+
+/**
+ * How an async `Agent` call's `tool_result` opens: the launch notice Claude
+ * Code writes when the subagent goes to the background, measured across every
+ * transcript on this machine on 2026-09-15. The rest of the notice is the agent
+ * id, the output file and instructions never to quote any of it.
+ */
+const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
+
+/**
+ * Whether a tool result is an async subagent's launch notice rather than
+ * anything it did: the work is still running and its report will come from the
+ * file the notification names (`docs/architecture.md`, #96).
+ */
+export function isAsyncLaunchNotice(result: string | null): boolean {
+	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
 }
 
 /** True for a `user` line that is a local command's own output, not a prompt. */
@@ -290,10 +327,18 @@ class Draft {
 		return { turns: this.turns, changedTurnIds: this.changed };
 	}
 
-	/** A copy of `turn` that this batch owns, swapped into the list on first ask. */
+	/**
+	 * A copy of `turn` that this batch owns, swapped into the list on first ask.
+	 *
+	 * The entries are copied too, one object each: a text merge, a tool result,
+	 * a notification and a report all write into an entry, and a snapshot the
+	 * view already drew must keep saying what it said. The `input` record and
+	 * the notification inside an entry are replaced rather than written into, so
+	 * sharing those costs nothing.
+	 */
 	private own(turn: Turn): Turn {
 		if (this.mine.has(turn.id)) return turn;
-		const copy: Turn = { ...turn, entries: [...turn.entries] };
+		const copy: Turn = { ...turn, entries: turn.entries.map((entry) => ({ ...entry })) };
 		this.turns[this.turns.indexOf(turn)] = copy;
 		this.mine.add(turn.id);
 		return copy;
@@ -353,6 +398,12 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				const text = stringField(attachment, 'prompt');
+				// The steer's own enqueue is spent here: it was pushed when the
+				// prompt was accepted and no `user` line will ever pair with it.
+				// Left behind, it would swallow the next ordinary prompt of the
+				// same words as injected content (#93, #96).
+				const enqueued = pendingQueue.indexOf(text);
+				if (enqueued !== -1) pendingQueue.splice(enqueued, 1);
 				const turn = draft.current();
 				if (turn) {
 					// A steer is consumed inside the turn already running, and shows
@@ -372,16 +423,26 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					let attached = false;
 					for (const block of content) {
 						if (!isRecord(block) || block.type !== 'tool_result') continue;
-						const entry = draft.toolEntry(stringField(block, 'tool_use_id'));
+						const toolUseId = stringField(block, 'tool_use_id');
+						const entry = draft.toolEntry(toolUseId);
 						if (!entry) continue;
 						entry.result = resultText(block.content);
+						// A failed call and one the user refused both arrive as
+						// `is_error`; a launch notice means the work goes on (#91).
+						entry.status =
+							block.is_error === true
+								? 'error'
+								: isAsyncLaunchNotice(entry.result)
+									? 'running'
+									: 'done';
+						// The turn that changed is the one holding the call, which is
+						// not always the turn now open: a background command answers
+						// after the next prompt has started one (#93, #94).
+						const turn = draft.turnOf(toolUseId);
+						if (turn) draft.touch(turn.id);
 						attached = true;
 					}
 					if (!attached) countRaw(type);
-					else {
-						const turn = draft.current();
-						if (turn) draft.touch(turn.id);
-					}
 					continue;
 				}
 				if (typeof content !== 'string' || parsed.isMeta === true) {
@@ -399,6 +460,8 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					const entry = task ? draft.toolEntry(task.toolUseId) : null;
 					if (task && entry) {
 						entry.notification = task.notification;
+						// The background work is over, one way or the other (#91).
+						entry.status = task.completed ? 'done' : 'error';
 						const turn = draft.turnOf(task.toolUseId);
 						if (turn) draft.touch(turn.id);
 					}
@@ -454,6 +517,9 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 							name: stringField(block, 'name'),
 							input: isRecord(block.input) ? block.input : {},
 							result: null,
+							// Nothing has answered it yet; a result or a notification
+							// moves it on (#91).
+							status: 'pending',
 							notification: null,
 							report: null,
 						});

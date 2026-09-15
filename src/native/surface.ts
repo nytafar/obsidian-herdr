@@ -29,6 +29,8 @@ import {
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
+	changeLine,
+	changeStateClass,
 	sourceText,
 	subagentReport,
 	toolDetail,
@@ -131,6 +133,15 @@ export function effectiveRenderMode(input: {
 export class PaneSurfaceHolder {
 	private surface: PaneSurface | null = null;
 	private mounted: PaneSurfaceKind | null = null;
+	/**
+	 * Which request the holder is serving. Every `show` takes the next number
+	 * and gives up if another `show` or a `release` has taken one since: a
+	 * detach can take a while, and what the tab wanted when it started is not
+	 * necessarily what it wants when the detach comes back.
+	 */
+	private request = 0;
+	/** The detach in flight, so the next mount waits for it rather than racing it. */
+	private detaching: Promise<void> | null = null;
 
 	constructor(private readonly create: (kind: PaneSurfaceKind) => PaneSurface) {}
 
@@ -146,12 +157,19 @@ export class PaneSurfaceHolder {
 
 	/**
 	 * Makes `kind` the mounted surface on `hostEl`, building and attaching it if
-	 * it is not the one already there. Returns the surface either way.
+	 * it is not the one already there. Returns the surface, or null when the
+	 * request was overtaken while the old surface was detaching — by the view
+	 * closing, or by another render mode — in which case nothing is mounted and
+	 * nothing was built.
 	 */
-	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface> {
+	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface | null> {
 		const current = this.surface;
 		if (current && this.mounted === kind) return current;
-		await this.release();
+		const request = ++this.request;
+		await this.detachCurrent();
+		// A surface attached now would outlive the view that asked for it: its
+		// model subscription and its tail would stay behind `onClose` (#92, #94).
+		if (request !== this.request) return null;
 		const surface = this.create(kind);
 		this.surface = surface;
 		this.mounted = kind;
@@ -161,11 +179,26 @@ export class PaneSurfaceHolder {
 
 	/** Detaches the mounted surface and forgets it. Idempotent; used by `onClose`. */
 	async release(): Promise<void> {
+		this.request++;
+		await this.detachCurrent();
+	}
+
+	/**
+	 * Gives the mounted surface back, and waits for a detach already in flight
+	 * when there is no surface left to give: the old one must be gone before the
+	 * next is attached, however many switches overlapped.
+	 */
+	private async detachCurrent(): Promise<void> {
 		const surface = this.surface;
-		if (!surface) return;
-		this.surface = null;
-		this.mounted = null;
-		await surface.detach();
+		if (surface) {
+			this.surface = null;
+			this.mounted = null;
+			const detaching = surface.detach().finally(() => {
+				if (this.detaching === detaching) this.detaching = null;
+			});
+			this.detaching = detaching;
+		}
+		await this.detaching;
 	}
 }
 
@@ -515,18 +548,23 @@ export class NativePaneSurface implements PaneSurface {
 	 * Inside the vault it is a link to the note, so a reader can go and read it;
 	 * outside there is nothing to strip and nothing to open, so the path shows
 	 * as it was. No diff either way (native-view-design.md).
+	 *
+	 * What the line says follows the call's status (#91): a change that was
+	 * refused, or that nothing has answered yet, must not read as one that
+	 * landed.
 	 */
 	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
 		const path = changedPath(entry);
 		if (!path) return;
 		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
-		el.appendText('Updated ');
+		const state = changeStateClass(entry.status);
+		if (state) el.addClass(state);
+		const { lead, trail } = changeLine(entry.status);
+		el.appendText(lead);
 		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (!link) {
-			el.appendText(path);
-			return;
-		}
-		this.renderPrompt(el, `[[${link}]]`, component);
+		if (link) this.renderPrompt(el, `[[${link}]]`, component);
+		else el.appendText(path);
+		if (trail) el.appendText(trail);
 	}
 
 	/**
@@ -545,16 +583,29 @@ export class NativePaneSurface implements PaneSurface {
 		void MarkdownRenderer.render(this.options.app, report, blockEl, '', component);
 	}
 
-	/** A web search or a fetch: where the turn's facts came from. */
+	/**
+	 * A web search or a fetch: where the turn's facts came from.
+	 *
+	 * A fetch is the one page it asked for. A search is the query it ran and the
+	 * pages it came back with, which live in the result rather than the input
+	 * (#95, `./toolCalls.ts`); a search that returned none shows its query alone.
+	 * External links are Obsidian's to open, so they get no handler of ours.
+	 */
 	private renderSource(turnEl: HTMLElement, entry: ToolEntry): void {
-		const { label, url } = sourceText(entry);
+		const { label, url, links } = sourceText(entry);
 		const el = turnEl.createDiv({ cls: 'herdr-native-source' });
-		if (!url) {
-			el.appendText(label);
+		if (url) {
+			el.createEl('a', { cls: 'external-link', text: label, href: url });
 			return;
 		}
-		// An external link is Obsidian's to open, so it gets no handler of ours.
-		el.createEl('a', { cls: 'external-link', text: label, href: url });
+		el.createDiv({ cls: 'herdr-native-source-query', text: label });
+		for (const link of links) {
+			el.createEl('a', {
+				cls: ['herdr-native-source-link', 'external-link'],
+				text: link.title,
+				href: link.url,
+			});
+		}
 	}
 
 	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */

@@ -84,11 +84,15 @@ class FakeSurface implements PaneSurface {
 	constructor(
 		readonly kind: PaneSurfaceKind,
 		private readonly log: string[],
+		/** A detach a test is holding open, or null for one that returns at once. */
+		private readonly gate: () => Promise<void> | null = () => null,
 	) {}
 	async attach(): Promise<void> {
 		this.log.push(`attach:${this.kind}`);
 	}
 	async detach(): Promise<void> {
+		const held = this.gate();
+		if (held) await held;
 		this.log.push(`detach:${this.kind}`);
 	}
 	async setVisible(visible: boolean): Promise<void> {
@@ -108,15 +112,28 @@ function holderWithLog(): {
 	log: string[];
 	built: string[];
 	host: HTMLElement;
+	/** Holds every detach from now on; the returned call lets them finish. */
+	holdDetach: () => () => void;
 } {
 	const log: string[] = [];
 	const built: string[] = [];
+	let held: Promise<void> | null = null;
 	const holder = new PaneSurfaceHolder((kind) => {
 		built.push(kind);
-		return new FakeSurface(kind, log);
+		return new FakeSurface(kind, log, () => held);
 	});
+	const holdDetach = (): (() => void) => {
+		let finish = (): void => {};
+		held = new Promise<void>((resolve) => {
+			finish = () => {
+				held = null;
+				resolve();
+			};
+		});
+		return () => finish();
+	};
 	// The holder only passes the host element on; nothing here touches a DOM.
-	return { holder, log, built, host: {} as HTMLElement };
+	return { holder, log, built, host: {} as HTMLElement, holdDetach };
 }
 
 describe('PaneSurfaceHolder (issue #92)', () => {
@@ -180,6 +197,41 @@ describe('PaneSurfaceHolder (issue #92)', () => {
 
 		await holder.show('native', host);
 		expect(built).toEqual(['native', 'native']);
+	});
+
+	it('mounts nothing when the view closes during a switch', async () => {
+		// `onClose` releases while a switch is waiting for the old surface to
+		// detach. The switch must not then attach a surface nobody will ever
+		// close again, subscription, tail and all (AGENTS.md teardown, #92/#94).
+		const { holder, log, built, host, holdDetach } = holderWithLog();
+		await holder.show('terminal', host);
+		const finishDetach = holdDetach();
+
+		const switching = holder.show('native', host);
+		const closing = holder.release();
+		finishDetach();
+		await Promise.all([switching, closing]);
+
+		expect(await switching).toBeNull();
+		expect(log).toEqual(['attach:terminal', 'detach:terminal']);
+		expect(built).toEqual(['terminal']);
+		expect(holder.current).toBeNull();
+		expect(holder.kind).toBeNull();
+	});
+
+	it('mounts only the last kind asked for when two switches overlap', async () => {
+		const { holder, log, host, holdDetach } = holderWithLog();
+		await holder.show('terminal', host);
+		const finishDetach = holdDetach();
+
+		const first = holder.show('native', host);
+		const second = holder.show('terminal', host);
+		finishDetach();
+		await Promise.all([first, second]);
+
+		expect(await first).toBeNull();
+		expect(holder.kind).toBe('terminal');
+		expect(log).toEqual(['attach:terminal', 'detach:terminal', 'attach:terminal']);
 	});
 
 	it('passes identity, visibility and setting effects to the surface in place', async () => {

@@ -1,0 +1,8 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Start the long job"},"uuid":"u1","timestamp":"2026-09-15T11:00:00.000Z","origin":{"kind":"human"},"sessionId":"s1"}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Starting it."}]},"uuid":"a1","timestamp":"2026-09-15T11:00:01.000Z","sessionId":"s1"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T11:00:02.000Z","sessionId":"s1","content":"again"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-09-15T11:00:02.500Z","sessionId":"s1","content":"again"}
+{"parentUuid":"a1","isSidechain":false,"attachment":{"type":"queued_command","prompt":"again","source_uuid":"q1","commandMode":"prompt","origin":{"kind":"human"},"timestamp":"2026-09-15T11:00:03.000Z"},"type":"attachment","uuid":"at1","timestamp":"2026-09-15T11:00:03.000Z","sessionId":"s1"}
+{"parentUuid":"at1","isSidechain":false,"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Done twice."}]},"uuid":"a2","timestamp":"2026-09-15T11:00:20.000Z","sessionId":"s1"}
+{"parentUuid":"a2","isSidechain":false,"type":"user","message":{"role":"user","content":"again"},"uuid":"u2","timestamp":"2026-09-15T11:05:00.000Z","origin":{"kind":"human"},"sessionId":"s1"}
+{"parentUuid":"u2","isSidechain":false,"type":"assistant","message":{"id":"msg_3","role":"assistant","content":[{"type":"text","text":"Doing it once more."}]},"uuid":"a3","timestamp":"2026-09-15T11:05:01.000Z","sessionId":"s1"}
