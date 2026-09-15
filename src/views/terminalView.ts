@@ -467,6 +467,34 @@ export function hostKeyPolicyApplies(input: {
 	return input.mode === 'control' && input.focusInside;
 }
 
+/**
+ * Who to tell when a tab swaps its surface where it stands (#100, #105).
+ *
+ * The header toggle, the tab menu and the waiting card's "Open in terminal" all
+ * change which view a leaf shows without any leaf becoming active, so
+ * `active-leaf-change` is silent and a sidebar that follows the active native
+ * view — the table of contents — would go on listing a transcript nobody is
+ * looking at. A plugin-held listener set rather than a workspace event: the
+ * workspace's `on` is typed to its own event names, and this is nobody else's
+ * business.
+ *
+ * The plugin holds one; `src/main.ts` hands it to both ends.
+ */
+export class PaneViewEvents {
+	private readonly listeners = new Set<(leaf: WorkspaceLeaf) => void>();
+
+	/** Subscribes. The returned unsubscribe is what a view registers. */
+	on(listener: (leaf: WorkspaceLeaf) => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+
+	/** A tab mounted the other surface. Told by the tab itself. */
+	changed(leaf: WorkspaceLeaf): void {
+		for (const listener of [...this.listeners]) listener(leaf);
+	}
+}
+
 export class TerminalView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	/** The pane's session and renderer, and every race between them (#83). */
@@ -892,7 +920,11 @@ export class TerminalView extends ItemView {
 		this.updateViewActions();
 		const host = this.hostEl;
 		if (!host) return;
+		const before = this.surfaces.kind;
 		await this.surfaces.show(surfaceKindFor(this.view()), host);
+		// A swap inside one leaf activates no leaf, so anything following the
+		// active native view has to be told (#100).
+		if (this.surfaces.kind !== before) this.plugin.paneViews.changed(this.leaf);
 	}
 
 	/**

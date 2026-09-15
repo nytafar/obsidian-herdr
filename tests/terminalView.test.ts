@@ -6,6 +6,7 @@ import {
 	stateMatchesPane,
 	terminalTabTitle,
 	planViewEffect,
+	PaneViewEvents,
 	HIDE_GRACE_MS,
 	hostKeyPolicyApplies,
 	keymapReturn,
@@ -29,6 +30,7 @@ import {
 } from '../src/views/paneTerminal';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
+import type { WorkspaceLeaf } from 'obsidian';
 import { NATIVE_REMOTE_REASON } from '../src/native/surface';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
@@ -165,6 +167,24 @@ describe('terminalHeaderActions (issue #105)', () => {
 		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
 		// A remote terminal is still a terminal: the eye stays.
 		expect(header.controlToggle).toBe(true);
+	});
+});
+
+describe('PaneViewEvents (#100, #105)', () => {
+	it('tells every subscriber which leaf swapped, and stops when one unsubscribes', () => {
+		const events = new PaneViewEvents();
+		const first: unknown[] = [];
+		const second: unknown[] = [];
+		const leaf = { id: 'leaf-1' } as unknown as WorkspaceLeaf;
+		const off = events.on((changed) => first.push(changed));
+		events.on((changed) => second.push(changed));
+
+		events.changed(leaf);
+		off();
+		events.changed(leaf);
+
+		expect(first).toEqual([leaf]);
+		expect(second).toEqual([leaf, leaf]);
 	});
 });
 

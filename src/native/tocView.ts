@@ -76,6 +76,12 @@ export class TocPanel {
 	private component = new Component();
 	private listEl: HTMLElement | null = null;
 	private paneId = '';
+	/**
+	 * The leaf the list is about, or null while it is about none. A leaf, never
+	 * a view (CLAUDE.md): it is only ever compared by identity against what
+	 * `getLeavesOfType` hands back at the moment it is used.
+	 */
+	private followedLeaf: WorkspaceLeaf | null = null;
 	private handle: SessionHandleOf<SessionModelView> | null = null;
 	private unsubscribe: (() => void) | null = null;
 
@@ -93,6 +99,10 @@ export class TocPanel {
 		const target = tocTarget(this.options.facts(leaf));
 		if (target.kind === 'keep') return;
 		const paneId = target.kind === 'follow' ? target.paneId : '';
+		// Which leaf the list is about, remembered before the early return: two
+		// tabs on one pane are the same session and different leaves, and a click
+		// must scroll the one the list is about (#100).
+		this.followedLeaf = paneId ? leaf : null;
 		if (paneId === this.paneId) return;
 		this.release();
 		this.paneId = paneId;
@@ -103,10 +113,26 @@ export class TocPanel {
 		this.render();
 	}
 
+	/**
+	 * A leaf swapped its surface where it stands (#105): the header toggle, the
+	 * tab menu and the waiting card's "Open in terminal" all change which view a
+	 * leaf shows without any leaf becoming active, so `active-leaf-change` says
+	 * nothing about it.
+	 *
+	 * It is news when it happens in the leaf the list follows — that view is not
+	 * a native view any more — and when it happens in the leaf the reader is
+	 * in. A swap in some third tab is not: the reader has not moved.
+	 */
+	surfaceChanged(leaf: WorkspaceLeaf, active: boolean): void {
+		if (!active && leaf !== this.followedLeaf) return;
+		this.activeLeafChanged(leaf);
+	}
+
 	/** Gives the model and the row listeners back. */
 	unmount(): void {
 		this.release();
 		this.paneId = '';
+		this.followedLeaf = null;
 		this.component.unload();
 		this.listEl = null;
 	}
@@ -204,6 +230,13 @@ export class TocView extends ItemView {
 		this.panel.mount(this.contentEl);
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (leaf) => this.panel.activeLeafChanged(leaf)),
+		);
+		// A tab that swapped its surface where it stands (#105): no leaf became
+		// active, so the leaf change above is silent about it.
+		this.register(
+			this.plugin.paneViews.on((leaf) =>
+				this.panel.surfaceChanged(leaf, leaf === this.app.workspace.getMostRecentLeaf()),
+			),
 		);
 		// Opening the TOC from a native view must show that view, and the leaf
 		// change that revealed this one has already been and gone.
