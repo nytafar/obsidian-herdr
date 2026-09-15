@@ -445,6 +445,17 @@
 }
 
 /*
+ * What a subagent reported (#96): prose like the rest of the turn, set in a
+ * little so it reads as another voice. The call that launched it stays in the
+ * tool group above.
+ */
+.herdr-native-report {
+	border-left: 2px solid var(--background-modifier-border);
+	margin: var(--size-4-2) 0;
+	padding-left: var(--size-4-3);
+}
+
+/*
  * A note the agent changed and a source it read: the two things that stay in
  * the text, at the point in the turn where they happened (#95).
  */

@@ -22,7 +22,15 @@
  * registry and hands it a watcher over the connected herdr.
  */
 
-import { emptyTranscript, reduce, type TranscriptState } from './reducer';
+import {
+	attachSubagentReport,
+	emptyTranscript,
+	lastAssistantText,
+	reduce,
+	type TaskNotification,
+	type TranscriptState,
+} from './reducer';
+import { toolKind } from './toolCalls';
 import {
 	transcriptPath,
 	type TranscriptSource,
@@ -187,6 +195,13 @@ export class SessionModel implements SessionModelView {
 	private stream: TranscriptStream | null = null;
 	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
+	/**
+	 * Which session the model is on. Bumped by every `follow`, so a read that
+	 * was in flight across a rotation can tell that its answer is stale.
+	 */
+	private generation = 0;
+	/** Calls whose report is being read, so a second batch does not read it twice. */
+	private readingReports = new Set<string>();
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -296,6 +311,8 @@ export class SessionModel implements SessionModelView {
 		this.stream = null;
 		this.currentPath = path;
 		this.transcript = emptyTranscript();
+		this.generation++;
+		this.readingReports.clear();
 		// Said now, not when the new file's first lines land: a tail delivers
 		// those asynchronously, and the session that is gone must not still be on
 		// screen in between.
@@ -311,6 +328,68 @@ export class SessionModel implements SessionModelView {
 		const { state, changedTurnIds } = reduce(this.transcript, lines);
 		this.transcript = state;
 		this.emit({ changedTurnIds, reset: false });
+		this.readReports(changedTurnIds);
+	}
+
+	/**
+	 * Starts the read for every finished background subagent in the turns that
+	 * just moved (#96).
+	 *
+	 * The reducer stays pure, so this is where the file is opened: a report is
+	 * not in the transcript at all, only the notification that names the file it
+	 * was written to. Each call is read once, and the answer comes back as an
+	 * ordinary changed turn.
+	 */
+	private readReports(changedTurnIds: readonly string[]): void {
+		if (!changedTurnIds.length) return;
+		for (const turn of this.transcript.turns) {
+			if (!changedTurnIds.includes(turn.id)) continue;
+			for (const entry of turn.entries) {
+				if (entry.kind !== 'tool' || entry.report !== null) continue;
+				// Only a subagent has a report; a background command's output file
+				// is its stdout, which the tool group already accounts for.
+				if (!entry.notification || toolKind(entry.name) !== 'agent') continue;
+				if (this.readingReports.has(entry.id)) continue;
+				this.readingReports.add(entry.id);
+				void this.readReport(entry.id, entry.notification);
+			}
+		}
+	}
+
+	/** Reads one report and feeds it back, unless the session moved on meanwhile. */
+	private async readReport(toolUseId: string, notification: TaskNotification): Promise<void> {
+		const generation = this.generation;
+		const report = await this.subagentReport(notification);
+		// The session rotated while the file was being read: that transcript is
+		// gone and so is the turn this belonged to (ADR-0003).
+		if (generation !== this.generation || !report) return;
+		const { state, changedTurnIds } = attachSubagentReport(this.transcript, toolUseId, report);
+		if (!changedTurnIds.length) return;
+		this.transcript = state;
+		this.emit({ changedTurnIds, reset: false });
+	}
+
+	/**
+	 * A subagent's report: the last thing it said in the file its notification
+	 * named, falling back to its transcript beside the session's own file, which
+	 * is where Claude Code also keeps it (`docs/architecture.md`).
+	 */
+	private async subagentReport(notification: TaskNotification): Promise<string> {
+		for (const path of [notification.outputFile, this.subagentPath(notification.taskId)]) {
+			if (!path) continue;
+			const text = await this.options.source.read(path);
+			if (!text) continue;
+			const report = lastAssistantText(text.split('\n'));
+			if (report) return report;
+		}
+		return '';
+	}
+
+	/** `<session>/subagents/agent-<task id>.jsonl`, beside the session's transcript. */
+	private subagentPath(taskId: string): string {
+		const path = this.currentPath;
+		if (!path || !taskId) return '';
+		return `${path.replace(/\.jsonl$/, '')}/subagents/agent-${taskId}.jsonl`;
 	}
 
 	private emit(change: SessionChange): void {

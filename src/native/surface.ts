@@ -30,6 +30,7 @@ import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
 	sourceText,
+	subagentReport,
 	toolDetail,
 	toolGroupSummary,
 	turnItems,
@@ -429,6 +430,9 @@ export class NativePaneSurface implements PaneSurface {
 			case 'source':
 				this.renderSource(turnEl, item.entry);
 				return;
+			case 'report':
+				this.renderSubagentReport(turnEl, item.entry, component);
+				return;
 			case 'steer':
 				// A steer is shown where it entered the running turn (CONTEXT.md).
 				this.renderPrompt(
@@ -504,6 +508,22 @@ export class NativePaneSurface implements PaneSurface {
 			return;
 		}
 		this.renderPrompt(el, `[[${link}]]`, component);
+	}
+
+	/**
+	 * What a subagent reported, as prose (#96): the turn's own text and the text
+	 * of the agent it sent out read the same way, which is the point of showing
+	 * it at all. The call that launched it stays folded in the tool group.
+	 */
+	private renderSubagentReport(
+		turnEl: HTMLElement,
+		entry: ToolEntry,
+		component: Component,
+	): void {
+		const report = subagentReport(entry);
+		if (!report) return;
+		const blockEl = turnEl.createDiv({ cls: 'herdr-native-report' });
+		void MarkdownRenderer.render(this.options.app, report, blockEl, '', component);
 	}
 
 	/** A web search or a fetch: where the turn's facts came from. */

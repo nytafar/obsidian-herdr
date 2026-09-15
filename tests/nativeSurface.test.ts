@@ -104,7 +104,7 @@ function tool(
 	input: Record<string, unknown> = {},
 	result: string | null = null,
 ): ToolEntry {
-	return { kind: 'tool', id, name, input, result };
+	return { kind: 'tool', id, name, input, result, notification: null, report: null };
 }
 
 beforeEach(() => {
@@ -313,6 +313,107 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(thought.attrs.open).toBeUndefined();
 		expect(thought.find('herdr-native-thinking-summary').textContent).toBe('Thought');
 		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual(['Weighing the rule.']);
+	});
+});
+
+/**
+ * Steers and subagent results (#96). A steer is a prompt taken while the agent
+ * was working; a subagent's report is prose the transcript keeps somewhere else.
+ */
+describe('NativePaneSurface: steers and subagent reports', () => {
+	/** The classes of a turn's own items, in the order they were drawn. */
+	function itemClasses(turnEl: FakeElement): string[] {
+		return turnEl.children.map((child) => [...child.classList][0] ?? '');
+	}
+
+	it('keeps a steer out of the tool group, at the point it entered the turn', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Start the long job', [
+					tool('t1', 'Read', { file_path: `${VAULT}/a.md` }),
+					{ kind: 'steer', text: 'also check the styles' },
+					tool('t2', 'Bash', { command: 'npm test' }),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		// Two groups, not one: the steer entered the context between the calls
+		// and is never inside a group (CONTEXT.md, #96).
+		expect(itemClasses(el.find('herdr-native-turn'))).toEqual([
+			'herdr-native-prompt',
+			'herdr-native-tools',
+			'herdr-native-steer',
+			'herdr-native-tools',
+		]);
+		expect(el.findAll('herdr-native-tools-summary').map((line) => line.textContent)).toEqual([
+			'Read 1 file',
+			'Ran 1 command',
+		]);
+		expect(el.find('herdr-native-steer').textContent).toBe('also check the styles');
+	});
+
+	it('renders a synchronous subagent report as prose, with the call still in the group', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Ask the researcher', [
+					tool('t1', 'Agent', { description: 'Research it' }, 'It settles **two** seams.'),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual([
+			'It settles **two** seams.',
+		]);
+		expect(el.find('herdr-native-report').textContent).toBe('It settles **two** seams.');
+	});
+
+	it('renders an asynchronous subagent report once it has been read, and never the launch notice', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const launched = tool(
+			't1',
+			'Agent',
+			{ description: 'Check the styles' },
+			'Async agent launched successfully. agentId: a1f2',
+		);
+		launched.notification = { taskId: 'a1f2', outputFile: '/tmp/a1f2.output' };
+
+		model.push([turn('u1', 'Start the long job', [launched])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
+
+		// While it runs there is nothing to show: the launch result is internal
+		// metadata, not the report (docs/architecture.md).
+		expect(el.findAll('herdr-native-report')).toEqual([]);
+		expect(MarkdownRenderer.calls).toEqual([]);
+
+		// The session model read the report and fed it back (#96).
+		model.push(
+			[
+				turn('u1', 'Start the long job', [
+					{ ...launched, report: 'The styles are **fine**.' },
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual([
+			'The styles are **fine**.',
+		]);
+		expect(el.find('herdr-native-report').textContent).toBe('The styles are **fine**.');
 	});
 });
 

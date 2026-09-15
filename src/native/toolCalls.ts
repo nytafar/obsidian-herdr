@@ -219,6 +219,21 @@ export function sourceText(entry: ToolEntry): { label: string; url: string | nul
 	return { label: `Searched the web for “${query}”`, url: null };
 }
 
+/**
+ * A subagent's report, ready to render, or empty when there is none to show.
+ *
+ * A synchronous `Agent` call carries its report in the tool result. An async one
+ * carries a launch notice there instead — internal metadata that says not to
+ * quote it — and its report is read out of the file its notification named
+ * (`docs/architecture.md`, issue #96), so until that read lands there is
+ * nothing to show and the notice is never shown at all.
+ */
+export function subagentReport(entry: ToolEntry): string {
+	if (toolKind(entry.name) !== 'agent') return '';
+	const report = entry.notification ? entry.report : entry.result;
+	return report?.trim() ? report : '';
+}
+
 /** One thing the surface draws inside a turn, in the order it draws them. */
 export type TurnItem =
 	| { kind: 'text'; entry: TextEntry }
@@ -226,7 +241,8 @@ export type TurnItem =
 	| { kind: 'steer'; entry: SteerEntry }
 	| { kind: 'group'; tools: ToolEntry[] }
 	| { kind: 'change'; entry: ToolEntry }
-	| { kind: 'source'; entry: ToolEntry };
+	| { kind: 'source'; entry: ToolEntry }
+	| { kind: 'report'; entry: ToolEntry };
 
 /**
  * A turn's entries as the things to draw.
@@ -271,6 +287,9 @@ export function turnItems(
 			items.push(group);
 		}
 		group.tools.push(entry);
+		// The call itself folds into the group; what the subagent reported is
+		// prose, and reads after it (#96).
+		if (subagentReport(entry)) items.push({ kind: 'report', entry });
 	}
 	return items;
 }

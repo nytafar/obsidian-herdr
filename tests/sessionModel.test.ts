@@ -12,7 +12,7 @@
  * exception is only sound if the parsing is.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	scopeWatcher,
 	SessionModelRegistry,
@@ -53,11 +53,20 @@ class FakeTail implements TranscriptStream {
 class FakeSource implements TranscriptSource {
 	readonly reads: string[] = [];
 	readonly tails: FakeTail[] = [];
+	/** While set, a read waits for {@link release}, so a test can finish it late. */
+	hold = false;
+	private readonly held: (() => void)[] = [];
 	constructor(readonly files: Map<string, string>) {}
 
 	async read(path: string): Promise<string | null> {
 		this.reads.push(path);
+		if (this.hold) await new Promise<void>((resolve) => this.held.push(resolve));
 		return this.files.get(path) ?? null;
+	}
+
+	/** Finishes every read that was held. */
+	release(): void {
+		for (const resolve of this.held.splice(0)) resolve();
 	}
 
 	open(path: string, onLines: (lines: string[]) => void, _options?: TailOptions): TranscriptStream {
@@ -94,6 +103,50 @@ function transcript(prompt: string, answer: string, uuid: string): string {
 
 const TRANSCRIPT_1 = transcript('First question', 'First answer.', 'u1');
 const TRANSCRIPT_2 = transcript('After the clear', 'A clean slate.', 'u2');
+
+/** Where an async subagent wrote its transcript, as its notification named it. */
+const OUTPUT_FILE = '/tmp/claude-1000/-home-lasse-hvelv/session-1/tasks/a1f2.output';
+/** Where the same subagent's transcript also lives, beside the session's file. */
+const SUBAGENT_FILE =
+	'/home/lasse/.claude/projects/-home-lasse-hvelv/session-1/subagents/agent-a1f2.jsonl';
+
+/** The notification a finished background subagent enqueues (docs/architecture.md). */
+const NOTIFICATION = [
+	'<task-notification>',
+	'<task-id>a1f2</task-id>',
+	'<tool-use-id>toolu_a1</tool-use-id>',
+	`<output-file>${OUTPUT_FILE}</output-file>`,
+	'<status>completed</status>',
+	'</task-notification>',
+].join('\n');
+
+/** A turn that launches an async subagent and is told it finished. */
+const LAUNCHED = [
+	'{"type":"user","message":{"role":"user","content":"Start the long job"},"uuid":"u1"}',
+	'{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_a1","name":"Agent","input":{"description":"Check the styles"}}]},"uuid":"a1"}',
+	`{"type":"queue-operation","operation":"enqueue","content":${JSON.stringify(NOTIFICATION)}}`,
+	`{"type":"user","message":{"role":"user","content":${JSON.stringify(NOTIFICATION)}},"uuid":"u2"}`,
+	'',
+].join('\n');
+
+/** The subagent's own transcript: its report is the last thing it said. */
+const SUBAGENT_TRANSCRIPT = [
+	'{"type":"user","message":{"role":"user","content":"Check the styles"}}',
+	'{"type":"assistant","message":{"id":"s1","role":"assistant","content":[{"type":"text","text":"Halfway through."}]}}',
+	'{"type":"assistant","message":{"id":"s2","role":"assistant","content":[{"type":"text","text":"The styles are **fine**."}]}}',
+	'',
+].join('\n');
+
+/** The report the model attached to the `Agent` call, or null when it has none. */
+function reportOf(model: { state: { turns: { entries: unknown[] }[] } }): string | null {
+	for (const turn of model.state.turns) {
+		for (const entry of turn.entries) {
+			const tool = entry as { kind: string; report?: string | null };
+			if (tool.kind === 'tool') return tool.report ?? null;
+		}
+	}
+	return null;
+}
 
 /** A herdr that reports one pane, and sends the events a test asks it to. */
 class FakeWatcher implements SessionWatcher {
@@ -465,5 +518,61 @@ describe('SessionModelRegistry: one model per pane', () => {
 
 		expect(source.openTails).toEqual([]);
 		expect(registry.has('w4:p1')).toBe(false);
+	});
+});
+
+describe('SessionModel: a background subagent’s report (#96)', () => {
+	it('reads the report out of the file the notification named and feeds it back with the turn it changed', async () => {
+		const { registry, source } = registryWith(
+			filesWith([PATH_1, LAUNCHED], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire('w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		await vi.waitFor(() => expect(changes).toHaveLength(1));
+
+		expect(source.reads).toEqual([OUTPUT_FILE]);
+		// The read is not a line of the transcript: it changes one turn, and the
+		// view redraws that turn (the seam note on #96).
+		expect(changes).toEqual([{ changedTurnIds: ['u1'], reset: false }]);
+		expect(reportOf(handle.model)).toBe('The styles are **fine**.');
+	});
+
+	it('falls back to the subagent transcript beside the session’s own file', async () => {
+		const { registry, source } = registryWith(
+			filesWith([PATH_1, LAUNCHED], [SUBAGENT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire('w4:p1');
+
+		await vi.waitFor(() => expect(reportOf(handle.model)).not.toBeNull());
+
+		expect(source.reads).toEqual([OUTPUT_FILE, SUBAGENT_FILE]);
+		expect(reportOf(handle.model)).toBe('The styles are **fine**.');
+	});
+
+	it('discards a report whose session rotated before the read resolved', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, LAUNCHED], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT], [PATH_2, TRANSCRIPT_2]),
+		);
+		source.hold = true;
+		const handle = registry.acquire('w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// /clear, while the read is still in flight.
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		source.release();
+		await vi.waitFor(() => expect(handle.model.path).toBe(PATH_2));
+
+		// The rotation emptied the view, and the report of the session that is
+		// gone never arrives (ADR-0003: following is strict).
+		expect(changes).toEqual([
+			{ changedTurnIds: [], reset: true },
+			{ changedTurnIds: ['u2'], reset: false },
+		]);
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
+		expect(reportOf(handle.model)).toBeNull();
 	});
 });

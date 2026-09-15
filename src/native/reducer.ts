@@ -51,6 +51,22 @@ export interface ThinkingEntry {
 	text: string;
 }
 
+/**
+ * A background task's completion, as its `<task-notification>` reported it
+ * (issue #96, `docs/architecture.md`).
+ *
+ * The notification names the tool call it belongs to and the file the task
+ * wrote. For an `Agent` call that file is the subagent's own transcript, and
+ * the report is the last thing it said; the reducer does not read it, because
+ * reading is not pure — the session model does, and feeds the text back.
+ */
+export interface TaskNotification {
+	/** The task's own id; also the name of the subagent transcript. */
+	taskId: string;
+	/** The file the task wrote, empty when the notification named none. */
+	outputFile: string;
+}
+
 /** A tool call and, once it lands, the result that answered it. */
 export interface ToolEntry {
 	kind: 'tool';
@@ -64,6 +80,18 @@ export interface ToolEntry {
 	input: Record<string, unknown>;
 	/** null until the `tool_result` line arrives. */
 	result: string | null;
+	/**
+	 * The task notification that reported this call finished, for the background
+	 * calls that get one; null for every other call.
+	 */
+	notification: TaskNotification | null;
+	/**
+	 * A background subagent's report, once it has been read out of the file the
+	 * notification named. Written by the session model, never by a transcript
+	 * line. A synchronous subagent has no notification and its report is simply
+	 * its {@link ToolEntry.result}.
+	 */
+	report: string | null;
 }
 
 /** A human prompt consumed inside a running turn, shown where it entered. */
@@ -154,6 +182,34 @@ function commandPrompt(content: string): string | null {
 	return `${name[1] ?? ''} ${args?.[1] ?? ''}`.trim();
 }
 
+/** The text of one `<tag>` in a task notification, empty when it has none. */
+function notificationField(content: string, tag: string): string {
+	const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(content);
+	return match?.[1]?.trim() ?? '';
+}
+
+/**
+ * The notification in a string `user` line, or null when the line is not one.
+ *
+ * A background task — a `Bash` run in the background or an async `Agent` —
+ * reports its completion as a `<task-notification>` block that names the tool
+ * call it answers and the file it wrote (`docs/architecture.md`, measured
+ * 2026-09-15). It arrives as an enqueue and then a `user` line, which is why it
+ * is never a turn.
+ */
+function taskNotification(
+	content: string,
+): { toolUseId: string; notification: TaskNotification } | null {
+	if (!content.trimStart().startsWith('<task-notification>')) return null;
+	return {
+		toolUseId: notificationField(content, 'tool-use-id'),
+		notification: {
+			taskId: notificationField(content, 'task-id'),
+			outputFile: notificationField(content, 'output-file'),
+		},
+	};
+}
+
 /** True for a `user` line that is a local command's own output, not a prompt. */
 function isLocalCommandOutput(content: string): boolean {
 	return content.startsWith('<local-command-stdout>');
@@ -207,6 +263,19 @@ class Draft {
 					(entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === toolUseId,
 				) ?? null
 			);
+		}
+		return null;
+	}
+
+	/** The turn holding the tool call `toolUseId`, or null when none does. */
+	turnOf(toolUseId: string): Turn | null {
+		for (let i = this.turns.length - 1; i >= 0; i--) {
+			const turn = this.turns[i];
+			if (!turn) continue;
+			const found = turn.entries.some(
+				(entry) => entry.kind === 'tool' && entry.id === toolUseId,
+			);
+			if (found) return turn;
 		}
 		return null;
 	}
@@ -324,6 +393,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// Enqueued before it arrived: a subagent's task notification, or a
 					// steer that has already been rendered from its attachment.
 					pendingQueue.splice(queued, 1);
+					// A notification belongs to the call it names, not to the
+					// conversation: it is how a background task says it finished (#96).
+					const task = taskNotification(content);
+					const entry = task ? draft.toolEntry(task.toolUseId) : null;
+					if (task && entry) {
+						entry.notification = task.notification;
+						const turn = draft.turnOf(task.toolUseId);
+						if (turn) draft.touch(turn.id);
+					}
 					countRaw(type);
 					continue;
 				}
@@ -376,6 +454,8 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 							name: stringField(block, 'name'),
 							input: isRecord(block.input) ? block.input : {},
 							result: null,
+							notification: null,
+							report: null,
 						});
 					}
 				}
@@ -390,4 +470,58 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 
 	const { turns, changedTurnIds } = draft.finish();
 	return { state: { turns, raw, pendingQueue }, changedTurnIds };
+}
+
+/**
+ * A background subagent's report, attached to the call that launched it (#96).
+ *
+ * The read itself is the session model's: this is the pure half, so a report
+ * that arrives long after its lines did still goes through one place and comes
+ * back as a changed turn id like everything else. An id no turn holds changes
+ * nothing, which is what a rotation between the read and its answer looks like.
+ */
+export function attachSubagentReport(
+	state: TranscriptState,
+	toolUseId: string,
+	report: string,
+): ReduceResult {
+	const draft = new Draft(state.turns);
+	const entry = draft.toolEntry(toolUseId);
+	const turn = entry ? draft.turnOf(toolUseId) : null;
+	if (entry && turn) {
+		entry.report = report;
+		draft.touch(turn.id);
+	}
+	const { turns, changedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds };
+}
+
+/**
+ * The last thing an assistant said in a transcript: a subagent's report, read
+ * out of its own file (`docs/architecture.md`). Lines that are not JSON, and
+ * everything that is not assistant text, are skipped; an empty answer means
+ * the file held no report, and the caller tries the next place.
+ */
+export function lastAssistantText(lines: readonly string[]): string {
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i];
+		if (!line?.trim()) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (!isRecord(parsed) || parsed.type !== 'assistant') continue;
+		const message = isRecord(parsed.message) ? parsed.message : null;
+		const content = message?.content;
+		if (!Array.isArray(content)) continue;
+		const parts: string[] = [];
+		for (const block of content) {
+			if (isRecord(block) && block.type === 'text') parts.push(stringField(block, 'text'));
+		}
+		const text = parts.join('\n\n').trim();
+		if (text) return text;
+	}
+	return '';
 }
