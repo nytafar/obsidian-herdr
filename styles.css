@@ -402,6 +402,14 @@
 	white-space: pre-wrap;
 }
 
+/* What the agent is doing between blocks, from herdr's status (#94). */
+.herdr-native-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+	padding: var(--size-4-2) 0;
+}
+
 /* Thinking and tool calls, until the tickets that give them a shape. */
 .herdr-native-aside {
 	color: var(--text-faint);

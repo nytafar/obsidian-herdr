@@ -171,7 +171,7 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	readonly sessionModels = new SessionModelRegistry({
 		source: new LocalTranscriptSource(),
-		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)?.scope ?? null),
+		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)),
 	});
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
@@ -225,6 +225,9 @@ export default class HerdrPlugin extends Plugin {
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerCommands();
 		this.registerStatusBar();
+		// A reconnect or an endpoint switch replaces the scope and the client the
+		// session models subscribe to (#94); they take the new ones.
+		this.register(this.onScopeReplaced(() => this.sessionModels.rebind()));
 
 		// OS notifications only fire while the window is unfocused (PRD M12), so
 		// track the edges instead of asking the DOM inside an event handler.

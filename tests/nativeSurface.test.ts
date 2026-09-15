@@ -1,5 +1,5 @@
 /**
- * The native surface's rendering (issue #93, ADR-0002, ADR-0003).
+ * The native surface's rendering (issues #93 and #94, ADR-0002, ADR-0003).
  *
  * A fake session model in place of a transcript, the DOM harness in place of a
  * document (`tests/fixtures/dom.ts`) and the recording `MarkdownRenderer` from
@@ -27,7 +27,6 @@ class FakeModel implements SessionModelView {
 	path: string | null = null;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
-	ready = Promise.resolve();
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 
 	on(listener: (change: SessionChange) => void): () => void {
@@ -222,5 +221,62 @@ describe('NativePaneSurface: detach', () => {
 		// Nothing arrives after a detach, and nothing is drawn if it does.
 		model.push([turn('u2', 'After')], { changedTurnIds: ['u2'], reset: false });
 		expect(el.children).toEqual([]);
+	});
+});
+
+describe('NativePaneSurface: what the agent is doing (#94)', () => {
+	it('says the agent is working, between blocks and while nothing arrives', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.push([turn('u1', 'Run it')], { changedTurnIds: ['u1'], reset: false });
+
+		// herdr's `agent_status`, not anything read out of the transcript.
+		model.agentStatus = 'working';
+		model.push([turn('u1', 'Run it')], { changedTurnIds: [], reset: false });
+
+		expect(el.find('herdr-native-status').textContent).toBe('Working…');
+	});
+
+	it('says nothing once the agent is idle or done', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.agentStatus = 'working';
+		model.push([], { changedTurnIds: [], reset: false });
+		expect(el.findAll('herdr-native-status')).toHaveLength(1);
+
+		model.agentStatus = 'done';
+		model.push([], { changedTurnIds: [], reset: false });
+
+		expect(el.findAll('herdr-native-status')).toEqual([]);
+	});
+
+	it('says the agent is waiting when it is blocked', async () => {
+		// The waiting card itself comes later; what #94 owes is that the state
+		// shows at all.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.agentStatus = 'blocked';
+		model.push([], { changedTurnIds: [], reset: false });
+
+		expect(el.find('herdr-native-status').textContent).toBe('Waiting for you.');
+	});
+
+	it('keeps its model and keeps up while the leaf is hidden', async () => {
+		// A hidden tab keeps its subscription and catches up on reveal (ADR-0003);
+		// there is no process to hand back, so hiding costs nothing to keep.
+		const model = new FakeModel();
+		const { surface, el, host, models } = surfaceOn(model);
+		await surface.attach(host);
+
+		await surface.setVisible(false);
+		model.push([turn('u1', 'Arrived while hidden')], { changedTurnIds: ['u1'], reset: false });
+		await surface.setVisible(true);
+
+		expect(models.released).toBe(0);
+		expect(el.find('herdr-native-prompt').textContent).toBe('Arrived while hidden');
 	});
 });

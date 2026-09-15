@@ -27,6 +27,7 @@ import {
 	type RenderMode,
 } from './renderMode';
 import type { Turn, TurnEntry } from './reducer';
+import type { AgentStatus } from '../herdr/types.gen';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -166,6 +167,22 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 }
 
+/**
+ * What the view says the agent is doing, or an empty string when it should say
+ * nothing at all.
+ *
+ * herdr's five states, not anything read out of the transcript: a turn that has
+ * stopped and a turn that is thinking look the same in the file, and the status
+ * is the only thing that tells them apart (ADR-0003). `blocked` gets a line of
+ * its own until the waiting card exists; `idle`, `done` and `unknown` get
+ * nothing, because a finished session should read as prose and nothing else.
+ */
+export function workingLine(status: AgentStatus): string {
+	if (status === 'working') return 'Working…';
+	if (status === 'blocked') return 'Waiting for you.';
+	return '';
+}
+
 /** One piece of a human prompt: literal text, or a wikilink to a note. */
 export type PromptSegment =
 	| { kind: 'text'; text: string }
@@ -219,6 +236,8 @@ export class NativePaneSurface implements PaneSurface {
 	private rootEl: HTMLElement | null = null;
 	private turnsEl: HTMLElement | null = null;
 	private emptyEl: HTMLElement | null = null;
+	/** What the agent is doing, shown between blocks; null when it is nothing. */
+	private statusEl: HTMLElement | null = null;
 	/** The model this surface holds, or null while it is detached or has no pane. */
 	private handle: SessionHandleOf<SessionModelView> | null = null;
 	private unsubscribe: (() => void) | null = null;
@@ -250,10 +269,15 @@ export class NativePaneSurface implements PaneSurface {
 		this.rootEl = null;
 		this.turnsEl = null;
 		this.emptyEl = null;
+		this.statusEl = null;
 	}
 
-	/** Nothing to hand back: there is no child process and no canvas here. */
-	async setVisible(): Promise<void> {}
+	/**
+	 * Nothing to hand back: there is no child process and no canvas here, so a
+	 * hidden tab keeps its session model and its subscription and is simply up
+	 * to date when it is revealed (#94, ADR-0003).
+	 */
+	async setVisible(_visible: boolean): Promise<void> {}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
 		const samePane = identity.paneId === this.identity.paneId;
@@ -307,6 +331,7 @@ export class NativePaneSurface implements PaneSurface {
 			}
 			this.updateEmpty();
 		}
+		this.updateStatus();
 		this.report();
 	}
 
@@ -314,6 +339,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.clearTurns();
 		for (const turn of this.model?.state.turns ?? []) this.renderTurn(turn);
 		this.updateEmpty();
+		this.updateStatus();
 	}
 
 	/** Drops every turn element and the components that went with them. */
@@ -411,6 +437,24 @@ export class NativePaneSurface implements PaneSurface {
 		const text = this.model?.path ? 'No turns in this session yet.' : 'No session yet.';
 		if (!this.emptyEl) this.emptyEl = root.createDiv({ cls: 'herdr-native-empty' });
 		this.emptyEl.setText(text);
+	}
+
+	/**
+	 * What the agent is doing between blocks (#94). herdr's `agent_status`, not
+	 * anything guessed from the transcript: a turn that has stopped writing and
+	 * a turn that is thinking look identical in the file.
+	 */
+	private updateStatus(): void {
+		const root = this.rootEl;
+		if (!root) return;
+		const text = workingLine(this.model?.agentStatus ?? 'unknown');
+		if (!text) {
+			this.statusEl?.remove();
+			this.statusEl = null;
+			return;
+		}
+		if (!this.statusEl) this.statusEl = root.createDiv({ cls: 'herdr-native-status' });
+		this.statusEl.setText(text);
 	}
 
 	private report(): void {

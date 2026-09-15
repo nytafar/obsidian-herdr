@@ -17,6 +17,7 @@ import {
 	encodeProjectDir,
 	LocalTranscriptSource,
 	transcriptPath,
+	type TranscriptStream,
 } from '../src/native/transcriptSource';
 
 describe('encodeProjectDir (ADR-0003)', () => {
@@ -100,5 +101,114 @@ describe('LocalTranscriptSource.read', () => {
 		appendFileSync(path, 'two\n');
 
 		expect(await source.read(path)).toBe('one\ntwo\n');
+	});
+});
+
+describe('LocalTranscriptSource.open: following a growing transcript (#94)', () => {
+	let dir = '';
+	const streams: TranscriptStream[] = [];
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'herdr-tail-'));
+	});
+
+	afterEach(() => {
+		for (const stream of streams.splice(0)) stream.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** Follows `path`, collecting every line delivered, closed by the hook above. */
+	function tail(path: string): string[] {
+		const source = new LocalTranscriptSource();
+		const lines: string[] = [];
+		// Short enough that a test finishes quickly, long enough that a burst of
+		// appends still coalesces the way it does in the app.
+		streams.push(source.open(path, (batch) => lines.push(...batch), { debounceMs: 5, pollMs: 20 }));
+		return lines;
+	}
+
+	/** Waits for `check` to hold, up to a second, polling the way a human would. */
+	async function eventually(check: () => boolean): Promise<void> {
+		for (let waited = 0; waited < 1000; waited += 10) {
+			if (check()) return;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		expect(check()).toBe(true);
+	}
+
+	it('delivers what the file already holds, then what is appended, in order', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\ntwo\n');
+
+		const lines = tail(path);
+		await eventually(() => lines.length === 2);
+		appendFileSync(path, 'three\n');
+		await eventually(() => lines.length === 3);
+		appendFileSync(path, 'four\nfive\n');
+		await eventually(() => lines.length === 5);
+
+		expect(lines).toEqual(['one', 'two', 'three', 'four', 'five']);
+	});
+
+	it('holds a partial trailing line until its newline arrives', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\n');
+		const lines = tail(path);
+		await eventually(() => lines.length === 1);
+
+		// Claude writes a transcript line in pieces; half a line is not a line.
+		appendFileSync(path, '{"type":"assis');
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(lines).toEqual(['one']);
+
+		appendFileSync(path, 'tant"}\n');
+		await eventually(() => lines.length === 2);
+		expect(lines[1]).toBe('{"type":"assistant"}');
+	});
+
+	it('follows a file that does not exist yet', async () => {
+		// The transcript is created when the first prompt lands (ADR-0003), which
+		// can be after the view opened.
+		const path = join(dir, 'later.jsonl');
+		const lines = tail(path);
+
+		writeFileSync(path, 'first\n');
+
+		await eventually(() => lines.length === 1);
+		expect(lines).toEqual(['first']);
+	});
+
+	it('delivers nothing more once it is closed', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\n');
+		const source = new LocalTranscriptSource();
+		const lines: string[] = [];
+		const stream = source.open(path, (batch) => lines.push(...batch), {
+			debounceMs: 5,
+			pollMs: 20,
+		});
+		await eventually(() => lines.length === 1);
+
+		stream.close();
+		appendFileSync(path, 'two\n');
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		expect(lines).toEqual(['one']);
+	});
+
+	it('reads a second path from its own beginning', async () => {
+		// What a rotation does: the old stream is closed and the new file is read
+		// whole, so nothing of the old session survives (ADR-0003).
+		const first = join(dir, 'first.jsonl');
+		const second = join(dir, 'second.jsonl');
+		writeFileSync(first, 'old\n');
+		writeFileSync(second, 'new\n');
+		const before = tail(first);
+		await eventually(() => before.length === 1);
+
+		const after = tail(second);
+
+		await eventually(() => after.length === 1);
+		expect(after).toEqual(['new']);
 	});
 });

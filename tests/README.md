@@ -407,3 +407,27 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
    `ls ~/.claude/projects/"$(pwd | tr -c 'a-zA-Z0-9' '-' | sed 's/-$//')"/`
    lists its transcripts; the one named by that pane's `agent_session.value` in
    `herdr agent list` is the file the view is showing.
+
+## Smoking live updates and session following (#94)
+
+The tail is tested against a real temp file and the following against fake
+herdr events (`tests/transcriptSource.test.ts`, `tests/sessionModel.test.ts`).
+What needs a real pane is the rotation, because nothing but Claude Code rotates
+a session.
+
+1. Prompt the agent from its terminal, with the native tab visible: new blocks
+   appear as it writes, and "Working…" shows between them, going away when it
+   finishes. Blocking it (a permission prompt) shows "Waiting for you."
+2. Send `/clear` in that pane. Within a few seconds the view empties and starts
+   showing the new session; `herdr agent list` confirms the pane's
+   `agent_session.value` changed.
+3. Exit Claude and start it again with `--resume <the old uuid>`: the original
+   history comes back, because the id and the file are the ones it had.
+4. Open a second native tab on the same pane (drag the tab out, or open the pane
+   again): both keep up, and there is still one tail —
+   `ls -l /proc/$(pgrep -f 'Obsidian' | head -1)/fd | grep -c '<session>.jsonl'`
+   stays at one while both are open. Closing both releases it.
+5. Leave a native tab in the background while the agent works, then switch back:
+   it is up to date at once, with no reload.
+6. Restart herdr (or stop and start the plugin's connection): the view keeps
+   following, because the models rebind to the new scope.
