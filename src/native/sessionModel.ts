@@ -320,9 +320,18 @@ export class SessionModel implements SessionModelView {
 		return this.status;
 	}
 
-	/** The one automatic answer this block gets, for the first caller (#99). */
+	/**
+	 * The one automatic answer this block gets, for the first caller (#99).
+	 *
+	 * The block is the call that is dangling, which is what the claim stores:
+	 * Claude can move from one permission to the next without herdr's status
+	 * leaving `blocked`, and a claim that only asked whether *some* claim was
+	 * held would have let the first call swallow every one after it. Two tabs
+	 * on one pane still get one press between them, which is the claim's job
+	 * (ADR-0003), because they ask about the same call.
+	 */
 	claimBlock(toolUseId: string): boolean {
-		if (this.blockClaim !== null) return false;
+		if (this.blockClaim === toolUseId) return false;
 		this.blockClaim = toolUseId;
 		return true;
 	}

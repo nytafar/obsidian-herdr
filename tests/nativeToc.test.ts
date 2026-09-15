@@ -296,6 +296,33 @@ describe('TocPanel', () => {
 		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
 	});
 
+	it('is reachable and activated from the keyboard', () => {
+		// A row is a button in everything but tag: it must take focus, say what it
+		// is to a screen reader, and answer enter and space (Obsidian guidelines).
+		const models = new FakeModels();
+		const leaf = leafOf('native');
+		const { panel, el, scrollToTurn } = panelOn(
+			models,
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+		);
+		panel.activeLeafChanged(leaf);
+		models.model('w4:p1').push([turn('u1', 'First'), turn('u2', 'Second')]);
+
+		const row = el.findAll('herdr-toc-item')[1];
+		expect(row?.attrs.role).toBe('button');
+		expect(row?.attrs.tabindex).toBe('0');
+
+		row?.dispatch('keydown', { key: 'Enter' });
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+
+		row?.dispatch('keydown', { key: ' ' });
+		expect(scrollToTurn).toHaveBeenCalledTimes(2);
+
+		// Anything else is the list's own scrolling, not an activation.
+		row?.dispatch('keydown', { key: 'ArrowDown' });
+		expect(scrollToTurn).toHaveBeenCalledTimes(2);
+	});
+
 	it('scrolls the leaf it follows, not the first tab showing that pane', () => {
 		// Two tabs on one pane share a session model (ADR-0003) and are two
 		// leaves. The list is about one of them, and a click must move that one:

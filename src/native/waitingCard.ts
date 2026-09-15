@@ -40,14 +40,18 @@ export interface WaitingCardModel {
 }
 
 /**
- * The last `tool_use` in the transcript that no `tool_result` has answered, or
- * null when every call has landed.
+ * The transcript's **newest** `tool_use` when no `tool_result` has answered it,
+ * and null otherwise — including when the newest call has landed and an older
+ * one never did.
  *
- * Scanned backwards over every turn, because that is what the transcript shows
- * a block as (`docs/architecture.md`): the call Claude is waiting on is the
- * last one with no result. A call further back that never got one — a
- * background launch that was interrupted — is not what the dialog on screen is
- * about, so the scan stops at the first one it finds from the end.
+ * Scanned backwards over every turn for the last call of any kind, because that
+ * is what the transcript shows a block as (`docs/architecture.md`): the call
+ * Claude is waiting on is the last one written, and it has no result yet. A
+ * call further back that never got one — a background launch that was
+ * interrupted — is not what the dialog on screen is about, so a newest call
+ * that has landed names nothing rather than reaching past it: an unnamed block
+ * is one the view refuses to answer by itself (#99), which is the safe end to
+ * fall off.
  */
 export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 	for (let t = turns.length - 1; t >= 0; t--) {
@@ -55,7 +59,7 @@ export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 		for (let e = entries.length - 1; e >= 0; e--) {
 			const entry = entries[e];
 			if (entry?.kind !== 'tool') continue;
-			if (entry.result === null) return entry;
+			return entry.result === null ? entry : null;
 		}
 	}
 	return null;

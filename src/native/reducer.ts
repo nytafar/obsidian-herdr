@@ -303,6 +303,8 @@ function isLocalCommandOutput(content: string): boolean {
 class Draft {
 	private readonly turns: Turn[];
 	private readonly changed: string[] = [];
+	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
+	private readonly changedIds = new Set<string>();
 	/** Turns already copied in this batch, by id: copy once, then mutate freely. */
 	private readonly mine = new Set<string>();
 
@@ -324,9 +326,16 @@ class Draft {
 		return turn;
 	}
 
-	/** Marks a turn as changed by this batch. */
+	/**
+	 * Marks a turn as changed by this batch. Asked once per line, so the
+	 * "already marked?" question is a set rather than a scan of the list: a
+	 * first batch is the whole file, and a scan each would be quadratic in the
+	 * number of turns (#101).
+	 */
 	touch(id: string): void {
-		if (!this.changed.includes(id)) this.changed.push(id);
+		if (this.changedIds.has(id)) return;
+		this.changedIds.add(id);
+		this.changed.push(id);
 	}
 
 	/**
@@ -377,8 +386,14 @@ class Draft {
 	 * still says what it said (#100).
 	 */
 	finish(): { turns: Turn[]; changedTurnIds: string[] } {
+		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed };
+		// Indexed once rather than searched per id: the first batch of a tail is
+		// the whole file, so every turn in a long session can be in `changed`, and
+		// a `find` each would be quadratic in exactly the case the native view's
+		// open time is measured on (#101).
+		const byId = new Map(this.turns.map((turn) => [turn.id, turn]));
 		for (const id of this.changed) {
-			const turn = this.turns.find((candidate) => candidate.id === id);
+			const turn = byId.get(id);
 			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
 		}
 		return { turns: this.turns, changedTurnIds: this.changed };

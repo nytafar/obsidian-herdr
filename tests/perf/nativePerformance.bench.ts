@@ -12,7 +12,8 @@
  * none of the shapes that cost anything — the tool results, the subagent
  * reports, the hundred-kilobyte `tool_result` blocks:
  *
- * - **(a)** one large real session, the 4.6 MB transcript named below.
+ * - **(a)** one large real session: the largest transcript on this machine, or
+ *   the one `HERDR_BENCH_TRANSCRIPT` names.
  * - **(b)** the three largest transcripts on this machine concatenated, about
  *   600 `user` lines. Concatenating sessions is not a thing Claude Code does,
  *   but the reducer and the surface only ever see lines, and what is measured
@@ -55,12 +56,16 @@ import type {
 import type { AgentStatus } from '../../src/herdr/types.gen';
 import type { App } from 'obsidian';
 
-/** Corpus (a): one large real session, read where it lies. */
-const LARGE_TRANSCRIPT = join(
-	homedir(),
-	'.claude/projects/-home-lasse-scratch-omarchy-strip',
-	'ba8fd527-ee1a-49a0-8073-3b7101cda36a.jsonl',
-);
+/**
+ * Corpus (a): one large real session, read where it lies — the largest
+ * transcript this machine has, or the file named in `HERDR_BENCH_TRANSCRIPT`.
+ *
+ * Discovered rather than named in the file: a path into one developer's home
+ * is a path that is empty on every other checkout and after that session is
+ * rotated away, and a benchmark that silently measures nothing is worse than
+ * one that does not run. So this throws when there is no corpus to measure.
+ */
+const TRANSCRIPT_ENV = 'HERDR_BENCH_TRANSCRIPT';
 
 /** Under this, a tab opens without the user seeing it happen. */
 const BUDGET_MS = { large: 500, longest: 2000 };
@@ -114,10 +119,29 @@ function linesOf(paths: string[]): string[] {
 	return paths.flatMap((path) => readFileSync(path, 'utf8').split('\n').filter(Boolean));
 }
 
-/** The corpora, or empty ones where this machine has no transcripts. */
+/** The file corpus (a) is read from; throws when there is none to read. */
+function largeTranscript(): string {
+	const named = process.env[TRANSCRIPT_ENV];
+	if (named !== undefined && named !== '') {
+		if (!existsSync(named)) throw new Error(`${TRANSCRIPT_ENV} names no file: ${named}`);
+		return named;
+	}
+	const [largest] = transcripts();
+	if (largest === undefined) {
+		throw new Error(
+			`no transcripts under ~/.claude/projects; name one in ${TRANSCRIPT_ENV} to benchmark`,
+		);
+	}
+	return largest;
+}
+
+/** The corpora. Both are real transcripts, so both fail loudly without any. */
 function corpora(): { large: string[]; longest: string[] } {
-	const large = existsSync(LARGE_TRANSCRIPT) ? linesOf([LARGE_TRANSCRIPT]) : [];
-	return { large, longest: linesOf(transcripts().slice(0, 3)) };
+	const longest = transcripts().slice(0, 3);
+	if (longest.length === 0) {
+		throw new Error('no transcripts under ~/.claude/projects to build corpus (b) from');
+	}
+	return { large: linesOf([largeTranscript()]), longest: linesOf(longest) };
 }
 
 /** Every uuid in a transcript line, and every tool call id beside them. */

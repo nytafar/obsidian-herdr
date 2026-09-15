@@ -428,6 +428,11 @@
  * sibling at the bottom rather than a sticky child, so no transcript can show
  * through beside or beneath it. `container-type` makes the root the box the
  * prompt box's cap is half of.
+ *
+ * No padding under the box: #103 asks for it flush with the view's bottom
+ * edge, and the root's bottom padding was the last strip of background between
+ * the two. The top and the sides keep theirs, which is what the transcript is
+ * read against.
  */
 .herdr-native-view {
 	container-type: size;
@@ -435,7 +440,7 @@
 	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
-	padding: var(--size-4-4);
+	padding: var(--size-4-4) var(--size-4-4) 0;
 }
 
 /*

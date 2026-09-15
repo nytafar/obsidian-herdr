@@ -189,12 +189,28 @@ export class TocPanel {
 	 * One clickable line. A heading scrolls to the turn it belongs to: the
 	 * surface's seam is the turn, and a heading inside Obsidian's rendered
 	 * Markdown carries no id of this plugin's making.
+	 *
+	 * A button in everything but tag: `role` and `tabindex` put it in the tab
+	 * order and tell a screen reader what it is, and enter and space activate
+	 * it, which is what a real button would have done for free. The tag stays a
+	 * `div` because the row is a truncated line of text, not a control, and a
+	 * `button` would need its own rules to stop being one (Obsidian
+	 * guidelines: no inline styles, keyboard and screen reader support).
 	 */
 	private renderRow(parentEl: HTMLElement, cls: string[], text: string, turnId: string): void {
-		const rowEl = parentEl.createDiv({ cls, text });
-		this.component.registerDomEvent(rowEl, 'click', () => {
-			if (this.paneId) this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
+		const rowEl = parentEl.createDiv({ cls, text, attr: { role: 'button', tabindex: '0' } });
+		this.component.registerDomEvent(rowEl, 'click', () => this.activate(turnId));
+		this.component.registerDomEvent(rowEl, 'keydown', (event: KeyboardEvent) => {
+			if (event.key !== 'Enter' && event.key !== ' ') return;
+			// Space would scroll the list under the reader otherwise.
+			event.preventDefault();
+			this.activate(turnId);
 		});
+	}
+
+	/** What a click or an enter on a row does: scroll the leaf the list is about. */
+	private activate(turnId: string): void {
+		if (this.paneId) this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
 	}
 }
 

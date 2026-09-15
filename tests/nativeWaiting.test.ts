@@ -45,9 +45,12 @@ class FakeModel implements SessionModelView {
 	/** The pane's one claim on the block it is in, as the real model holds it. */
 	private blockClaim: string | null = null;
 
-	/** True for the first caller of a block, false for every one after it (#99). */
+	/**
+	 * True for the first caller of a block, false for every one after it (#99).
+	 * The block is the call that is dangling, as the real model's claim is.
+	 */
 	claimBlock(toolUseId: string): boolean {
-		if (this.blockClaim !== null) return false;
+		if (this.blockClaim === toolUseId) return false;
 		this.blockClaim = toolUseId;
 		return true;
 	}
@@ -273,6 +276,24 @@ describe('waiting card: which kind (#99)', () => {
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 
+	it('names no tool when the newest call landed and an older one never did', async () => {
+		// A background launch that was interrupted never gets a result, and it is
+		// not what the dialog on screen is about: the call Claude is blocked on is
+		// the newest one, and a newest one that has landed names nothing at all.
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+
+		model.push([
+			turn('u1', 'Launch it, then read the file', [
+				tool('toolu_01Bg', 'Task', { description: 'Background launch' }),
+				tool('toolu_02Rd', 'Read', { file_path: '/tmp/a.txt' }, 'contents'),
+			]),
+		]);
+		model.setStatus('blocked');
+
+		expect(title(el)).toBe('Claude is waiting for permission');
+	});
+
 	it('is a permission with no tool named when every call has landed', async () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
@@ -301,6 +322,36 @@ describe('waiting card: what it presses (#99)', () => {
 		// The first option of a Bash or Write permission is "Yes": it allows the
 		// call once and changes no mode (`docs/architecture.md`).
 		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
+	});
+
+	it('sends one enter for a block however often Allow is pressed', async () => {
+		// Two clicks before the block is over are two enters, and the second one
+		// answers whatever dialog the first one's "Yes" opened.
+		const model = new FakeModel();
+		const { el, keys } = await surfaceOn(model);
+		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
+		model.setStatus('blocked');
+
+		el.find('herdr-native-waiting-allow').dispatch('click');
+		el.find('herdr-native-waiting-allow').dispatch('click');
+		await Promise.resolve();
+
+		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
+	});
+
+	it('offers no Allow until the transcript has been read', async () => {
+		// herdr has named the session and nothing has been read from it, so the
+		// card can only fall back to a permission — and the dialog on screen may
+		// be plan approval, where a bare enter switches the session to auto mode
+		// (`docs/architecture.md`). Nothing to press but the terminal.
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+
+		model.setPath('/transcript.jsonl');
+		model.setStatus('blocked');
+
+		expect(title(el)).toBe('Claude is waiting for permission');
+		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 
 	it('says so as a notice when the enter does not get through', async () => {
@@ -438,6 +489,35 @@ describe('waiting card: auto-accept permissions (#99)', () => {
 
 		expect(title(el)).toBe('Claude is ready to code');
 		expect(keys.calls).toEqual([]);
+	});
+
+	it('presses nothing for a block whose call is not named, read or not', async () => {
+		// `loaded` says lines have arrived, not that the `tool_use` of this block
+		// is among them: a status change can beat the line that names the call.
+		// An unnamed block is not known to be a permission at all, so it waits
+		// for the line rather than guessing with an enter.
+		const model = new FakeModel();
+		const { el, keys } = await surfaceOn(model, { autoAccept: true });
+		model.push([
+			turn('u1', 'Read it', [tool('toolu_01Rd', 'Read', { file_path: '/tmp/a.txt' }, 'ok')]),
+		]);
+
+		model.setStatus('blocked');
+		await Promise.resolve();
+
+		expect(title(el)).toBe('Claude is waiting for permission');
+		expect(keys.calls).toEqual([]);
+
+		// The line that names the call lands under the same block: now it can.
+		model.push([
+			turn('u1', 'Read it', [
+				tool('toolu_01Rd', 'Read', { file_path: '/tmp/a.txt' }, 'ok'),
+				tool('toolu_02XB', 'Bash', { command: 'echo hi' }),
+			]),
+		]);
+		await Promise.resolve();
+
+		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
 	});
 
 	it('presses nothing while the setting is off, which is its default', async () => {

@@ -479,6 +479,21 @@ describe('SessionModel: the agent’s status', () => {
 		second.release();
 	});
 
+	it('grants a claim for the next call while the pane stays blocked (#99)', () => {
+		// Claude can move from one permission to the next without herdr's status
+		// leaving `blocked`. The claim is one press per block, and the block is
+		// which call is dangling, so the next call is a block of its own.
+		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
+		expect(handle.model.claimBlock('toolu_01XB')).toBe(false);
+		expect(handle.model.claimBlock('toolu_02YC')).toBe(true);
+
+		handle.release();
+	});
+
 	it('drops the block claim when the session rotates', () => {
 		const { registry, watcher } = registryWith(
 			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),

@@ -260,6 +260,24 @@ describe('NativePaneSurface: following new content', () => {
 
 		expect(turnsEl(el).scrollTop).toBe(400);
 	});
+
+	it('opens the pane it is switched to at the bottom', async () => {
+		// A tab pointed at another pane is another session, and the reader has
+		// read nothing of it: where they had scrolled to in the pane before it
+		// says nothing about where this one starts (#106).
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { surface, el } = await surfaceOn(model);
+		await settle();
+		turnsEl(el).scrollTop = 200;
+		turnsEl(el).dispatch('scroll');
+
+		await surface.setIdentity({ paneId: 'w4:p2', mode: 'control', endpointId: 'local' });
+		laidOut(el, 800);
+		await settle();
+
+		expect(turnsEl(el).scrollTop).toBe(400);
+	});
 });
 
 describe('NativePaneSurface: re-pinning as the view grows', () => {

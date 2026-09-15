@@ -1258,6 +1258,10 @@ export function buildNativeViewSection(
 			toggle.setValue(settings.nativeAutoAcceptPermissions === true).onChange(async (value) => {
 				settings.nativeAutoAcceptPermissions = value;
 				await callbacks.save();
+				// The card on screen was drawn from the setting as it was, and a
+				// card is what a blocked pane shows until the block is over: without
+				// the redraw the switch would only reach the block after this one.
+				callbacks.refreshNativeViews();
 			}),
 		);
 }

@@ -524,6 +524,20 @@ describe('native view section', () => {
 		expect(calls).toEqual(['save', 'refreshNativeViews']);
 	});
 
+	it('saves auto-accept and redraws the open native views', async () => {
+		// The card on screen is drawn from the setting as it was: without the
+		// redraw the switch only reaches the next card (#99).
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildNativeViewSection(el, settings, callbacks);
+
+		await toggleOf(el, 'Auto-accept permissions').change(true);
+
+		expect(settings.nativeAutoAcceptPermissions).toBe(true);
+		expect(calls).toEqual(['save', 'refreshNativeViews']);
+	});
+
 	it('reads a stored value it does not know as the default', () => {
 		const el = settingsContainer();
 		buildNativeViewSection(

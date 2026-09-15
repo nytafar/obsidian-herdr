@@ -379,6 +379,8 @@ export class NativePaneSurface implements PaneSurface {
 	private waitingEl: HTMLElement | null = null;
 	/** The card's listeners, unloaded whenever it is drawn again or goes. */
 	private waitingComponent: Component | null = null;
+	/** The block this surface has already sent an Enter for; null for none. */
+	private allowedBlock: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -408,7 +410,6 @@ export class NativePaneSurface implements PaneSurface {
 		this.turnsEl = turns;
 		this.rootEl = root;
 		this.component.load();
-		this.following = true;
 		// The only thing a scroll does: say whether the view is still following.
 		// Nothing is drawn, measured or unmounted here, because this runs on
 		// every frame of a flick through a long session (#101).
@@ -492,9 +493,17 @@ export class NativePaneSurface implements PaneSurface {
 		turnEl.scrollIntoView({ block: 'start' });
 	}
 
-	/** Takes the pane's session model and draws what it already holds. */
+	/**
+	 * Takes the pane's session model and draws what it already holds.
+	 *
+	 * At the bottom of it, always: this runs on open and again whenever the tab
+	 * is pointed at another pane, and another pane is another session the reader
+	 * has read nothing of. Where they had scrolled to in the pane before it says
+	 * nothing about where this one starts (#106).
+	 */
 	private bind(): void {
 		if (!this.rootEl) return;
+		this.following = true;
 		if (this.identity.paneId) {
 			this.handle = this.options.models.acquire(this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
@@ -861,6 +870,8 @@ export class NativePaneSurface implements PaneSurface {
 		if (!root) return;
 		if (status !== 'blocked') {
 			this.clearWaiting();
+			// The block is over: the next one is an Enter of its own.
+			this.allowedBlock = null;
 			this.promptBox?.setHidden(false);
 			return;
 		}
@@ -911,13 +922,18 @@ export class NativePaneSurface implements PaneSurface {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		if (card.kind === 'permission') {
+		// Only once the transcript has been read, for the same reason
+		// {@link autoAccept} waits for it: until then a blocked session has no
+		// turns to scan and every block falls back to a permission with no call
+		// named, so the button would be offered on a question, a plan approval or
+		// the trust prompt just as readily as on a permission.
+		if (card.kind === 'permission' && this.model?.loaded === true) {
 			const allowEl = actions.createEl('button', {
 				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-allow', 'mod-cta'],
 				text: 'Allow',
 			});
 			component.registerDomEvent(allowEl, 'click', () => {
-				void this.allow();
+				void this.allow(card.toolUseId);
 			});
 		}
 		const terminalEl = actions.createEl('button', {
@@ -945,20 +961,35 @@ export class NativePaneSurface implements PaneSurface {
 		if (!this.options.autoAcceptPermissions()) return;
 		const model = this.model;
 		if (!model?.loaded) return;
+		// And never a block whose call is not named. `loaded` says lines have
+		// arrived, not that the `tool_use` of *this* block is among them: an
+		// `agent_status` transition can beat the line that names the call, and
+		// the card falls back to a permission in that window too. An unnamed
+		// block is not known to be a permission at all, so it waits for the line
+		// — the card is drawn again for every line that lands under it.
+		if (card.toolUseId === '') return;
 		// One press per block for the pane, not one per view: the claim is the
 		// model's, which is the thing two tabs on one pane share (ADR-0003). It
 		// is also what makes this once per block at all, since the card is drawn
 		// again every time a transcript line lands under it.
 		if (!model.claimBlock(card.toolUseId)) return;
-		void this.allow();
+		void this.allow(card.toolUseId);
 	}
 
 	/**
 	 * Allow: a bare Enter in the pane's agent, which takes the first option of
 	 * the permission dialog — "Yes", allowing the call once and changing no
 	 * mode (`docs/architecture.md`). Only ever called for a permission block.
+	 *
+	 * One Enter per block, whoever asks and however often. A second press —
+	 * two clicks before the status moves, or a click on a card auto-accept has
+	 * already answered — would land on whatever dialog the first one's "Yes"
+	 * opened. The block is the call the card names, as the model's claim is
+	 * (#99), and it is forgotten when the agent leaves `blocked`.
 	 */
-	private async allow(): Promise<void> {
+	private async allow(toolUseId: string): Promise<void> {
+		if (this.allowedBlock === toolUseId) return;
+		this.allowedBlock = toolUseId;
 		try {
 			await this.options.keySender.sendKeys(this.identity.paneId, ['Enter']);
 		} catch (error) {
