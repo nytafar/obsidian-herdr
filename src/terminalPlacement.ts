@@ -86,3 +86,41 @@ export function decideOpenTarget(input: OpenTargetInput): OpenTarget {
 	if (input.mode === 'reuse' && input.hasAnyLeaf) return 'switch';
 	return 'new';
 }
+
+/** A main-area leaf and the file its persisted view state says it shows. */
+export interface NoteLeafCandidate<T> {
+	leaf: T;
+	/** `state.file` of the leaf, or null for a view that shows no file. */
+	file: string | null;
+}
+
+/**
+ * The leaf a split is taken beside: the one showing the active note (issue #28).
+ *
+ * Obsidian answers two different questions here, and the split only happens
+ * when both point at the same note. `getActiveFile()` skips views that are not
+ * navigable — a terminal among them — so it keeps naming the note the reader
+ * came from; `getMostRecentLeaf()` does not, so it names the terminal as soon
+ * as one is opened, because attaching in control mode focuses the renderer and
+ * that activates its leaf. Asking only the most recent leaf therefore stopped
+ * splitting after the first terminal and dropped every later one into that
+ * terminal's tab group instead.
+ *
+ * So the most recent leaf is preferred — it is the note the reader is in, and
+ * it covers a pop-out, which the main area's leaves do not — and otherwise the
+ * main area is searched for the leaf that does show the file. Null means no
+ * leaf shows it, and the caller falls back to a plain tab.
+ */
+export function chooseNoteLeaf<T>(input: {
+	/** Vault-relative path of the active note, or null when there is none. */
+	activeFilePath: string | null;
+	/** `getMostRecentLeaf()`, which may be any leaf at all, or null. */
+	mostRecent: NoteLeafCandidate<T> | null;
+	/** The main area's leaves, in layout order (`iterateRootLeaves`). */
+	rootLeaves: readonly NoteLeafCandidate<T>[];
+}): T | null {
+	const path = input.activeFilePath?.trim() ?? '';
+	if (!path) return null;
+	if (input.mostRecent && input.mostRecent.file === path) return input.mostRecent.leaf;
+	return input.rootLeaves.find((candidate) => candidate.file === path)?.leaf ?? null;
+}

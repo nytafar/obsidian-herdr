@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	chooseNoteLeaf,
 	decideOpenTarget,
 	decidePlacement,
 	type OpenTargetInput,
@@ -125,5 +126,53 @@ describe('decideOpenTarget (issue #38)', () => {
 		// Nothing to take over: reuse only ever holds one tab, it does not refuse
 		// to open one.
 		expect(decideOpenTarget(target({ mode: 'reuse' }))).toBe('new');
+	});
+});
+
+/**
+ * Which leaf the split is taken beside (issue #28).
+ *
+ * The leaves are strings: the choice only ever compares the file each leaf says
+ * it shows against the active one, and never touches a leaf otherwise.
+ */
+describe('chooseNoteLeaf: the leaf the split is taken beside', () => {
+	const NOTE = 'projects/herdr/notes.md';
+	const note = { leaf: 'note', file: NOTE };
+	const terminal = { leaf: 'terminal', file: null };
+
+	it('takes the most recent leaf when that is the note', () => {
+		expect(
+			chooseNoteLeaf({ activeFilePath: NOTE, mostRecent: note, rootLeaves: [note, terminal] }),
+		).toBe('note');
+	});
+
+	it('finds the note when a terminal is the most recent leaf', () => {
+		// Attaching in control mode focuses the renderer, and that activates the
+		// terminal's leaf, so `getMostRecentLeaf()` names the terminal from the
+		// first open onwards while `getActiveFile()` still names the note.
+		// Asking only the most recent leaf stopped splitting at that point.
+		expect(
+			chooseNoteLeaf({
+				activeFilePath: NOTE,
+				mostRecent: terminal,
+				rootLeaves: [note, terminal],
+			}),
+		).toBe('note');
+	});
+
+	it('prefers the most recent leaf over another showing the same note', () => {
+		// A pop-out is not among the main area's leaves, so the recent leaf has to
+		// win on its own account rather than by being found in the list.
+		const popout = { leaf: 'popout', file: NOTE };
+		expect(chooseNoteLeaf({ activeFilePath: NOTE, mostRecent: popout, rootLeaves: [note] })).toBe(
+			'popout',
+		);
+	});
+
+	it('says nothing when no leaf shows the note, or there is no note', () => {
+		expect(
+			chooseNoteLeaf({ activeFilePath: NOTE, mostRecent: terminal, rootLeaves: [terminal] }),
+		).toBeNull();
+		expect(chooseNoteLeaf({ activeFilePath: null, mostRecent: note, rootLeaves: [note] })).toBeNull();
 	});
 });
