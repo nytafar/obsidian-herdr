@@ -313,6 +313,59 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(el.findAll('herdr-native-tools')).toEqual([]);
 	});
 
+	it('lists the sources a web search returned, as links', async () => {
+		// A search's sources are in its `tool_result`, as a `Links:` line of
+		// title/url objects ahead of the prose — the shape every WebSearch result
+		// on this machine has (#95, #91 story 13). The input holds only a query,
+		// so a view that reads the input alone shows no source at all.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const search = tool(
+			't1',
+			'WebSearch',
+			{ query: 'herdr protocol' },
+			[
+				'Web search results for query: "herdr protocol"',
+				'',
+				'Links: [{"title":"Herdr documentation | herdr","url":"https://herdr.dev/docs/"},{"title":"herdr - crates.io","url":"https://crates.io/crates/herdr"}]',
+				'',
+				'Based on the search results, herdr is a terminal workspace manager.',
+			].join('\n'),
+		);
+
+		model.push([turn('u1', 'Look it up', [search])], { changedTurnIds: ['u1'], reset: false });
+
+		const source = el.find('herdr-native-source');
+		expect(source.children[0]?.textContent).toBe('Searched the web for “herdr protocol”');
+		const links = source.findAll('herdr-native-source-link');
+		expect(links.map((link) => link.textContent)).toEqual([
+			'Herdr documentation | herdr',
+			'herdr - crates.io',
+		]);
+		expect(links.map((link) => link.attrs.href)).toEqual([
+			'https://herdr.dev/docs/',
+			'https://crates.io/crates/herdr',
+		]);
+		expect([...(links[0]?.classList ?? [])]).toContain('external-link');
+	});
+
+	it('shows a web search with no sources yet as the query alone', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[turn('u1', 'Look it up', [tool('t1', 'WebSearch', { query: 'herdr protocol' })])],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.find('herdr-native-source').textContent).toBe(
+			'Searched the web for “herdr protocol”',
+		);
+		expect(el.find('herdr-native-source').findAll('herdr-native-source-link')).toEqual([]);
+	});
+
 	it('says what became of a change: updated, updating or refused', async () => {
 		// A vault change line reports the call's status (#91, #95): an edit that
 		// failed or has not answered yet must not read as one that landed.

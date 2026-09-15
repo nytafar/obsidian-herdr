@@ -237,12 +237,59 @@ export function changedPath(entry: ToolEntry): string {
 	return typeof value === 'string' ? value : '';
 }
 
-/** What a source line says: the query it searched for, or the page it fetched. */
-export function sourceText(entry: ToolEntry): { label: string; url: string | null } {
+/** One page a search returned: what a reader clicks to check a fact. */
+export interface SourceLink {
+	title: string;
+	url: string;
+}
+
+/**
+ * The `Links:` line of a `WebSearch` result, which is where its sources are.
+ *
+ * A search's input holds only the query; the pages it found come back in the
+ * `tool_result`, as `Web search results for query: "…"`, then one line of JSON
+ * objects with a title and a url, then the model's prose. Measured against the
+ * WebSearch results in this machine's transcripts on 2026-09-15. Anything that
+ * does not parse is no sources rather than an error: a search that failed, or a
+ * shape a later Claude Code writes, simply shows its query.
+ */
+export function searchSources(result: string | null): SourceLink[] {
+	const line = /^Links: (\[.*\])\s*$/m.exec(result ?? '');
+	if (!line?.[1]) return [];
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line[1]);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(parsed)) return [];
+	const links: SourceLink[] = [];
+	for (const item of parsed) {
+		if (typeof item !== 'object' || item === null) continue;
+		const { title, url } = item as { title?: unknown; url?: unknown };
+		if (typeof url !== 'string' || !url) continue;
+		links.push({ title: typeof title === 'string' && title ? title : url, url });
+	}
+	return links;
+}
+
+/**
+ * What a source line says: the page a fetch named, or the query a search ran
+ * and the pages it came back with (#95, #91 user story 13).
+ */
+export function sourceText(entry: ToolEntry): {
+	label: string;
+	url: string | null;
+	links: SourceLink[];
+} {
 	const url = typeof entry.input.url === 'string' ? entry.input.url : '';
-	if (url) return { label: url, url };
+	if (url) return { label: url, url, links: [] };
 	const query = typeof entry.input.query === 'string' ? entry.input.query : '';
-	return { label: `Searched the web for “${query}”`, url: null };
+	return {
+		label: `Searched the web for “${query}”`,
+		url: null,
+		links: searchSources(entry.result),
+	};
 }
 
 /**

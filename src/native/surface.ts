@@ -552,16 +552,29 @@ export class NativePaneSurface implements PaneSurface {
 		void MarkdownRenderer.render(this.options.app, report, blockEl, '', component);
 	}
 
-	/** A web search or a fetch: where the turn's facts came from. */
+	/**
+	 * A web search or a fetch: where the turn's facts came from.
+	 *
+	 * A fetch is the one page it asked for. A search is the query it ran and the
+	 * pages it came back with, which live in the result rather than the input
+	 * (#95, `./toolCalls.ts`); a search that returned none shows its query alone.
+	 * External links are Obsidian's to open, so they get no handler of ours.
+	 */
 	private renderSource(turnEl: HTMLElement, entry: ToolEntry): void {
-		const { label, url } = sourceText(entry);
+		const { label, url, links } = sourceText(entry);
 		const el = turnEl.createDiv({ cls: 'herdr-native-source' });
-		if (!url) {
-			el.appendText(label);
+		if (url) {
+			el.createEl('a', { cls: 'external-link', text: label, href: url });
 			return;
 		}
-		// An external link is Obsidian's to open, so it gets no handler of ours.
-		el.createEl('a', { cls: 'external-link', text: label, href: url });
+		el.createDiv({ cls: 'herdr-native-source-query', text: label });
+		for (const link of links) {
+			el.createEl('a', {
+				cls: ['herdr-native-source-link', 'external-link'],
+				text: link.title,
+				href: link.url,
+			});
+		}
 	}
 
 	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */
