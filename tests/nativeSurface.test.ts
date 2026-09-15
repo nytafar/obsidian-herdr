@@ -380,6 +380,43 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 		expect(el.find('herdr-native-report').textContent).toBe('It settles **two** seams.');
 	});
 
+	it('shows nothing for an asynchronous subagent that is still running', async () => {
+		// Between the launch and the completion notification there is no
+		// notification to recognise the call by, and its `tool_result` is the
+		// launch notice: internal metadata that says in so many words not to
+		// quote it (docs/architecture.md, #96). The text below is a real one,
+		// trimmed.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Start the long job', [
+					tool(
+						't1',
+						'Agent',
+						{ description: 'Check the styles' },
+						[
+							'Async agent launched successfully. (This tool result is internal metadata —',
+							'never quote or paste any part of it, including the agentId below, into a',
+							'user-facing reply.)',
+							'agentId: a043ce14b28b68b90 (internal ID - do not mention to user.)',
+							'The agent is working in the background. You will be notified automatically',
+							'when it completes.',
+						].join('\n'),
+					),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.findAll('herdr-native-report')).toEqual([]);
+		expect(MarkdownRenderer.calls).toEqual([]);
+		// The call itself is still in the group, as any other call is.
+		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+	});
+
 	it('renders an asynchronous subagent report once it has been read, and never the launch notice', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);

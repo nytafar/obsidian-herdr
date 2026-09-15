@@ -220,6 +220,22 @@ export function sourceText(entry: ToolEntry): { label: string; url: string | nul
 }
 
 /**
+ * How an async `Agent` call's `tool_result` opens: the launch notice Claude
+ * Code writes when the subagent goes to the background. Measured across every
+ * transcript on this machine on 2026-09-15; the rest of the notice is the
+ * agent id, the output file and instructions not to quote any of it.
+ */
+const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
+
+/**
+ * Whether a tool result is an async subagent's launch notice rather than
+ * anything a reader should see.
+ */
+export function isAsyncLaunchNotice(result: string | null): boolean {
+	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
+}
+
+/**
  * A subagent's report, ready to render, or empty when there is none to show.
  *
  * A synchronous `Agent` call carries its report in the tool result. An async one
@@ -227,10 +243,14 @@ export function sourceText(entry: ToolEntry): { label: string; url: string | nul
  * quote it — and its report is read out of the file its notification named
  * (`docs/architecture.md`, issue #96), so until that read lands there is
  * nothing to show and the notice is never shown at all.
+ *
+ * The notice, not the notification, is what tells the two apart: the
+ * notification arrives only when the subagent finishes, and between the launch
+ * and that moment the notice would otherwise read as the report.
  */
 export function subagentReport(entry: ToolEntry): string {
 	if (toolKind(entry.name) !== 'agent') return '';
-	const report = entry.notification ? entry.report : entry.result;
+	const report = isAsyncLaunchNotice(entry.result) ? entry.report : entry.report ?? entry.result;
 	return report?.trim() ? report : '';
 }
 
