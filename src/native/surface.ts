@@ -945,11 +945,21 @@ export class NativePaneSurface implements PaneSurface {
 	 * Presses Allow for this block when the setting says to, once (#99). The
 	 * kind is checked here as well as where the button is drawn, because this
 	 * is the path with nobody looking at it.
+	 *
+	 * **Never before the transcript has been read.** The model knows the path as
+	 * soon as herdr names the agent session, and the tail reads the file after
+	 * that; in between, a session that is blocked has no turns to scan and the
+	 * card falls back to a permission with no call named. Pressing then would
+	 * send a bare Enter at whatever the dialog really is — auto mode on plan
+	 * approval, the first answer of a question (`docs/architecture.md`) — so a
+	 * model that has delivered nothing gets the card and no Enter.
 	 */
 	private autoAccept(card: WaitingCardModel): void {
 		if (this.autoAccepted !== null) return;
 		if (card.kind !== 'permission') return;
 		if (!this.options.autoAcceptPermissions()) return;
+		const model = this.model;
+		if (!model?.loaded) return;
 		this.autoAccepted = card.toolUseId;
 		void this.allow();
 	}

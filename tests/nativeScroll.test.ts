@@ -34,6 +34,8 @@ import type { App } from 'obsidian';
 class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	path: string | null = '/transcript.jsonl';
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = true;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();

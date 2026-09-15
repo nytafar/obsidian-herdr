@@ -337,6 +337,8 @@ describe('PromptBox: state per agent status', () => {
 class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	path: string | null = null;
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();

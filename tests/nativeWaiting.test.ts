@@ -37,6 +37,8 @@ class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	/** Null is "no transcript yet", which is the startup card's whole condition. */
 	path: string | null = null;
+	/** False until the tail has delivered a line, as the real model's is (#99). */
+	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();
@@ -56,7 +58,18 @@ class FakeModel implements SessionModelView {
 	push(turns: Turn[], changedTurnIds: string[] = turns.map((t) => t.id)): void {
 		this.state = { ...this.state, turns };
 		this.path = this.path ?? '/transcript.jsonl';
+		// Lines have been delivered, which is the whole of what `loaded` says.
+		this.loaded = true;
 		for (const listener of [...this.listeners]) listener({ changedTurnIds, reset: false });
+	}
+
+	/**
+	 * herdr named the session, so the path is known — and nothing has been read
+	 * from it yet. The state a view is in for as long as the first read takes.
+	 */
+	setPath(path: string): void {
+		this.path = path;
+		for (const listener of [...this.listeners]) listener({ changedTurnIds: [], reset: false });
 	}
 }
 
@@ -371,6 +384,32 @@ describe('waiting card: auto-accept permissions (#99)', () => {
 
 			expect(keys.calls).toEqual([]);
 		}
+	});
+
+	it('presses nothing until the transcript has been read, path or no path', async () => {
+		const model = new FakeModel();
+		const { el, keys } = await surfaceOn(model, { autoAccept: true });
+
+		// herdr has named the agent session, so the model knows the file — and the
+		// tail has delivered nothing from it yet. Every call in it is unread, so
+		// the card can only fall back to "waiting for permission", which is the
+		// one card auto-accept presses.
+		model.setPath('/transcript.jsonl');
+		model.setStatus('blocked');
+		await Promise.resolve();
+
+		expect(title(el)).toBe('Claude is waiting for permission');
+		expect(keys.calls).toEqual([]);
+
+		// What the block was all along: plan approval, where a bare Enter switches
+		// the session to auto mode (`docs/architecture.md`).
+		model.push([
+			turn('u1', 'Write a plan', [tool('toolu_01JU', 'ExitPlanMode', { plan: 'Write d.txt.' })]),
+		]);
+		await Promise.resolve();
+
+		expect(title(el)).toBe('Claude is ready to code');
+		expect(keys.calls).toEqual([]);
 	});
 
 	it('presses nothing while the setting is off, which is its default', async () => {

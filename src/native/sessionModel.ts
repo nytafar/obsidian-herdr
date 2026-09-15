@@ -90,6 +90,15 @@ export interface SessionModelView {
 	readonly state: TranscriptState;
 	/** The transcript being shown, or null while the pane has no session yet. */
 	readonly path: string | null;
+	/**
+	 * Whether the transcript's lines have been delivered, which a known path
+	 * does **not** say: the model has the path the moment herdr names the agent
+	 * session, and the tail reads the file afterwards. Until then the state is
+	 * empty for want of reading, not because the session is empty, and anything
+	 * that would act on what the state does not hold — auto-accept above all
+	 * (#99) — must wait for this.
+	 */
+	readonly loaded: boolean;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
@@ -227,6 +236,8 @@ export class SessionModel implements SessionModelView {
 	private status: AgentStatus = 'unknown';
 	/** The tail of the file being shown, closed on rotation and on release. */
 	private stream: TranscriptStream | null = null;
+	/** Whether the current tail has delivered anything; see {@link loaded}. */
+	private delivered = false;
 	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
 	/**
@@ -269,6 +280,15 @@ export class SessionModel implements SessionModelView {
 	/** The file being shown, or null while the pane has no session yet. */
 	get path(): string | null {
 		return this.currentPath;
+	}
+
+	/**
+	 * Whether the tail has delivered a line of the file being shown. False for a
+	 * pane with no session, and false again from a rotation until the new file's
+	 * first lines land.
+	 */
+	get loaded(): boolean {
+		return this.delivered;
 	}
 
 	/** herdr's `agent_session` for the pane, empty when there is none yet. */
@@ -366,6 +386,8 @@ export class SessionModel implements SessionModelView {
 		this.stream = null;
 		this.currentPath = path;
 		this.transcript = emptyTranscript();
+		// Nothing of the new file has been read, whatever was read of the old one.
+		this.delivered = false;
 		this.generation++;
 		this.readingReports.clear();
 		// Said now, not when the new file's first lines land: a tail delivers
@@ -380,6 +402,7 @@ export class SessionModel implements SessionModelView {
 
 	/** A batch of whole lines from the tail. */
 	private onLines(lines: string[]): void {
+		this.delivered = true;
 		const { state, changedTurnIds } = reduce(this.transcript, lines);
 		this.transcript = state;
 		this.emit({ changedTurnIds, reset: false });
