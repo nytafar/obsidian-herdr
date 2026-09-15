@@ -98,6 +98,38 @@ export class ItemView extends View {
 	}
 }
 
+/**
+ * Stand-in for the base class of the prompt box's autocomplete (#98). Only
+ * loadable, like most of this fixture: the popover is Obsidian's own and what
+ * it needs — a document, a scope, a focused field — no test here has.
+ */
+export class PopoverSuggest<T> {
+	constructor(
+		public app: unknown,
+		public scope?: unknown,
+	) {}
+	open(): void {}
+	close(): void {}
+	selectSuggestion(_value: T): void {}
+}
+
+export class AbstractInputSuggest<T> extends PopoverSuggest<T> {
+	limit = 100;
+	constructor(
+		app: unknown,
+		public textInputEl: unknown,
+	) {
+		super(app);
+	}
+	getValue(): string {
+		return '';
+	}
+	setValue(_value: string): void {}
+	onSelect(_callback: (value: T, evt: unknown) => unknown): this {
+		return this;
+	}
+}
+
 export class Modal {
 	constructor(public app: unknown) {}
 }

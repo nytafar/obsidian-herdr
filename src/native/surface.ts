@@ -169,6 +169,11 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
+	/**
+	 * Called with the prompt box's text area once it exists, so the view can
+	 * hang an autocomplete on it (#98). Left out by tests that only render.
+	 */
+	onPromptInput?: (inputEl: HTMLTextAreaElement) => void;
 }
 
 /**
@@ -269,6 +274,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
 			sender: this.options.sender,
+			onInput: this.options.onPromptInput,
 		});
 		this.promptBox.mount(root);
 		this.bind();

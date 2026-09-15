@@ -469,6 +469,22 @@
 	margin-right: auto;
 }
 
+/*
+ * One row of the prompt box's autocomplete (#98). The popover around it is
+ * Obsidian's own; these two lines are what the plugin puts inside a row.
+ */
+.herdr-prompt-suggestion-name {
+	color: var(--text-normal);
+}
+
+.herdr-prompt-suggestion-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Thinking and tool calls, until the tickets that give them a shape. */
 .herdr-native-aside {
 	color: var(--text-faint);

@@ -458,3 +458,28 @@ what the facts say it is.
    `agent_session` appeared and the tail started.
 7. Stop herdr and press send: a notice says the prompt could not be sent and the
    text stays in the box.
+
+## Smoking the prompt autocomplete (#98)
+
+The catalog is tested against a real temp tree with all three scopes and
+symlinks (`tests/commandCatalog.test.ts`) and the form a mention goes out in is
+a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
+`AbstractInputSuggest` draws it, and only the app has one.
+
+1. In a native tab, type `/` as the first character: the list shows this pane's
+   commands and skills with their descriptions and argument hints, project
+   entries winning a name over user ones and user over plugin. Compare with
+   `ls ~/.claude/commands ~/.claude/skills <the pane's repo>/.claude/commands`.
+2. Pick one. The prompt reads `/name ` and sending it runs the command rather
+   than typing it; `/help` opens the help overlay (`send-keys <pane> esc`
+   closes it).
+3. A symlinked skill (`~/.claude/skills` is half symlinks here) is offered like
+   any other, under the link's own name.
+4. Type `@` after a space: vault files are offered. Pick one inside the pane's
+   cwd and the prompt gets a relative path; pick one outside it and the prompt
+   gets an absolute path. A file whose path has a space in it comes out in
+   double quotes.
+5. Send a prompt with a mention in it and check in the terminal that Claude
+   resolved the file rather than treating the text as prose.
+6. `/` in the middle of a prompt, and `@` glued to the end of a word, offer
+   nothing: neither is a trigger there.
