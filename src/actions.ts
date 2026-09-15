@@ -87,8 +87,13 @@ export interface ActionHost {
 	vaultName(): string;
 	/** Show a message to the user. */
 	notice(message: string): void;
-	/** Opens the terminal view for a pane (a stub until T9). */
-	openTerminal(paneId: string): Promise<void>;
+	/**
+	 * Opens the terminal view for a pane. `cwd` is the pane's working directory
+	 * for a caller that knows it before the scope does — {@link
+	 * HerdrActions.startAgentHere} creates the pane itself — so the terminal is
+	 * placed beside the note the same way attaching to that folder is (#28).
+	 */
+	openTerminal(paneId: string, cwd?: string): Promise<void>;
 	/**
 	 * Detaches every open terminal leaf for `paneId` on `endpointId` (issue #66).
 	 * Called after a successful `pane.close` from the row menu, so the tab
@@ -462,7 +467,10 @@ export class HerdrActions {
 			try {
 				await this.host.request('agent.start', { name, kind, pane_id: paneId });
 				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
-				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId);
+				// The folder is this pane's cwd, and the scope cannot know that yet:
+				// it admits a pane on `pane.agent_detected` plus a `pane.list`, both
+				// still in flight here (issue #28).
+				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
 				return { tabId, paneId, name, kind };
 			} catch (error) {
 				if (error instanceof HerdrError) {
