@@ -133,6 +133,15 @@ export function effectiveRenderMode(input: {
 export class PaneSurfaceHolder {
 	private surface: PaneSurface | null = null;
 	private mounted: PaneSurfaceKind | null = null;
+	/**
+	 * Which request the holder is serving. Every `show` takes the next number
+	 * and gives up if another `show` or a `release` has taken one since: a
+	 * detach can take a while, and what the tab wanted when it started is not
+	 * necessarily what it wants when the detach comes back.
+	 */
+	private request = 0;
+	/** The detach in flight, so the next mount waits for it rather than racing it. */
+	private detaching: Promise<void> | null = null;
 
 	constructor(private readonly create: (kind: PaneSurfaceKind) => PaneSurface) {}
 
@@ -148,12 +157,19 @@ export class PaneSurfaceHolder {
 
 	/**
 	 * Makes `kind` the mounted surface on `hostEl`, building and attaching it if
-	 * it is not the one already there. Returns the surface either way.
+	 * it is not the one already there. Returns the surface, or null when the
+	 * request was overtaken while the old surface was detaching — by the view
+	 * closing, or by another render mode — in which case nothing is mounted and
+	 * nothing was built.
 	 */
-	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface> {
+	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface | null> {
 		const current = this.surface;
 		if (current && this.mounted === kind) return current;
-		await this.release();
+		const request = ++this.request;
+		await this.detachCurrent();
+		// A surface attached now would outlive the view that asked for it: its
+		// model subscription and its tail would stay behind `onClose` (#92, #94).
+		if (request !== this.request) return null;
 		const surface = this.create(kind);
 		this.surface = surface;
 		this.mounted = kind;
@@ -163,11 +179,26 @@ export class PaneSurfaceHolder {
 
 	/** Detaches the mounted surface and forgets it. Idempotent; used by `onClose`. */
 	async release(): Promise<void> {
+		this.request++;
+		await this.detachCurrent();
+	}
+
+	/**
+	 * Gives the mounted surface back, and waits for a detach already in flight
+	 * when there is no surface left to give: the old one must be gone before the
+	 * next is attached, however many switches overlapped.
+	 */
+	private async detachCurrent(): Promise<void> {
 		const surface = this.surface;
-		if (!surface) return;
-		this.surface = null;
-		this.mounted = null;
-		await surface.detach();
+		if (surface) {
+			this.surface = null;
+			this.mounted = null;
+			const detaching = surface.detach().finally(() => {
+				if (this.detaching === detaching) this.detaching = null;
+			});
+			this.detaching = detaching;
+		}
+		await this.detaching;
 	}
 }
 
