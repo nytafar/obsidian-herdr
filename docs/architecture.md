@@ -59,6 +59,26 @@ their own.
   down: membership in the scoped list comes from `session.snapshot`, from the
   poll above and from transitions, and `pane.updated` only refreshes a pane the
   list already holds (`WorkspaceScope.upsert`).
+- **A replayed transition raises corpses too, and whether one ever comes down
+  is luck.** Measured again on 2026-09-15 on workspace `w2`: opening a stream
+  replayed `pane.moved` for `w2:pK` — the whole `PaneInfo`, `agent: "claude"`,
+  `agent_status: "idle"`, an `agent_session` — for a pane `pane.list` does not
+  carry and whose tab had been closed. `pane.moved` and `pane.created` are
+  transitions, so the scope admitted it, exactly as a live move should. What
+  took it down again, half a second later, was the replayed `tab.closed` for its
+  old tab happening to arrive after it; in the same capture another pane's
+  `tab.closed` arrived *before* its frames, and that one would have stayed on
+  screen for good. That is the ghost row of issue #90: a pane herdr does not
+  have, shown as working, that nothing on the stream will ever remove.
+  So `pane.list` decides who is in the list, not only what they are doing: a row
+  the answer has stopped carrying is taken down after **two consecutive**
+  answers without it (`POLL_MISSES_BEFORE_REMOVAL`, `WorkspaceScope.reap`),
+  counted only for rows that were already there when the question went out —
+  a pane admitted while the answer was in flight is missing from it through no
+  fault of its own. It leaves as an ordinary `removed` transition, so nothing
+  downstream learns that a poll was involved. Verified against the live session:
+  a corpse raised from a replayed `pane.moved` survived one answer and was gone
+  on the second, about four seconds.
 - **Closing a tab announces the tab, not its panes**: `tab.closed` and no
   `pane.closed` for what was in it. Closing a pane does emit `pane.closed`.
   Nor is the agent in such a pane released: no `pane.agent_detected` with
