@@ -19,7 +19,10 @@
  * tab close, a move, a release — and never by a raw `pane_updated` frame, which
  * only refreshes a pane already in it. herdr replays old frames to every new
  * subscriber, corpses included, so a row raised from one could outlive its pane
- * with nothing left to take it down (`docs/architecture.md`, issue #90).
+ * with nothing left to take it down (`docs/architecture.md`, issue #90). The
+ * poll is what takes it down: a row `pane.list` has stopped carrying leaves
+ * after two consecutive answers without it, which is the same `removed`
+ * transition as any other departure and not a silent deletion.
  *
  * No Obsidian imports and no socket: the vault is passed in as a path plus a
  * name, and the one call this module needs to make (`ScopeOptions.lookupPanes`)
@@ -53,6 +56,13 @@ export const SCOPE_SUBSCRIPTIONS = [
 
 /** How the scoped workspace was picked, for the settings tab and the log. */
 export type ResolutionMethod = 'setting' | 'label' | 'cwd' | 'none';
+
+/**
+ * Consecutive `pane.list` answers without a pane before its row comes down
+ * (issue #90). Two, so the poll is a second opinion on itself and no single
+ * odd answer empties a list; at `PANE_REFRESH_MS` that is four seconds.
+ */
+export const POLL_MISSES_BEFORE_REMOVAL = 2;
 
 /** The subset of `PaneInfo` the plugin renders and reacts to. */
 export interface PaneState {
@@ -314,6 +324,13 @@ export class WorkspaceScope {
 	private pendingLookups = new Map<string, string>();
 	/** The refresh in flight, so a tick that lands on a slow one asks for nothing. */
 	private refreshing: Promise<void> | null = null;
+	/**
+	 * pane id → consecutive `pane.list` answers that did not name it, for rows
+	 * the question had already been asked about ({@link reap}). Entries live
+	 * only while a row is missing: the answer that names it again deletes its
+	 * count, and so does the removal it ends in.
+	 */
+	private pollMisses = new Map<string, number>();
 	/** Counter behind `PaneState.statusChangedSeq`; only ever increases. */
 	private statusSeq = 0;
 	private resolvedId: string | null = null;
@@ -441,26 +458,46 @@ export class WorkspaceScope {
 	 * lives. Both are what a view then shows.
 	 *
 	 * Nothing about the poll reaches a view directly: `upsert` diffs, so a
-	 * refresh that finds nothing emits nothing and the N4 rule holds. Removal is
-	 * left to the events that do arrive (`pane.closed`, `pane.exited`,
-	 * `tab.closed`, a released detection), because a pane created while the
-	 * question was out is missing from the answer through no fault of its own.
+	 * refresh that finds nothing emits nothing and the N4 rule holds.
+	 *
+	 * The answer also decides who is still in the list, which is the snapshot
+	 * diff issue #90 asked for. Nothing on the stream can be relied on to take a
+	 * row down: measured on 2026-09-15 against herdr 0.8.2, opening a stream
+	 * replayed `pane.moved` for `w2:pK` — whole `PaneInfo`, `agent: "claude"` —
+	 * for a pane whose tab had been closed and which `pane.list` does not carry,
+	 * and nothing later in that replay mentioned it again. Whether such a row is
+	 * ever removed comes down to where the replay happens to put the
+	 * `tab.closed` for its tab, which in the same capture landed before one
+	 * pane's frames and after another's. So a row herdr does not list goes, and
+	 * it goes as a transition (`removed`), like every other departure.
+	 *
+	 * Two things keep that from removing a live row (see {@link reap}): it takes
+	 * two consecutive answers, four seconds at `PANE_REFRESH_MS`, and only a row
+	 * the question was actually asked about counts — a pane admitted while the
+	 * answer was in flight is missing from it through no fault of its own.
 	 */
 	refresh(): Promise<void> {
 		if (this.refreshing) return this.refreshing;
 		const workspaceId = this.resolvedId;
 		const lookup = this.options.lookupPanes;
 		if (workspaceId === null || !lookup) return Promise.resolve();
+		// The rows this question is about, read before it goes out.
+		const asked = new Set(this.panes.keys());
 		this.refreshing = lookup(workspaceId)
 			.then(
 				(panes) => {
 					// The answer describes a workspace this vault no longer shows.
 					if (this.resolvedId !== workspaceId) return;
+					const listed = new Set<string>();
 					for (const pane of panes) {
 						if (pane.workspace_id !== workspaceId) continue;
+						listed.add(pane.pane_id);
 						this.inventory.set(pane.pane_id, pane);
+						// A pane the answer holds without an agent leaves here and now:
+						// that is herdr saying the agent is gone, not saying nothing.
 						this.upsert(pane);
 					}
+					this.reap(asked, listed);
 				},
 				// A failed poll is the state staying as it was until the next tick;
 				// the connection reports its own trouble.
@@ -470,6 +507,32 @@ export class WorkspaceScope {
 				this.refreshing = null;
 			});
 		return this.refreshing;
+	}
+
+	/**
+	 * Takes down the rows `pane.list` no longer has, once it has said so twice.
+	 *
+	 * @param asked rows the question went out for; anything admitted since is
+	 *   not judged by this answer at all, which is the grace a just-created pane
+	 *   needs and the reason nothing flickers once a tick.
+	 * @param listed panes the answer named for the scoped workspace.
+	 */
+	private reap(asked: ReadonlySet<string>, listed: ReadonlySet<string>): void {
+		for (const paneId of [...this.panes.keys()]) {
+			if (listed.has(paneId)) {
+				// One miss in a row is not two: a pane back in the answer starts over.
+				this.pollMisses.delete(paneId);
+				continue;
+			}
+			if (!asked.has(paneId)) continue;
+			const misses = (this.pollMisses.get(paneId) ?? 0) + 1;
+			if (misses < POLL_MISSES_BEFORE_REMOVAL) {
+				this.pollMisses.set(paneId, misses);
+				continue;
+			}
+			// The inventory too, or the next replayed frame raises it again.
+			this.forget(paneId);
+		}
 	}
 
 	/**
@@ -505,6 +568,7 @@ export class WorkspaceScope {
 			const current = next.get(paneId);
 			if (!current) {
 				this.panes.delete(paneId);
+				this.pollMisses.delete(paneId);
 				this.emit('removed', previous);
 			}
 		}
@@ -789,6 +853,7 @@ export class WorkspaceScope {
 		// Before the early return below, because the pane a detection lookup is out
 		// for is by definition not in the map yet (issue #75).
 		this.pendingLookups.delete(paneId);
+		this.pollMisses.delete(paneId);
 		const previous = this.panes.get(paneId);
 		if (!previous) return;
 		this.panes.delete(paneId);

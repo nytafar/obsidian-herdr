@@ -1163,11 +1163,11 @@ describe('refresh re-reads the scoped panes (the status herdr never announces)',
 		expect(scope.get('w4:p2')).toBeUndefined();
 	});
 
-	it('leaves a pane the answer does not mention alone', async () => {
-		// Removal stays with the events that do arrive (`pane.closed`,
-		// `pane.exited`, a released detection). A pane created while the question
-		// was out is missing from the answer through no fault of its own, and
-		// dropping it here would make it flicker once a second.
+	it('leaves a pane one answer does not mention alone', async () => {
+		// One silence is not an answer: a pane created while the question was out
+		// is missing from it through no fault of its own, and dropping a row on a
+		// single miss would make it flicker once a tick. Two takes it down; that
+		// is the block below.
 		const lookup = lookingAt([[]]);
 		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
 		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
@@ -1207,5 +1207,122 @@ describe('refresh re-reads the scoped panes (the status herdr never announces)',
 		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1', agent_status: 'working' })]);
 		await expect(scope.refresh()).resolves.toBeUndefined();
 		expect(scope.get('w4:p1')?.agentStatus).toBe('working');
+	});
+});
+
+/**
+ * The poll as the snapshot diff issue #90 asked for.
+ *
+ * Nothing on the stream can be trusted to take a row down. Measured on
+ * 2026-09-15 against herdr 0.8.2: opening a stream replayed `pane.moved` for
+ * `w2:pK`, whole `PaneInfo` and `agent: "claude"` and all, for a pane whose tab
+ * had been closed and which `pane.list` does not carry — a ghost row, shown as
+ * working, that no later event ever removed. Whether one is taken down at all
+ * depends on where the replay happens to put the `tab.closed` for its tab,
+ * which in the same capture came *before* the pane's frames for one pane and
+ * after them for another.
+ *
+ * So membership is decided by the question, not by the stream. Two consecutive
+ * answers without the pane, which is four seconds at `PANE_REFRESH_MS`, and
+ * only for a row the question was asked about: a pane admitted while the
+ * question was out is not in the answer through no fault of its own, and is
+ * never counted against.
+ */
+describe('refresh takes down what herdr no longer lists (#90, ghost rows)', () => {
+	/** A lookup a test settles by hand, one queued answer per call. */
+	function answering(answers: PaneInfo[][]): (workspaceId: string) => Promise<PaneInfo[]> {
+		let call = 0;
+		return () => Promise.resolve(answers[call++] ?? []);
+	}
+
+	function primed(answers: PaneInfo[][]): { scope: WorkspaceScope; rec: Recorded } {
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: answering(answers) });
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p9' })],
+		);
+		return { scope, rec: record(scope) };
+	}
+
+	it('removes a row absent from two consecutive answers', async () => {
+		const live = [pane({ pane_id: 'w4:p1' })];
+		const { scope, rec } = primed([live, live]);
+
+		await scope.refresh();
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.get('w4:p9')).toBeDefined();
+
+		await scope.refresh();
+
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p9']);
+		expect(scope.get('w4:p9')).toBeUndefined();
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+	});
+
+	it('forgets the misses when the pane comes back', async () => {
+		const both = [pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p9' })];
+		const { scope, rec } = primed([[pane({ pane_id: 'w4:p1' })], both, [pane({ pane_id: 'w4:p1' })]]);
+
+		await scope.refresh();
+		await scope.refresh();
+		await scope.refresh();
+
+		// Miss, hit, miss: one in a row is never two in a row.
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.get('w4:p9')).toBeDefined();
+	});
+
+	it('never counts a pane admitted while the question was out', async () => {
+		// The grace, exactly: the answer describes the panes as they were when
+		// the question went out, so a row raised after that cannot be judged by
+		// it, however many such answers arrive.
+		const lookup = (): Promise<PaneInfo[]> => Promise.resolve([pane({ pane_id: 'w4:p1' })]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		const rec = record(scope);
+
+		const first = scope.refresh();
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:pN' }) }));
+		await first;
+		const second = scope.refresh();
+		await second;
+
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.get('w4:pN')).toBeDefined();
+
+		// Once it has been asked about twice and still not answered for, it goes.
+		await scope.refresh();
+		await scope.refresh();
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:pN']);
+	});
+
+	it('leaves a pane the answer still holds to the events that release it', async () => {
+		// An agent that stops is announced (`docs/architecture.md`), and the
+		// answer carrying the pane without an agent is the same news: that path
+		// already drops the row on one answer, and the counting below is only for
+		// a pane herdr does not mention at all.
+		const released = [pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p9', agent: null })];
+		const { scope, rec } = primed([released]);
+
+		await scope.refresh();
+
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p9']);
+	});
+
+	it('stays gone under the frames that keep arriving for it', async () => {
+		const live = [pane({ pane_id: 'w4:p1' })];
+		const { scope, rec } = primed([live, live, live]);
+
+		await scope.refresh();
+		await scope.refresh();
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p9']);
+
+		// herdr goes on replaying the corpse; a raw frame may not raise a row.
+		scope.ingest(event('pane_updated', { pane: pane({ pane_id: 'w4:p9' }) }));
+		await scope.refresh();
+
+		expect(rec.added).toHaveLength(0);
+		expect(scope.get('w4:p9')).toBeUndefined();
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
 	});
 });
