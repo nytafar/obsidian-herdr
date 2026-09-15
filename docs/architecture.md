@@ -160,3 +160,31 @@ scratch pane created with `tab create` and `agent start`.
   wrapped to int32, `Math.abs(...).toString(36)`. The cwd is the session's, not
   the process's: an agent started from one directory and working in another
   writes under the first.
+- **What a bare Enter selects on each of Claude's blocking dialogs.** Measured
+  2026-09-15 against herdr 0.8.2 and Claude Code 2.1.266, in a scratch pane
+  started with `--permission-mode default` (this machine's Claude defaults to
+  auto mode, which shows no permission dialog at all, so Bash `echo` and other
+  allowlisted commands never block either). The cursor sits on the first option
+  in every variant, and `agent send-keys <pane> Enter` picks it:
+  - **Workspace trust prompt** (startup, `launch_pending`): first option is
+    "No, exit". Enter quits Claude. Never send a bare Enter here; `Down Enter`
+    trusts the folder.
+  - **Write and Edit permission** ("Do you want to create b.txt?"): options
+    "1. Yes", "2. Yes, and switch to accept edits …", "3. No". Enter allowed
+    the write and the status went `blocked` → `done`.
+  - **Bash permission** ("Do you want to proceed?"): "1. Yes", "2. Yes, and
+    don't ask again for … in <cwd>", "3. Yes, and switch to auto mode",
+    "4. No". Enter ran the command once, without changing any mode.
+  - **`AskUserQuestion`**: the options are the question's own answers,
+    "1. Tea", "2. Coffee", "3. Type something.", "4. Chat about this". Enter
+    chose the first answer. Answering a question is never "Allow".
+  - **Plan approval** (`ExitPlanMode`, "Ready to code?"): "1. Yes, and use
+    auto mode", "2. Yes, manually approve edits", "3. Tell Claude what to
+    change". Enter switches the session to auto mode, a lasting side effect.
+    Never send a bare Enter here.
+  So Allow is safe to wire as a bare Enter for the permission kind only (tool
+  `Bash`, `Write`, `Edit` and the like, recognised as the last `tool_use` with
+  no result), and must not be offered for questions, plan approval or startup.
+  The transcript shows a permission block as that dangling `tool_use`; a
+  question as a dangling `AskUserQuestion` call; plan approval as a dangling
+  `ExitPlanMode` call. `agent_status` is `blocked` in all of them.
