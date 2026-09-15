@@ -86,16 +86,23 @@ function leafOf(name: string): WorkspaceLeaf {
 function panelOn(
 	models: FakeModels,
 	facts: Map<WorkspaceLeaf, ActiveLeafFacts>,
-): { panel: TocPanel; el: FakeElement; scrollToTurn: ReturnType<typeof vi.fn> } {
+): {
+	panel: TocPanel;
+	el: FakeElement;
+	scrollToTurn: ReturnType<typeof vi.fn>;
+	scrollToHeading: ReturnType<typeof vi.fn>;
+} {
 	const { el, host } = hostEl();
 	const scrollToTurn = vi.fn();
+	const scrollToHeading = vi.fn();
 	const panel = new TocPanel({
 		models,
 		facts: (leaf) => (leaf ? (facts.get(leaf) ?? null) : null),
 		scrollToTurn,
+		scrollToHeading,
 	});
 	panel.mount(host);
-	return { panel, el, scrollToTurn };
+	return { panel, el, scrollToTurn, scrollToHeading };
 }
 
 /** What every clickable line in the list says, in order. */
@@ -261,7 +268,7 @@ describe('TocPanel', () => {
 		const models = new FakeModels();
 		const native = leafOf('native');
 		const own = leafOf('toc');
-		const { panel, el, scrollToTurn } = panelOn(
+		const { panel, el, scrollToHeading } = panelOn(
 			models,
 			new Map([
 				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
@@ -276,9 +283,39 @@ describe('TocPanel', () => {
 		expect(models.released).toEqual([]);
 		expect(items(el)).toEqual(['First prompt', 'A heading']);
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
-		// A heading scrolls to the turn it belongs to (#100): the view's own seam
-		// is `scrollToTurn`, which also switches following off.
-		expect(scrollToTurn).toHaveBeenCalledWith(native, 'w4:p1', 'u1');
+		// The list is still the one the native leaf put there, so the click goes
+		// to that leaf and not to the TOC's own.
+		expect(scrollToHeading).toHaveBeenCalledWith(native, 'w4:p1', 'u1', 0);
+	});
+
+	it('scrolls to the heading a click names, by its place in the turn (#118)', () => {
+		const models = new FakeModels();
+		const leaf = leafOf('native');
+		const { panel, el, scrollToTurn, scrollToHeading } = panelOn(
+			models,
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+		);
+		panel.activeLeafChanged(leaf);
+		models.model('w4:p1').push([
+			turn('u1', 'First', [
+				{ level: 1, text: 'One' },
+				{ level: 2, text: 'Two' },
+			]),
+			turn('u2', 'Second', [{ level: 2, text: 'Three' }]),
+		]);
+
+		// Rows: First, One, Two, Second, Three.
+		el.findAll('herdr-toc-item')[2]?.dispatch('click');
+		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'w4:p1', 'u1', 1);
+
+		// The index is within the turn, so the first heading of the next turn is
+		// its own index 0 and not the fourth heading of the list.
+		el.findAll('herdr-toc-item')[4]?.dispatch('click');
+		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2', 0);
+
+		// A prompt row is still the turn's seam, headings or no headings.
+		el.findAll('herdr-toc-item')[3]?.dispatch('click');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
 	});
 
 	it('scrolls the view to the turn a click names', () => {

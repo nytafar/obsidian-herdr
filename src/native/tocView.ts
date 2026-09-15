@@ -4,8 +4,9 @@
  * A right-sidebar view listing the turns of the **active native view**, each
  * turn's headings nested beneath it, the way Obsidian's own outline lists a
  * note. Headings are computed in the reducer (`turnHeadings`, #100), so nothing
- * here parses Markdown; a click scrolls the view through its one seam,
- * `NativePaneSurface.scrollToTurn`, which also switches following off (#106).
+ * here parses Markdown; a click scrolls the view through its seams,
+ * `NativePaneSurface.scrollToTurn` for a prompt and `scrollToHeading` for a
+ * heading (#118), both of which switch following off (#106).
  *
  * The view holds no reference to a native view: it follows the pane, through
  * the same reference-counted session model the surface subscribes to, and finds
@@ -68,6 +69,18 @@ export interface TocPanelOptions {
 	 * rather than held, and the view around the panel resolves it at the click.
 	 */
 	scrollToTurn(leaf: WorkspaceLeaf | null, paneId: string, turnId: string): void;
+	/**
+	 * The same for one heading of a turn's prose (#118). The index is the
+	 * heading's place in that turn's `headings`, which is the order the reducer
+	 * computes and this list draws; the surface pairs it with the elements
+	 * Obsidian rendered, and falls back to the turn when they cannot be paired.
+	 */
+	scrollToHeading(
+		leaf: WorkspaceLeaf | null,
+		paneId: string,
+		turnId: string,
+		index: number,
+	): void;
 }
 
 /**
@@ -175,20 +188,23 @@ export class TocPanel {
 	private renderTurn(listEl: HTMLElement, turn: Turn): void {
 		const turnEl = listEl.createDiv({ cls: 'herdr-toc-turn' });
 		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], firstLine(turn.prompt), turn.id);
-		for (const heading of turn.headings) {
+		turn.headings.forEach((heading, index) => {
 			this.renderRow(
 				turnEl,
 				['herdr-toc-item', 'herdr-toc-heading', `mod-level-${heading.level}`],
 				heading.text,
 				turn.id,
+				// The heading's place in *this turn*, which is how the surface
+				// addresses it (#118), not its place in the whole list.
+				index,
 			);
-		}
+		});
 	}
 
 	/**
-	 * One clickable line. A heading scrolls to the turn it belongs to: the
-	 * surface's seam is the turn, and a heading inside Obsidian's rendered
-	 * Markdown carries no id of this plugin's making.
+	 * One clickable line. A prompt row scrolls to its turn; a heading row
+	 * scrolls to the heading itself (#118), by its place in the turn, which the
+	 * surface pairs with the elements it marked after Obsidian rendered them.
 	 *
 	 * A button in everything but tag: `role` and `tabindex` put it in the tab
 	 * order and tell a screen reader what it is, and enter and space activate
@@ -197,20 +213,31 @@ export class TocPanel {
 	 * `button` would need its own rules to stop being one (Obsidian
 	 * guidelines: no inline styles, keyboard and screen reader support).
 	 */
-	private renderRow(parentEl: HTMLElement, cls: string[], text: string, turnId: string): void {
+	private renderRow(
+		parentEl: HTMLElement,
+		cls: string[],
+		text: string,
+		turnId: string,
+		heading?: number,
+	): void {
 		const rowEl = parentEl.createDiv({ cls, text, attr: { role: 'button', tabindex: '0' } });
-		this.component.registerDomEvent(rowEl, 'click', () => this.activate(turnId));
+		this.component.registerDomEvent(rowEl, 'click', () => this.activate(turnId, heading));
 		this.component.registerDomEvent(rowEl, 'keydown', (event: KeyboardEvent) => {
 			if (event.key !== 'Enter' && event.key !== ' ') return;
 			// Space would scroll the list under the reader otherwise.
 			event.preventDefault();
-			this.activate(turnId);
+			this.activate(turnId, heading);
 		});
 	}
 
 	/** What a click or an enter on a row does: scroll the leaf the list is about. */
-	private activate(turnId: string): void {
-		if (this.paneId) this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
+	private activate(turnId: string, heading?: number): void {
+		if (!this.paneId) return;
+		if (heading === undefined) {
+			this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
+			return;
+		}
+		this.options.scrollToHeading(this.followedLeaf, this.paneId, turnId, heading);
 	}
 }
 
@@ -230,7 +257,10 @@ export class TocView extends ItemView {
 		this.panel = new TocPanel({
 			models: this.plugin.sessionModels,
 			facts: (candidate) => this.leafFacts(candidate),
-			scrollToTurn: (leaf, paneId, turnId) => this.scrollToTurn(leaf, paneId, turnId),
+			scrollToTurn: (leaf, paneId, turnId) =>
+				this.scrollNative(leaf, paneId, (view) => view.scrollNativeToTurn(turnId)),
+			scrollToHeading: (leaf, paneId, turnId, index) =>
+				this.scrollNative(leaf, paneId, (view) => view.scrollNativeToHeading(turnId, index)),
 		});
 	}
 
@@ -278,7 +308,8 @@ export class TocView extends ItemView {
 	}
 
 	/**
-	 * Scrolls the native view the list is about.
+	 * Scrolls the native view the list is about, however the click asked for it
+	 * (a turn, or one heading inside it).
 	 *
 	 * **The leaf the list follows**, not the first leaf showing that pane: two
 	 * tabs can be on one pane (ADR-0003), and scrolling the other one moves
@@ -288,13 +319,17 @@ export class TocView extends ItemView {
 	 * the list was drawn simply does not match. It falls back to any leaf on the
 	 * pane, which is what a tab closed and reopened since then looks like.
 	 */
-	private scrollToTurn(followed: WorkspaceLeaf | null, paneId: string, turnId: string): void {
+	private scrollNative(
+		followed: WorkspaceLeaf | null,
+		paneId: string,
+		move: (view: TerminalView) => void,
+	): void {
 		const showing = this.app.workspace
 			.getLeavesOfType(TERMINAL_VIEW_TYPE)
 			.filter((leaf) => leaf.view instanceof TerminalView && leaf.view.nativePaneId() === paneId);
 		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
 		const view = leaf?.view;
-		if (view instanceof TerminalView) view.scrollNativeToTurn(turnId);
+		if (view instanceof TerminalView) move(view);
 	}
 }
 

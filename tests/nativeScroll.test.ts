@@ -425,3 +425,123 @@ describe('NativePaneSurface: scrolling to one turn', () => {
 		expect(turnsEl(el).scrollTop).toBe(1000);
 	});
 });
+
+/**
+ * A turn whose prose is `text`, with the headings the reducer would have found
+ * in it (#118). The two are given separately on purpose: the pairing between
+ * the reducer's list and the rendered elements is what these cases are about,
+ * and a case that wants them to disagree says so.
+ */
+function proseTurn(id: string, text: string, headings: Turn['headings']): Turn {
+	return {
+		id,
+		prompt: `prompt ${id}`,
+		entries: [{ kind: 'text', messageId: `m-${id}`, text }],
+		headings,
+	};
+}
+
+/** The headings the surface marked inside an element, in document order. */
+function markedHeadings(el: FakeElement): FakeElement[] {
+	return el.querySelectorAll('h1, h2, h3, h4, h5, h6');
+}
+
+describe('NativePaneSurface: scrolling to one heading (#118)', () => {
+	it('marks the rendered headings and brings the one the list names into view', async () => {
+		const model = new FakeModel();
+		model.state = {
+			...model.state,
+			turns: [
+				proseTurn('u1', '# One\nbody\n## Two', [
+					{ level: 1, text: 'One' },
+					{ level: 2, text: 'Two' },
+				]),
+			],
+		};
+		const { surface, el } = await surfaceOn(model);
+		await settle();
+
+		const headings = markedHeadings(el.find('herdr-native-turn'));
+		expect(headings.map((heading) => heading.attrs['data-herdr-turn'])).toEqual(['u1', 'u1']);
+		expect(headings.map((heading) => heading.attrs['data-herdr-heading'])).toEqual(['0', '1']);
+
+		surface.scrollToHeading('u1', 1);
+
+		expect(headings[1]?.scrolledIntoView).toEqual([{ block: 'start' }]);
+		// Following is off afterwards, as it is for a turn (#106): the view stays
+		// where the reader sent it when the next turn lands.
+		laidOut(el, 1400);
+		model.push([...model.state.turns, turn('u2', 'next')], {
+			changedTurnIds: ['u2'],
+			reset: false,
+		});
+		expect(turnsEl(el).scrollTop).toBe(600);
+	});
+
+	it('counts only the assistant prose, not a thought', async () => {
+		const model = new FakeModel();
+		model.state = {
+			...model.state,
+			turns: [
+				{
+					id: 'u1',
+					prompt: 'prompt',
+					// The reducer's `turnHeadings` reads `text` entries only, so a
+					// hash inside a thought must not shift the prose's indices.
+					entries: [
+						{ kind: 'thinking', messageId: 'm0', text: '# Not in the list' },
+						{ kind: 'text', messageId: 'm1', text: '## Real' },
+					],
+					headings: [{ level: 2, text: 'Real' }],
+				},
+			],
+		};
+		const { surface, el } = await surfaceOn(model);
+		await settle();
+
+		surface.scrollToHeading('u1', 0);
+
+		const marked = markedHeadings(el.find('herdr-native-block'));
+		expect(marked.map((heading) => heading.attrs['data-herdr-heading'])).toEqual(['0']);
+		expect(marked[0]?.scrolledIntoView).toEqual([{ block: 'start' }]);
+		expect(el.find('herdr-native-turn').scrolledIntoView).toEqual([]);
+	});
+
+	it('falls back to the turn when the counts disagree', async () => {
+		const model = new FakeModel();
+		// One heading rendered, two the regex thought it saw: the indices no
+		// longer pair, so the whole turn is what a click can promise.
+		model.state = {
+			...model.state,
+			turns: [
+				proseTurn('u1', '# One', [
+					{ level: 1, text: 'One' },
+					{ level: 2, text: 'Ghost' },
+				]),
+			],
+		};
+		const { surface, el } = await surfaceOn(model);
+		await settle();
+
+		surface.scrollToHeading('u1', 0);
+
+		expect(markedHeadings(el.find('herdr-native-turn'))[0]?.scrolledIntoView).toEqual([]);
+		expect(el.find('herdr-native-turn').scrolledIntoView).toEqual([{ block: 'start' }]);
+	});
+
+	it('falls back to the turn for an index it has not got, and moves nothing for an unknown turn', async () => {
+		const model = new FakeModel();
+		model.state = {
+			...model.state,
+			turns: [proseTurn('u1', '# One', [{ level: 1, text: 'One' }])],
+		};
+		const { surface, el } = await surfaceOn(model);
+		await settle();
+
+		surface.scrollToHeading('u1', 4);
+		expect(el.find('herdr-native-turn').scrolledIntoView).toEqual([{ block: 'start' }]);
+
+		surface.scrollToHeading('nope', 0);
+		expect(el.find('herdr-native-turn').scrolledIntoView).toEqual([{ block: 'start' }]);
+	});
+});

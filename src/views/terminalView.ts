@@ -752,6 +752,16 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * The same for one heading of that turn's prose (#118): the index is its
+	 * place in the turn's headings, and the surface falls back to the turn when
+	 * it cannot pair that with what Obsidian rendered.
+	 */
+	scrollNativeToHeading(turnId: string, index: number): void {
+		const surface = this.surfaces.current;
+		if (surface instanceof NativePaneSurface) surface.scrollToHeading(turnId, index);
+	}
+
+	/**
 	 * The published connection when it is the herdr this view is pinned to
 	 * (issue #81), with its scope, tab labels and endpoint snapshot; null while
 	 * the list is connected elsewhere, or to nothing. The one place this view
