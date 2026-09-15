@@ -9,6 +9,11 @@ ones that belong to your vault into Obsidian:
 - **Agent list** in the sidebar: every agent of the matching herdr workspace, with
   its status, name, what it is doing, and its prompt-cache countdown. Sort by
   urgency or name, group by folder or by herdr tab. It updates live.
+- **Native view**, the default: a Claude Code session rendered as Obsidian
+  Markdown, with wikilinks, callouts and your theme, tool calls folded into one
+  line per run, vault edits shown as links to the notes, a chat-style prompt box
+  with `/` and `@` completion, and a table of contents where the outline lives.
+  Made for knowledge work; the terminal is one click away on every tab.
 - **Terminals** as Obsidian tabs: open any agent's live terminal, type in it, or
   watch it read-only. Open it beside the note you are working on, or reuse one tab.
 - **Notifications** when an agent stops and wants you, or finishes, with a status
@@ -74,6 +79,14 @@ and grouping (herdr tab, working directory, or none). Clicking a row opens the
 agent's terminal; the button that appears on hover jumps to the pane in the herdr
 TUI. A setting swaps the two.
 
+**The native view.** Clicking a Claude Code agent opens its session as
+Markdown: the prose reads like a note, each turn's tool calls collapse into one
+line, "Updated [[note]]" links to what the agent changed, and the prompt box
+under the transcript sends or queues your next prompt. When the agent stops to
+ask something, a card names the block and offers to open the terminal. The
+header button on the tab switches to the terminal and back; each tab remembers
+its choice. See [docs/native-view.md](docs/native-view.md).
+
 **Terminals.** A terminal tab attaches to the agent's pane in one of two modes,
 switchable with the eye button:
 
@@ -109,6 +122,8 @@ you have open never notifies. Focusing the pane in herdr is what marks it seen.
 
 ## Settings, remote use, troubleshooting
 
+- [docs/native-view.md](docs/native-view.md), the native view: what it shows,
+  the prompt box, the waiting card, and its limits.
 - [docs/settings.md](docs/settings.md), every setting on one line, with units.
 - [docs/remote.md](docs/remote.md), the SSH profile, the vault mirror it needs,
   and its two caveats.

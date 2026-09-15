@@ -370,19 +370,20 @@ describe('migrateRenderMode (issue #104)', () => {
 	 * two fields it becomes. The expected pairs come from the ticket, not from
 	 * re-running the split: `native` is the native view on the default engine,
 	 * an engine name is a terminal on that engine, and anything else is the
-	 * default pair.
+	 * default pair, which since 0.4.0 is the native view; a file that chose an
+	 * engine before the split keeps its terminal (migrated, written back once).
 	 */
 	const table: [string, unknown, { defaultView: string; terminalEngine: string; migrated: boolean }][] =
 		[
 			[
 				'the v1 default engine',
 				{ terminalEngine: 'ghostty-web' },
-				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: true },
 			],
 			[
 				'the other engine',
 				{ terminalEngine: 'xterm.js' },
-				{ defaultView: 'terminal', terminalEngine: 'xterm.js', migrated: false },
+				{ defaultView: 'terminal', terminalEngine: 'xterm.js', migrated: true },
 			],
 			[
 				'the native render mode',
@@ -392,17 +393,17 @@ describe('migrateRenderMode (issue #104)', () => {
 			[
 				'a value no build ever wrote',
 				{ terminalEngine: 'nonsense' },
-				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+				{ defaultView: 'native', terminalEngine: 'ghostty-web', migrated: false },
 			],
 			[
 				'a settings file without the key',
 				{},
-				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+				{ defaultView: 'native', terminalEngine: 'ghostty-web', migrated: false },
 			],
 			[
 				'no settings file at all',
 				null,
-				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+				{ defaultView: 'native', terminalEngine: 'ghostty-web', migrated: false },
 			],
 			[
 				'a file this build already split',
@@ -412,7 +413,7 @@ describe('migrateRenderMode (issue #104)', () => {
 			[
 				'an unreadable view beside a readable engine',
 				{ defaultView: 'nonsense', terminalEngine: 'xterm.js' },
-				{ defaultView: 'terminal', terminalEngine: 'xterm.js', migrated: false },
+				{ defaultView: 'native', terminalEngine: 'xterm.js', migrated: false },
 			],
 			[
 				'a hand-edited file with both the old and the new key',
@@ -429,19 +430,19 @@ describe('migrateRenderMode (issue #104)', () => {
 
 	it('never throws on a value of the wrong type', () => {
 		expect(migrateRenderMode({ terminalEngine: 7, defaultView: [] })).toEqual({
-			defaultView: 'terminal',
+			defaultView: 'native',
 			terminalEngine: 'ghostty-web',
 			migrated: false,
 		});
 		expect(migrateRenderMode('not a settings object')).toEqual({
-			defaultView: 'terminal',
+			defaultView: 'native',
 			terminalEngine: 'ghostty-web',
 			migrated: false,
 		});
 	});
 
 	it('leaves the defaults agreeing with the split it produces', () => {
-		expect(DEFAULT_SETTINGS.defaultView).toBe('terminal');
+		expect(DEFAULT_SETTINGS.defaultView).toBe('native');
 		expect(DEFAULT_SETTINGS.terminalEngine).toBe('ghostty-web');
 	});
 });

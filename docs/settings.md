@@ -54,6 +54,16 @@ counts are for.
 | Clicking an agent row | Opens the terminal (default) or focuses the pane in herdr. The row's hover button does the other one; its tooltip says which. |
 | Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per herdr endpoint, so a local pin never applies to a remote herdr. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
 
+## Native view
+
+| Setting | Meaning |
+|---|---|
+| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for local panes only; a remote herdr shows terminals. |
+| Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
+| Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, so an agent started in a new folder begins without a trip to the terminal. Off by default. Nothing else is answered for you. |
+
+See [native-view.md](native-view.md).
+
 ## Terminal
 
 | Setting | Meaning |
@@ -63,7 +73,7 @@ counts are for.
 | Terminal tab | Per agent (default): one tab per agent, reopening reveals it. Reuse: one tab, opening another agent switches it. Reuse saves roughly five megabytes per agent. |
 | Terminal tab title | Agent name (default): the name the agent list shows. Herdr tab label: the label of the herdr tab the agent runs in, as in herdr's own tab bar. While "Share a herdr tab" is on and a tab holds two agents, the agent name is appended so the two terminals differ. A label herdr has not reported yet, or a herdr without `tab.list`, falls back to the agent name. Open terminals retitle at once. |
 | Theme | Follow Obsidian (default), or Ghostty dark, Ghostty light, Solarized dark, Solarized light, Gruvbox dark, Dracula, Nord, One dark. Applies to open terminals at once. On ghostty-web the terminal is rebuilt to repaint it, so colours from before the switch are replayed as plain text; the session is untouched, so nothing is reattached or taken over. |
-| Terminal engine | ghostty-web (default) or xterm.js. ghostty-web parses faster and handles complex scripts better but keeps its memory until Obsidian restarts; xterm.js gives memory back when a tab closes and stops drawing when hidden. Switch if Obsidian feels heavy with several terminals open. Open terminals are rebuilt on change. |
+| Terminal engine | ghostty-web (default) or xterm.js. Applies to every tab showing a terminal, whatever the default view is. ghostty-web parses faster and handles complex scripts better but keeps its memory until Obsidian restarts; xterm.js gives memory back when a tab closes and stops drawing when hidden. Switch if Obsidian feels heavy with several terminals open. Open terminals are rebuilt on change. |
 | Cursor style | Shape of the terminal cursor: block (default), underline or bar. Applies to open terminals at once, on both engines. |
 | Blinking cursor | Whether the terminal cursor blinks. On by default. Applies to open terminals at once, on both engines. |
 | Font family, Font size | Override Obsidian's monospace font. Empty or 0 follows Obsidian. |

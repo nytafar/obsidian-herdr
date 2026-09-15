@@ -390,7 +390,7 @@ describe('terminal section', () => {
 		buildTerminalSection(el, settingsOf(), recorder().callbacks);
 
 		expect(dropdownOf(el, 'Default view').optionValues()).toEqual(['terminal', 'native']);
-		expect(dropdownOf(el, 'Default view').getValue()).toBe('terminal');
+		expect(dropdownOf(el, 'Default view').getValue()).toBe('native');
 	});
 
 	it('offers the two terminal engines separately from the view (#104)', () => {

@@ -478,7 +478,10 @@ export interface RenderModeMigration {
  * `native`. A file holding `native` is migrated: the view becomes native and
  * the engine goes back to the default, which is what such a vault would have
  * come back to on a switch to a terminal anyway. A file this build wrote has a
- * `defaultView` of its own and needs nothing. Both keys present with the old
+ * `defaultView` of its own and needs nothing. A file holding only an engine name
+ * is also migrated, to the terminal view on that engine: it was written when
+ * the terminal was the default, and the native default of 0.4.0 must not turn
+ * a chosen terminal into a native view. Both keys present with the old
  * `native` in the engine is a hand-edit; the legacy value wins, because it is
  * the one that cannot survive as it stands.
  *
@@ -491,11 +494,24 @@ export function migrateRenderMode(stored: unknown): RenderModeMigration {
 		unknown
 	>;
 	const legacy = splitRenderMode(record.terminalEngine);
-	const migrated = legacy?.view === 'native';
+	if (legacy?.view === 'native') {
+		return {
+			defaultView: 'native',
+			terminalEngine: normalizeEngineName(record.terminalEngine),
+			migrated: true,
+		};
+	}
+	// An engine name with no view beside it is a pre-#104 file: it chose a
+	// terminal on that engine when the terminal was the default, and keeps it
+	// now that the native view is (0.4.0). Written back once, so the choice
+	// survives the next read whatever the default becomes.
+	if (legacy !== null && record.defaultView === undefined) {
+		return { defaultView: 'terminal', terminalEngine: legacy.engine ?? 'ghostty-web', migrated: true };
+	}
 	return {
-		defaultView: migrated ? 'native' : normalizePaneView(record.defaultView),
+		defaultView: normalizePaneView(record.defaultView),
 		terminalEngine: normalizeEngineName(record.terminalEngine),
-		migrated,
+		migrated: false,
 	};
 }
 

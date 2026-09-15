@@ -29,8 +29,13 @@ export const PANE_VIEWS = ['terminal', 'native'] as const;
 
 export type PaneView = (typeof PANE_VIEWS)[number];
 
-/** What a tab shows when nothing has chosen: the v1 terminal (issue #27). */
-export const DEFAULT_PANE_VIEW: PaneView = 'terminal';
+/**
+ * What a tab shows when nothing has chosen: the native view, since 0.4.0. The
+ * plugin is for knowledge work first; the terminal is one click away on every
+ * tab's header. A vault that chose a terminal engine before the split (#104)
+ * keeps its terminal, see `migrateRenderMode`.
+ */
+export const DEFAULT_PANE_VIEW: PaneView = 'native';
 
 /** Settings dropdown labels, sentence case per the Obsidian guidelines. */
 export const PANE_VIEW_LABELS: Record<PaneView, string> = {
