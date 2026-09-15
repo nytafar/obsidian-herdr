@@ -53,7 +53,12 @@ import {
 	switchRenderModeCommand,
 } from './views/terminalView';
 import type { TerminalSetting } from './views/paneTerminal';
-import { decideOpenTarget, decidePlacement } from './terminalPlacement';
+import {
+	chooseNoteLeaf,
+	decideOpenTarget,
+	decidePlacement,
+	type NoteLeafCandidate,
+} from './terminalPlacement';
 import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
@@ -435,15 +440,30 @@ export default class HerdrPlugin extends Plugin {
 	/**
 	 * The main-area leaf showing the active file, or null. `getMostRecentLeaf`
 	 * rather than the active leaf: the terminal is usually opened from the agent
-	 * list, which sits in a sidebar. The file is read off the persisted view
-	 * state, not `leaf.view`, like `terminalLeaf` does (PRD N1).
+	 * list, which sits in a sidebar. That leaf is a terminal as often as a note —
+	 * attaching in control mode focuses the renderer, which activates its leaf —
+	 * so the main area is searched when it is not the note itself; the choice is
+	 * {@link chooseNoteLeaf}. The file is read off the persisted view state, not
+	 * `leaf.view`, like `terminalLeaf` does (PRD N1).
 	 */
 	private activeNoteLeaf(): WorkspaceLeaf | null {
-		const file = this.app.workspace.getActiveFile();
-		const leaf = this.app.workspace.getMostRecentLeaf();
-		if (!file || !leaf) return null;
-		const state = leaf.getViewState().state;
-		return state?.file === file.path ? leaf : null;
+		const workspace = this.app.workspace;
+		const file = workspace.getActiveFile();
+		if (!file) return null;
+		const rootLeaves: NoteLeafCandidate<WorkspaceLeaf>[] = [];
+		workspace.iterateRootLeaves((leaf) => rootLeaves.push(this.noteLeafCandidate(leaf)));
+		const recent = workspace.getMostRecentLeaf();
+		return chooseNoteLeaf({
+			activeFilePath: file.path,
+			mostRecent: recent ? this.noteLeafCandidate(recent) : null,
+			rootLeaves,
+		});
+	}
+
+	/** What a leaf's persisted state says it is showing, for {@link chooseNoteLeaf}. */
+	private noteLeafCandidate(leaf: WorkspaceLeaf): NoteLeafCandidate<WorkspaceLeaf> {
+		const file = leaf.getViewState().state?.file;
+		return { leaf, file: typeof file === 'string' ? file : null };
 	}
 
 	/**
