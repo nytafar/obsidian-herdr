@@ -38,10 +38,17 @@ export interface TextEntry {
 	text: string;
 }
 
-/** That a message thought before it spoke. The content itself is never shown. */
+/**
+ * That a message thought before it spoke, and what it thought.
+ *
+ * The text is kept because the view shows it in a collapsed disclosure (#95).
+ * A block that carries only a `signature` — an encrypted thought this build may
+ * not read — has an empty text, and the view shows nothing for it.
+ */
 export interface ThinkingEntry {
 	kind: 'thinking';
 	messageId: string;
+	text: string;
 }
 
 /** A tool call and, once it lands, the result that answered it. */
@@ -49,6 +56,12 @@ export interface ToolEntry {
 	kind: 'tool';
 	id: string;
 	name: string;
+	/**
+	 * The call's input, exactly as the transcript gave it. The reducer knows no
+	 * tool: which field is a path, a command or a query is the view's kind table
+	 * (`./toolCalls.ts`), so that stays one place and this stays dumb.
+	 */
+	input: Record<string, unknown>;
 	/** null until the `tool_result` line arrives. */
 	result: string | null;
 }
@@ -345,15 +358,23 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						if (existing) existing.text = `${existing.text}\n\n${text}`;
 						else turn.entries.push({ kind: 'text', messageId, text });
 					} else if (block.type === 'thinking') {
-						const already = turn.entries.some(
-							(entry) => entry.kind === 'thinking' && entry.messageId === messageId,
+						// Merged by message id like text, for the same reason: one
+						// message's thought is one disclosure however many lines it took.
+						const text = stringField(block, 'thinking');
+						const existing = turn.entries.find(
+							(entry): entry is ThinkingEntry =>
+								entry.kind === 'thinking' && entry.messageId === messageId,
 						);
-						if (!already) turn.entries.push({ kind: 'thinking', messageId });
+						if (!existing) turn.entries.push({ kind: 'thinking', messageId, text });
+						else if (text) {
+							existing.text = existing.text ? `${existing.text}\n\n${text}` : text;
+						}
 					} else if (block.type === 'tool_use') {
 						turn.entries.push({
 							kind: 'tool',
 							id: stringField(block, 'id'),
 							name: stringField(block, 'name'),
+							input: isRecord(block.input) ? block.input : {},
 							result: null,
 						});
 					}

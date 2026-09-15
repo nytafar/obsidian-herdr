@@ -26,7 +26,17 @@ import {
 	NATIVE_RENDER_MODE,
 	type RenderMode,
 } from './renderMode';
-import type { Turn, TurnEntry } from './reducer';
+import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
+import {
+	changedPath,
+	sourceText,
+	toolDetail,
+	toolGroupSummary,
+	turnItems,
+	vaultNoteLink,
+	type ToolGroupPresentation,
+	type TurnItem,
+} from './toolCalls';
 import type { AgentStatus } from '../herdr/types.gen';
 import type {
 	SessionChange,
@@ -165,6 +175,18 @@ export interface NativePaneSurfaceOptions {
 	onStatus: (line: StatusLine) => void;
 	/** The plugin's session models; one is held for as long as this is attached. */
 	models: SessionModels;
+	/**
+	 * How much of a turn's tool calls to fold away (#95). Read on every draw, so
+	 * a change to the setting reaches an open view through {@link
+	 * NativePaneSurface.refresh}.
+	 */
+	presentation: () => ToolGroupPresentation;
+	/**
+	 * The vault's absolute path, for stripping it off the files the agent
+	 * changed. Empty for a vault with no filesystem adapter, which simply leaves
+	 * every path outside the vault.
+	 */
+	vaultPath: () => string;
 }
 
 /**
@@ -221,8 +243,10 @@ export function promptSegments(prompt: string): PromptSegment[] {
  * What renders how (native-view-design.md): assistant prose through
  * `MarkdownRenderer`, one element per block, so the vault's own wikilinks,
  * callouts and embeds come out as they do anywhere else; human prompts as plain
- * pre-wrapped text with their wikilinks linkified; thinking, tool calls and
- * steers as plain placeholders until the tickets that give them a shape.
+ * pre-wrapped text with their wikilinks linkified; a turn's consecutive tool
+ * calls as one collapsed tool group with the vault changes and the sources it
+ * made kept outside it (#95); thinking as a collapsed "Thought"; a steer where
+ * it entered the turn.
  *
  * Guidelines: no `innerHTML`, no inline styles (everything is in `styles.css`),
  * `this.app` comes in from the view rather than the global, and every DOM
@@ -293,6 +317,15 @@ export class NativePaneSurface implements PaneSurface {
 
 	/** Colours, cursors and engines are a terminal's business, not this view's. */
 	async apply(): Promise<void> {}
+
+	/**
+	 * Draws everything again from the model it already holds (#95): what the
+	 * tool group setting changed is how the turns read, not what they hold.
+	 */
+	refresh(): void {
+		if (!this.rootEl) return;
+		this.renderAll();
+	}
 
 	/** Takes the pane's session model and draws what it already holds. */
 	private bind(): void {
@@ -372,32 +405,117 @@ export class NativePaneSurface implements PaneSurface {
 		if (turn.prompt) {
 			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt, component);
 		}
-		for (const entry of turn.entries) this.renderEntry(turnEl, entry, component);
+		// What to draw, and in which order, is `turnItems` (#95): the tool calls
+		// folded into groups with the vault changes and sources left outside.
+		for (const item of turnItems(turn.entries, this.options.presentation())) {
+			this.renderItem(turnEl, item, component);
+		}
 	}
 
-	private renderEntry(turnEl: HTMLElement, entry: TurnEntry, component: Component): void {
-		switch (entry.kind) {
-			case 'text': {
-				const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
-				// Obsidian's own renderer, so the vault's links, callouts and embeds
-				// come out exactly as they do in a note. It resolves relative links
-				// against `sourcePath`; a transcript is not a note in the vault, so
-				// that is the vault root.
-				void MarkdownRenderer.render(this.options.app, entry.text, blockEl, '', component);
+	private renderItem(turnEl: HTMLElement, item: TurnItem, component: Component): void {
+		switch (item.kind) {
+			case 'text':
+				this.renderText(turnEl, item.entry, component);
 				return;
-			}
 			case 'thinking':
-				// A placeholder until the ticket that gives thinking a shape (#93).
-				turnEl.createDiv({ cls: 'herdr-native-aside', text: 'Thinking' });
+				this.renderThinking(turnEl, item.entry, component);
 				return;
-			case 'tool':
-				turnEl.createDiv({ cls: 'herdr-native-aside', text: entry.name });
+			case 'group':
+				this.renderToolGroup(turnEl, item.tools);
+				return;
+			case 'change':
+				this.renderVaultChange(turnEl, item.entry, component);
+				return;
+			case 'source':
+				this.renderSource(turnEl, item.entry);
 				return;
 			case 'steer':
 				// A steer is shown where it entered the running turn (CONTEXT.md).
-				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), entry.text, component);
+				this.renderPrompt(
+					turnEl.createDiv({ cls: 'herdr-native-steer' }),
+					item.entry.text,
+					component,
+				);
 				return;
 		}
+	}
+
+	/** Assistant prose, through Obsidian's own renderer. */
+	private renderText(turnEl: HTMLElement, entry: TextEntry, component: Component): void {
+		const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
+		// Obsidian's own renderer, so the vault's links, callouts and embeds
+		// come out exactly as they do in a note. It resolves relative links
+		// against `sourcePath`; a transcript is not a note in the vault, so
+		// that is the vault root.
+		void MarkdownRenderer.render(this.options.app, entry.text, blockEl, '', component);
+	}
+
+	/**
+	 * A thought, collapsed (#95). A `details` rather than a click handler: the
+	 * browser owns the open state, so a turn redrawn while Claude writes does not
+	 * fight the reader, and nothing has to be torn down.
+	 *
+	 * A block with no text is an encrypted thought this build cannot read, and
+	 * renders nothing rather than an empty disclosure.
+	 */
+	private renderThinking(
+		turnEl: HTMLElement,
+		entry: ThinkingEntry,
+		component: Component,
+	): void {
+		if (!entry.text.trim()) return;
+		const details = turnEl.createEl('details', { cls: 'herdr-native-thinking' });
+		details.createEl('summary', { cls: 'herdr-native-thinking-summary', text: 'Thought' });
+		const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
+		void MarkdownRenderer.render(this.options.app, entry.text, bodyEl, '', component);
+	}
+
+	/** The tool group: one summary line that expands to a row per call. */
+	private renderToolGroup(turnEl: HTMLElement, tools: readonly ToolEntry[]): void {
+		const details = turnEl.createEl('details', { cls: 'herdr-native-tools' });
+		details.createEl('summary', {
+			cls: 'herdr-native-tools-summary',
+			text: toolGroupSummary(tools),
+		});
+		const vaultPath = this.options.vaultPath();
+		for (const entry of tools) {
+			const detail = toolDetail(entry, vaultPath);
+			details.createDiv({
+				cls: 'herdr-native-tool',
+				text: detail ? `${entry.name} ${detail}` : entry.name,
+			});
+		}
+	}
+
+	/**
+	 * A file the agent wrote or edited, at the point in the turn where it did.
+	 * Inside the vault it is a link to the note, so a reader can go and read it;
+	 * outside there is nothing to strip and nothing to open, so the path shows
+	 * as it was. No diff either way (native-view-design.md).
+	 */
+	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
+		const path = changedPath(entry);
+		if (!path) return;
+		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
+		el.appendText('Updated ');
+		const link = vaultNoteLink(path, this.options.vaultPath());
+		if (!link) {
+			el.appendText(path);
+			return;
+		}
+		this.renderPrompt(el, `[[${link}]]`, component);
+	}
+
+	/** A web search or a fetch: where the turn's facts came from. */
+	private renderSource(turnEl: HTMLElement, entry: ToolEntry): void {
+		const { label, url } = sourceText(entry);
+		const el = turnEl.createDiv({ cls: 'herdr-native-source' });
+		if (!url) {
+			el.appendText(label);
+			return;
+		}
+		// An external link is Obsidian's to open, so it gets no handler of ours.
+		el.createEl('a', { cls: 'external-link', text: label, href: url });
 	}
 
 	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */

@@ -50,7 +50,9 @@ describe('reduce: assistant blocks merged by message id', () => {
 
 		expect(state.turns).toHaveLength(1);
 		expect(state.turns[0]?.entries).toEqual([
-			{ kind: 'thinking', messageId: 'msg_2' },
+			// The thinking text rides along: the view shows it in a collapsed
+			// disclosure (#95), and only the signature is dropped.
+			{ kind: 'thinking', messageId: 'msg_2', text: 'weighing the rule' },
 			{
 				kind: 'text',
 				messageId: 'msg_2',
@@ -90,7 +92,15 @@ describe('reduce: tool results', () => {
 		expect(state.turns).toHaveLength(1);
 		expect(state.turns[0]?.entries).toEqual([
 			{ kind: 'text', messageId: 'msg_5', text: 'Running them.' },
-			{ kind: 'tool', id: 'toolu_1', name: 'Bash', result: '3 passed' },
+			// The call's input rides along too: what a tool line and a vault
+			// change say comes out of it (#95), and only the surface knows how.
+			{
+				kind: 'tool',
+				id: 'toolu_1',
+				name: 'Bash',
+				input: { command: 'npm test' },
+				result: '3 passed',
+			},
 			{ kind: 'text', messageId: 'msg_6', text: 'All green.' },
 		]);
 	});

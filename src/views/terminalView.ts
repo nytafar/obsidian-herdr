@@ -113,6 +113,7 @@ import {
 	type PaneSurface,
 	type PaneSurfaceKind,
 } from '../native/surface';
+import { normalizeToolGroupPresentation } from '../native/toolCalls';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -488,7 +489,20 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
+			// Both read fresh on every draw, so a setting change and a vault the
+			// user moved reach a view that is already open (#95).
+			presentation: () => normalizeToolGroupPresentation(this.plugin.settings.nativeToolGroups),
+			vaultPath: () => this.plugin.vaultPath(),
 		});
+	}
+
+	/**
+	 * The tool group setting changed (#95): draw the native view again if this
+	 * tab is showing one. A terminal surface has nothing to do with it.
+	 */
+	refreshNativeSurface(): void {
+		const surface = this.surfaces.current;
+		if (surface instanceof NativePaneSurface) surface.refresh();
 	}
 
 	/**

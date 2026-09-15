@@ -27,6 +27,7 @@ import {
 	buildAgentsSection,
 	buildConnectionSection,
 	buildFileExplorerSection,
+	buildNativeViewSection,
 	buildNotificationsSection,
 	buildRemoteSection,
 	buildTerminalSection,
@@ -66,6 +67,9 @@ function recorder(): { calls: string[]; callbacks: SettingsCallbacks } {
 		},
 		applyTerminalSetting: (setting) => {
 			calls.push(`applyTerminalSetting:${setting}`);
+		},
+		refreshNativeViews: () => {
+			calls.push('refreshNativeViews');
 		},
 	};
 	return { calls, callbacks };
@@ -464,6 +468,43 @@ describe('terminal section', () => {
 	});
 });
 
+describe('native view section', () => {
+	it('offers the two ways of showing a turn\u2019s tool calls', () => {
+		const el = settingsContainer();
+		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
+
+		expect(settingNames(el)).toEqual(['Native view', 'Tool groups']);
+		expect(headings(el)).toEqual(['Native view']);
+		const dropdown = dropdownOf(el, 'Tool groups');
+		expect(dropdown.optionValues()).toEqual(['highlight', 'collapse']);
+		// Highlighting the notes a turn changed is the default (#95).
+		expect(dropdown.value).toBe('highlight');
+	});
+
+	it('saves the presentation and redraws the open native views', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildNativeViewSection(el, settings, callbacks);
+
+		await dropdownOf(el, 'Tool groups').change('collapse');
+
+		expect(settings.nativeToolGroups).toBe('collapse');
+		expect(calls).toEqual(['save', 'refreshNativeViews']);
+	});
+
+	it('reads a stored value it does not know as the default', () => {
+		const el = settingsContainer();
+		buildNativeViewSection(
+			el,
+			settingsOf({ nativeToolGroups: 'everything' as never }),
+			recorder().callbacks,
+		);
+
+		expect(dropdownOf(el, 'Tool groups').value).toBe('highlight');
+	});
+});
+
 describe('the tab as a whole', () => {
 	it('renders every section in order on one container', () => {
 		const el = settingsContainer();
@@ -480,6 +521,7 @@ describe('the tab as a whole', () => {
 			'File explorer',
 			'Agent list',
 			'Terminal',
+			'Native view',
 		]);
 		// Every non-heading row carries exactly one control, which is what the
 		// per-section assertions above lean on.

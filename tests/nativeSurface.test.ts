@@ -11,7 +11,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
-import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
+import {
+	emptyTranscript,
+	type ToolEntry,
+	type TranscriptState,
+	type Turn,
+} from '../src/native/reducer';
+import type { ToolGroupPresentation } from '../src/native/toolCalls';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -61,7 +67,13 @@ function turn(id: string, prompt: string, entries: Turn['entries'] = []): Turn {
 	return { id, prompt, entries };
 }
 
-function surfaceOn(model: FakeModel): {
+/** The vault the surface strips paths against, unless a case says otherwise. */
+const VAULT = '/home/lasse/hvelv';
+
+function surfaceOn(
+	model: FakeModel,
+	options: { presentation?: ToolGroupPresentation; vaultPath?: string } = {},
+): {
 	surface: NativePaneSurface;
 	models: FakeModels;
 	el: FakeElement;
@@ -77,8 +89,22 @@ function surfaceOn(model: FakeModel): {
 		identity: { paneId: 'w4:p1', mode: 'control', endpointId: 'local' },
 		onStatus: () => {},
 		models,
+		// Both read fresh on every draw: the setting can change under an open
+		// view, and the vault is the app's, never a path this file invents.
+		presentation: () => options.presentation ?? 'highlight',
+		vaultPath: () => options.vaultPath ?? VAULT,
 	});
 	return { surface, models, el, host, openLinkText };
+}
+
+/** A tool call as the reducer hands it over. */
+function tool(
+	id: string,
+	name: string,
+	input: Record<string, unknown> = {},
+	result: string | null = null,
+): ToolEntry {
+	return { kind: 'tool', id, name, input, result };
 }
 
 beforeEach(() => {
@@ -148,27 +174,145 @@ describe('NativePaneSurface: a turn', () => {
 		expect(openLinkText).toHaveBeenCalledWith('native-view-design', '', false);
 	});
 
-	it('shows tool calls, thinking and steers as placeholders', async () => {
+	it('shows a steer where it entered the turn', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[turn('u1', 'Run it', [{ kind: 'steer', text: 'and check the styles' }])],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.find('herdr-native-steer').textContent).toBe('and check the styles');
+	});
+});
+
+/**
+ * The tool group (#95). The transcript below is one turn's worth of calls in
+ * the order Claude made them, and the expected summary is the one the issue
+ * names — "Read 4 files, ran 2 commands" — for exactly these calls.
+ */
+describe('NativePaneSurface: tool groups', () => {
+	/** The classes of a turn's own items, in the order they were drawn. */
+	function itemClasses(turnEl: FakeElement): string[] {
+		return turnEl.children.map((child) => [...child.classList][0] ?? '');
+	}
+
+	/** Four reads, two commands, one vault change and one web search. */
+	function busyTurn(): Turn {
+		return turn('u1', 'Work through it', [
+			{ kind: 'text', messageId: 'm1', text: 'Reading first.' },
+			tool('t1', 'Read', { file_path: `${VAULT}/a.md` }),
+			tool('t2', 'Write', { file_path: `${VAULT}/notes/b.md` }),
+			tool('t3', 'Read', { file_path: `${VAULT}/c.md` }),
+			tool('t4', 'WebSearch', { query: 'herdr protocol' }),
+			tool('t5', 'Bash', { command: 'npm test' }),
+			tool('t6', 'Read', { file_path: `${VAULT}/d.md` }),
+			tool('t7', 'Read', { file_path: `${VAULT}/e.md` }),
+			tool('t8', 'Bash', { command: 'ls' }),
+			{ kind: 'text', messageId: 'm2', text: 'Done.' },
+		]);
+	}
+
+	it('summarises the group without the vault change and the source, and leaves those outside it in chronological order', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
+
+		const group = el.find('herdr-native-tools');
+		expect(group.find('herdr-native-tools-summary').textContent).toBe(
+			'Read 4 files, ran 2 commands',
+		);
+		expect(group.findAll('herdr-native-tool').map((row) => row.textContent)).toEqual([
+			'Read a.md',
+			'Read c.md',
+			'Bash npm test',
+			'Read d.md',
+			'Read e.md',
+			'Bash ls',
+		]);
+		// The change and the source sit between the prose blocks, where they
+		// happened: the write came before the search (native-view-design.md).
+		expect(itemClasses(el.find('herdr-native-turn'))).toEqual([
+			'herdr-native-prompt',
+			'herdr-native-block',
+			'herdr-native-tools',
+			'herdr-native-change',
+			'herdr-native-source',
+			'herdr-native-block',
+		]);
+		expect(el.find('herdr-native-change').textContent).toBe('Updated notes/b');
+		expect(el.find('herdr-native-source').textContent).toBe('Searched the web for “herdr protocol”');
+	});
+
+	it('moves the vault change and the source inside the group when the setting collapses everything', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model, { presentation: 'collapse' });
+		await surface.attach(host);
+
+		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
+
+		const group = el.find('herdr-native-tools');
+		expect(group.find('herdr-native-tools-summary').textContent).toBe(
+			'Read 4 files, wrote 1 file, ran 1 web search, ran 2 commands',
+		);
+		expect(group.findAll('herdr-native-tool')).toHaveLength(8);
+		expect(el.findAll('herdr-native-change')).toEqual([]);
+		expect(el.findAll('herdr-native-source')).toEqual([]);
+	});
+
+	it('links a changed note inside the vault and names a file outside it plainly', async () => {
+		const model = new FakeModel();
+		const { surface, el, host, openLinkText } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Edit both', [
+					tool('t1', 'Write', { file_path: `${VAULT}/repos/obsidian-herdr/CONTEXT.md` }),
+					tool('t2', 'Edit', { file_path: '/etc/hosts' }),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		const [inside, outside] = el.findAll('herdr-native-change');
+		expect(inside?.textContent).toBe('Updated repos/obsidian-herdr/CONTEXT');
+		const link = inside?.find('internal-link');
+		expect(link?.attrs['data-href']).toBe('repos/obsidian-herdr/CONTEXT');
+		link?.dispatch('click');
+		expect(openLinkText).toHaveBeenCalledWith('repos/obsidian-herdr/CONTEXT', '', false);
+		// Outside the vault there is nothing to strip and nothing to link to.
+		expect(outside?.textContent).toBe('Updated /etc/hosts');
+		expect(outside?.findAll('internal-link')).toEqual([]);
+		// Every call escaped the group, so there is no group left to draw.
+		expect(el.findAll('herdr-native-tools')).toEqual([]);
+	});
+
+	it('shows a thought collapsed, and shows nothing for a thought that is only a signature', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
 		await surface.attach(host);
 
 		model.push(
 			[
-				turn('u1', 'Run it', [
-					{ kind: 'thinking', messageId: 'm1' },
-					{ kind: 'tool', id: 't1', name: 'Bash', result: 'ok' },
-					{ kind: 'steer', text: 'and check the styles' },
+				turn('u1', 'Think it over', [
+					{ kind: 'thinking', messageId: 'm1', text: 'Weighing the rule.' },
+					{ kind: 'thinking', messageId: 'm2', text: '' },
 				]),
 			],
 			{ changedTurnIds: ['u1'], reset: false },
 		);
 
-		expect(el.findAll('herdr-native-aside').map((aside) => aside.textContent)).toEqual([
-			'Thinking',
-			'Bash',
-		]);
-		expect(el.find('herdr-native-steer').textContent).toBe('and check the styles');
+		const thought = el.find('herdr-native-thinking');
+		expect(thought.tag).toBe('details');
+		// Collapsed by default: a disclosure is open only with the attribute.
+		expect(thought.attrs.open).toBeUndefined();
+		expect(thought.find('herdr-native-thinking-summary').textContent).toBe('Thought');
+		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual(['Weighing the rule.']);
 	});
 });
 

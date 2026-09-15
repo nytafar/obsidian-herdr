@@ -13,6 +13,11 @@ import {
 	type TerminalCursorStyle,
 } from './views/renderer/TerminalRenderer';
 import {
+	DEFAULT_TOOL_GROUP_PRESENTATION,
+	normalizeToolGroupPresentation,
+	type ToolGroupPresentation,
+} from './native/toolCalls';
+import {
 	DEFAULT_RENDER_MODE,
 	normalizeRenderMode,
 	RENDER_MODES,
@@ -199,6 +204,12 @@ export interface HerdrSettings {
 	terminalFontSize: number;
 	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
 	terminalScrollbackMb: number;
+	/**
+	 * How the native view shows a turn's tool calls (issue #95): the vault
+	 * changes and sources kept out of the tool group, or everything collapsed
+	 * into it. See `native/toolCalls.ts`.
+	 */
+	nativeToolGroups: ToolGroupPresentation;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -385,6 +396,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalCursorBlink: true,
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
+	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -536,6 +548,8 @@ export interface SettingsCallbacks {
 	refreshFolderHoverButton: () => void;
 	/** Hand one changed setting to the open terminals (issue #84). */
 	applyTerminalSetting: (setting: TerminalSetting) => void;
+	/** Draw every open native view again (issue #95). */
+	refreshNativeViews: () => void;
 }
 
 /**
@@ -1127,6 +1141,36 @@ export function buildTerminalSection(
 }
 
 /**
+ * The native render mode (issue #95). One setting so far: how much of a turn's
+ * tool calls the view folds away. It changes nothing a view holds, only how it
+ * reads, so a change redraws the open native views and touches nothing else.
+ */
+export function buildNativeViewSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Native view').setHeading();
+
+	new Setting(containerEl)
+		.setName('Tool groups')
+		.setDesc(
+			'What a turn\u2019s tool calls look like. Highlighting keeps the notes the agent changed and the sources it read in the text, at the point it used them, and leaves the rest inside the collapsed group. Collapsing puts every call inside it.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('highlight', 'Highlight vault changes and sources')
+				.addOption('collapse', 'Collapse everything')
+				.setValue(normalizeToolGroupPresentation(settings.nativeToolGroups))
+				.onChange(async (value) => {
+					settings.nativeToolGroups = normalizeToolGroupPresentation(value);
+					await callbacks.save();
+					callbacks.refreshNativeViews();
+				}),
+		);
+}
+
+/**
  * The order the sections are rendered in. One entry per builder, so adding a
  * section is adding a builder and a line here.
  */
@@ -1142,6 +1186,7 @@ export const SETTINGS_SECTIONS: readonly ((
 	buildFileExplorerSection,
 	buildAgentListSection,
 	buildTerminalSection,
+	buildNativeViewSection,
 ];
 
 /**
@@ -1172,6 +1217,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			refreshAgentList: () => plugin.refreshAgentList(),
 			refreshFolderHoverButton: () => plugin.refreshFolderHoverButton(),
 			applyTerminalSetting: (setting) => plugin.applyTerminalSetting(setting),
+			refreshNativeViews: () => plugin.refreshNativeViews(),
 		};
 	}
 
