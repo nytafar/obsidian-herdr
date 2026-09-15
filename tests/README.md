@@ -357,6 +357,27 @@ below, which is the only place the memory the suspension exists for is visible.
    byte budget, not a line count). Raising it to 64 MB and opening several
    terminals is the worst case the ceiling exists for.
 
+## Smoking the render mode switch inside Obsidian (#92)
+
+The pane surface seam is unit tested with a fake factory
+(`tests/paneSurface.test.ts`); what needs Obsidian is the swap happening on a
+real terminal.
+
+1. With a terminal tab open, right-click its tab header (or use the palette's
+   "Switch render mode"): the menu lists Ghostty web, xterm.js and Native view,
+   with the current one checked.
+2. Choose Native view: the terminal is given back — `pgrep -fa 'terminal
+   session'` shows no bridge for that pane — and the tab shows the session's
+   history (#93), or "No session yet." on a pane whose Claude has taken no
+   prompt, with the strip reading `Native view of <pane>. No session yet.`
+3. Choose Ghostty web again: the bridge respawns and the pane renders as before.
+4. Restart Obsidian: a tab left in native mode comes back in native mode, and a
+   tab that never chose follows **Default render mode** in the settings, so
+   switching that setting to Native view moves every such tab at once.
+5. With the remote profile on and a terminal opened on the remote endpoint, the
+   menu shows "Native view (local panes only)", greyed out, and clicking it does
+   nothing (ADR-0002).
+
 Read-only bridge check without Obsidian (observe only — never control against a
 pane someone is using):
 
@@ -366,3 +387,99 @@ herdr terminal session observe w4:p1 --cols 100 --rows 30 </dev/null | head -1
 
 matches what the view spawns in observe mode; the first line is a
 `terminal.frame` with `full: true` and the requested width/height.
+
+## Smoking the native view's history inside Obsidian (#93)
+
+The reducer, the transcript source, the session model and what the surface draws
+are unit tested (`tests/transcriptReducer.test.ts`, `tests/transcriptSource.test.ts`,
+`tests/sessionModel.test.ts`, `tests/nativeSurface.test.ts`, the first of them
+against the live transcript of whatever session runs them). What needs Obsidian
+is the Markdown: only the app can render a wikilink, a callout or an embed.
+
+1. Open a pane whose Claude has answered at least once in native mode. The whole
+   session so far is there: human prompts as plain pre-wrapped text, the
+   assistant's prose as Markdown, tool calls and thinking as one grey line each.
+2. A prompt that mentioned `[[a note]]` shows it as a link; clicking opens the
+   note, and ctrl/cmd-clicking opens it in a new tab.
+3. An answer containing a callout, an embed or a wikilink renders exactly as the
+   same text would in a note, in the vault's own theme and fonts.
+4. From the pane's own directory,
+   `ls ~/.claude/projects/"$(pwd | tr -c 'a-zA-Z0-9' '-' | sed 's/-$//')"/`
+   lists its transcripts; the one named by that pane's `agent_session.value` in
+   `herdr agent list` is the file the view is showing.
+
+## Smoking live updates and session following (#94)
+
+The tail is tested against a real temp file and the following against fake
+herdr events (`tests/transcriptSource.test.ts`, `tests/sessionModel.test.ts`).
+What needs a real pane is the rotation, because nothing but Claude Code rotates
+a session.
+
+1. Prompt the agent from its terminal, with the native tab visible: new blocks
+   appear as it writes, and "Working…" shows between them, going away when it
+   finishes. Blocking it (a permission prompt) shows "Waiting for you."
+2. Send `/clear` in that pane. Within a few seconds the view empties and starts
+   showing the new session; `herdr agent list` confirms the pane's
+   `agent_session.value` changed.
+3. Exit Claude and start it again with `--resume <the old uuid>`: the original
+   history comes back, because the id and the file are the ones it had.
+4. Open a second native tab on the same pane (drag the tab out, or open the pane
+   again): both keep up, and there is still one tail —
+   `ls -l /proc/$(pgrep -f 'Obsidian' | head -1)/fd | grep -c '<session>.jsonl'`
+   stays at one while both are open. Closing both releases it.
+5. Leave a native tab in the background while the agent works, then switch back:
+   it is up to date at once, with no reload.
+6. Restart herdr (or stop and start the plugin's connection): the view keeps
+   following, because the models rebind to the new scope.
+
+## Smoking the prompt box (#97)
+
+The button's label and enabled state per status, the text that goes out and the
+failure path are unit tested (`tests/promptBox.test.ts`), and that the
+`agent.prompt` request carries no `wait` field is pinned in
+`tests/promptSender.test.ts`. What needs a real pane is that herdr's delivery is
+what the facts say it is.
+
+1. In a native tab on an idle pane, type three lines with a blank one between
+   them and press ctrl/cmd-enter (or the **Send** button). The pane's Claude
+   receives the whole text as one prompt, newlines intact, and the box empties.
+2. While it works, the button reads **Queue** and stays enabled. Send a second
+   prompt: it is accepted, Claude consumes it inside the running turn, and
+   nothing is echoed into the view until the transcript says so.
+3. Block the agent (a permission prompt): the button is disabled and the view
+   says "Waiting for you.". Answer it in the terminal and the button comes back.
+4. Open a native tab on a pane with no agent: the box says "No agent in this
+   pane." and neither the box nor the button can be used.
+5. Send `/help` from the box: Claude opens its help overlay rather than typing
+   the text. `herdr agent send-keys <pane> esc` closes it again.
+6. On a freshly started Claude that has never been prompted, the view says "No
+   session yet." and the button reads **Send**. Sending the first prompt starts
+   the session; within seconds the view shows the turn, because
+   `agent_session` appeared and the tail started.
+7. Stop herdr and press send: a notice says the prompt could not be sent and the
+   text stays in the box.
+
+## Smoking the prompt autocomplete (#98)
+
+The catalog is tested against a real temp tree with all three scopes and
+symlinks (`tests/commandCatalog.test.ts`) and the form a mention goes out in is
+a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
+`AbstractInputSuggest` draws it, and only the app has one.
+
+1. In a native tab, type `/` as the first character: the list shows this pane's
+   commands and skills with their descriptions and argument hints, project
+   entries winning a name over user ones and user over plugin. Compare with
+   `ls ~/.claude/commands ~/.claude/skills <the pane's repo>/.claude/commands`.
+2. Pick one. The prompt reads `/name ` and sending it runs the command rather
+   than typing it; `/help` opens the help overlay (`send-keys <pane> esc`
+   closes it).
+3. A symlinked skill (`~/.claude/skills` is half symlinks here) is offered like
+   any other, under the link's own name.
+4. Type `@` after a space: vault files are offered. Pick one inside the pane's
+   cwd and the prompt gets a relative path; pick one outside it and the prompt
+   gets an absolute path. A file whose path has a space in it comes out in
+   double quotes.
+5. Send a prompt with a mention in it and check in the terminal that Claude
+   resolved the file rather than treating the text as prose.
+6. `/` in the middle of a prompt, and `@` glued to the end of a word, offer
+   nothing: neither is a trigger there.

@@ -28,6 +28,7 @@ import {
 	ConnectionCoordinator,
 	EndpointSessions,
 	endpointLabel,
+	LOCAL_ENDPOINT_ID,
 	endpointOf,
 	resolveEndpoint,
 	type Endpoint,
@@ -46,9 +47,12 @@ import {
 	TerminalView,
 	parseTerminalState,
 	stateMatchesPane,
+	switchRenderModeCommand,
 } from './views/terminalView';
 import type { TerminalSetting } from './views/paneTerminal';
 import { decideOpenTarget, decidePlacement } from './terminalPlacement';
+import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
+import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
@@ -160,6 +164,15 @@ export default class HerdrPlugin extends Plugin {
 	get tunnel(): SshTunnel | null {
 		return this.connection.current?.tunnel ?? null;
 	}
+	/**
+	 * The native view's session models (#93, ADR-0003), one per pane while a
+	 * view watches it. Local only: a remote pane keeps a terminal surface until
+	 * an SSH transcript adapter exists (ADR-0002).
+	 */
+	readonly sessionModels = new SessionModelRegistry({
+		source: new LocalTranscriptSource(),
+		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)),
+	});
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
@@ -212,6 +225,9 @@ export default class HerdrPlugin extends Plugin {
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerCommands();
 		this.registerStatusBar();
+		// A reconnect or an endpoint switch replaces the scope and the client the
+		// session models subscribe to (#94); they take the new ones.
+		this.register(this.onScopeReplaced(() => this.sessionModels.rebind()));
 
 		// OS notifications only fire while the window is unfocused (PRD M12), so
 		// track the edges instead of asking the DOM inside an event handler.
@@ -244,6 +260,7 @@ export default class HerdrPlugin extends Plugin {
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
 		this.sessions.dispose();
+		this.sessionModels.dispose();
 		this.scopeListeners.clear();
 		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
 		this.agentNameTimer = 0;
@@ -281,7 +298,7 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/** Absolute path of the vault, or empty for a non-filesystem adapter. */
-	private vaultPath(): string {
+	vaultPath(): string {
 		const adapter = this.app.vault.adapter;
 		return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
 	}
@@ -451,6 +468,14 @@ export default class HerdrPlugin extends Plugin {
 		}
 	}
 
+	/** The native view's presentation setting changed: redraw them (issue #95). */
+	refreshNativeViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) view.refreshNativeSurface();
+		}
+	}
+
 	/** Applies the folder hover button setting, both ways (issue #30). */
 	refreshFolderHoverButton(): void {
 		if (this.settings.folderHoverButton) this.explorerButtons.enable();
@@ -554,6 +579,12 @@ export default class HerdrPlugin extends Plugin {
 			callback: () => {
 				void this.activateAgentList();
 			},
+		});
+		// The menu it opens, and who may open it, belong to the view (#92).
+		this.addCommand({
+			id: 'switch-render-mode',
+			name: 'Switch render mode',
+			checkCallback: (checking) => switchRenderModeCommand(this.app, checking),
 		});
 		this.addFolderCommand('new-tab-here', 'New tab here', (path) =>
 			this.actions.newTabHere(path),

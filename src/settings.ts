@@ -6,17 +6,24 @@ import type { RowClickAction } from './views/rowModel';
 import type { TerminalSetting } from './views/paneTerminal';
 import {
 	DEFAULT_CURSOR_STYLE,
-	DEFAULT_TERMINAL_ENGINE,
 	normalizeCursorStyle,
-	normalizeEngineName,
 	TERMINAL_CURSOR_STYLES,
 	TERMINAL_CURSOR_STYLE_LABELS,
-	TERMINAL_ENGINES,
-	TERMINAL_ENGINE_LABELS,
 	type CursorOptions,
 	type TerminalCursorStyle,
-	type TerminalEngine,
 } from './views/renderer/TerminalRenderer';
+import {
+	DEFAULT_TOOL_GROUP_PRESENTATION,
+	normalizeToolGroupPresentation,
+	type ToolGroupPresentation,
+} from './native/toolCalls';
+import {
+	DEFAULT_RENDER_MODE,
+	normalizeRenderMode,
+	RENDER_MODES,
+	RENDER_MODE_LABELS,
+	type RenderMode,
+} from './native/renderMode';
 import {
 	DEFAULT_TERMINAL_THEME,
 	TERMINAL_THEMES,
@@ -178,11 +185,14 @@ export interface HerdrSettings {
 	 */
 	terminalTheme: TerminalThemeName;
 	/**
-	 * Which renderer draws the terminal (issue #27). `ghostty-web` is the default
-	 * and the v1 behaviour; `xterm.js` is the mature alternative. See
-	 * `views/renderer/create.ts`.
+	 * The render mode a new terminal tab starts in (issues #27, #92). Stored
+	 * under its v1 name because the two terminal modes are still the engine
+	 * names: `ghostty-web`, the default and the v1 behaviour, `xterm.js`, the
+	 * mature alternative, and `native`, the Markdown view of the pane's agent
+	 * session. A tab stores its own render mode once it switches; see
+	 * `native/renderMode.ts` and `native/surface.ts`.
 	 */
-	terminalEngine: TerminalEngine;
+	terminalEngine: RenderMode;
 	/**
 	 * Cursor shape in the terminal view (issue #52). `block` is both engines'
 	 * own default. See `views/renderer/TerminalRenderer.ts`.
@@ -194,6 +204,12 @@ export interface HerdrSettings {
 	terminalFontSize: number;
 	/** Megabytes of scrollback each open terminal may keep. See {@link clampScrollbackMb}. */
 	terminalScrollbackMb: number;
+	/**
+	 * How the native view shows a turn's tool calls (issue #95): the vault
+	 * changes and sources kept out of the tool group, or everything collapsed
+	 * into it. See `native/toolCalls.ts`.
+	 */
+	nativeToolGroups: ToolGroupPresentation;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -375,11 +391,12 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
 	terminalTheme: DEFAULT_TERMINAL_THEME,
-	terminalEngine: DEFAULT_TERMINAL_ENGINE,
+	terminalEngine: DEFAULT_RENDER_MODE,
 	terminalCursorStyle: DEFAULT_CURSOR_STYLE,
 	terminalCursorBlink: true,
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
+	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -531,6 +548,8 @@ export interface SettingsCallbacks {
 	refreshFolderHoverButton: () => void;
 	/** Hand one changed setting to the open terminals (issue #84). */
 	applyTerminalSetting: (setting: TerminalSetting) => void;
+	/** Draw every open native view again (issue #95). */
+	refreshNativeViews: () => void;
 }
 
 /**
@@ -1024,18 +1043,18 @@ export function buildTerminalSection(
 		});
 
 	new Setting(containerEl)
-		.setName('Terminal engine')
+		.setName('Default render mode')
 		.setDesc(
-			'Which library draws the terminal. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows. Open terminals are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
+			'How a terminal tab is shown until it chooses for itself. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows; the native view shows the pane’s agent session as Markdown instead of a terminal, and is offered for local panes only. Each tab keeps its own choice, switched from its tab menu; open tabs that never chose follow this one and are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
 		)
 		.addDropdown((dropdown) => {
-			for (const name of TERMINAL_ENGINES) {
-				dropdown.addOption(name, TERMINAL_ENGINE_LABELS[name]);
+			for (const name of RENDER_MODES) {
+				dropdown.addOption(name, RENDER_MODE_LABELS[name]);
 			}
 			dropdown
-				.setValue(normalizeEngineName(settings.terminalEngine))
+				.setValue(normalizeRenderMode(settings.terminalEngine))
 				.onChange(async (value) => {
-					settings.terminalEngine = normalizeEngineName(value);
+					settings.terminalEngine = normalizeRenderMode(value);
 					await callbacks.save();
 					callbacks.applyTerminalSetting('terminalEngine');
 				});
@@ -1122,6 +1141,36 @@ export function buildTerminalSection(
 }
 
 /**
+ * The native render mode (issue #95). One setting so far: how much of a turn's
+ * tool calls the view folds away. It changes nothing a view holds, only how it
+ * reads, so a change redraws the open native views and touches nothing else.
+ */
+export function buildNativeViewSection(
+	containerEl: HTMLElement,
+	settings: HerdrSettings,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName('Native view').setHeading();
+
+	new Setting(containerEl)
+		.setName('Tool groups')
+		.setDesc(
+			'What a turn\u2019s tool calls look like. Highlighting keeps the notes the agent changed and the sources it read in the text, at the point it used them, and leaves the rest inside the collapsed group. Collapsing puts every call inside it.',
+		)
+		.addDropdown((dropdown) =>
+			dropdown
+				.addOption('highlight', 'Highlight vault changes and sources')
+				.addOption('collapse', 'Collapse everything')
+				.setValue(normalizeToolGroupPresentation(settings.nativeToolGroups))
+				.onChange(async (value) => {
+					settings.nativeToolGroups = normalizeToolGroupPresentation(value);
+					await callbacks.save();
+					callbacks.refreshNativeViews();
+				}),
+		);
+}
+
+/**
  * The order the sections are rendered in. One entry per builder, so adding a
  * section is adding a builder and a line here.
  */
@@ -1137,6 +1186,7 @@ export const SETTINGS_SECTIONS: readonly ((
 	buildFileExplorerSection,
 	buildAgentListSection,
 	buildTerminalSection,
+	buildNativeViewSection,
 ];
 
 /**
@@ -1167,6 +1217,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			refreshAgentList: () => plugin.refreshAgentList(),
 			refreshFolderHoverButton: () => plugin.refreshFolderHoverButton(),
 			applyTerminalSetting: (setting) => plugin.applyTerminalSetting(setting),
+			refreshNativeViews: () => plugin.refreshNativeViews(),
 		};
 	}
 

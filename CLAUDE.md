@@ -24,6 +24,9 @@ general plugin conventions.
 - JSON API: ignore unknown fields, treat unsupported methods as ordinary errors,
   warn on protocol mismatch, never refuse to connect over it.
 - React to `agent_status` transitions, never to raw `pane.updated` events.
+  One exception: a view following a pane's agent session reads the
+  `agent_session` field of `pane.updated` for its own pane only, deduplicated
+  by value, because session rotation (`/clear`) has no event or status change.
 - Scope everything to one workspace client-side. herdr outside Obsidian must be
   unaffected by this plugin.
 

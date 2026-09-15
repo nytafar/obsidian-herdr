@@ -17,16 +17,116 @@
  * by path instead.
  */
 
+/**
+ * Enough of `Component` for a view to register what it has to give back: the
+ * native surface hangs its DOM listeners and its rendered Markdown off one and
+ * unloads it on detach (issue #93).
+ */
 export class Component {
-	load(): void {}
-	unload(): void {}
+	/** Registered teardowns, run by `unload` and countable from a test. */
+	readonly registered: (() => void)[] = [];
+	loaded = false;
+	load(): void {
+		this.loaded = true;
+	}
+	unload(): void {
+		this.loaded = false;
+		for (const off of this.registered.splice(0)) off();
+	}
+	register(cb: () => void): void {
+		this.registered.push(cb);
+	}
+	registerDomEvent(el: unknown, type: string, handler: (event: unknown) => void): void {
+		const target = el as {
+			addEventListener(type: string, handler: (event: unknown) => void): void;
+			removeEventListener(type: string, handler: (event: unknown) => void): void;
+		};
+		target.addEventListener(type, handler);
+		this.register(() => target.removeEventListener(type, handler));
+	}
 }
+
+/**
+ * Recording stand-in for `MarkdownRenderer`. The real one turns Markdown into
+ * Obsidian's own DOM — wikilinks, callouts, embeds and all — which no test can
+ * assert without the app; what a test can assert is that the surface handed it
+ * the right Markdown, in the right element, with a component to hang the result
+ * on. The stub writes the source text into the element synchronously so the
+ * surrounding structure is still assertable.
+ */
+export class MarkdownRenderer {
+	/** Every `render` call, in order, across a test file. Cleared by `reset`. */
+	static readonly calls: {
+		markdown: string;
+		el: unknown;
+		sourcePath: string;
+		component: Component;
+	}[] = [];
+
+	static reset(): void {
+		MarkdownRenderer.calls.length = 0;
+	}
+
+	static async render(
+		_app: unknown,
+		markdown: string,
+		el: unknown,
+		sourcePath: string,
+		component: Component,
+	): Promise<void> {
+		MarkdownRenderer.calls.push({ markdown, el, sourcePath, component });
+		(el as { createDiv(info: { cls: string; text: string }): unknown }).createDiv({
+			cls: 'markdown-rendered',
+			text: markdown,
+		});
+	}
+}
+
+/** Modifier-click detection; a plain click is never a mod event. */
+export const Keymap = {
+	isModEvent(event?: unknown): boolean {
+		const mouse = event as { ctrlKey?: boolean; metaKey?: boolean } | undefined;
+		return Boolean(mouse?.ctrlKey || mouse?.metaKey);
+	},
+};
 
 export class View extends Component {}
 
 export class ItemView extends View {
 	constructor(public leaf: unknown) {
 		super();
+	}
+}
+
+/**
+ * Stand-in for the base class of the prompt box's autocomplete (#98). Only
+ * loadable, like most of this fixture: the popover is Obsidian's own and what
+ * it needs — a document, a scope, a focused field — no test here has.
+ */
+export class PopoverSuggest<T> {
+	constructor(
+		public app: unknown,
+		public scope?: unknown,
+	) {}
+	open(): void {}
+	close(): void {}
+	selectSuggestion(_value: T): void {}
+}
+
+export class AbstractInputSuggest<T> extends PopoverSuggest<T> {
+	limit = 100;
+	constructor(
+		app: unknown,
+		public textInputEl: unknown,
+	) {
+		super(app);
+	}
+	getValue(): string {
+		return '';
+	}
+	setValue(_value: string): void {}
+	onSelect(_callback: (value: T, evt: unknown) => unknown): this {
+		return this;
 	}
 }
 
