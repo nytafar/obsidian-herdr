@@ -30,11 +30,11 @@ export interface PromptSender {
  * herdr's `agent.send_keys`. Same shape as {@link PromptSender} and the same
  * two adapters, because a remote endpoint answers the same request.
  *
- * The card decides *which* keys, and it may only ever decide `Enter` for a
- * permission block: on the workspace trust prompt a bare Enter is "No, exit",
- * and on a question or plan approval it picks the first option, which switches
- * the session to auto mode (`docs/architecture.md`, "What a bare Enter selects
- * on each of Claude's blocking dialogs").
+ * The card decides *which* keys, and the only dialog it decides for is the
+ * workspace trust prompt, where they are `Down Enter`: the first option there
+ * is "No, exit", so a bare Enter would quit Claude (`docs/architecture.md`,
+ * "What a bare Enter selects on each of Claude's blocking dialogs"). Tool
+ * permissions, questions and plan approval are answered in the terminal.
  */
 export interface KeySender {
 	/** Presses `keys` in the pane's agent. Rejects with a readable message. */

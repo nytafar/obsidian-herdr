@@ -1,10 +1,16 @@
 /**
  * The waiting card (#99): what the native view shows while the agent is
- * blocked, and the two things it may press.
+ * blocked, and the one thing it may answer for the user.
  *
  * The same fakes as `tests/nativeSurface.test.ts` — a session model driven by
  * hand, the DOM harness, the recording `MarkdownRenderer` — plus a fake key
- * sender, which is the whole of what "Allow" is.
+ * sender, which is the whole of what "Trust this folder" is.
+ *
+ * Tool permissions are Claude's own business: it has permission modes for
+ * them and this machine's Claude is in auto mode, so the card shows a
+ * permission, a question and a plan and presses nothing at all. The workspace
+ * trust prompt is the one block it answers, because a fresh Claude in a new
+ * directory cannot be started from this view otherwise.
  *
  * The transcripts the cases are worked from are real: the scratch pane of the
  * 2026-09-15 verification (`docs/architecture.md`, "What a bare Enter selects
@@ -104,7 +110,7 @@ const VAULT = '/home/lasse/hvelv';
 
 async function surfaceOn(
 	model: FakeModel,
-	options: { autoAccept?: boolean } = {},
+	options: { autoTrust?: boolean } = {},
 ): Promise<{
 	surface: NativePaneSurface;
 	el: FakeElement;
@@ -132,7 +138,7 @@ async function surfaceOn(
 		notify: (message) => notices.push(message),
 		openInTerminal,
 		// Off by default, as the setting is (#99).
-		autoAcceptPermissions: () => options.autoAccept ?? false,
+		autoTrustFolders: () => options.autoTrust ?? false,
 		presentation: () => 'highlight',
 		vaultPath: () => VAULT,
 	});
@@ -194,11 +200,12 @@ describe('waiting card: which kind (#99)', () => {
 		const shown = card(el);
 		expect(shown).not.toBeNull();
 		expect(title(el)).toBe('Claude is asking whether to trust this folder');
-		// A bare enter here is "No, exit", so there is nothing but the terminal.
-		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+		// The one block this view answers: a fresh Claude in a new directory
+		// cannot be started from here otherwise.
+		expect(buttonLabels(el)).toEqual(['Trust this folder', 'Open in terminal']);
 	});
 
-	it('names the tool of the last tool_use with no result, and offers Allow', async () => {
+	it('names the tool of the last tool_use with no result, and presses nothing', async () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 
@@ -215,10 +222,12 @@ describe('waiting card: which kind (#99)', () => {
 		expect(title(el)).toBe('Claude wants to use Bash');
 		// The detail line is the tool group's own formatting, reused (#95).
 		expect(el.find('herdr-native-waiting-body').textContent).toBe('echo permission-test');
-		expect(buttonLabels(el)).toEqual(['Allow', 'Open in terminal']);
+		// Claude decides tool permissions through its own permission modes; the
+		// view never answers one.
+		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 
-	it('shows the question and its options for AskUserQuestion, with no Allow', async () => {
+	it('shows the question and its options for AskUserQuestion, with no button', async () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 
@@ -249,11 +258,11 @@ describe('waiting card: which kind (#99)', () => {
 			'Tea',
 			'Coffee',
 		]);
-		// Enter would choose the first answer, and answering is never "Allow".
+		// Answering a question is the user's, in the terminal.
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 
-	it('shows the plan for ExitPlanMode, with no Allow', async () => {
+	it('shows the plan for ExitPlanMode, with no button', async () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 
@@ -305,45 +314,42 @@ describe('waiting card: which kind (#99)', () => {
 
 		expect(title(el)).toBe('Claude is waiting for permission');
 		expect(el.findAll('herdr-native-waiting-body')).toEqual([]);
-		expect(buttonLabels(el)).toEqual(['Allow', 'Open in terminal']);
+		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 });
 
 describe('waiting card: what it presses (#99)', () => {
-	it('sends a bare enter to the pane when Allow is pressed', async () => {
+	it('sends Down Enter to the pane when Trust this folder is pressed', async () => {
 		const model = new FakeModel();
 		const { el, keys } = await surfaceOn(model);
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
-		model.setStatus('blocked');
 
-		el.find('herdr-native-waiting-allow').dispatch('click');
+		model.setStatus('blocked');
+		el.find('herdr-native-waiting-trust').dispatch('click');
 		await Promise.resolve();
 
-		// The first option of a Bash or Write permission is "Yes": it allows the
-		// call once and changes no mode (`docs/architecture.md`).
-		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
+		// The trust prompt's first option is "No, exit", so a bare Enter would
+		// quit Claude; `Down Enter` trusts the folder (`docs/architecture.md`).
+		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Down', 'Enter'] }]);
 	});
 
-	it('sends one enter for a block however often Allow is pressed', async () => {
-		// Two clicks before the block is over are two enters, and the second one
-		// answers whatever dialog the first one's "Yes" opened.
+	it('sends one answer for a block however often the button is pressed', async () => {
+		// Two clicks before the block is over are two answers, and the second one
+		// lands on whatever Claude showed after the first one trusted the folder.
 		const model = new FakeModel();
 		const { el, keys } = await surfaceOn(model);
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
 		model.setStatus('blocked');
 
-		el.find('herdr-native-waiting-allow').dispatch('click');
-		el.find('herdr-native-waiting-allow').dispatch('click');
+		el.find('herdr-native-waiting-trust').dispatch('click');
+		el.find('herdr-native-waiting-trust').dispatch('click');
 		await Promise.resolve();
 
-		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
+		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Down', 'Enter'] }]);
 	});
 
-	it('offers no Allow until the transcript has been read', async () => {
-		// herdr has named the session and nothing has been read from it, so the
-		// card can only fall back to a permission — and the dialog on screen may
-		// be plan approval, where a bare enter switches the session to auto mode
-		// (`docs/architecture.md`). Nothing to press but the terminal.
+	it('offers nothing to press once a transcript exists', async () => {
+		// herdr has named the session, so this is no longer a fresh Claude at its
+		// trust prompt: whatever the card falls back to, the block is Claude's
+		// own to answer and the terminal is where it is answered.
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 
@@ -354,18 +360,17 @@ describe('waiting card: what it presses (#99)', () => {
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
 	});
 
-	it('says so as a notice when the enter does not get through', async () => {
+	it('says so as a notice when the answer does not get through', async () => {
 		const model = new FakeModel();
 		const { el, keys, notices } = await surfaceOn(model);
 		keys.fail = 'pane is gone';
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
 		model.setStatus('blocked');
 
-		el.find('herdr-native-waiting-allow').dispatch('click');
+		el.find('herdr-native-waiting-trust').dispatch('click');
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(notices).toEqual(['Herdr: could not allow the tool call (pane is gone)']);
+		expect(notices).toEqual(['Herdr: could not trust this folder (pane is gone)']);
 	});
 
 	it('switches the tab to a terminal when Open in terminal is pressed', async () => {
@@ -393,54 +398,43 @@ describe('waiting card: what it presses (#99)', () => {
 	});
 });
 
-describe('waiting card: auto-accept permissions (#99)', () => {
-	it('presses Allow once for a permission block, however often it is drawn', async () => {
+describe('waiting card: trust new folders automatically (#99)', () => {
+	it('answers the trust prompt once, however often the card is drawn', async () => {
 		const model = new FakeModel();
-		const { keys } = await surfaceOn(model, { autoAccept: true });
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
+		const { surface, keys } = await surfaceOn(model, { autoTrust: true });
 
 		model.setStatus('blocked');
-		// More of the transcript lands under the same block: the card is drawn
-		// again, and the block is still the one that was pressed.
-		model.push([
-			turn('u1', 'Run it', [
-				{ kind: 'text', messageId: 'm1', text: 'Running it.' },
-				tool('toolu_01XB', 'Bash', { command: 'echo hi' }),
-			]),
-		]);
+		// A setting changed, a tab came back: the card is drawn again, and it is
+		// the same block it was drawn for the first time.
+		surface.refresh();
 		await Promise.resolve();
 
-		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
+		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Down', 'Enter'] }]);
 	});
 
-	it('presses again for the next block', async () => {
+	it('answers again for the next block', async () => {
 		const model = new FakeModel();
-		const { keys } = await surfaceOn(model, { autoAccept: true });
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo one' })])]);
-		model.setStatus('blocked');
+		const { keys } = await surfaceOn(model, { autoTrust: true });
 
+		model.setStatus('blocked');
 		model.setStatus('working');
-		model.push([
-			turn('u1', 'Run it', [
-				tool('toolu_01XB', 'Bash', { command: 'echo one' }, 'one'),
-				tool('toolu_02YC', 'Bash', { command: 'echo two' }),
-			]),
-		]);
 		model.setStatus('blocked');
 		await Promise.resolve();
 
 		expect(keys.calls).toHaveLength(2);
 	});
 
-	it('never presses for a question, a plan or the startup prompt', async () => {
+	it('never answers a permission, a question or a plan', async () => {
+		// Claude handles tool permissions itself, through its permission modes.
 		for (const entries of [
-			[],
+			[tool('toolu_01XB', 'Bash', { command: 'echo hi' })],
 			[tool('toolu_01Gw', 'AskUserQuestion', { questions: [{ question: 'Tea?' }] })],
 			[tool('toolu_01JU', 'ExitPlanMode', { plan: 'Write d.txt.' })],
+			[tool('toolu_01Rd', 'Read', { file_path: '/tmp/a.txt' }, 'ok')],
 		]) {
 			const model = new FakeModel();
-			const { keys } = await surfaceOn(model, { autoAccept: true });
-			if (entries.length > 0) model.push([turn('u1', 'Ask me', entries)]);
+			const { keys } = await surfaceOn(model, { autoTrust: true });
+			model.push([turn('u1', 'Do it', entries)]);
 			model.setStatus('blocked');
 			await Promise.resolve();
 
@@ -448,82 +442,25 @@ describe('waiting card: auto-accept permissions (#99)', () => {
 		}
 	});
 
-	it('presses once for a pane, not once per view, when two tabs show it', async () => {
+	it('answers once for a pane, not once per view, when two tabs show it', async () => {
 		// Two tabs on one pane share one session model (ADR-0003) and each draws
-		// the same card. One block, one Enter: the second would land on whatever
-		// dialog the first one's "Yes" opened.
+		// the same card. One block, one answer: the second would land on whatever
+		// Claude showed after the folder was trusted.
 		const model = new FakeModel();
-		const first = await surfaceOn(model, { autoAccept: true });
-		const second = await surfaceOn(model, { autoAccept: true });
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
+		const first = await surfaceOn(model, { autoTrust: true });
+		const second = await surfaceOn(model, { autoTrust: true });
 
 		model.setStatus('blocked');
 		await Promise.resolve();
 
 		expect([...first.keys.calls, ...second.keys.calls]).toEqual([
-			{ paneId: 'w4:p1', keys: ['Enter'] },
+			{ paneId: 'w4:p1', keys: ['Down', 'Enter'] },
 		]);
 	});
 
-	it('presses nothing until the transcript has been read, path or no path', async () => {
-		const model = new FakeModel();
-		const { el, keys } = await surfaceOn(model, { autoAccept: true });
-
-		// herdr has named the agent session, so the model knows the file — and the
-		// tail has delivered nothing from it yet. Every call in it is unread, so
-		// the card can only fall back to "waiting for permission", which is the
-		// one card auto-accept presses.
-		model.setPath('/transcript.jsonl');
-		model.setStatus('blocked');
-		await Promise.resolve();
-
-		expect(title(el)).toBe('Claude is waiting for permission');
-		expect(keys.calls).toEqual([]);
-
-		// What the block was all along: plan approval, where a bare Enter switches
-		// the session to auto mode (`docs/architecture.md`).
-		model.push([
-			turn('u1', 'Write a plan', [tool('toolu_01JU', 'ExitPlanMode', { plan: 'Write d.txt.' })]),
-		]);
-		await Promise.resolve();
-
-		expect(title(el)).toBe('Claude is ready to code');
-		expect(keys.calls).toEqual([]);
-	});
-
-	it('presses nothing for a block whose call is not named, read or not', async () => {
-		// `loaded` says lines have arrived, not that the `tool_use` of this block
-		// is among them: a status change can beat the line that names the call.
-		// An unnamed block is not known to be a permission at all, so it waits
-		// for the line rather than guessing with an enter.
-		const model = new FakeModel();
-		const { el, keys } = await surfaceOn(model, { autoAccept: true });
-		model.push([
-			turn('u1', 'Read it', [tool('toolu_01Rd', 'Read', { file_path: '/tmp/a.txt' }, 'ok')]),
-		]);
-
-		model.setStatus('blocked');
-		await Promise.resolve();
-
-		expect(title(el)).toBe('Claude is waiting for permission');
-		expect(keys.calls).toEqual([]);
-
-		// The line that names the call lands under the same block: now it can.
-		model.push([
-			turn('u1', 'Read it', [
-				tool('toolu_01Rd', 'Read', { file_path: '/tmp/a.txt' }, 'ok'),
-				tool('toolu_02XB', 'Bash', { command: 'echo hi' }),
-			]),
-		]);
-		await Promise.resolve();
-
-		expect(keys.calls).toEqual([{ paneId: 'w4:p1', keys: ['Enter'] }]);
-	});
-
-	it('presses nothing while the setting is off, which is its default', async () => {
+	it('answers nothing while the setting is off, which is its default', async () => {
 		const model = new FakeModel();
 		const { keys } = await surfaceOn(model);
-		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
 
 		model.setStatus('blocked');
 		await Promise.resolve();

@@ -49,7 +49,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
 		nativeToolGroups: 'highlight',
-		nativeAutoAcceptPermissions: false,
+		nativeAutoTrustFolders: false,
 		openTerminalAfterStart: true,
 		splitIntoFolderTab: true,
 		panesPerTab: 2,

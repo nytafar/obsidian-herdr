@@ -216,22 +216,22 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
-	/** How the waiting card's "Allow" reaches the pane's agent (#99). */
+	/** How the waiting card's "Trust this folder" reaches the agent (#99). */
 	keySender: KeySender;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
 	 * Switches this tab back to the terminal view, which is what the
 	 * waiting card's "Open in terminal" does: every block can be answered there,
-	 * including the three this view must never press Enter on (#99).
+	 * including the three this view never answers itself (#99).
 	 */
 	openInTerminal: () => void;
 	/**
-	 * The global "Auto-accept permissions" setting (#99), read on every block so
-	 * a change reaches an open view. Permission blocks only, never a question, a
-	 * plan or the startup prompt.
+	 * The global "Trust new folders automatically" setting (#99), read on every
+	 * block so a change reaches an open view. The workspace trust prompt only,
+	 * never a permission, a question or a plan.
 	 */
-	autoAcceptPermissions: () => boolean;
+	autoTrustFolders: () => boolean;
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
 	 * hang an autocomplete on it (#98), returning how to close it again when
@@ -269,10 +269,10 @@ export function workingLine(status: AgentStatus): string {
 	return '';
 }
 
-/** What a failed Allow says, with herdr's own message in the tail (#99). */
-export function allowFailureMessage(error: unknown): string {
+/** What a failed trust answer says, with herdr's message in the tail (#99). */
+export function trustFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
-	return `Herdr: could not allow the tool call (${reason})`;
+	return `Herdr: could not trust this folder (${reason})`;
 }
 
 /**
@@ -379,8 +379,8 @@ export class NativePaneSurface implements PaneSurface {
 	private waitingEl: HTMLElement | null = null;
 	/** The card's listeners, unloaded whenever it is drawn again or goes. */
 	private waitingComponent: Component | null = null;
-	/** The block this surface has already sent an Enter for; null for none. */
-	private allowedBlock: string | null = null;
+	/** Whether this surface has already answered the block it is in (#99). */
+	private trustSent = false;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -870,8 +870,8 @@ export class NativePaneSurface implements PaneSurface {
 		if (!root) return;
 		if (status !== 'blocked') {
 			this.clearWaiting();
-			// The block is over: the next one is an Enter of its own.
-			this.allowedBlock = null;
+			// The block is over: the next one is an answer of its own.
+			this.trustSent = false;
 			this.promptBox?.setHidden(false);
 			return;
 		}
@@ -884,7 +884,7 @@ export class NativePaneSurface implements PaneSurface {
 		});
 		this.renderWaiting(root, card);
 		this.promptBox?.setHidden(true);
-		this.autoAccept(card);
+		this.autoTrust(card);
 	}
 
 	/** Drops the card and its listeners. Safe to call when there is none. */
@@ -899,15 +899,15 @@ export class NativePaneSurface implements PaneSurface {
 	 * Draws the card: what the block is, and the one or two things to do about
 	 * it.
 	 *
-	 * **Allow is a permission block and nothing else.** Measured 2026-09-15
+	 * **The startup prompt is the one block with a button of its own.** A
+	 * permission is Claude's to decide, through its permission mode, and a
+	 * question and a plan are the user's; all three get "Open in terminal"
+	 * alone. The workspace trust prompt is what stands between a fresh Claude
+	 * in a new directory and a session that can be used from this view at all,
+	 * so it gets "Trust this folder". Measured 2026-09-15
 	 * (`docs/architecture.md`, "What a bare Enter selects on each of Claude's
-	 * blocking dialogs"): the cursor sits on the first option in every variant,
-	 * and on a Write, an Edit or a Bash permission that first option is "Yes",
-	 * which allows the call once and changes no mode. On the other three it is
-	 * something no view may choose for the user — "No, exit" on the workspace
-	 * trust prompt, the question's own first answer, and "Yes, and use auto
-	 * mode" on plan approval, which is a lasting side effect. Those three get
-	 * "Open in terminal" alone.
+	 * blocking dialogs"): the cursor sits on the first option, which here is
+	 * "No, exit", so the keys are `Down Enter` and never a bare Enter.
 	 */
 	private renderWaiting(root: HTMLElement, card: WaitingCardModel): void {
 		this.clearWaiting();
@@ -922,18 +922,17 @@ export class NativePaneSurface implements PaneSurface {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		// Only once the transcript has been read, for the same reason
-		// {@link autoAccept} waits for it: until then a blocked session has no
-		// turns to scan and every block falls back to a permission with no call
-		// named, so the button would be offered on a question, a plan approval or
-		// the trust prompt just as readily as on a permission.
-		if (card.kind === 'permission' && this.model?.loaded === true) {
-			const allowEl = actions.createEl('button', {
-				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-allow', 'mod-cta'],
-				text: 'Allow',
+		// The startup kind is "no transcript at all", which is what a Claude
+		// sitting at its trust prompt looks like: it has written no file yet
+		// (ADR-0003). Every other kind is read out of a transcript, so it is a
+		// session that is already running and past this prompt.
+		if (card.kind === 'startup') {
+			const trustEl = actions.createEl('button', {
+				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-trust', 'mod-cta'],
+				text: 'Trust this folder',
 			});
-			component.registerDomEvent(allowEl, 'click', () => {
-				void this.allow(card.toolUseId);
+			component.registerDomEvent(trustEl, 'click', () => {
+				void this.trust();
 			});
 		}
 		const terminalEl = actions.createEl('button', {
@@ -944,56 +943,41 @@ export class NativePaneSurface implements PaneSurface {
 	}
 
 	/**
-	 * Presses Allow for this block when the setting says to, once (#99). The
-	 * kind is checked here as well as where the button is drawn, because this
-	 * is the path with nobody looking at it.
-	 *
-	 * **Never before the transcript has been read.** The model knows the path as
-	 * soon as herdr names the agent session, and the tail reads the file after
-	 * that; in between, a session that is blocked has no turns to scan and the
-	 * card falls back to a permission with no call named. Pressing then would
-	 * send a bare Enter at whatever the dialog really is — auto mode on plan
-	 * approval, the first answer of a question (`docs/architecture.md`) — so a
-	 * model that has delivered nothing gets the card and no Enter.
+	 * Answers the trust prompt when the setting says to, once (#99). The kind is
+	 * checked here as well as where the button is drawn, because this is the
+	 * path with nobody looking at it: every other block stays on screen,
+	 * whatever the setting says.
 	 */
-	private autoAccept(card: WaitingCardModel): void {
-		if (card.kind !== 'permission') return;
-		if (!this.options.autoAcceptPermissions()) return;
-		const model = this.model;
-		if (!model?.loaded) return;
-		// And never a block whose call is not named. `loaded` says lines have
-		// arrived, not that the `tool_use` of *this* block is among them: an
-		// `agent_status` transition can beat the line that names the call, and
-		// the card falls back to a permission in that window too. An unnamed
-		// block is not known to be a permission at all, so it waits for the line
-		// — the card is drawn again for every line that lands under it.
-		if (card.toolUseId === '') return;
-		// One press per block for the pane, not one per view: the claim is the
+	private autoTrust(card: WaitingCardModel): void {
+		if (card.kind !== 'startup') return;
+		if (!this.options.autoTrustFolders()) return;
+		// One answer per block for the pane, not one per view: the claim is the
 		// model's, which is the thing two tabs on one pane share (ADR-0003). It
 		// is also what makes this once per block at all, since the card is drawn
-		// again every time a transcript line lands under it.
-		if (!model.claimBlock(card.toolUseId)) return;
-		void this.allow(card.toolUseId);
+		// again for every change that lands under it. The startup block names no
+		// call, so the claim it is made under is the empty one.
+		if (this.model?.claimBlock(card.toolUseId) !== true) return;
+		void this.trust();
 	}
 
 	/**
-	 * Allow: a bare Enter in the pane's agent, which takes the first option of
-	 * the permission dialog — "Yes", allowing the call once and changing no
-	 * mode (`docs/architecture.md`). Only ever called for a permission block.
+	 * Trust: `Down Enter` in the pane's agent, which moves off the trust
+	 * prompt's first option — "No, exit", which would quit Claude — onto the one
+	 * that trusts the folder (`docs/architecture.md`, measured 2026-09-15).
+	 * Only ever called for the startup block.
 	 *
-	 * One Enter per block, whoever asks and however often. A second press —
-	 * two clicks before the status moves, or a click on a card auto-accept has
-	 * already answered — would land on whatever dialog the first one's "Yes"
-	 * opened. The block is the call the card names, as the model's claim is
-	 * (#99), and it is forgotten when the agent leaves `blocked`.
+	 * One answer per block, whoever asks and however often. A second press —
+	 * two clicks before the status moves, or a click on a card the setting has
+	 * already answered — would land on whatever Claude showed next. The guard is
+	 * dropped when the agent leaves `blocked`.
 	 */
-	private async allow(toolUseId: string): Promise<void> {
-		if (this.allowedBlock === toolUseId) return;
-		this.allowedBlock = toolUseId;
+	private async trust(): Promise<void> {
+		if (this.trustSent) return;
+		this.trustSent = true;
 		try {
-			await this.options.keySender.sendKeys(this.identity.paneId, ['Enter']);
+			await this.options.keySender.sendKeys(this.identity.paneId, ['Down', 'Enter']);
 		} catch (error) {
-			this.notify(allowFailureMessage(error));
+			this.notify(trustFailureMessage(error));
 		}
 	}
 

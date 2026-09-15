@@ -287,8 +287,8 @@ describe('SessionModel: the pane’s current transcript', () => {
 
 	it('is not loaded while it only knows the path, and is once a line lands', () => {
 		// The path comes from herdr's `agent_session` and the lines come from the
-		// tail afterwards, so "path known" is not "transcript read" — which is
-		// what auto-accept waits for (#99).
+		// tail afterwards, so "path known" is not "transcript read": anything
+		// that acts on what the state does not hold has to wait for this.
 		const { registry, source } = registryWith(new Map());
 		const handle = registry.acquire('w4:p1');
 
@@ -492,6 +492,26 @@ describe('SessionModel: the agent’s status', () => {
 		expect(handle.model.claimBlock('toolu_02YC')).toBe(true);
 
 		handle.release();
+	});
+
+	it('claims the startup block, which names no call at all (#99)', () => {
+		// The trust prompt blocks before any transcript exists, so the block the
+		// trust answer is claimed for is the empty one. Once for the pane, and
+		// again once the pane has left `blocked`.
+		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		const second = registry.acquire('w4:p1');
+
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('')).toBe(true);
+		expect(second.model.claimBlock('')).toBe(false);
+
+		watcher.statusChanged('w4:p1', 'working');
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('')).toBe(true);
+
+		handle.release();
+		second.release();
 	});
 
 	it('drops the block claim when the session rotates', () => {

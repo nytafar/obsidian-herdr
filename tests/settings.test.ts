@@ -25,6 +25,7 @@ import {
 	pinnedPaneIds,
 	migrateRenderMode,
 	remoteVaultPathIssue,
+	withoutRemovedSettings,
 	renderConnectionStatus,
 	togglePanePin,
 	SCROLLBACK_BYTES_PER_MB,
@@ -442,5 +443,32 @@ describe('migrateRenderMode (issue #104)', () => {
 	it('leaves the defaults agreeing with the split it produces', () => {
 		expect(DEFAULT_SETTINGS.defaultView).toBe('terminal');
 		expect(DEFAULT_SETTINGS.terminalEngine).toBe('ghostty-web');
+	});
+});
+
+describe('withoutRemovedSettings (#99)', () => {
+	it('drops a stored auto-accept permissions switch', () => {
+		// The waiting card never answers a tool permission any more: Claude does
+		// that itself, through its permission modes. A vault that stored the old
+		// switch loads without it, and without a word about it.
+		expect(
+			withoutRemovedSettings({ nativeAutoAcceptPermissions: true, nativeToolGroups: 'collapse' }),
+		).toEqual({ nativeToolGroups: 'collapse' });
+	});
+
+	it('leaves a stored file that never had it alone', () => {
+		const stored = { defaultView: 'native', terminalEngine: 'xterm.js' };
+		expect(withoutRemovedSettings(stored)).toEqual(stored);
+	});
+
+	it('never throws on what data.json may hold', () => {
+		expect(withoutRemovedSettings(null)).toEqual({});
+		expect(withoutRemovedSettings('not a settings object')).toEqual({});
+	});
+
+	it('has no auto-accept setting left to default', () => {
+		expect('nativeAutoAcceptPermissions' in DEFAULT_SETTINGS).toBe(false);
+		// Trusting a new folder is off until it is asked for.
+		expect(DEFAULT_SETTINGS.nativeAutoTrustFolders).toBe(false);
 	});
 });

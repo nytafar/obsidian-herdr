@@ -187,9 +187,12 @@ scratch pane created with `tab create` and `agent start`.
     auto mode", "2. Yes, manually approve edits", "3. Tell Claude what to
     change". Enter switches the session to auto mode, a lasting side effect.
     Never send a bare Enter here.
-  So Allow is safe to wire as a bare Enter for the permission kind only (tool
-  `Bash`, `Write`, `Edit` and the like, recognised as the last `tool_use` with
-  no result), and must not be offered for questions, plan approval or startup.
-  The transcript shows a permission block as that dangling `tool_use`; a
+  So the trust prompt is the one dialog the plugin answers, with `Down Enter`
+  and never a bare Enter. Tool permissions are Claude's own, decided by its
+  permission mode, and a question and plan approval are the user's; the native
+  view shows those three and leaves them to the terminal (the "Allow" button
+  and the auto-accept setting of #99 were withdrawn on 2026-09-15 for that
+  reason). The transcript shows a permission block as a dangling `tool_use`; a
   question as a dangling `AskUserQuestion` call; plan approval as a dangling
-  `ExitPlanMode` call. `agent_status` is `blocked` in all of them.
+  `ExitPlanMode` call; the trust prompt as no transcript at all.
+  `agent_status` is `blocked` in all of them.

@@ -182,7 +182,7 @@ async function draw(state: TranscriptState): Promise<FakeElement> {
 		// The waiting card is `tests/nativeWaiting.test.ts`; nothing here presses it.
 		keySender: { sendKeys: async () => {} },
 		openInTerminal: () => {},
-		autoAcceptPermissions: () => false,
+		autoTrustFolders: () => false,
 		presentation: () => 'highlight',
 		vaultPath: () => '',
 	});

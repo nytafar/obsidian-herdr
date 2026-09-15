@@ -19,6 +19,7 @@ import {
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
 	renderConnectionStatus,
+	withoutRemovedSettings,
 	type AttachMode,
 	type ConnectionStatus,
 	type HerdrSettings,
@@ -286,7 +287,9 @@ export default class HerdrPlugin extends Plugin {
 		const renderMode = migrateRenderMode(stored);
 		this.settings = {
 			...DEFAULT_SETTINGS,
-			...stored,
+			// Minus the keys this build has no setting for, so nothing a past
+			// version wrote survives in the object or in the next save (#99).
+			...withoutRemovedSettings(stored),
 			defaultView: renderMode.defaultView,
 			terminalEngine: renderMode.terminalEngine,
 			remote: { ...DEFAULT_SETTINGS.remote, ...stored?.remote },
