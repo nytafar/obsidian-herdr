@@ -28,6 +28,8 @@ import {
 } from './renderMode';
 import type { Turn, TurnEntry } from './reducer';
 import type { AgentStatus } from '../herdr/types.gen';
+import { PromptBox } from './promptBox';
+import type { PromptSender } from './promptSender';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -165,6 +167,8 @@ export interface NativePaneSurfaceOptions {
 	onStatus: (line: StatusLine) => void;
 	/** The plugin's session models; one is held for as long as this is attached. */
 	models: SessionModels;
+	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
+	sender: PromptSender;
 }
 
 /**
@@ -245,6 +249,8 @@ export class NativePaneSurface implements PaneSurface {
 	private readonly turnEls = new Map<string, HTMLElement>();
 	/** One component per turn: its listeners and its rendered Markdown. */
 	private readonly turnComponents = new Map<string, Component>();
+	/** The prompt box under the transcript (#97); null while detached. */
+	private promptBox: PromptBox | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -260,11 +266,18 @@ export class NativePaneSurface implements PaneSurface {
 		root.addClass('markdown-preview-view');
 		this.turnsEl = root.createDiv({ cls: 'herdr-native-turns' });
 		this.rootEl = root;
+		this.promptBox = new PromptBox({
+			paneId: () => this.identity.paneId,
+			sender: this.options.sender,
+		});
+		this.promptBox.mount(root);
 		this.bind();
 	}
 
 	async detach(): Promise<void> {
 		this.unbind();
+		this.promptBox?.destroy();
+		this.promptBox = null;
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.turnsEl = null;
@@ -447,7 +460,10 @@ export class NativePaneSurface implements PaneSurface {
 	private updateStatus(): void {
 		const root = this.rootEl;
 		if (!root) return;
-		const text = workingLine(this.model?.agentStatus ?? 'unknown');
+		const status = this.model?.agentStatus ?? 'unknown';
+		// What the box may do is the same status this line reports (#97).
+		this.promptBox?.setStatus(status);
+		const text = workingLine(status);
 		if (!text) {
 			this.statusEl?.remove();
 			this.statusEl = null;

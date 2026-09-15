@@ -113,6 +113,7 @@ import {
 	type PaneSurface,
 	type PaneSurfaceKind,
 } from '../native/surface';
+import { clientPromptSender } from '../native/promptSender';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -488,6 +489,12 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
+			// Prompts go to the herdr that is connected now, over the local
+			// endpoint: native mode is local-only until the SSH adapters land
+			// (ADR-0002), and `--wait` is never asked for (#97, ADR-0003).
+			sender: clientPromptSender(
+				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
+			),
 		});
 	}
 

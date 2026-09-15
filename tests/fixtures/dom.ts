@@ -33,6 +33,11 @@ export class FakeElement {
 	readonly nodes: Node[] = [];
 	readonly listeners: { type: string; handler: (event: unknown) => void }[] = [];
 	parent: FakeElement | null = null;
+	/** `<textarea>`'s own property; the prompt box reads and clears it (#97). */
+	value = '';
+	/** `<button>`'s and `<textarea>`'s own property, not an attribute (#97). */
+	disabled = false;
+	focused = false;
 
 	constructor(readonly tag: string) {}
 
@@ -107,6 +112,10 @@ export class FakeElement {
 
 	detach(): void {
 		this.remove();
+	}
+
+	focus(): void {
+		this.focused = true;
 	}
 
 	addEventListener(type: string, handler: (event: unknown) => void): void {
