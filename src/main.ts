@@ -391,8 +391,16 @@ export default class HerdrPlugin extends Plugin {
 	 * terminal pinned to the other herdr is neither revealed nor switched by a
 	 * plain open, only by the reuse mode, which is an explicit choice to point
 	 * the one terminal tab at whatever row was clicked.
+	 *
+	 * `cwd` is for a caller that knows the pane's working directory before the
+	 * scope does: "Start agent here" creates the pane and opens its terminal in
+	 * one go, and the scope only admits a pane once `pane.agent_detected` and the
+	 * `pane.list` behind it have landed, which is after `agent.start` answers.
+	 * Without it every new agent was placed as if its cwd were unknown — a tab
+	 * filling the main area — while attaching to the same folder split beside the
+	 * note (issue #28).
 	 */
-	async openTerminal(paneId: string): Promise<void> {
+	async openTerminal(paneId: string, cwd?: string): Promise<void> {
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
 		// is opened on and pinned to (issue #54).
@@ -429,7 +437,7 @@ export default class HerdrPlugin extends Plugin {
 			}
 		}
 		if (!leaf) {
-			leaf = this.leafForNewTerminal(paneId);
+			leaf = this.leafForNewTerminal(paneId, cwd);
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
@@ -444,12 +452,18 @@ export default class HerdrPlugin extends Plugin {
 		return parseTerminalState(leaf.getViewState().state)?.mode ?? this.settings.defaultAttachMode;
 	}
 
-	/** The leaf a new terminal view takes (issue #28). */
-	private leafForNewTerminal(paneId: string): WorkspaceLeaf {
+	/**
+	 * The leaf a new terminal view takes (issue #28).
+	 *
+	 * The cwd comes from the scope when it has the pane, from the caller when it
+	 * does not: a pane an agent was just started in is not in the scope yet, and
+	 * an empty cwd contains no note and so always ended in a tab.
+	 */
+	private leafForNewTerminal(paneId: string, cwd?: string): WorkspaceLeaf {
 		const workspace = this.app.workspace;
 		const decision = decidePlacement({
 			placement: normalizeTerminalPlacement(this.settings.terminalPlacement),
-			paneCwd: this.scope?.get(paneId)?.cwd ?? '',
+			paneCwd: this.scope?.get(paneId)?.cwd || (cwd ?? ''),
 			activeFilePath: workspace.getActiveFile()?.path ?? null,
 			// herdr's view of the vault, because the cwd is herdr's (PRD S5, M19).
 			vaultPath: this.herdrVaultPath(),
@@ -603,7 +617,7 @@ export default class HerdrPlugin extends Plugin {
 			notice: (message: string) => {
 				new Notice(message);
 			},
-			openTerminal: (paneId: string) => this.openTerminal(paneId),
+			openTerminal: (paneId: string, cwd?: string) => this.openTerminal(paneId, cwd),
 			detachTerminalLeaves: (paneId: string, endpointId: string) =>
 				this.detachTerminalLeaves(paneId, endpointId),
 			// The scope of the endpoint the action was aimed at, not `this.scope`:
