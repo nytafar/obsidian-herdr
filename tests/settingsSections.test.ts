@@ -501,15 +501,15 @@ describe('native view section', () => {
 		expect(settingNames(el)).toEqual([
 			'Native view',
 			'Tool groups',
-			'Auto-accept permissions',
+			'Trust new folders automatically',
 		]);
 		expect(headings(el)).toEqual(['Native view']);
 		const dropdown = dropdownOf(el, 'Tool groups');
 		expect(dropdown.optionValues()).toEqual(['highlight', 'collapse']);
 		// Highlighting the notes a turn changed is the default (#95).
 		expect(dropdown.value).toBe('highlight');
-		// Answering a permission by itself is off until it is asked for (#99).
-		expect(toggleOf(el, 'Auto-accept permissions').value).toBe(false);
+		// Answering the trust prompt by itself is off until it is asked for (#99).
+		expect(toggleOf(el, 'Trust new folders automatically').value).toBe(false);
 	});
 
 	it('saves the presentation and redraws the open native views', async () => {
@@ -524,7 +524,7 @@ describe('native view section', () => {
 		expect(calls).toEqual(['save', 'refreshNativeViews']);
 	});
 
-	it('saves auto-accept and redraws the open native views', async () => {
+	it('saves auto-trust and redraws the open native views', async () => {
 		// The card on screen is drawn from the setting as it was: without the
 		// redraw the switch only reaches the next card (#99).
 		const el = settingsContainer();
@@ -532,9 +532,9 @@ describe('native view section', () => {
 		const { calls, callbacks } = recorder();
 		buildNativeViewSection(el, settings, callbacks);
 
-		await toggleOf(el, 'Auto-accept permissions').change(true);
+		await toggleOf(el, 'Trust new folders automatically').change(true);
 
-		expect(settings.nativeAutoAcceptPermissions).toBe(true);
+		expect(settings.nativeAutoTrustFolders).toBe(true);
 		expect(calls).toEqual(['save', 'refreshNativeViews']);
 	});
 

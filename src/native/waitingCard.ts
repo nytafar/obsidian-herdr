@@ -4,8 +4,14 @@
  * What the native view shows when herdr's `agent_status` is `blocked`
  * (CONTEXT.md): the kind of block and a way to answer it. This file is the
  * *kind*, as a value — the surface draws it — because which kind a block is
- * decides the one thing in the native view that has a lasting side effect if it
- * is decided wrong, namely whether a bare Enter may be sent.
+ * decides the one thing in the native view that presses a key in someone's
+ * session, namely whether the workspace trust prompt is what is on screen.
+ *
+ * **Only the trust prompt is answered from here.** Tool permissions are
+ * Claude's own, decided by its permission mode, and a plugin that pressed
+ * "Yes" for them would be answering a question it was never asked; questions
+ * and plan approval are the user's. Those three kinds exist so the card can
+ * say what the block is, and the terminal is where they are answered.
  *
  * The order is the ticket's, and it is an order rather than a set: no
  * transcript at all → startup; the last `tool_use` with no result → that tool;
@@ -33,8 +39,9 @@ export interface WaitingCardModel {
 	/** The answers `AskUserQuestion` offered; empty for every other kind. */
 	options: string[];
 	/**
-	 * The dangling `tool_use` this block is about, empty when none dangles. It is
-	 * what tells one block from the next, so auto-accept presses each once.
+	 * The dangling `tool_use` this block is about, empty when none dangles — as
+	 * it always is at startup, which is the one kind that gets answered. It is
+	 * what tells one block from the next, so the trust answer goes out once.
 	 */
 	toolUseId: string;
 }
@@ -49,9 +56,9 @@ export interface WaitingCardModel {
  * Claude is waiting on is the last one written, and it has no result yet. A
  * call further back that never got one — a background launch that was
  * interrupted — is not what the dialog on screen is about, so a newest call
- * that has landed names nothing rather than reaching past it: an unnamed block
- * is one the view refuses to answer by itself (#99), which is the safe end to
- * fall off.
+ * that has landed names nothing rather than reaching past it: a block with no
+ * call named is still a block the view only describes (#99), which is the safe
+ * end to fall off.
  */
 export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 	for (let t = turns.length - 1; t >= 0; t--) {
@@ -82,7 +89,7 @@ export function waitingCard(input: {
 		return {
 			kind: 'startup',
 			title: 'Claude is asking whether to trust this folder',
-			body: 'Answer it in the terminal. Enter would choose "No, exit" here.',
+			body: 'Trusting it here answers the prompt; the terminal answers it too.',
 			options: [],
 			toolUseId: '',
 		};

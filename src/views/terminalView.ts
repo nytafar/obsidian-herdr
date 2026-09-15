@@ -688,8 +688,8 @@ export class TerminalView extends ItemView {
 			sender: clientPromptSender(
 				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
 			),
-			// The waiting card's "Allow" (#99), over the same client and only ever a
-			// bare Enter on a permission block.
+			// The waiting card's "Trust this folder" (#99), over the same client and
+			// only ever `Down Enter` on the workspace trust prompt.
 			keySender: clientKeySender(
 				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
 			),
@@ -701,7 +701,7 @@ export class TerminalView extends ItemView {
 				this.detached('open in terminal', () => this.setPaneView('terminal'));
 			},
 			// Read per block, so the setting reaches an open view (#99).
-			autoAcceptPermissions: () => this.plugin.settings.nativeAutoAcceptPermissions === true,
+			autoTrustFolders: () => this.plugin.settings.nativeAutoTrustFolders === true,
 			// `/` offers the pane's commands and skills, `@` the vault's files
 			// (#98). The pane's own cwd decides the project scope and the form a
 			// mention takes; the vault path is the local one, because a native

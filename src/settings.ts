@@ -222,15 +222,14 @@ export interface HerdrSettings {
 	 */
 	nativeToolGroups: ToolGroupPresentation;
 	/**
-	 * Whether the native view's waiting card presses "Allow" by itself for a
-	 * permission block (issue #99). Off by default, and permissions only: a bare
-	 * Enter on the workspace trust prompt quits Claude, and on a question or on
-	 * plan approval it picks the first option, which switches the session to auto
-	 * mode (`docs/architecture.md`). One global switch is enough because this
-	 * vault is knowledge work only (native-view-design.md). See
+	 * Whether the native view's waiting card answers the workspace trust prompt
+	 * by itself (issue #99). Off by default, and that prompt only: tool
+	 * permissions are Claude's own, decided by its permission mode, and a
+	 * question and plan approval are the user's. One global switch is enough
+	 * because this vault is knowledge work only (native-view-design.md). See
 	 * `native/waitingCard.ts`.
 	 */
-	nativeAutoAcceptPermissions: boolean;
+	nativeAutoTrustFolders: boolean;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -419,7 +418,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
-	nativeAutoAcceptPermissions: false,
+	nativeAutoTrustFolders: false,
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -434,6 +433,30 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentListRowClick: 'terminal',
 	pinnedPanes: {},
 };
+
+/**
+ * Keys older builds stored that this one has no setting for. Dropped on load.
+ *
+ * `nativeAutoAcceptPermissions` (#99, shipped in #113) let the waiting card
+ * press "Allow" for a tool permission. Claude decides those itself, through its
+ * permission modes, so the plugin answers none of them and the switch is gone.
+ */
+export const REMOVED_SETTING_KEYS: readonly string[] = ['nativeAutoAcceptPermissions'];
+
+/**
+ * A stored `data.json` with the keys this build no longer has taken out, so
+ * nothing a past version wrote survives in the settings object or is written
+ * back by the next save.
+ *
+ * Takes `unknown` and never throws: this reads `data.json`, which may hold
+ * anything, and a file that has none of them comes back as it was.
+ */
+export function withoutRemovedSettings(stored: unknown): Partial<HerdrSettings> {
+	if (typeof stored !== 'object' || stored === null) return {};
+	const kept: Record<string, unknown> = { ...stored };
+	for (const key of REMOVED_SETTING_KEYS) delete kept[key];
+	return kept;
+}
 
 /** The two fields the v1 render mode setting becomes, and whether it moved. */
 export interface RenderModeMigration {
@@ -1219,11 +1242,11 @@ export function buildTerminalSection(
 }
 
 /**
- * The native view (issues #95, #99): how much of a turn's tool calls the
- * view folds away, and whether the waiting card answers a permission by itself.
- * The first changes nothing a view holds, only how it reads, so a change
- * redraws the open native views; the second is read per block, so an open view
- * picks it up at the next one.
+ * The native view (issues #95, #99): how much of a turn's tool calls the view
+ * folds away, and whether the waiting card answers the workspace trust prompt
+ * by itself. The first changes nothing a view holds, only how it reads, so a
+ * change redraws the open native views; the second is read per block, so an
+ * open view picks it up at the next one.
  */
 export function buildNativeViewSection(
 	containerEl: HTMLElement,
@@ -1250,13 +1273,13 @@ export function buildNativeViewSection(
 		);
 
 	new Setting(containerEl)
-		.setName('Auto-accept permissions')
+		.setName('Trust new folders automatically')
 		.setDesc(
-			'Answer a permission block in the native view without asking: the waiting card presses Allow once for each one. Questions, plan approval and the workspace trust prompt are never answered this way, because the key that allows a tool call chooses something else entirely on those. Off by default.',
+			'Answer the workspace trust prompt from the native view, so a fresh agent in a new folder starts without a trip to the terminal. Nothing else is answered for you: tool permissions are Claude\u2019s own, and questions and plan approval are yours. Off by default.',
 		)
 		.addToggle((toggle) =>
-			toggle.setValue(settings.nativeAutoAcceptPermissions === true).onChange(async (value) => {
-				settings.nativeAutoAcceptPermissions = value;
+			toggle.setValue(settings.nativeAutoTrustFolders === true).onChange(async (value) => {
+				settings.nativeAutoTrustFolders = value;
 				await callbacks.save();
 				// The card on screen was drawn from the setting as it was, and a
 				// card is what a blocked pane shows until the block is over: without

@@ -382,7 +382,7 @@ async function surfaceOn(
 		// The waiting card is `tests/nativeWaiting.test.ts`; nothing here presses it.
 		keySender: { sendKeys: async () => {} },
 		openInTerminal: () => {},
-		autoAcceptPermissions: () => false,
+		autoTrustFolders: () => false,
 		// Turn presentation is `tests/nativeSurface.test.ts`; nothing here draws a tool group.
 		presentation: () => 'highlight',
 		vaultPath: () => '',

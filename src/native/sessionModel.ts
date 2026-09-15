@@ -95,8 +95,7 @@ export interface SessionModelView {
 	 * does **not** say: the model has the path the moment herdr names the agent
 	 * session, and the tail reads the file afterwards. Until then the state is
 	 * empty for want of reading, not because the session is empty, and anything
-	 * that would act on what the state does not hold — auto-accept above all
-	 * (#99) — must wait for this.
+	 * that would act on what the state does not hold must wait for this.
 	 */
 	readonly loaded: boolean;
 	readonly agentSession: string;
@@ -107,11 +106,12 @@ export interface SessionModelView {
 	 *
 	 * Per pane, not per view. Two tabs on one pane share this model (ADR-0003)
 	 * and each of them draws the same waiting card, so a guard held by a view
-	 * sends one Enter per view — and the second lands on whatever dialog the
-	 * first one's "Yes" opened. True for the first caller of a block, false for
-	 * every one after it, until the pane leaves `blocked` or the session
-	 * rotates. `toolUseId` is the dangling `tool_use` the claim was made for,
-	 * empty when no call dangles.
+	 * sends one answer per view — and the second lands on whatever Claude showed
+	 * after the first. True for the first caller of a block, false for every one
+	 * after it, until the pane leaves `blocked` or the session rotates.
+	 * `toolUseId` is the dangling `tool_use` the claim was made for, empty when
+	 * no call dangles — as it always is at the workspace trust prompt, the one
+	 * block the view answers by itself.
 	 */
 	claimBlock(toolUseId: string): boolean;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
@@ -324,11 +324,11 @@ export class SessionModel implements SessionModelView {
 	 * The one automatic answer this block gets, for the first caller (#99).
 	 *
 	 * The block is the call that is dangling, which is what the claim stores:
-	 * Claude can move from one permission to the next without herdr's status
-	 * leaving `blocked`, and a claim that only asked whether *some* claim was
-	 * held would have let the first call swallow every one after it. Two tabs
-	 * on one pane still get one press between them, which is the claim's job
-	 * (ADR-0003), because they ask about the same call.
+	 * Claude can move from one dialog to the next without herdr's status leaving
+	 * `blocked`, and a claim that only asked whether *some* claim was held would
+	 * have let the first swallow every one after it. Two tabs on one pane still
+	 * get one answer between them, which is the claim's job (ADR-0003), because
+	 * they ask about the same block.
 	 */
 	claimBlock(toolUseId: string): boolean {
 		if (this.blockClaim === toolUseId) return false;
