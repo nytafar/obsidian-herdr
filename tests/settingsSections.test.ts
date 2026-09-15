@@ -354,7 +354,8 @@ describe('terminal section', () => {
 			'Terminal tab',
 			'Terminal tab title',
 			'Theme',
-			'Default render mode',
+			'Default view',
+			'Terminal engine',
 			'Cursor style',
 			'Blinking cursor',
 			'Font family',
@@ -384,27 +385,47 @@ describe('terminal section', () => {
 		expect(calls).toEqual(['save', 'save', 'save']);
 	});
 
-	it('offers all three render modes as the default for new tabs (#92)', () => {
+	it('offers both views as the default for new tabs (#92, #104)', () => {
 		const el = settingsContainer();
 		buildTerminalSection(el, settingsOf(), recorder().callbacks);
 
-		expect(dropdownOf(el, 'Default render mode').optionValues()).toEqual([
-			'ghostty-web',
-			'xterm.js',
-			'native',
-		]);
-		expect(dropdownOf(el, 'Default render mode').getValue()).toBe('ghostty-web');
+		expect(dropdownOf(el, 'Default view').optionValues()).toEqual(['terminal', 'native']);
+		expect(dropdownOf(el, 'Default view').getValue()).toBe('terminal');
 	});
 
-	it('stores the native render mode and tells open terminals (#92)', async () => {
+	it('offers the two terminal engines separately from the view (#104)', () => {
+		const el = settingsContainer();
+		buildTerminalSection(el, settingsOf({ defaultView: 'native' }), recorder().callbacks);
+
+		expect(dropdownOf(el, 'Terminal engine').optionValues()).toEqual(['ghostty-web', 'xterm.js']);
+		// The engine setting reads the same whichever view is the default: it is
+		// what a tab comes back to, not a property of the terminal view.
+		expect(dropdownOf(el, 'Terminal engine').getValue()).toBe('ghostty-web');
+	});
+
+	it('stores the native view and tells open terminals (#92, #104)', async () => {
 		const el = settingsContainer();
 		const settings = settingsOf();
 		const { calls, callbacks } = recorder();
 		buildTerminalSection(el, settings, callbacks);
 
-		await dropdownOf(el, 'Default render mode').change('native');
+		await dropdownOf(el, 'Default view').change('native');
 
-		expect(settings.terminalEngine).toBe('native');
+		expect(settings.defaultView).toBe('native');
+		expect(settings.terminalEngine).toBe(DEFAULT_SETTINGS.terminalEngine);
+		expect(calls).toEqual(['save', 'applyTerminalSetting:defaultView']);
+	});
+
+	it('leaves the default view alone when the engine changes (#104)', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf({ defaultView: 'native' });
+		const { calls, callbacks } = recorder();
+		buildTerminalSection(el, settings, callbacks);
+
+		await dropdownOf(el, 'Terminal engine').change('xterm.js');
+
+		expect(settings.defaultView).toBe('native');
+		expect(settings.terminalEngine).toBe('xterm.js');
 		expect(calls).toEqual(['save', 'applyTerminalSetting:terminalEngine']);
 	});
 
@@ -415,7 +436,7 @@ describe('terminal section', () => {
 		buildTerminalSection(el, settings, callbacks);
 
 		await dropdownOf(el, 'Theme').change('nord');
-		await dropdownOf(el, 'Default render mode').change('xterm.js');
+		await dropdownOf(el, 'Terminal engine').change('xterm.js');
 		await toggleOf(el, 'Blinking cursor').change(false);
 		await textOf(el, 'Font family').change('Iosevka');
 		await sliderOf(el, 'Font size').change(14);
@@ -449,17 +470,21 @@ describe('terminal section', () => {
 
 		await dropdownOf(el, 'Terminal placement').change('nonsense');
 		await dropdownOf(el, 'Theme').change('nonsense');
-		await dropdownOf(el, 'Default render mode').change('nonsense');
+		await dropdownOf(el, 'Default view').change('nonsense');
+		await dropdownOf(el, 'Terminal engine').change('nonsense');
 		await sliderOf(el, 'Scrollback memory budget').change(9999);
 
 		expect(settings.terminalPlacement).toBe(DEFAULT_SETTINGS.terminalPlacement);
 		expect(settings.terminalTheme).toBe(DEFAULT_SETTINGS.terminalTheme);
+		expect(settings.defaultView).toBe(DEFAULT_SETTINGS.defaultView);
 		expect(settings.terminalEngine).toBe(DEFAULT_SETTINGS.terminalEngine);
 		expect(settings.terminalScrollbackMb).toBe(MAX_SCROLLBACK_MB);
 		expect(calls).toEqual([
 			'save',
 			'save',
 			'applyTerminalSetting:terminalTheme',
+			'save',
+			'applyTerminalSetting:defaultView',
 			'save',
 			'applyTerminalSetting:terminalEngine',
 			'save',

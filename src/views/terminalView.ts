@@ -12,11 +12,15 @@
  * `Notice` all reach it from here.
  *
  * Since issue #92 that lifecycle is one **pane surface** among two
- * (`../native/surface.ts`, ADR-0002): the tab's **render mode** decides which
- * one is mounted, `PaneSurfaceHolder` performs the swap, and the native
- * surface is the other. The tab's own render mode lives in its view state and
- * is switched from the tab menu or the `Switch render mode` command; a tab
- * that never chose follows `settings.terminalEngine`, the global default.
+ * (`../native/surface.ts`, ADR-0002): the tab's **view** decides which one is
+ * mounted, `PaneSurfaceHolder` performs the swap, and the native surface is
+ * the other. Since #104 the tab's view state holds two independent fields, the
+ * view and the terminal engine, each switched from the tab menu or the
+ * `Switch render mode` command and each falling back to its own global setting
+ * (`defaultView`, `terminalEngine`) while the tab has not chosen it. The view
+ * also has a header button of its own (#105), beside the observe/control eye,
+ * which is hidden while the native view is up because only a terminal has an
+ * attach mode.
  *
  * What stays here, then:
  *
@@ -81,6 +85,11 @@ import { terminalArgvPrefix } from '../herdr/ssh';
 import { LOCAL_ENDPOINT_ID, type EndpointSession } from '../connection';
 import { TerminalSession, type TerminalSessionMode } from '../bridge/terminalSession';
 import { createRenderer } from './renderer/create';
+import {
+	isTerminalEngine,
+	TERMINAL_ENGINES,
+	type TerminalEngine,
+} from './renderer/TerminalRenderer';
 import { agentDisplayName } from './rowModel';
 import {
 	PaneTerminal,
@@ -98,18 +107,21 @@ import type { HerdrClient } from '../herdr/client';
 import type { TabLabelCache } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
-	engineForRenderMode,
-	isRenderMode,
-	normalizeRenderMode,
-	RENDER_MODES,
-	RENDER_MODE_NAMES,
-	type RenderMode,
+	effectiveEngine,
+	isPaneView,
+	normalizePaneView,
+	otherPaneView,
+	PANE_VIEWS,
+	PANE_VIEW_NAMES,
+	splitRenderMode,
+	TERMINAL_ENGINE_NAMES,
+	type PaneView,
 } from '../native/renderMode';
 import {
-	effectiveRenderMode,
+	effectivePaneView,
 	NativePaneSurface,
 	PaneSurfaceHolder,
-	renderModeAvailability,
+	paneViewAvailability,
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
@@ -130,10 +142,16 @@ export interface TerminalViewState {
 	mode: AttachMode;
 	endpointId: string;
 	/**
-	 * The tab's render mode (issue #92), or undefined while the tab has never
-	 * chosen one and follows the global default.
+	 * The view the tab chose (issues #92, #104), or undefined while it has never
+	 * chosen one and follows `settings.defaultView`.
 	 */
-	renderMode?: RenderMode;
+	view?: PaneView;
+	/**
+	 * The terminal engine the tab chose (#104), or undefined while it follows
+	 * `settings.terminalEngine`. Independent of {@link view}: a tab in the
+	 * native view keeps the engine it will come back to.
+	 */
+	engine?: TerminalEngine;
 }
 
 /**
@@ -142,8 +160,13 @@ export interface TerminalViewState {
  * back to control, which is the documented default (PRD M15). A state saved
  * before endpoints existed has no endpoint id and is treated as local, which
  * is the only endpoint a plugin of that age could have opened it on. An
- * unreadable or missing render mode is left unset (issue #92), which is how a
- * tab says it follows the global default.
+ * unreadable or missing view or engine is left unset (issues #92, #104), which
+ * is how a tab says it follows the global default for that half.
+ *
+ * A layout written before #104 stored one `renderMode` instead; it is split
+ * here and written back in the new shape by the next {@link getState}. The old
+ * value wins over the new fields, which only a hand-edit could have put beside
+ * it, because it is the one this build no longer stores.
  */
 export function parseTerminalState(raw: unknown): TerminalViewState | null {
 	if (typeof raw !== 'object' || raw === null) return null;
@@ -151,13 +174,99 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
 	const paneId = typeof record.paneId === 'string' ? record.paneId.trim() : '';
 	if (paneId.length === 0) return null;
 	const endpointId = typeof record.endpointId === 'string' ? record.endpointId.trim() : '';
+	const legacy = splitRenderMode(record.renderMode);
+	// Deliberately not normalized to the defaults: a tab with no stored view or
+	// engine follows the global one, and an unreadable value is such a tab.
+	const view = legacy?.view ?? (isPaneView(record.view) ? record.view : null);
+	const engine = legacy
+		? legacy.engine
+		: isTerminalEngine(record.engine)
+			? record.engine
+			: null;
 	return {
 		paneId,
 		mode: record.mode === 'observe' ? 'observe' : 'control',
 		endpointId: endpointId.length > 0 ? endpointId : LOCAL_ENDPOINT_ID,
-		// Deliberately not normalized to the default: a tab with no stored render
-		// mode follows the global one, and an unreadable value is such a tab.
-		...(isRenderMode(record.renderMode) ? { renderMode: record.renderMode } : {}),
+		...(view ? { view } : {}),
+		...(engine ? { engine } : {}),
+	};
+}
+
+/**
+ * What the tab header shows for the surface the tab is on (issue #105).
+ *
+ * Two decisions, both a function of the view alone (plus the endpoint), kept
+ * pure so the header can be asserted without an Obsidian view: the toggle
+ * between the two views, and whether the observe/control eye applies at all.
+ * The native-only readouts coming in #111 belong in here too.
+ */
+export interface TerminalHeaderActions {
+	/** Icon, tooltip and state of the view toggle; what a click *does*. */
+	viewToggle: {
+		icon: string;
+		/** Tooltip and aria-label. Names the view a click switches to. */
+		label: string;
+		/** True on a remote endpoint, where native is unavailable (ADR-0002). */
+		disabled: boolean;
+	};
+	/**
+	 * Whether the observe/control eye is shown. Only a terminal has an attach
+	 * mode to swap; the native view reads a transcript, so the eye is hidden
+	 * while it is up and comes back with the terminal.
+	 */
+	controlToggle: boolean;
+}
+
+/**
+ * The header for a tab in this view, on this endpoint (#105).
+ *
+ * The toggle is a picture of where a click goes, not of where the tab is —
+ * the same reading as the observe/control eye and the agent list's endpoint
+ * toggle. On a remote endpoint it is disabled rather than hidden, with the
+ * reason the tab menu gives beside native in its tooltip: a button that is
+ * missing looks like a bug, one that says why does not.
+ */
+export function terminalHeaderActions(where: {
+	view: PaneView;
+	remote: boolean;
+}): TerminalHeaderActions {
+	const target = otherPaneView(where.view);
+	const name = target === 'native' ? 'native view' : 'terminal';
+	const { available, reason } = paneViewAvailability(target, { remote: where.remote });
+	const label = `Switch to ${name}${reason === null ? '' : ` (${reason})`}`;
+	return {
+		viewToggle: {
+			icon: target === 'native' ? 'book-open' : 'terminal',
+			label,
+			disabled: !available,
+		},
+		controlToggle: where.view === 'terminal',
+	};
+}
+
+/** What a tab chose for itself, either half null while it follows the vault. */
+export interface ChosenPaneView {
+	view: PaneView | null;
+	engine: TerminalEngine | null;
+}
+
+/**
+ * The state a tab persists (#104): its identity, plus only the halves it chose
+ * for itself — one that never chose keeps following the global settings across
+ * restarts. Never writes the pre-#104 `renderMode`, so the next save migrates
+ * a layout that held one.
+ */
+export function terminalViewState(
+	identity: PaneIdentity,
+	chosen: ChosenPaneView,
+): TerminalViewState {
+	const { paneId, mode, endpointId } = identity;
+	return {
+		paneId,
+		mode,
+		endpointId,
+		...(chosen.view ? { view: chosen.view } : {}),
+		...(chosen.engine ? { engine: chosen.engine } : {}),
 	};
 }
 
@@ -342,7 +451,10 @@ export class TerminalView extends ItemView {
 	private lastTitle = '';
 	private hostEl: HTMLElement | null = null;
 	private statusEl: HTMLElement | null = null;
+	/** The observe/control eye; hidden while the tab shows the native view (#105). */
 	private toggleActionEl: HTMLElement | null = null;
+	/** The native/terminal toggle in the header (#105). */
+	private viewActionEl: HTMLElement | null = null;
 	/** Hide/reveal state machine; null before `onOpen` and after `onClose`. */
 	private visibility: VisibilityTracker | null = null;
 	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
@@ -355,10 +467,18 @@ export class TerminalView extends ItemView {
 	 */
 	private readonly pendingEffects = new SettingEffectQueue();
 	/**
-	 * The render mode this tab chose for itself (#92), or null while it follows
-	 * the global default. Persisted in the view state, so it survives a restart.
+	 * The view this tab chose for itself (#92, #104), or null while it follows
+	 * `settings.defaultView`. Persisted in the view state, so it survives a
+	 * restart.
 	 */
-	private storedRenderMode: RenderMode | null = null;
+	private storedView: PaneView | null = null;
+	/**
+	 * The terminal engine this tab chose for itself (#104), or null while it
+	 * follows `settings.terminalEngine`. Kept while the tab is in the native
+	 * view, which is the point of the split: the tab comes back to the terminal
+	 * it had.
+	 */
+	private storedEngine: TerminalEngine | null = null;
 	/**
 	 * The one surface this tab has mounted, and the swap between them (#92).
 	 * The terminal adapter is {@link terminal} itself, kept for the view's whole
@@ -411,11 +531,10 @@ export class TerminalView extends ItemView {
 					fontSize: settings.terminalFontSize,
 					// Colours: `obsidian` by default, which is the CSS variables (#26).
 					theme: settings.terminalTheme,
-					// Which library draws it (#27, #92): the tab's own render mode,
-					// read fresh on every mount, so a switch or a changed default
-					// lands on the next rebuild. `native` never reaches a terminal
-					// surface, and would be the default engine if it did.
-					engine: engineForRenderMode(this.renderMode()),
+					// Which library draws it (#27, #104): the tab's own engine, read
+					// fresh on every mount, so a switch or a changed default lands
+					// on the next rebuild.
+					engine: this.engine(),
 					// Cursor shape and blink (#52); both engines also take these in
 					// place, so a change never rebuilds anything.
 					...cursorOptions(settings),
@@ -461,18 +580,27 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * The render mode this tab renders in (#92): its own once it has switched,
-	 * else the global default, read fresh so a tab that never chose follows a
-	 * change to the setting.
+	 * The view this tab shows (#92, #104): its own once it has switched, else
+	 * the global default, read fresh so a tab that never chose follows a change
+	 * to the setting.
 	 */
-	private renderMode(): RenderMode {
-		return effectiveRenderMode({
-			stored: this.storedRenderMode,
-			fallback: normalizeRenderMode(this.plugin.settings.terminalEngine),
+	private view(): PaneView {
+		return effectivePaneView({
+			stored: this.storedView,
+			fallback: normalizePaneView(this.plugin.settings.defaultView),
 			// ADR-0002: the native view reads a transcript on the pane's own host,
 			// so a tab pinned to a remote herdr keeps its terminal surface.
 			remote: this.isRemote(),
 		});
+	}
+
+	/**
+	 * The engine this tab's terminal mounts (#27, #104): its own once it has
+	 * switched, else the global default. Answered whatever the view is — a tab
+	 * in the native view still has an engine waiting for it.
+	 */
+	private engine(): TerminalEngine {
+		return effectiveEngine(this.storedEngine, this.plugin.settings.terminalEngine);
 	}
 
 	/**
@@ -513,16 +641,12 @@ export class TerminalView extends ItemView {
 			keySender: clientKeySender(
 				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
 			),
-			// "Open in terminal": the tab's own render mode switch (#92), which is
-			// how a block this view must never press Enter on gets answered. The
-			// mode it switches to is the engine the vault's default names, so the
-			// tab comes back as the terminal the user would have opened anyway.
+			// "Open in terminal": the tab's own view switch (#92, #104), which is
+			// how a block this view must never press Enter on gets answered. Only
+			// the view moves; the terminal it comes back to is the tab's own
+			// engine, or the vault's default for a tab that never chose one.
 			openInTerminal: () => {
-				this.detached('open in terminal', () =>
-					this.setRenderMode(
-						engineForRenderMode(normalizeRenderMode(this.plugin.settings.terminalEngine)),
-					),
-				);
+				this.detached('open in terminal', () => this.setPaneView('terminal'));
 			},
 			// Read per block, so the setting reaches an open view (#99).
 			autoAcceptPermissions: () => this.plugin.settings.nativeAutoAcceptPermissions === true,
@@ -626,22 +750,28 @@ export class TerminalView extends ItemView {
 	}
 
 	override getState(): Record<string, unknown> {
-		const { paneId, mode, endpointId } = this.terminal.identity;
-		// Only a tab that chose stores a render mode: one that never did keeps
-		// following the global default across restarts (#92).
-		const renderMode = this.storedRenderMode;
-		return { paneId, mode, endpointId, ...(renderMode ? { renderMode } : {}) };
+		// Only a tab that chose stores a view or an engine: one that never did
+		// keeps following the global defaults across restarts (#92, #104). This
+		// is also where a layout written before #104 is migrated onto the two
+		// fields, since nothing here ever writes the old one back.
+		return { ...terminalViewState(this.terminal.identity, this.chosen()) };
+	}
+
+	/** The two halves this tab pinned, as the state writer takes them (#104). */
+	private chosen(): ChosenPaneView {
+		return { view: this.storedView, engine: this.storedEngine };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		await super.setState(state, result);
 		const parsed = parseTerminalState(state);
 		if (!parsed) return;
-		this.storedRenderMode = parsed.renderMode ?? null;
+		this.storedView = parsed.view ?? null;
+		this.storedEngine = parsed.engine ?? null;
 		// A change clears the old pane's output, retitles through
 		// `onIdentityChanged` and restarts the bridge; anything else is a no-op.
 		// The endpoint may have moved too, and native is local-only (ADR-0002),
-		// so the render mode is re-decided after it.
+		// so the view is re-decided after it.
 		await this.setIdentity(parsed);
 	}
 
@@ -652,10 +782,21 @@ export class TerminalView extends ItemView {
 		this.hostEl = container.createDiv({ cls: 'herdr-terminal-host' });
 		this.statusEl = container.createDiv({ cls: 'herdr-terminal-status' });
 
+		// Header actions, in the order Obsidian shows them (#105). Surface-specific
+		// first — the view toggle, then the observe/control eye, which only a
+		// terminal has — and connection actions last, so the native-only readouts
+		// of #111 (context, model, effort) can join the first group without
+		// moving anything else.
+		this.viewActionEl = this.addAction('book-open', 'Switch to native view', () => {
+			this.detached('view toggle', () => this.togglePaneView());
+		});
+		this.viewActionEl.addClass('herdr-view-toggle');
 		this.toggleActionEl = this.addAction('eye', 'Switch to observe mode', () => {
 			this.detached('mode toggle', () => this.toggleMode());
 		});
+		this.toggleActionEl.addClass('herdr-mode-toggle');
 		this.updateToggleAction();
+		this.updateViewActions();
 		this.addAction('refresh-cw', 'Reconnect', () => {
 			this.detached('reconnect', () => this.terminal.reconnect());
 		});
@@ -717,20 +858,23 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * Mounts the surface this tab's render mode asks for (#92). The holder does
+	 * Mounts the surface this tab's view asks for (#92). The holder does
 	 * nothing when that is the surface already mounted, so this is also the
 	 * "did anything change?" call after a setting, a switch or an endpoint move.
 	 */
 	private async showSurface(): Promise<void> {
+		// Whatever decided the surface — a switch, a setting, a move to another
+		// endpoint — decided the header with it (#105).
+		this.updateViewActions();
 		const host = this.hostEl;
 		if (!host) return;
-		await this.surfaces.show(surfaceKindFor(this.renderMode()), host);
+		await this.surfaces.show(surfaceKindFor(this.view()), host);
 	}
 
 	/**
 	 * Points the tab at another pane, endpoint or attach mode. The lifecycle is
-	 * always told, mounted or not, so the terminal a switch back to a terminal
-	 * render mode re-attaches is pointed at the right pane; the native surface
+	 * always told, mounted or not, so the terminal a switch back to the terminal
+	 * view re-attaches is pointed at the right pane; the native surface
 	 * is told when it is the one mounted.
 	 */
 	private async setIdentity(identity: PaneIdentity): Promise<void> {
@@ -748,6 +892,7 @@ export class TerminalView extends ItemView {
 		this.hostEl = null;
 		this.statusEl = null;
 		this.toggleActionEl = null;
+		this.viewActionEl = null;
 		this.contentEl.empty();
 	}
 
@@ -907,12 +1052,14 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * One effect on the mounted surface. `engine` is the render mode's setting
-	 * (#92): a changed default can mean the other surface altogether, and when
-	 * it does not it is the lifecycle's ordinary renderer rebuild.
+	 * One effect on the mounted surface. `engine` is the view's and the engine's
+	 * setting (#92, #104): a changed default view can mean the other surface
+	 * altogether, and when it does not it is the lifecycle's ordinary renderer
+	 * rebuild — which the native surface ignores, so an engine switched while a
+	 * tab is in the native view simply waits for it to come back.
 	 */
 	private async applyEffect(effect: TerminalEffect): Promise<void> {
-		if (effect === 'engine' && surfaceKindFor(this.renderMode()) !== this.surfaces.kind) {
+		if (effect === 'engine' && surfaceKindFor(this.view()) !== this.surfaces.kind) {
 			await this.showSurface();
 			return;
 		}
@@ -975,9 +1122,41 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * Header action: swap the tab's view (#105). A click on the disabled button
+	 * — a remote endpoint, where native is unavailable (ADR-0002) — does
+	 * nothing, since Obsidian's header actions stay clickable whatever they look
+	 * like.
+	 */
+	private async togglePaneView(): Promise<void> {
+		const target = otherPaneView(this.view());
+		if (!paneViewAvailability(target, { remote: this.isRemote() }).available) return;
+		await this.setPaneView(target);
+	}
+
+	/**
+	 * Paints the surface-specific half of the header from the view the tab is
+	 * showing (#105): what the toggle switches to, and whether the eye applies
+	 * at all. Both elements stay in place; only their look changes, so nothing
+	 * in the header moves as a tab is switched back and forth.
+	 */
+	private updateViewActions(): void {
+		const header = terminalHeaderActions({ view: this.view(), remote: this.isRemote() });
+		const el = this.viewActionEl;
+		if (el) {
+			const { icon, label, disabled } = header.viewToggle;
+			setIcon(el, icon);
+			setTooltip(el, label);
+			el.setAttribute('aria-label', label);
+			el.toggleClass('is-disabled', disabled);
+			el.setAttribute('aria-disabled', String(disabled));
+		}
+		this.toggleActionEl?.toggleClass('herdr-hidden', !header.controlToggle);
+	}
+
+	/**
 	 * The tab header menu (#92). Obsidian calls this for "more options" and for
-	 * a right-click on the tab, which is where a render mode is switched in
-	 * place; the palette reaches the same menu through
+	 * a right-click on the tab, which is where a tab's view and engine are
+	 * switched in place; the palette reaches the same menu through
 	 * {@link switchRenderModeCommand}.
 	 */
 	override onPaneMenu(menu: Menu, source: string): void {
@@ -985,7 +1164,7 @@ export class TerminalView extends ItemView {
 		this.addRenderModeItems(menu);
 	}
 
-	/** Opens the render mode menu over this view, for the command. */
+	/** Opens the view-and-engine menu over this view, for the command. */
 	showRenderModeMenu(): void {
 		const menu = new Menu();
 		this.addRenderModeItems(menu);
@@ -994,45 +1173,75 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * One checkable item per render mode. Native is shown but disabled on a
-	 * remote endpoint, with the reason in its title (ADR-0002), rather than
-	 * hidden: a mode that is missing looks like a bug, one that says why does
-	 * not.
+	 * Two checkable sections (#104): which view the tab shows, then which engine
+	 * its terminal uses. The engine section stays while the tab is in the native
+	 * view — it is what the tab comes back to — and switching it there takes
+	 * effect on return.
+	 *
+	 * Native is shown but disabled on a remote endpoint, with the reason in its
+	 * title (ADR-0002), rather than hidden: a view that is missing looks like a
+	 * bug, one that says why does not.
 	 */
 	private addRenderModeItems(menu: Menu): void {
-		const current = this.renderMode();
+		const currentView = this.view();
 		const remote = this.isRemote();
-		for (const mode of RENDER_MODES) {
-			const { available, reason } = renderModeAvailability(mode, { remote });
-			const name = RENDER_MODE_NAMES[mode];
+		for (const view of PANE_VIEWS) {
+			const { available, reason } = paneViewAvailability(view, { remote });
+			const name = PANE_VIEW_NAMES[view];
 			const title = reason === null ? name : `${name} (${reason})`;
 			menu.addItem((item) => {
-				item.setSection('herdr-render-mode')
+				item.setSection('herdr-view')
 					.setTitle(title)
-					.setChecked(mode === current)
+					.setChecked(view === currentView)
 					.setDisabled(!available)
 					.onClick(() => {
-						if (available) this.detached('render mode switch', () => this.setRenderMode(mode));
+						if (available) this.detached('view switch', () => this.setPaneView(view));
+					});
+			});
+		}
+		const currentEngine = this.engine();
+		for (const engine of TERMINAL_ENGINES) {
+			menu.addItem((item) => {
+				item.setSection('herdr-terminal-engine')
+					.setTitle(TERMINAL_ENGINE_NAMES[engine])
+					.setChecked(engine === currentEngine)
+					.onClick(() => {
+						this.detached('engine switch', () => this.setEngine(engine));
 					});
 			});
 		}
 	}
 
 	/**
-	 * Switches this tab's render mode in place and remembers it in the view
-	 * state, so it survives a restart. Between the two terminal modes this is
-	 * the `engine` effect and the surface stays; to or from native it is a
-	 * surface swap.
+	 * Switches this tab's view in place and remembers it in the view state, so
+	 * it survives a restart. To or from native this is a surface swap; pinning
+	 * the view the tab was following anyway changes nothing on screen.
 	 */
-	async setRenderMode(mode: RenderMode): Promise<void> {
-		if (this.storedRenderMode === mode) return;
-		const before = this.renderMode();
-		this.storedRenderMode = mode;
+	async setPaneView(view: PaneView): Promise<void> {
+		if (this.storedView === view) return;
+		const before = this.view();
+		this.storedView = view;
 		// Keeps the layout file in step with what the view is actually doing.
 		this.app.workspace.requestSaveLayout();
-		// Pinning the mode the tab was following anyway changes nothing on
+		if (this.view() === before) return;
+		await this.applyEffect('engine');
+	}
+
+	/**
+	 * Switches this tab's terminal engine and remembers it. Allowed while the
+	 * tab is in the native view (#104): the stored engine is what it comes back
+	 * to, and the native surface ignores the effect, so nothing is rebuilt until
+	 * the tab shows a terminal again.
+	 */
+	async setEngine(engine: TerminalEngine): Promise<void> {
+		if (this.storedEngine === engine) return;
+		const before = this.engine();
+		this.storedEngine = engine;
+		// Keeps the layout file in step with what the view is actually doing.
+		this.app.workspace.requestSaveLayout();
+		// Pinning the engine the tab was following anyway changes nothing on
 		// screen, and a rebuild would cost it its colours for no reason.
-		if (this.renderMode() === before) return;
+		if (this.engine() === before) return;
 		await this.applyEffect('engine');
 	}
 
@@ -1050,7 +1259,8 @@ export class TerminalView extends ItemView {
 /**
  * The `Switch render mode` command (#92), registered in `main.ts`. Answers for
  * the active terminal tab and nothing else, so the command hides itself in the
- * palette while another view has the focus.
+ * palette while another view has the focus. The command keeps its id and name
+ * across the #104 split: they are what a user's hotkey is bound to.
  */
 export function switchRenderModeCommand(app: App, checking: boolean): boolean {
 	const view = app.workspace.getActiveViewOfType(TerminalView);

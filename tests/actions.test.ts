@@ -42,6 +42,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		agentNamePattern: '{folder}',
 		terminalFontFamily: '',
 		terminalTheme: 'obsidian',
+		defaultView: 'terminal',
 		terminalEngine: 'ghostty-web',
 		terminalCursorStyle: 'block',
 		terminalCursorBlink: true,

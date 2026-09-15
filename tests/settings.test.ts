@@ -23,6 +23,7 @@ import {
 	isPanePinned,
 	normalizePinnedPanes,
 	pinnedPaneIds,
+	migrateRenderMode,
 	remoteVaultPathIssue,
 	renderConnectionStatus,
 	togglePanePin,
@@ -359,5 +360,87 @@ describe('pinned panes (issue #35)', () => {
 				empty: [],
 			}),
 		).toEqual({ local: ['w4:p1', 'w4:p2'] });
+	});
+});
+
+describe('migrateRenderMode (issue #104)', () => {
+	/**
+	 * Every value `data.json` can hold for the old single render mode, and the
+	 * two fields it becomes. The expected pairs come from the ticket, not from
+	 * re-running the split: `native` is the native view on the default engine,
+	 * an engine name is a terminal on that engine, and anything else is the
+	 * default pair.
+	 */
+	const table: [string, unknown, { defaultView: string; terminalEngine: string; migrated: boolean }][] =
+		[
+			[
+				'the v1 default engine',
+				{ terminalEngine: 'ghostty-web' },
+				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+			],
+			[
+				'the other engine',
+				{ terminalEngine: 'xterm.js' },
+				{ defaultView: 'terminal', terminalEngine: 'xterm.js', migrated: false },
+			],
+			[
+				'the native render mode',
+				{ terminalEngine: 'native' },
+				{ defaultView: 'native', terminalEngine: 'ghostty-web', migrated: true },
+			],
+			[
+				'a value no build ever wrote',
+				{ terminalEngine: 'nonsense' },
+				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+			],
+			[
+				'a settings file without the key',
+				{},
+				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+			],
+			[
+				'no settings file at all',
+				null,
+				{ defaultView: 'terminal', terminalEngine: 'ghostty-web', migrated: false },
+			],
+			[
+				'a file this build already split',
+				{ defaultView: 'native', terminalEngine: 'xterm.js' },
+				{ defaultView: 'native', terminalEngine: 'xterm.js', migrated: false },
+			],
+			[
+				'an unreadable view beside a readable engine',
+				{ defaultView: 'nonsense', terminalEngine: 'xterm.js' },
+				{ defaultView: 'terminal', terminalEngine: 'xterm.js', migrated: false },
+			],
+			[
+				'a hand-edited file with both the old and the new key',
+				{ defaultView: 'terminal', terminalEngine: 'native' },
+				{ defaultView: 'native', terminalEngine: 'ghostty-web', migrated: true },
+			],
+		];
+
+	for (const [what, stored, expected] of table) {
+		it(`splits ${what}`, () => {
+			expect(migrateRenderMode(stored)).toEqual(expected);
+		});
+	}
+
+	it('never throws on a value of the wrong type', () => {
+		expect(migrateRenderMode({ terminalEngine: 7, defaultView: [] })).toEqual({
+			defaultView: 'terminal',
+			terminalEngine: 'ghostty-web',
+			migrated: false,
+		});
+		expect(migrateRenderMode('not a settings object')).toEqual({
+			defaultView: 'terminal',
+			terminalEngine: 'ghostty-web',
+			migrated: false,
+		});
+	});
+
+	it('leaves the defaults agreeing with the split it produces', () => {
+		expect(DEFAULT_SETTINGS.defaultView).toBe('terminal');
+		expect(DEFAULT_SETTINGS.terminalEngine).toBe('ghostty-web');
 	});
 });

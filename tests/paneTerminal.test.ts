@@ -738,6 +738,7 @@ describe('the settings-effect matrix (issue #84)', () => {
 			terminalTheme: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
 			terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
 			terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+			defaultView: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
 			terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
 			terminalFontFamily: {
 				effect: 'next-mount',
@@ -764,11 +765,13 @@ describe('the settings-effect matrix (issue #84)', () => {
 		}
 	});
 
-	it('restarts the session for the engine and for nothing else', () => {
+	it('restarts the session for the two settings that rebuild a surface, and for nothing else', () => {
+		// #104 split the render mode in two: either half can mean another
+		// library, or the other surface altogether, for a tab that never chose.
 		const restarts = Object.entries(TERMINAL_SETTING_EFFECTS)
 			.filter(([, spec]) => !spec.keepsSession)
 			.map(([setting]) => setting);
-		expect(restarts).toEqual(['terminalEngine']);
+		expect(restarts).toEqual(['defaultView', 'terminalEngine']);
 	});
 
 	it('defers everything the renderer shows while a leaf is hidden, but never the title', () => {
