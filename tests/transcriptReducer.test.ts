@@ -50,7 +50,9 @@ describe('reduce: assistant blocks merged by message id', () => {
 
 		expect(state.turns).toHaveLength(1);
 		expect(state.turns[0]?.entries).toEqual([
-			{ kind: 'thinking', messageId: 'msg_2' },
+			// The thinking text rides along: the view shows it in a collapsed
+			// disclosure (#95), and only the signature is dropped.
+			{ kind: 'thinking', messageId: 'msg_2', text: 'weighing the rule' },
 			{
 				kind: 'text',
 				messageId: 'msg_2',
@@ -90,7 +92,17 @@ describe('reduce: tool results', () => {
 		expect(state.turns).toHaveLength(1);
 		expect(state.turns[0]?.entries).toEqual([
 			{ kind: 'text', messageId: 'msg_5', text: 'Running them.' },
-			{ kind: 'tool', id: 'toolu_1', name: 'Bash', result: '3 passed' },
+			// The call's input rides along too: what a tool line and a vault
+			// change say comes out of it (#95), and only the surface knows how.
+			{
+				kind: 'tool',
+				id: 'toolu_1',
+				name: 'Bash',
+				input: { command: 'npm test' },
+				result: '3 passed',
+				notification: null,
+				report: null,
+			},
 			{ kind: 'text', messageId: 'msg_6', text: 'All green.' },
 		]);
 	});
@@ -104,9 +116,38 @@ describe('reduce: steers and task notifications', () => {
 		expect(state.turns[0]?.prompt).toBe('Start the long job');
 		expect(state.turns[0]?.entries).toEqual([
 			{ kind: 'text', messageId: 'msg_7', text: 'Starting it.' },
+			{
+				kind: 'tool',
+				id: 'toolu_a1',
+				name: 'Agent',
+				input: {
+					description: 'Check the styles',
+					subagent_type: 'general-purpose',
+					prompt: 'Check the styles',
+				},
+				// The launch result is internal metadata, never the report; the
+				// report is read from the notification's output file (#96).
+				result: 'Async agent launched successfully. agentId: a1f2',
+				notification: {
+					taskId: 'a1f2',
+					outputFile: '/tmp/claude-1000/-home-lasse-hvelv/s1/tasks/a1f2.output',
+				},
+				report: null,
+			},
 			{ kind: 'steer', text: 'also check the styles' },
 			{ kind: 'text', messageId: 'msg_8', text: 'Styles checked too.' },
 		]);
+	});
+
+	it('attaches a task notification to the tool call it names, and starts no turn for it', () => {
+		const { state } = reduceFixture('steer-and-notification');
+
+		const entries = state.turns[0]?.entries ?? [];
+		const call = entries.find((entry) => entry.kind === 'tool');
+		expect(call?.kind === 'tool' && call.notification?.taskId).toBe('a1f2');
+		// It is not a turn of its own, and it renders nothing by itself.
+		expect(state.turns).toHaveLength(1);
+		expect(state.raw.user).toBe(1);
 	});
 
 	it('does not read a subagent task notification as a human turn', () => {

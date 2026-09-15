@@ -47,6 +47,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalCursorBlink: true,
 		terminalFontSize: 0,
 		terminalScrollbackMb: 10,
+		nativeToolGroups: 'highlight',
 		openTerminalAfterStart: true,
 		splitIntoFolderTab: true,
 		panesPerTab: 2,

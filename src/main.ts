@@ -298,7 +298,7 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/** Absolute path of the vault, or empty for a non-filesystem adapter. */
-	private vaultPath(): string {
+	vaultPath(): string {
 		const adapter = this.app.vault.adapter;
 		return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
 	}
@@ -465,6 +465,14 @@ export default class HerdrPlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
 			const view = leaf.view;
 			if (view instanceof TerminalView) view.applySetting(setting);
+		}
+	}
+
+	/** The native view's presentation setting changed: redraw them (issue #95). */
+	refreshNativeViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TerminalView) view.refreshNativeSurface();
 		}
 	}
 

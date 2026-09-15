@@ -485,9 +485,58 @@
 	white-space: nowrap;
 }
 
-/* Thinking and tool calls, until the tickets that give them a shape. */
-.herdr-native-aside {
+/*
+ * The tool group (#95): one summary line that expands to a row per call. A
+ * `details` element, so the browser owns the open state and a turn redrawn
+ * while Claude writes does not close what the reader opened.
+ */
+.herdr-native-tools,
+.herdr-native-thinking {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+}
+
+.herdr-native-tools-summary,
+.herdr-native-thinking-summary {
 	color: var(--text-faint);
+	cursor: var(--cursor);
+}
+
+.herdr-native-tool {
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	overflow: hidden;
+	padding-left: var(--size-4-4);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* A thought, once the reader opens it: prose, like the rest of the turn. */
+.herdr-native-thought {
+	border-left: 2px solid var(--background-modifier-border);
+	margin-top: var(--size-4-2);
+	padding-left: var(--size-4-3);
+}
+
+/*
+ * What a subagent reported (#96): prose like the rest of the turn, set in a
+ * little so it reads as another voice. The call that launched it stays in the
+ * tool group above.
+ */
+.herdr-native-report {
+	border-left: 2px solid var(--background-modifier-border);
+	margin: var(--size-4-2) 0;
+	padding-left: var(--size-4-3);
+}
+
+/*
+ * A note the agent changed and a source it read: the two things that stay in
+ * the text, at the point in the turn where they happened (#95).
+ */
+.herdr-native-change,
+.herdr-native-source {
+	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 	margin: var(--size-4-1) 0;
 }
