@@ -300,6 +300,26 @@ describe('NativePaneSurface: re-pinning as the view grows', () => {
 	});
 });
 
+describe('NativePaneSurface: what a scroll costs (#101)', () => {
+	it('draws nothing and touches no turn when the reader scrolls', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first'), turn('u2', 'last')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		const drawn = MarkdownRenderer.calls.length;
+
+		// A flick through a long session: the only thing a scroll may do is
+		// decide whether the view is still following.
+		for (const position of [500, 300, 100, 0, 600]) {
+			turnsEl(el).scrollTop = position;
+			turnsEl(el).dispatch('scroll');
+		}
+
+		expect(MarkdownRenderer.calls).toHaveLength(drawn);
+		expect(el.findAll('herdr-native-turn')).toHaveLength(2);
+	});
+});
+
 describe('NativePaneSurface: a tab that was hidden', () => {
 	it('is at the bottom when it is revealed, if it was following', async () => {
 		const model = new FakeModel();

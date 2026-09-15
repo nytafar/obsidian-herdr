@@ -414,6 +414,13 @@
  * One turn: the human prompt, then what the agent did (#93). `content-visibility`
  * lets the browser skip laying out turns that are scrolled away, which is what
  * makes a whole session's history affordable (native-view-design.md).
+ *
+ * `auto` in front of the guess is what keeps it honest (#101): 200px is only
+ * the estimate for a turn that has never been laid out, and each turn's real
+ * height replaces it once it has. Until then `scrollHeight` is an estimate, so
+ * the jump to the bottom on open (#106) lands near the end rather than on it —
+ * which is why the view re-pins when the draw's Markdown has rendered and
+ * whenever the turn being written resizes, instead of scrolling once.
  */
 .herdr-native-turn {
 	contain-intrinsic-size: auto 200px;
