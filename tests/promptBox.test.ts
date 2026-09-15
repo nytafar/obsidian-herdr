@@ -216,6 +216,9 @@ async function surfaceOn(
 		onStatus: () => {},
 		models: new FakeModels(model),
 		sender,
+		// Turn presentation is `tests/nativeSurface.test.ts`; nothing here draws a tool group.
+		presentation: () => 'highlight',
+		vaultPath: () => '',
 	});
 	await surface.attach(host);
 	return { surface, el };
