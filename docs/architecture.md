@@ -20,6 +20,46 @@ agent status transitions, never to the raw `pane.updated` stream, which is about
 ten events per second across a busy session; the scope collapses it to the
 handful of changes a row can show.
 
+### What the event stream does not say
+
+Measured on 2026-09-15 against herdr 0.8.2, protocol 20, on scratch panes of
+their own.
+
+- **A status change has no event a workspace can subscribe to.** A whole turn
+  (idle → working → done → idle) on a scoped pane produced three
+  `pane.agent_status_changed` events and not one `pane.updated`. `pane.updated`
+  fires on a `PaneInfo` revision bump, and a status change alone is not one, so
+  the `agent_status` the stream carries stays at whatever it was when a
+  renderable field last moved: the pane sat at `working`, revision 3, in every
+  event while `pane.list` answered `done` and then `idle`. The same on a pane
+  that had never been moved, and the same with a `terminal session observe`
+  client attached. `pane.agent_status_changed` is subscribed **per pane id** —
+  `*`, `""` and `w2:*` all come back `pane_not_found`, and one id that no longer
+  exists fails the whole `events.subscribe` — so the plugin's single stream
+  cannot cover a workspace with it. Hence the one poll in the plugin: the scope
+  re-reads `pane.list` for the scoped workspace every two seconds
+  (`PANE_REFRESH_MS` in `src/main.ts`, `WorkspaceScope.refresh`), 4.6 KB against
+  56 KB for `session.snapshot` here and about 11 ms. Nothing downstream learns
+  that it is a poll — the scope still diffs, so a refresh that finds nothing
+  emits nothing and the rule above holds.
+- **A freshly opened stream replays the inventory**, `pane.created` and
+  `pane.updated` for every pane herdr holds, at its stored revision, before any
+  live event. That replay is how the stale `agent_status` above was read back.
+- **Closing a tab announces the tab, not its panes**: `tab.closed` and no
+  `pane.closed` for what was in it. Closing a pane does emit `pane.closed`.
+
+### What `pane move` emits
+
+A pane id carries its workspace, so moving a pane across workspaces renames it:
+`w1:pF` became `w2:pK`. herdr emits one `pane.moved` holding the whole new
+`PaneInfo` — `agent_status` current, `agent_session` unchanged — plus
+`previous_pane_id`, `previous_tab_id`, `previous_workspace_id`, and
+`created_tab` / `closed_tab_id` when the move made or emptied a tab, followed by
+`pane.focused`, `tab.created` and `tab.closed`. To the scope that is one pane
+leaving under its old id and another arriving under the new one, which is why
+`ingest` forgets `previous_pane_id` before it upserts. A view pointed at the old
+id is pointed at a pane that no longer exists; there is no rename to follow.
+
 ## Pane terminals: the session bridge
 
 A terminal tab spawns `herdr terminal session control|observe <pane> --cols N

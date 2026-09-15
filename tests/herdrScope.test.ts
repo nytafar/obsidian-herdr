@@ -948,3 +948,143 @@ describe('pane_agent_detected admits the pane (issue #75)', () => {
 		expect(scope.size).toBe(1);
 	});
 });
+
+/**
+ * `refresh`: the status herdr never announces.
+ *
+ * Measured against herdr 0.8.2 on 2026-09-15 (`docs/architecture.md`): a whole
+ * turn on a scoped pane emitted `pane.agent_status_changed` — a per-pane
+ * subscription the plugin's one stream cannot carry — and not a single
+ * `pane.updated`. The `agent_status` inside the `PaneInfo` the stream does
+ * carry is whatever it was when some other field last moved the revision, so a
+ * status the plugin shows goes stale and stays stale. Asking is the only way
+ * back, and `pane.list` for the scoped workspace is the cheapest question
+ * (4.6 KB against 56 KB for `session.snapshot` on the machine this was
+ * measured on).
+ */
+describe('refresh re-reads the scoped panes (the status herdr never announces)', () => {
+	function lookingAt(panes: PaneInfo[][]): {
+		fn: (workspaceId: string) => Promise<PaneInfo[]>;
+		calls: string[];
+	} {
+		const calls: string[] = [];
+		return {
+			calls,
+			fn: (workspaceId) => {
+				calls.push(workspaceId);
+				return Promise.resolve(panes[calls.length - 1] ?? []);
+			},
+		};
+	}
+
+	it('reports a status that moved with no pane.updated behind it', async () => {
+		const lookup = lookingAt([[pane({ pane_id: 'w4:p1', agent_status: 'idle' })]]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1', agent_status: 'working' })]);
+		const rec = record(scope);
+
+		await scope.refresh();
+
+		expect(lookup.calls).toEqual(['w4']);
+		expect(rec.changed.map(({ paneId, next }) => [paneId, next.agentStatus])).toEqual([
+			['w4:p1', 'idle'],
+		]);
+		expect(scope.get('w4:p1')?.agentStatus).toBe('idle');
+	});
+
+	it('admits a pane whose agent was detected but never updated again', async () => {
+		// The other half of the same defect: a pane the plugin started an agent in
+		// sits at `unknown` — "no agent in this pane" to a native view — until a
+		// `pane.updated` that may never come. The answer here is the one herdr
+		// gives to a question, which is always current.
+		const lookup = lookingAt([
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2', agent_status: 'idle' })],
+		]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[pane({ pane_id: 'w4:p1' }), pane({ pane_id: 'w4:p2', agent: null })],
+		);
+		const rec = record(scope);
+
+		await scope.refresh();
+
+		expect(rec.added.map((state) => [state.paneId, state.agentStatus])).toEqual([
+			['w4:p2', 'idle'],
+		]);
+	});
+
+	it('emits nothing when nothing moved, whatever the revision says', async () => {
+		// The N4 rule survives the poll: a refresh every couple of seconds must
+		// cost the views nothing while herdr is quiet.
+		const lookup = lookingAt([[pane({ pane_id: 'w4:p1', revision: 99 })]]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		const rec = record(scope);
+
+		await scope.refresh();
+
+		expect(rec.changed).toHaveLength(0);
+		expect(rec.added).toHaveLength(0);
+		expect(rec.removed).toHaveLength(0);
+	});
+
+	it('takes nothing from an answer about a workspace that is no longer ours', async () => {
+		const lookup = lookingAt([[pane({ pane_id: 'w4:p2', agent_status: 'idle' })]]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		const rec = record(scope);
+		const pending = scope.refresh();
+		scope.configure({ workspaceId: 'wT' });
+		await pending;
+
+		expect(rec.added).toHaveLength(0);
+		expect(scope.get('w4:p2')).toBeUndefined();
+	});
+
+	it('leaves a pane the answer does not mention alone', async () => {
+		// Removal stays with the events that do arrive (`pane.closed`,
+		// `pane.exited`, a released detection). A pane created while the question
+		// was out is missing from the answer through no fault of its own, and
+		// dropping it here would make it flicker once a second.
+		const lookup = lookingAt([[]]);
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		const rec = record(scope);
+
+		await scope.refresh();
+
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.get('w4:p1')).toBeDefined();
+	});
+
+	it('asks once at a time, and not at all before a workspace is resolved', async () => {
+		const lookup = lookingAt([[pane({ pane_id: 'w4:p1' })], [pane({ pane_id: 'w4:p1' })]]);
+		const unresolved = new WorkspaceScope({ vaultPath: '/nowhere', lookupPanes: lookup.fn });
+		await unresolved.refresh();
+		expect(lookup.calls).toEqual([]);
+
+		const scope = new WorkspaceScope({ vaultPath: VAULT, lookupPanes: lookup.fn });
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		await Promise.all([scope.refresh(), scope.refresh()]);
+		expect(lookup.calls).toEqual(['w4']);
+
+		// The next tick asks again: one at a time is not once ever.
+		await scope.refresh();
+		expect(lookup.calls).toEqual(['w4', 'w4']);
+	});
+
+	it('is inert without a lookup, and swallows a failed one', async () => {
+		const bare = new WorkspaceScope({ vaultPath: VAULT });
+		bare.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		await expect(bare.refresh()).resolves.toBeUndefined();
+
+		const scope = new WorkspaceScope({
+			vaultPath: VAULT,
+			lookupPanes: () => Promise.reject(new Error('pane.list failed')),
+		});
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1', agent_status: 'working' })]);
+		await expect(scope.refresh()).resolves.toBeUndefined();
+		expect(scope.get('w4:p1')?.agentStatus).toBe('working');
+	});
+});

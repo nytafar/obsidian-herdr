@@ -68,6 +68,17 @@ import { ExplorerFolderButtons } from './explorerButtons';
 const AGENT_NAME_REFRESH_MS = 300;
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
+/**
+ * How often the scoped panes are re-read from herdr.
+ *
+ * herdr has no event for an agent status change that a whole workspace can
+ * subscribe to (`docs/architecture.md`, measured against 0.8.2), so the status
+ * behind the list, the notifications and the native view's "Working…" is only
+ * as fresh as the last time the plugin asked. Two seconds is a `pane.list` for
+ * one workspace (4.6 KB, about 11 ms on the machine this was measured on), and
+ * the scope emits nothing when nothing moved.
+ */
+const PANE_REFRESH_MS = 2000;
 
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
@@ -244,6 +255,15 @@ export default class HerdrPlugin extends Plugin {
 		// A reconnect or an endpoint switch replaces the scope and the client the
 		// session models subscribe to (#94); they take the new ones.
 		this.register(this.onScopeReplaced(() => this.sessionModels.rebind()));
+		// The one poll in the plugin: herdr announces no agent status change on
+		// the stream, so a status that moved is only found by asking. No
+		// connection is no question, and an answer that holds nothing new emits
+		// nothing (see `PANE_REFRESH_MS`).
+		this.registerInterval(
+			window.setInterval(() => {
+				void this.scope?.refresh();
+			}, PANE_REFRESH_MS),
+		);
 
 		// OS notifications only fire while the window is unfocused (PRD M12), so
 		// track the edges instead of asking the DOM inside an event handler.

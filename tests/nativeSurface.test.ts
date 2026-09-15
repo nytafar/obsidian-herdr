@@ -767,6 +767,38 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		expect(el.find('herdr-native-status').textContent).toBe('Waiting for you.');
 	});
 
+	it('takes a transition that lands after it bound, in the line and in the box', async () => {
+		// Both halves of the stale-status defect, at the seam a view sees them:
+		// a pane whose agent was only just detected binds at `unknown` — "no
+		// agent in this pane", the box disabled — and a pane that was working
+		// binds at `working`. Neither transition has an event of its own on the
+		// stream the plugin holds (`docs/architecture.md`), so both arrive from
+		// the scope's refresh, and both have to land here.
+		const model = new FakeModel();
+		model.agentStatus = 'unknown';
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		expect(el.find('herdr-native-prompt-send').disabled).toBe(true);
+
+		model.agentStatus = 'idle';
+		model.push([], { changedTurnIds: [], reset: false });
+
+		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
+		expect(el.find('herdr-native-prompt-send').disabled).toBe(false);
+
+		model.agentStatus = 'working';
+		model.push([], { changedTurnIds: [], reset: false });
+		expect(el.find('herdr-native-status').textContent).toBe('Working…');
+		expect(el.find('herdr-native-prompt-send').textContent).toBe('Queue');
+
+		model.agentStatus = 'idle';
+		model.push([], { changedTurnIds: [], reset: false });
+
+		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
+	});
+
 	it('keeps its model and keeps up while the leaf is hidden', async () => {
 		// A hidden tab keeps its subscription and catches up on reveal (ADR-0003);
 		// there is no process to hand back, so hiding costs nothing to keep.
