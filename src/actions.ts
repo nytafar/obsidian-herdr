@@ -47,6 +47,13 @@ const AGENT_START_POLL_MS = 100;
 const PANE_NOT_READY_CODES = new Set(['agent_pane_unavailable', 'agent_pane_busy']);
 
 /**
+ * herdr's answer when the pane id it was given names nothing:
+ * `{"code":"pane_not_found","message":"pane w2:pZZ not found"}`, measured
+ * against 0.8.2. For a close that is not a failure but the outcome asked for.
+ */
+const PANE_NOT_FOUND = 'pane_not_found';
+
+/**
  * One JSON API call over a connection the caller has already captured. What
  * {@link ActionHost.connection} hands out, so an action made of two requests
  * cannot have the client swapped underneath it between them.
@@ -92,6 +99,14 @@ export interface ActionHost {
 	 * herdrs while `pane.close` was in flight (PR #89).
 	 */
 	detachTerminalLeaves(paneId: string, endpointId: string): void;
+	/**
+	 * Takes `paneId` out of the scoped pane list on `endpointId`, so its row
+	 * goes. Only for a pane herdr has told us, in an answer rather than an
+	 * event, that it no longer has — see {@link HerdrActions.closePane}. The
+	 * endpoint travels with the id for the same reason it does above: ids alias
+	 * across herdrs (issue #54).
+	 */
+	forgetPane(paneId: string, endpointId: string): void;
 	/** Sleep, injected so tests do not actually wait. */
 	sleep(ms: number): Promise<void>;
 	/** Clock, injected for the pane wait timeout. */
@@ -487,6 +502,14 @@ export class HerdrActions {
 	 * its tab with it, unlike a pane that just exits on its own, which leaves the
 	 * tab showing "Session closed". A failed close leaves the tab untouched.
 	 *
+	 * **`pane_not_found` counts as done, not as a failure.** herdr replays stale
+	 * `pane.updated` frames to every new subscriber (issue #90), so a row could
+	 * outlive the pane behind it, and terminating such a ghost then reported a
+	 * failure and left it sitting there — the only action on it did nothing.
+	 * A pane herdr does not have is exactly the state the user asked for, so the
+	 * row and its terminal leaves go, with a notice saying which of the two
+	 * happened. Every other error is still reported and changes nothing.
+	 *
 	 * The endpoint travels with the pane id, and the caller's endpoint is what is
 	 * detached on: pane ids alias across herdrs (issue #54), so resolving the
 	 * endpoint after the await could close a same-id tab on the herdr the list
@@ -495,12 +518,19 @@ export class HerdrActions {
 	async closePane(paneId: string, endpointId: string): Promise<boolean> {
 		try {
 			await this.host.request('pane.close', { pane_id: paneId });
-			this.host.detachTerminalLeaves(paneId, endpointId);
-			return true;
 		} catch (error) {
-			this.reportFailure('close the pane', error);
-			return false;
+			if (!(error instanceof HerdrError && error.code === PANE_NOT_FOUND)) {
+				this.reportFailure('close the pane', error);
+				return false;
+			}
+			this.host.notice('Herdr: that pane is already gone, so its row was removed from the list.');
 		}
+		// Not only on the `pane_not_found` path: doing it on a plain success too
+		// makes the row go now rather than when `pane.closed` comes round, and
+		// closes the window in which a replayed frame could still touch it.
+		this.host.forgetPane(paneId, endpointId);
+		this.host.detachTerminalLeaves(paneId, endpointId);
+		return true;
 	}
 
 	/**

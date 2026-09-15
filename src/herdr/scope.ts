@@ -14,6 +14,13 @@
  *     `pane_updated` per second at idle and most of them only move `revision`
  *     (PRD N4).
  *
+ * Membership in that map is decided by the snapshot, by {@link
+ * WorkspaceScope.refresh} and by transitions — a detection, a close, an exit, a
+ * tab close, a move, a release — and never by a raw `pane_updated` frame, which
+ * only refreshes a pane already in it. herdr replays old frames to every new
+ * subscriber, corpses included, so a row raised from one could outlive its pane
+ * with nothing left to take it down (`docs/architecture.md`, issue #90).
+ *
  * No Obsidian imports and no socket: the vault is passed in as a path plus a
  * name, and the one call this module needs to make (`ScopeOptions.lookupPanes`)
  * arrives as a plain async callback, so the file stays unit-testable and
@@ -435,9 +442,9 @@ export class WorkspaceScope {
 	 *
 	 * Nothing about the poll reaches a view directly: `upsert` diffs, so a
 	 * refresh that finds nothing emits nothing and the N4 rule holds. Removal is
-	 * left to the events that do arrive (`pane.closed`, `pane.exited`, a
-	 * released detection), because a pane created while the question was out is
-	 * missing from the answer through no fault of its own.
+	 * left to the events that do arrive (`pane.closed`, `pane.exited`,
+	 * `tab.closed`, a released detection), because a pane created while the
+	 * question was out is missing from the answer through no fault of its own.
 	 */
 	refresh(): Promise<void> {
 		if (this.refreshing) return this.refreshing;
@@ -542,7 +549,13 @@ export class WorkspaceScope {
 				this.inventory.set(pane.pane_id, pane);
 				// Only the cwd rule reads panes: a label or setting match cannot move.
 				if (this.resolvedByPanes()) this.reconcile();
-				this.upsert(pane);
+				// `pane.updated` refreshes a row, it never decides that there is one:
+				// it is the raw stream CLAUDE.md says not to react to, and herdr 0.8.2
+				// replays it to every new subscriber, corpses included (issue #90 and
+				// the measurement in `docs/architecture.md`). A pane joins the list
+				// from the snapshot or from `pane.agent_detected`, and leaves it on a
+				// close, an exit, a release or a move — all of them transitions.
+				this.upsert(pane, event.event !== 'pane_updated');
 				return;
 			}
 			case 'pane_closed':
@@ -550,6 +563,25 @@ export class WorkspaceScope {
 				const paneId = stringField(event.data, 'pane_id');
 				if (!paneId) return;
 				this.forget(paneId);
+				if (this.resolvedByPanes()) this.reconcile();
+				return;
+			}
+			case 'tab_closed': {
+				// The tab is the only notice its panes get: closing a tab whose pane
+				// was running an agent emitted `tab_closed` and nothing else at all
+				// — no `pane_closed`, no `pane_exited`, no release — while
+				// `pane.get` for the pane already answered `pane_not_found`
+				// (`docs/architecture.md`, measured against 0.8.2). Without this the
+				// row outlived its pane and could not be removed from Obsidian.
+				//
+				// A move that empties its old tab also ends in a `tab_closed`, but
+				// the `pane_moved` before it has already given the pane its new tab,
+				// so nothing is taken out from under it.
+				const tabId = stringField(event.data, 'tab_id');
+				if (!tabId) return;
+				for (const pane of [...this.inventory.values()]) {
+					if (pane.tab_id === tabId) this.forget(pane.pane_id);
+				}
 				if (this.resolvedByPanes()) this.reconcile();
 				return;
 			}
@@ -652,8 +684,11 @@ export class WorkspaceScope {
 				this.settleLookup(paneId, workspaceId, panes);
 			},
 			() => {
-				// No answer is no change: the next pane_updated for the pane still
-				// admits it the slow way, and nothing here is worth a notice.
+				// No answer is no change: the next {@link refresh} tick asks the
+				// same question two seconds later and admits the pane then, so
+				// nothing here is worth a notice. The `pane_updated` that used to
+				// admit it the slow way no longer may: that stream cannot be told
+				// apart from herdr's replay of it.
 				if (this.pendingLookups.get(paneId) === workspaceId) this.pendingLookups.delete(paneId);
 			},
 		);
@@ -697,17 +732,29 @@ export class WorkspaceScope {
 		return true;
 	}
 
-	private upsert(pane: PaneInfo): void {
+	/**
+	 * Applies one `PaneInfo` to the scoped map.
+	 *
+	 * @param membership whether this frame may put the pane in the list or take
+	 *   it out. True for a snapshot and for the transitions that carry a whole
+	 *   pane (`pane.created`, `pane.moved`) and for the verified answer behind a
+	 *   detection; false for `pane.updated`, which then only refreshes a pane
+	 *   the list already holds. Both directions matter: a replayed frame from
+	 *   before the agent was detected would otherwise remove a live row that the
+	 *   frames after it are no longer allowed to put back.
+	 */
+	private upsert(pane: PaneInfo, membership = true): void {
 		const previous = this.panes.get(pane.pane_id);
 		const inScope = this.resolvedId !== null && pane.workspace_id === this.resolvedId;
 		const fresh = inScope ? toPaneState(pane, this.names.get(pane.pane_id) ?? '') : null;
 
 		if (!fresh) {
 			// Moved out of scope, or the agent was released: it leaves the list.
-			if (previous) this.drop(pane.pane_id);
+			if (previous && membership) this.drop(pane.pane_id);
 			return;
 		}
 		if (!previous) {
+			if (!membership) return;
 			// An agent that appears while we are watching is newer than anything the
 			// prime found, so it takes the freshest stamp rather than 0.
 			const added = { ...fresh, statusChangedSeq: ++this.statusSeq };
@@ -748,8 +795,15 @@ export class WorkspaceScope {
 		this.emit('removed', previous);
 	}
 
-	/** Takes a pane out of the inventory as well as the scoped map: it is gone. */
-	private forget(paneId: string): void {
+	/**
+	 * Takes a pane out of the inventory as well as the scoped map: it is gone.
+	 *
+	 * Public because herdr can tell us so in an answer rather than an event: a
+	 * `pane.close` refused with `pane_not_found` means the pane does not exist,
+	 * and the row for it must go whether or not an event ever says so
+	 * (`actions.ts`).
+	 */
+	forget(paneId: string): void {
 		this.inventory.delete(paneId);
 		this.drop(paneId);
 	}
