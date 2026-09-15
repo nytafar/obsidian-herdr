@@ -55,6 +55,20 @@
 	display: none;
 }
 
+/* Terminal tab header (issue #105). The view toggle is dimmed and inert on a
+   remote endpoint, where the native view is unavailable (ADR-0002), rather
+   than missing; the observe/control eye applies to a terminal only, so it is
+   hidden while the tab shows the native view and comes back with the
+   terminal. Both keep their place in the header either way. */
+.herdr-view-toggle.is-disabled {
+	color: var(--text-faint);
+	cursor: default;
+}
+
+.herdr-mode-toggle.herdr-hidden {
+	display: none;
+}
+
 .herdr-agent-list-body {
 	display: flex;
 	flex-direction: column;

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	parseTerminalState,
+	terminalHeaderActions,
 	terminalViewState,
 	stateMatchesPane,
 	terminalTabTitle,
@@ -27,6 +28,7 @@ import {
 } from '../src/views/paneTerminal';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
+import { NATIVE_REMOTE_REASON } from '../src/native/surface';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
 // the ghostty WASM and a live herdr. See tests/README.md for the smoke recipe.
@@ -122,6 +124,46 @@ describe('parseTerminalState', () => {
 			expect(state?.view).toBeUndefined();
 			expect(state?.engine).toBeUndefined();
 		}
+	});
+});
+
+describe('terminalHeaderActions (issue #105)', () => {
+	it('says what a click switches to while the tab shows a terminal', () => {
+		const header = terminalHeaderActions({ view: 'terminal', remote: false });
+		expect(header.viewToggle).toEqual({
+			icon: 'book-open',
+			label: 'Switch to native view',
+			disabled: false,
+		});
+	});
+
+	it('says what a click switches to while the tab shows the native view', () => {
+		const header = terminalHeaderActions({ view: 'native', remote: false });
+		expect(header.viewToggle).toEqual({
+			icon: 'terminal',
+			label: 'Switch to terminal',
+			disabled: false,
+		});
+	});
+
+	it('keeps the observe/control eye for a terminal only (#105)', () => {
+		// The eye swaps the attach mode of a session a terminal is attached to;
+		// the native view reads a transcript and has no mode to swap.
+		expect(terminalHeaderActions({ view: 'terminal', remote: false }).controlToggle).toBe(true);
+		expect(terminalHeaderActions({ view: 'native', remote: false }).controlToggle).toBe(false);
+	});
+
+	it('disables the toggle on a remote endpoint, in the tab menu\u2019s words', () => {
+		const header = terminalHeaderActions({ view: 'terminal', remote: true });
+		expect(header.viewToggle).toEqual({
+			icon: 'book-open',
+			label: `Switch to native view (${NATIVE_REMOTE_REASON})`,
+			disabled: true,
+		});
+		// ADR-0002, and the same reason the tab menu shows beside native.
+		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
+		// A remote terminal is still a terminal: the eye stays.
+		expect(header.controlToggle).toBe(true);
 	});
 });
 

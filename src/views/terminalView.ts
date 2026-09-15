@@ -17,7 +17,10 @@
  * the other. Since #104 the tab's view state holds two independent fields, the
  * view and the terminal engine, each switched from the tab menu or the
  * `Switch render mode` command and each falling back to its own global setting
- * (`defaultView`, `terminalEngine`) while the tab has not chosen it.
+ * (`defaultView`, `terminalEngine`) while the tab has not chosen it. The view
+ * also has a header button of its own (#105), beside the observe/control eye,
+ * which is hidden while the native view is up because only a terminal has an
+ * attach mode.
  *
  * What stays here, then:
  *
@@ -107,6 +110,7 @@ import {
 	effectiveEngine,
 	isPaneView,
 	normalizePaneView,
+	otherPaneView,
 	PANE_VIEWS,
 	PANE_VIEW_NAMES,
 	splitRenderMode,
@@ -185,6 +189,58 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
 		endpointId: endpointId.length > 0 ? endpointId : LOCAL_ENDPOINT_ID,
 		...(view ? { view } : {}),
 		...(engine ? { engine } : {}),
+	};
+}
+
+/**
+ * What the tab header shows for the surface the tab is on (issue #105).
+ *
+ * Two decisions, both a function of the view alone (plus the endpoint), kept
+ * pure so the header can be asserted without an Obsidian view: the toggle
+ * between the two views, and whether the observe/control eye applies at all.
+ * The native-only readouts coming in #111 belong in here too.
+ */
+export interface TerminalHeaderActions {
+	/** Icon, tooltip and state of the view toggle; what a click *does*. */
+	viewToggle: {
+		icon: string;
+		/** Tooltip and aria-label. Names the view a click switches to. */
+		label: string;
+		/** True on a remote endpoint, where native is unavailable (ADR-0002). */
+		disabled: boolean;
+	};
+	/**
+	 * Whether the observe/control eye is shown. Only a terminal has an attach
+	 * mode to swap; the native view reads a transcript, so the eye is hidden
+	 * while it is up and comes back with the terminal.
+	 */
+	controlToggle: boolean;
+}
+
+/**
+ * The header for a tab in this view, on this endpoint (#105).
+ *
+ * The toggle is a picture of where a click goes, not of where the tab is —
+ * the same reading as the observe/control eye and the agent list's endpoint
+ * toggle. On a remote endpoint it is disabled rather than hidden, with the
+ * reason the tab menu gives beside native in its tooltip: a button that is
+ * missing looks like a bug, one that says why does not.
+ */
+export function terminalHeaderActions(where: {
+	view: PaneView;
+	remote: boolean;
+}): TerminalHeaderActions {
+	const target = otherPaneView(where.view);
+	const name = target === 'native' ? 'native view' : 'terminal';
+	const { available, reason } = paneViewAvailability(target, { remote: where.remote });
+	const label = `Switch to ${name}${reason === null ? '' : ` (${reason})`}`;
+	return {
+		viewToggle: {
+			icon: target === 'native' ? 'book-open' : 'terminal',
+			label,
+			disabled: !available,
+		},
+		controlToggle: where.view === 'terminal',
 	};
 }
 
@@ -395,7 +451,10 @@ export class TerminalView extends ItemView {
 	private lastTitle = '';
 	private hostEl: HTMLElement | null = null;
 	private statusEl: HTMLElement | null = null;
+	/** The observe/control eye; hidden while the tab shows the native view (#105). */
 	private toggleActionEl: HTMLElement | null = null;
+	/** The native/terminal toggle in the header (#105). */
+	private viewActionEl: HTMLElement | null = null;
 	/** Hide/reveal state machine; null before `onOpen` and after `onClose`. */
 	private visibility: VisibilityTracker | null = null;
 	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
@@ -723,10 +782,21 @@ export class TerminalView extends ItemView {
 		this.hostEl = container.createDiv({ cls: 'herdr-terminal-host' });
 		this.statusEl = container.createDiv({ cls: 'herdr-terminal-status' });
 
+		// Header actions, in the order Obsidian shows them (#105). Surface-specific
+		// first — the view toggle, then the observe/control eye, which only a
+		// terminal has — and connection actions last, so the native-only readouts
+		// of #111 (context, model, effort) can join the first group without
+		// moving anything else.
+		this.viewActionEl = this.addAction('book-open', 'Switch to native view', () => {
+			this.detached('view toggle', () => this.togglePaneView());
+		});
+		this.viewActionEl.addClass('herdr-view-toggle');
 		this.toggleActionEl = this.addAction('eye', 'Switch to observe mode', () => {
 			this.detached('mode toggle', () => this.toggleMode());
 		});
+		this.toggleActionEl.addClass('herdr-mode-toggle');
 		this.updateToggleAction();
+		this.updateViewActions();
 		this.addAction('refresh-cw', 'Reconnect', () => {
 			this.detached('reconnect', () => this.terminal.reconnect());
 		});
@@ -793,6 +863,9 @@ export class TerminalView extends ItemView {
 	 * "did anything change?" call after a setting, a switch or an endpoint move.
 	 */
 	private async showSurface(): Promise<void> {
+		// Whatever decided the surface — a switch, a setting, a move to another
+		// endpoint — decided the header with it (#105).
+		this.updateViewActions();
 		const host = this.hostEl;
 		if (!host) return;
 		await this.surfaces.show(surfaceKindFor(this.view()), host);
@@ -819,6 +892,7 @@ export class TerminalView extends ItemView {
 		this.hostEl = null;
 		this.statusEl = null;
 		this.toggleActionEl = null;
+		this.viewActionEl = null;
 		this.contentEl.empty();
 	}
 
@@ -1045,6 +1119,38 @@ export class TerminalView extends ItemView {
 		setIcon(el, observing ? 'square-terminal' : 'eye');
 		setTooltip(el, title);
 		el.setAttribute('aria-label', title);
+	}
+
+	/**
+	 * Header action: swap the tab's view (#105). A click on the disabled button
+	 * — a remote endpoint, where native is unavailable (ADR-0002) — does
+	 * nothing, since Obsidian's header actions stay clickable whatever they look
+	 * like.
+	 */
+	private async togglePaneView(): Promise<void> {
+		const target = otherPaneView(this.view());
+		if (!paneViewAvailability(target, { remote: this.isRemote() }).available) return;
+		await this.setPaneView(target);
+	}
+
+	/**
+	 * Paints the surface-specific half of the header from the view the tab is
+	 * showing (#105): what the toggle switches to, and whether the eye applies
+	 * at all. Both elements stay in place; only their look changes, so nothing
+	 * in the header moves as a tab is switched back and forth.
+	 */
+	private updateViewActions(): void {
+		const header = terminalHeaderActions({ view: this.view(), remote: this.isRemote() });
+		const el = this.viewActionEl;
+		if (el) {
+			const { icon, label, disabled } = header.viewToggle;
+			setIcon(el, icon);
+			setTooltip(el, label);
+			el.setAttribute('aria-label', label);
+			el.toggleClass('is-disabled', disabled);
+			el.setAttribute('aria-disabled', String(disabled));
+		}
+		this.toggleActionEl?.toggleClass('herdr-hidden', !header.controlToggle);
 	}
 
 	/**
