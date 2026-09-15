@@ -46,6 +46,9 @@ export class Component {
 	}
 }
 
+/** An ATX heading, the one piece of Markdown the stub below understands. */
+const STUB_HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
+
 /**
  * Recording stand-in for `MarkdownRenderer`. The real one turns Markdown into
  * Obsidian's own DOM — wikilinks, callouts, embeds and all — which no test can
@@ -53,7 +56,18 @@ export class Component {
  * the right Markdown, in the right element, with a component to hang the result
  * on. The stub writes the source text into the element synchronously so the
  * surrounding structure is still assertable.
+ *
+ * One shape of output is real, because the surface reads it back: an ATX
+ * heading line becomes an `h1`–`h6` element, which is what the heading
+ * anchors are written onto (#118). Everything else is the source text, so a
+ * block of prose with no headings still says exactly what it was given.
  */
+/** What the stub renderer needs of the element it was handed. */
+interface StubElement {
+	createEl(tag: string, info: { text: string }): unknown;
+	appendText(text: string): void;
+}
+
 export class MarkdownRenderer {
 	/** Every `render` call, in order, across a test file. Cleared by `reset`. */
 	static readonly calls: {
@@ -75,10 +89,20 @@ export class MarkdownRenderer {
 		component: Component,
 	): Promise<void> {
 		MarkdownRenderer.calls.push({ markdown, el, sourcePath, component });
-		(el as { createDiv(info: { cls: string; text: string }): unknown }).createDiv({
+		const rendered = (el as { createDiv(info: { cls: string }): StubElement }).createDiv({
 			cls: 'markdown-rendered',
-			text: markdown,
 		});
+		let first = true;
+		for (const line of markdown.split('\n')) {
+			const heading = STUB_HEADING.exec(line);
+			if (heading) {
+				rendered.createEl(`h${(heading[1] ?? '').length}`, { text: (heading[2] ?? '').trim() });
+				first = false;
+				continue;
+			}
+			rendered.appendText(first ? line : `\n${line}`);
+			first = false;
+		}
 	}
 }
 

@@ -182,6 +182,25 @@ export class FakeElement {
 		return found;
 	}
 
+	/**
+	 * Descendants matching a list of bare tag names, in document order: the one
+	 * selector shape the plugin passes, `h1, h2, … h6` for the heading
+	 * anchors (#118). Anything else throws, so a query this harness cannot
+	 * answer fails here instead of quietly matching nothing.
+	 */
+	querySelectorAll(selector: string): FakeElement[] {
+		const tags = selector.split(',').map((part) => part.trim().toLowerCase());
+		for (const tag of tags) {
+			if (!/^[a-z][a-z0-9]*$/.test(tag)) throw new Error(`unsupported selector: ${selector}`);
+		}
+		const found: FakeElement[] = [];
+		for (const child of this.children) {
+			if (tags.includes(child.tag.toLowerCase())) found.push(child);
+			found.push(...child.querySelectorAll(selector));
+		}
+		return found;
+	}
+
 	/** The one element carrying `cls`; throws unless there is exactly one. */
 	find(cls: string): FakeElement {
 		const hits = this.findAll(cls);

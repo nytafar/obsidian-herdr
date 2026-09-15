@@ -77,6 +77,41 @@ function turn(id: string, prompt: string, entries: Turn['entries'] = []): Turn {
 /** The vault the surface strips paths against, unless a case says otherwise. */
 const VAULT = '/home/lasse/hvelv';
 
+/**
+ * The vault's configuration, as far as the surface reads it (#117): the
+ * `readableLineLength` setting and the `config-changed` event Obsidian fires
+ * when any setting moves. Neither is in `obsidian.d.ts`, which is exactly why
+ * the surface reaches for them through one guarded helper.
+ */
+class FakeVault {
+	readableLineLength = true;
+	private readonly listeners = new Set<(key: string) => void>();
+
+	getConfig(key: string): unknown {
+		return key === 'readableLineLength' ? this.readableLineLength : undefined;
+	}
+
+	on(name: string, callback: (key: string) => void): (key: string) => void {
+		if (name === 'config-changed') this.listeners.add(callback);
+		return callback;
+	}
+
+	offref(ref: unknown): void {
+		this.listeners.delete(ref as (key: string) => void);
+	}
+
+	/** The user moving the setting: the new value, then the event. */
+	set(value: boolean): void {
+		this.readableLineLength = value;
+		for (const listener of [...this.listeners]) listener('readableLineLength');
+	}
+
+	/** How many listeners are still registered, for the teardown case. */
+	get watchers(): number {
+		return this.listeners.size;
+	}
+}
+
 function surfaceOn(
 	model: FakeModel,
 	options: { presentation?: ToolGroupPresentation; vaultPath?: string } = {},
@@ -86,11 +121,13 @@ function surfaceOn(
 	el: FakeElement;
 	host: HTMLElement;
 	openLinkText: ReturnType<typeof vi.fn>;
+	vault: FakeVault;
 } {
 	const { el, host } = hostEl();
 	const models = new FakeModels(model);
 	const openLinkText = vi.fn();
-	const app = { workspace: { openLinkText } } as unknown as App;
+	const vault = new FakeVault();
+	const app = { workspace: { openLinkText }, vault } as unknown as App;
 	const surface = new NativePaneSurface({
 		app,
 		identity: { paneId: 'w4:p1', mode: 'control', endpointId: 'local' },
@@ -107,7 +144,7 @@ function surfaceOn(
 		presentation: () => options.presentation ?? 'highlight',
 		vaultPath: () => options.vaultPath ?? VAULT,
 	});
-	return { surface, models, el, host, openLinkText };
+	return { surface, models, el, host, openLinkText, vault };
 }
 
 /**
@@ -152,7 +189,8 @@ describe('NativePaneSurface: no session yet', () => {
 
 /**
  * The classes the root carries, which is what decides whether the theme's own
- * rules reach the rendered Markdown (#108).
+ * rules reach the rendered Markdown (#108), and the wrapper inside the scroll
+ * container, which is what makes the readable line width apply (#117).
  */
 describe('NativePaneSurface: reading-view classes', () => {
 	it('gives the root the pair Obsidian\u2019s own reading view uses', async () => {
@@ -165,7 +203,91 @@ describe('NativePaneSurface: reading-view classes', () => {
 			'herdr-native-view',
 			'markdown-preview-view',
 			'markdown-rendered',
+			'is-readable-line-width',
 		]);
+	});
+
+	it('wraps the turns in the sizer the reading view builds, and draws into it', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push([turn('u1', 'One')], { changedTurnIds: ['u1'], reset: false });
+
+		// `previewEl.createDiv("markdown-preview-sizer markdown-preview-section")`
+		// in Obsidian 1.10's own bundle: the scroll container stays the full
+		// width of the tab, the wrapper inside it is what the width applies to.
+		const sizer = el.find('herdr-native-turns').children[0];
+		expect([...(sizer?.classList ?? [])]).toEqual([
+			'herdr-native-sizer',
+			'markdown-preview-sizer',
+			'markdown-preview-section',
+		]);
+		expect(sizer?.findAll('herdr-native-turn')).toHaveLength(1);
+	});
+
+	it('constrains the prompt box, the waiting card and the lines around them', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.agentStatus = 'blocked';
+
+		model.push([], { changedTurnIds: [], reset: false });
+
+		// Everything the reader sees under the prose sits at the prose's width,
+		// so nothing runs the width of the tab beneath a centred transcript.
+		for (const cls of [
+			'herdr-native-empty',
+			'herdr-native-prompt-box',
+			'herdr-native-waiting',
+		]) {
+			expect(el.find(cls).hasClass('herdr-native-sizer')).toBe(true);
+		}
+	});
+});
+
+/**
+ * The readable line length setting (#117). `is-readable-line-width` on the
+ * element that carries `markdown-preview-view` is what Obsidian's own views
+ * toggle, and `.markdown-preview-view.is-readable-line-width .markdown-preview-sizer`
+ * in `app.css` is the rule it turns on.
+ */
+describe('NativePaneSurface: readable line width', () => {
+	it('leaves the class off when the vault has the setting off', async () => {
+		const model = new FakeModel();
+		const { surface, el, host, vault } = surfaceOn(model);
+		vault.readableLineLength = false;
+
+		await surface.attach(host);
+
+		expect(el.find('herdr-native-view').hasClass('is-readable-line-width')).toBe(false);
+	});
+
+	it('follows the setting under an open view, without a redraw', async () => {
+		const model = new FakeModel();
+		const { surface, el, host, vault } = surfaceOn(model);
+		await surface.attach(host);
+		model.push([turn('u1', 'One')], { changedTurnIds: ['u1'], reset: false });
+		const turnEl = el.find('herdr-native-turn');
+
+		vault.set(false);
+		expect(el.find('herdr-native-view').hasClass('is-readable-line-width')).toBe(false);
+		vault.set(true);
+
+		expect(el.find('herdr-native-view').hasClass('is-readable-line-width')).toBe(true);
+		// Nothing was drawn again for it: the turn element is the same one.
+		expect(el.find('herdr-native-turn')).toBe(turnEl);
+	});
+
+	it('stops watching the setting when the surface detaches', async () => {
+		const model = new FakeModel();
+		const { surface, host, vault } = surfaceOn(model);
+		await surface.attach(host);
+		expect(vault.watchers).toBe(1);
+
+		await surface.detach();
+
+		expect(vault.watchers).toBe(0);
 	});
 });
 

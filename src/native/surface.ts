@@ -40,6 +40,7 @@ import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { waitingCard, type WaitingCardModel } from './waitingCard';
+import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -323,6 +324,27 @@ export function promptSegments(prompt: string): PromptSegment[] {
 }
 
 /**
+ * The heading elements a rendered block can hold, as one selector (#118).
+ * Obsidian's renderer builds ordinary `h1`-`h6` elements, so this is the whole
+ * of what "a heading in the prose" means here.
+ */
+const HEADING_TAGS = 'h1, h2, h3, h4, h5, h6';
+
+/**
+ * What one turn's draw collects for the heading anchors (#118): the elements
+ * its assistant prose was rendered into, in document order, and the renders
+ * that have to land before those elements hold anything.
+ *
+ * Prose only. A thought, a subagent report and a tool detail are Markdown too,
+ * but the reducer's `turnHeadings` reads `text` entries alone, and a heading
+ * counted here that the reducer never saw would shift every index after it.
+ */
+interface TurnDraw {
+	proseEls: HTMLElement[];
+	renders: Promise<void>[];
+}
+
+/**
  * The native surface (issues #92, #93): a pane's agent session as Obsidian
  * Markdown.
  *
@@ -349,6 +371,12 @@ export class NativePaneSurface implements PaneSurface {
 	/** The element this surface added to the host; removed again on detach. */
 	private rootEl: HTMLElement | null = null;
 	private turnsEl: HTMLElement | null = null;
+	/**
+	 * The wrapper the turns are drawn into, inside the scroll container: the
+	 * reading view's sizer, which is what the readable line width applies to
+	 * (#117, `./readableWidth.ts`).
+	 */
+	private sizerEl: HTMLElement | null = null;
 	private emptyEl: HTMLElement | null = null;
 	/** What the agent is doing, shown between blocks; null when it is nothing. */
 	private statusEl: HTMLElement | null = null;
@@ -359,6 +387,17 @@ export class NativePaneSurface implements PaneSurface {
 	private readonly turnEls = new Map<string, HTMLElement>();
 	/** One component per turn: its listeners and its rendered Markdown. */
 	private readonly turnComponents = new Map<string, Component>();
+	/**
+	 * The heading elements of each turn's prose, in the order the reducer counts
+	 * them, once that turn's Markdown has rendered (#118). Empty until it has.
+	 */
+	private readonly turnHeadingEls = new Map<string, HTMLElement[]>();
+	/**
+	 * Which draw owns each turn's headings. A turn is redrawn while Claude
+	 * writes, so a render that lands after the draw it belonged to was replaced
+	 * must mark nothing: its elements are already out of the document.
+	 */
+	private readonly headingDraws = new Map<string, symbol>();
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
 	/** The surface's own listeners: the scroll on the turns element (#106). */
@@ -407,9 +446,20 @@ export class NativePaneSurface implements PaneSurface {
 		// acts on the scroll — following here, the TOC's jumps (#100), the
 		// `content-visibility` estimates (#101) — acts on this element.
 		const turns = root.createDiv({ cls: 'herdr-native-turns' });
+		// Inside it, the wrapper the reading view builds (#117): the scroll
+		// container keeps the full width of the tab, so the scrollbar stays at
+		// its edge, and this is the element `--file-line-width` narrows.
+		this.sizerEl = turns.createDiv({
+			cls: ['herdr-native-sizer', 'markdown-preview-sizer', 'markdown-preview-section'],
+		});
 		this.turnsEl = turns;
 		this.rootEl = root;
 		this.component.load();
+		// The setting is the vault's, and it may move under an open view (#117).
+		this.applyReadableWidth();
+		this.component.register(
+			watchReadableLineWidth(this.options.app, () => this.applyReadableWidth()),
+		);
 		// The only thing a scroll does: say whether the view is still following.
 		// Nothing is drawn, measured or unmounted here, because this runs on
 		// every frame of a flick through a long session (#101).
@@ -439,6 +489,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.turnsEl = null;
+		this.sizerEl = null;
 		this.emptyEl = null;
 		this.statusEl = null;
 	}
@@ -491,6 +542,29 @@ export class NativePaneSurface implements PaneSurface {
 		if (!turnEl) return;
 		this.following = false;
 		turnEl.scrollIntoView({ block: 'start' });
+	}
+
+	/**
+	 * Brings one heading of a turn's prose into view, which is what a click on a
+	 * heading in the table of contents does (#118).
+	 *
+	 * The index is the heading's place in {@link Turn.headings}, which the
+	 * reducer computes by regex, and the elements are what Obsidian's renderer
+	 * produced. They pair by position and only while there are as many of one as
+	 * of the other: a heading the regex saw inside an indented code block, or
+	 * one it missed, makes every index after it a lie. When they disagree, or
+	 * the index names no heading, the turn is what a click can still promise.
+	 */
+	scrollToHeading(turnId: string, index: number): void {
+		const els = this.turnHeadingEls.get(turnId) ?? [];
+		const turn = this.model?.state.turns.find((candidate) => candidate.id === turnId);
+		const headingEl = els.length === turn?.headings.length ? els[index] : undefined;
+		if (!headingEl) {
+			this.scrollToTurn(turnId);
+			return;
+		}
+		this.following = false;
+		headingEl.scrollIntoView({ block: 'start' });
 	}
 
 	/**
@@ -559,11 +633,23 @@ export class NativePaneSurface implements PaneSurface {
 		for (const component of this.turnComponents.values()) component.unload();
 		this.turnComponents.clear();
 		this.turnEls.clear();
+		this.turnHeadingEls.clear();
+		this.headingDraws.clear();
 		if (this.observedTurnEl) {
 			this.resizeObserver?.unobserve(this.observedTurnEl);
 			this.observedTurnEl = null;
 		}
-		this.turnsEl?.empty();
+		this.sizerEl?.empty();
+	}
+
+	/**
+	 * Puts the readable-line-width class where Obsidian's own rule looks for it:
+	 * on the element carrying `markdown-preview-view` (#117). Nothing is drawn
+	 * again for it — the width is a stylesheet's business, not a layout this
+	 * view computes.
+	 */
+	private applyReadableWidth(): void {
+		this.rootEl?.toggleClass(READABLE_WIDTH_CLASS, readableLineWidth(this.options.app));
 	}
 
 	/**
@@ -572,11 +658,11 @@ export class NativePaneSurface implements PaneSurface {
 	 * in the view, and the turns around it are not touched.
 	 */
 	private renderTurn(turn: Turn): void {
-		const turnsEl = this.turnsEl;
-		if (!turnsEl) return;
+		const sizerEl = this.sizerEl;
+		if (!sizerEl) return;
 		let turnEl = this.turnEls.get(turn.id);
 		if (!turnEl) {
-			turnEl = turnsEl.createDiv({ cls: 'herdr-native-turn' });
+			turnEl = sizerEl.createDiv({ cls: 'herdr-native-turn' });
 			this.turnEls.set(turn.id, turnEl);
 			// The turn Claude is writing is the one that grows under the view.
 			this.watchForGrowth(turnEl, this.observedTurnEl);
@@ -592,15 +678,22 @@ export class NativePaneSurface implements PaneSurface {
 		}
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
 		// folded into groups with the vault changes and sources left outside.
+		const draw: TurnDraw = { proseEls: [], renders: [] };
 		for (const item of turnItems(turn.entries, this.options.presentation())) {
-			this.renderItem(turnEl, item, component);
+			this.renderItem(turnEl, item, component, draw);
 		}
+		this.markHeadings(turn, draw);
 	}
 
-	private renderItem(turnEl: HTMLElement, item: TurnItem, component: Component): void {
+	private renderItem(
+		turnEl: HTMLElement,
+		item: TurnItem,
+		component: Component,
+		draw: TurnDraw,
+	): void {
 		switch (item.kind) {
 			case 'text':
-				this.renderText(turnEl, item.entry, component);
+				this.renderText(turnEl, item.entry, component, draw);
 				return;
 			case 'thinking':
 				this.renderThinking(turnEl, item.entry, component);
@@ -628,10 +721,54 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
-	/** Assistant prose, through Obsidian's own renderer. */
-	private renderText(turnEl: HTMLElement, entry: TextEntry, component: Component): void {
+	/**
+	 * Assistant prose, through Obsidian's own renderer. The block is the draw's,
+	 * because the headings inside it are the ones the table of contents lists
+	 * (#118) and nothing else in a turn counts.
+	 */
+	private renderText(
+		turnEl: HTMLElement,
+		entry: TextEntry,
+		component: Component,
+		draw: TurnDraw,
+	): void {
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
-		this.renderMarkdown(entry.text, blockEl, component);
+		draw.proseEls.push(blockEl);
+		draw.renders.push(this.renderMarkdown(entry.text, blockEl, component));
+	}
+
+	/**
+	 * Writes the anchors a heading click aims at (#118), once the draw's
+	 * Markdown has rendered: the turn's id and the heading's place in the turn,
+	 * on every `h1`-`h6` of its prose in document order.
+	 *
+	 * Obsidian's rendered output carries nothing of this plugin's, and the
+	 * render is async, so this is the only moment the elements exist and are
+	 * still the ones on screen. A turn redrawn since takes the mark over, which
+	 * is what the draw token guards: `renderTurn` empties the element, so a
+	 * render that lands late would otherwise mark elements nobody can see.
+	 */
+	private markHeadings(turn: Turn, draw: TurnDraw): void {
+		const token = Symbol('draw');
+		this.headingDraws.set(turn.id, token);
+		this.turnHeadingEls.delete(turn.id);
+		const mark = (): void => {
+			if (this.headingDraws.get(turn.id) !== token) return;
+			const found: HTMLElement[] = [];
+			for (const proseEl of draw.proseEls) {
+				found.push(...Array.from(proseEl.querySelectorAll<HTMLElement>(HEADING_TAGS)));
+			}
+			found.forEach((headingEl, index) => {
+				headingEl.setAttr('data-herdr-turn', turn.id);
+				headingEl.setAttr('data-herdr-heading', String(index));
+			});
+			this.turnHeadingEls.set(turn.id, found);
+		};
+		if (draw.renders.length === 0) {
+			mark();
+			return;
+		}
+		void Promise.allSettled(draw.renders).then(mark);
 	}
 
 	/**
@@ -651,7 +788,9 @@ export class NativePaneSurface implements PaneSurface {
 		const details = turnEl.createEl('details', { cls: 'herdr-native-thinking' });
 		details.createEl('summary', { cls: 'herdr-native-thinking-summary', text: 'Thought' });
 		const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
-		this.renderMarkdown(entry.text, bodyEl, component);
+		// The promise is the draw's business, and a thought is not in it: only
+		// prose is paired with the reducer's headings (#118).
+		void this.renderMarkdown(entry.text, bodyEl, component);
 	}
 
 	/** The tool group: one summary line that expands to a row per call. */
@@ -708,7 +847,8 @@ export class NativePaneSurface implements PaneSurface {
 		const report = subagentReport(entry);
 		if (!report) return;
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-report' });
-		this.renderMarkdown(report, blockEl, component);
+		// Not prose either, as far as the headings go (#118).
+		void this.renderMarkdown(report, blockEl, component);
 	}
 
 	/**
@@ -771,8 +911,14 @@ export class NativePaneSurface implements PaneSurface {
 	 * real height: the promise is kept, and {@link settleScroll} pins the view
 	 * once every render of this draw has landed (#106).
 	 */
-	private renderMarkdown(markdown: string, el: HTMLElement, component: Component): void {
-		this.renders.push(MarkdownRenderer.render(this.options.app, markdown, el, '', component));
+	private renderMarkdown(
+		markdown: string,
+		el: HTMLElement,
+		component: Component,
+	): Promise<void> {
+		const rendering = MarkdownRenderer.render(this.options.app, markdown, el, '', component);
+		this.renders.push(rendering);
+		return rendering;
 	}
 
 	/**
@@ -832,7 +978,9 @@ export class NativePaneSurface implements PaneSurface {
 			return;
 		}
 		const text = this.model?.path ? 'No turns in this session yet.' : 'No session yet.';
-		if (!this.emptyEl) this.emptyEl = root.createDiv({ cls: 'herdr-native-empty' });
+		if (!this.emptyEl) {
+			this.emptyEl = root.createDiv({ cls: ['herdr-native-empty', 'herdr-native-sizer'] });
+		}
 		this.emptyEl.setText(text);
 	}
 
@@ -855,7 +1003,9 @@ export class NativePaneSurface implements PaneSurface {
 			this.statusEl = null;
 			return;
 		}
-		if (!this.statusEl) this.statusEl = root.createDiv({ cls: 'herdr-native-status' });
+		if (!this.statusEl) {
+			this.statusEl = root.createDiv({ cls: ['herdr-native-status', 'herdr-native-sizer'] });
+		}
 		this.statusEl.setText(text);
 	}
 
@@ -914,7 +1064,7 @@ export class NativePaneSurface implements PaneSurface {
 		const component = new Component();
 		component.load();
 		this.waitingComponent = component;
-		const el = root.createDiv({ cls: 'herdr-native-waiting' });
+		const el = root.createDiv({ cls: ['herdr-native-waiting', 'herdr-native-sizer'] });
 		this.waitingEl = el;
 		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });

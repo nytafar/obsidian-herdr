@@ -462,6 +462,29 @@
 	overflow-y: auto;
 }
 
+/*
+ * Readable line length (#117), Obsidian's own mechanism and none of this
+ * plugin's. The root carries `markdown-preview-view` and, while the vault asks
+ * for it, `is-readable-line-width`; inside the scroll container the turns are
+ * wrapped in `markdown-preview-sizer markdown-preview-section`, exactly the
+ * pair the reading view builds. That alone is enough for the transcript:
+ * `app.css` has
+ * `.markdown-preview-view.is-readable-line-width .markdown-preview-sizer`
+ * with `max-width: var(--file-line-width)` and auto side margins, and a theme
+ * that changes the width changes this view with it.
+ *
+ * The rule below is for everything that is *not* rendered note content — the
+ * prompt box, the waiting card, the status and empty lines — which follows the
+ * same width so it sits under the prose rather than across the tab. It stays
+ * off Obsidian's own class so no theme rule written for a note's sizer lands on
+ * a text area, and it invents no width: `--file-line-width` is the same
+ * variable Obsidian reads.
+ */
+.herdr-native-view.is-readable-line-width .herdr-native-sizer {
+	margin-inline: auto;
+	max-width: var(--file-line-width);
+}
+
 .herdr-native-status {
 	flex: 0 0 auto;
 	order: 3;
