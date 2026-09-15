@@ -1,7 +1,7 @@
 /**
  * The pane surface seam (issue #92, ADR-0002).
  *
- * A tab's render mode decides which surface its terminal view mounts: the
+ * A tab's view (#104) decides which surface its terminal view mounts: the
  * existing terminal lifecycle, or the native view. What is tested here is the
  * choice and the swap, with a fake surface factory in place of both adapters —
  * the terminal lifecycle has its own tests (`tests/paneTerminal.test.ts`, which
@@ -10,31 +10,31 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	effectiveRenderMode,
+	effectivePaneView,
 	NATIVE_REMOTE_REASON,
 	PaneSurfaceHolder,
-	renderModeAvailability,
+	paneViewAvailability,
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
 } from '../src/native/surface';
+import { effectiveEngine } from '../src/native/renderMode';
 import type { PaneIdentity, TerminalEffect } from '../src/views/paneTerminal';
 
 describe('surfaceKindFor (ADR-0002)', () => {
-	it('sends the two terminal render modes to the terminal lifecycle', () => {
-		expect(surfaceKindFor('ghostty-web')).toBe('terminal');
-		expect(surfaceKindFor('xterm.js')).toBe('terminal');
+	it('sends the terminal view to the terminal lifecycle', () => {
+		expect(surfaceKindFor('terminal')).toBe('terminal');
 	});
 
-	it('sends the native render mode to the native surface', () => {
+	it('sends the native view to the native surface', () => {
 		expect(surfaceKindFor('native')).toBe('native');
 	});
 });
 
-describe('renderModeAvailability (ADR-0002)', () => {
-	it('offers every render mode on a local pane', () => {
-		for (const mode of ['ghostty-web', 'xterm.js', 'native'] as const) {
-			expect(renderModeAvailability(mode, { remote: false })).toEqual({
+describe('paneViewAvailability (ADR-0002)', () => {
+	it('offers both views on a local pane', () => {
+		for (const view of ['terminal', 'native'] as const) {
+			expect(paneViewAvailability(view, { remote: false })).toEqual({
 				available: true,
 				reason: null,
 			});
@@ -42,40 +42,51 @@ describe('renderModeAvailability (ADR-0002)', () => {
 	});
 
 	it('offers native as unavailable on a remote endpoint, with the reason', () => {
-		expect(renderModeAvailability('native', { remote: true })).toEqual({
+		expect(paneViewAvailability('native', { remote: true })).toEqual({
 			available: false,
 			reason: NATIVE_REMOTE_REASON,
 		});
 		expect(NATIVE_REMOTE_REASON).toBe('local panes only');
 	});
 
-	it('leaves the terminal render modes available on a remote endpoint', () => {
-		expect(renderModeAvailability('xterm.js', { remote: true }).available).toBe(true);
+	it('leaves the terminal view available on a remote endpoint', () => {
+		expect(paneViewAvailability('terminal', { remote: true }).available).toBe(true);
 	});
 });
 
-describe('effectiveRenderMode (issue #92)', () => {
-	it('is the tab’s own render mode once it has chosen one', () => {
-		expect(
-			effectiveRenderMode({ stored: 'xterm.js', fallback: 'ghostty-web', remote: false }),
-		).toBe('xterm.js');
-	});
-
-	it('is the global default while the tab has never chosen', () => {
-		expect(effectiveRenderMode({ stored: null, fallback: 'native', remote: false })).toBe(
+describe('effectivePaneView (issues #92, #104)', () => {
+	it('is the tab\u2019s own view once it has chosen one', () => {
+		expect(effectivePaneView({ stored: 'native', fallback: 'terminal', remote: false })).toBe(
 			'native',
 		);
 	});
 
+	it('is the global default view while the tab has never chosen', () => {
+		expect(effectivePaneView({ stored: null, fallback: 'native', remote: false })).toBe('native');
+	});
+
 	it('keeps a terminal surface on a remote endpoint, whichever side asked for native', () => {
 		// ADR-0002: a remote pane keeps its terminal until an SSH transcript
-		// adapter exists, and the default engine is what it falls back to.
-		expect(effectiveRenderMode({ stored: 'native', fallback: 'xterm.js', remote: true })).toBe(
-			'ghostty-web',
+		// adapter exists. The stored preference itself is untouched (#104).
+		expect(effectivePaneView({ stored: 'native', fallback: 'terminal', remote: true })).toBe(
+			'terminal',
 		);
-		expect(effectiveRenderMode({ stored: null, fallback: 'native', remote: true })).toBe(
-			'ghostty-web',
-		);
+		expect(effectivePaneView({ stored: null, fallback: 'native', remote: true })).toBe('terminal');
+	});
+});
+
+describe('effectiveEngine (issue #104)', () => {
+	it('is the tab\u2019s own engine once it has chosen one', () => {
+		expect(effectiveEngine('xterm.js', 'ghostty-web')).toBe('xterm.js');
+	});
+
+	it('falls back to the global engine on its own, whatever the view is', () => {
+		expect(effectiveEngine(null, 'xterm.js')).toBe('xterm.js');
+	});
+
+	it('normalises an unreadable global engine instead of throwing', () => {
+		expect(effectiveEngine(null, 'nonsense')).toBe('ghostty-web');
+		expect(effectiveEngine(null, undefined)).toBe('ghostty-web');
 	});
 });
 
@@ -137,7 +148,7 @@ function holderWithLog(): {
 }
 
 describe('PaneSurfaceHolder (issue #92)', () => {
-	it('builds and attaches the surface the render mode asked for', async () => {
+	it('builds and attaches the surface the view asked for', async () => {
 		const { holder, log, built, host } = holderWithLog();
 
 		await holder.show('terminal', host);
@@ -147,7 +158,7 @@ describe('PaneSurfaceHolder (issue #92)', () => {
 		expect(holder.kind).toBe('terminal');
 	});
 
-	it('leaves the surface alone while the render mode stays in the same kind', async () => {
+	it('leaves the surface alone while the view stays in the same kind', async () => {
 		const { holder, log, built, host } = holderWithLog();
 
 		await holder.show('terminal', host);
@@ -199,7 +210,7 @@ describe('PaneSurfaceHolder (issue #92)', () => {
 		expect(built).toEqual(['native', 'native']);
 	});
 
-	it('mounts nothing when the view closes during a switch', async () => {
+	it('mounts nothing when the tab closes during a switch', async () => {
 		// `onClose` releases while a switch is waiting for the old surface to
 		// detach. The switch must not then attach a surface nobody will ever
 		// close again, subscription, tail and all (AGENTS.md teardown, #92/#94).

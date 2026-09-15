@@ -90,8 +90,30 @@ export interface SessionModelView {
 	readonly state: TranscriptState;
 	/** The transcript being shown, or null while the pane has no session yet. */
 	readonly path: string | null;
+	/**
+	 * Whether the transcript's lines have been delivered, which a known path
+	 * does **not** say: the model has the path the moment herdr names the agent
+	 * session, and the tail reads the file afterwards. Until then the state is
+	 * empty for want of reading, not because the session is empty, and anything
+	 * that would act on what the state does not hold — auto-accept above all
+	 * (#99) — must wait for this.
+	 */
+	readonly loaded: boolean;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
+	/**
+	 * Claims the block the pane is sitting in for whatever answers it without
+	 * being asked, and says whether this caller got it (#99).
+	 *
+	 * Per pane, not per view. Two tabs on one pane share this model (ADR-0003)
+	 * and each of them draws the same waiting card, so a guard held by a view
+	 * sends one Enter per view — and the second lands on whatever dialog the
+	 * first one's "Yes" opened. True for the first caller of a block, false for
+	 * every one after it, until the pane leaves `blocked` or the session
+	 * rotates. `toolUseId` is the dangling `tool_use` the claim was made for,
+	 * empty when no call dangles.
+	 */
+	claimBlock(toolUseId: string): boolean;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
 }
 
@@ -227,6 +249,14 @@ export class SessionModel implements SessionModelView {
 	private status: AgentStatus = 'unknown';
 	/** The tail of the file being shown, closed on rotation and on release. */
 	private stream: TranscriptStream | null = null;
+	/** Whether the current tail has delivered anything; see {@link loaded}. */
+	private delivered = false;
+	/**
+	 * The dangling `tool_use` this pane's block has been claimed for, or null
+	 * while it is unclaimed. Per pane rather than per view, which is the whole
+	 * point of it living here; see {@link SessionModelView.claimBlock}.
+	 */
+	private blockClaim: string | null = null;
 	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
 	/**
@@ -271,6 +301,15 @@ export class SessionModel implements SessionModelView {
 		return this.currentPath;
 	}
 
+	/**
+	 * Whether the tail has delivered a line of the file being shown. False for a
+	 * pane with no session, and false again from a rotation until the new file's
+	 * first lines land.
+	 */
+	get loaded(): boolean {
+		return this.delivered;
+	}
+
 	/** herdr's `agent_session` for the pane, empty when there is none yet. */
 	get agentSession(): string {
 		return this.session;
@@ -279,6 +318,22 @@ export class SessionModel implements SessionModelView {
 	/** herdr's view of the agent: what the view shows between blocks. */
 	get agentStatus(): AgentStatus {
 		return this.status;
+	}
+
+	/**
+	 * The one automatic answer this block gets, for the first caller (#99).
+	 *
+	 * The block is the call that is dangling, which is what the claim stores:
+	 * Claude can move from one permission to the next without herdr's status
+	 * leaving `blocked`, and a claim that only asked whether *some* claim was
+	 * held would have let the first call swallow every one after it. Two tabs
+	 * on one pane still get one press between them, which is the claim's job
+	 * (ADR-0003), because they ask about the same call.
+	 */
+	claimBlock(toolUseId: string): boolean {
+		if (this.blockClaim === toolUseId) return false;
+		this.blockClaim = toolUseId;
+		return true;
 	}
 
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
@@ -338,6 +393,8 @@ export class SessionModel implements SessionModelView {
 	private onStatusChanged(paneId: string, status: AgentStatus): void {
 		if (paneId !== this.paneId || status === this.status) return;
 		this.status = status;
+		// The block is over, so the next one is a block of its own to answer.
+		if (status !== 'blocked') this.blockClaim = null;
 		// No turn changed; the view redraws what it shows between blocks.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -353,6 +410,7 @@ export class SessionModel implements SessionModelView {
 		const statusMoved = status !== this.status;
 		this.session = pane?.agentSession ?? '';
 		this.status = status;
+		if (status !== 'blocked') this.blockClaim = null;
 		const path = pane
 			? transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
 			: null;
@@ -366,6 +424,10 @@ export class SessionModel implements SessionModelView {
 		this.stream = null;
 		this.currentPath = path;
 		this.transcript = emptyTranscript();
+		// Nothing of the new file has been read, whatever was read of the old one.
+		this.delivered = false;
+		// Another session is another block, whatever the status still says.
+		this.blockClaim = null;
 		this.generation++;
 		this.readingReports.clear();
 		// Said now, not when the new file's first lines land: a tail delivers
@@ -380,6 +442,7 @@ export class SessionModel implements SessionModelView {
 
 	/** A batch of whole lines from the tail. */
 	private onLines(lines: string[]): void {
+		this.delivered = true;
 		const { state, changedTurnIds } = reduce(this.transcript, lines);
 		this.transcript = state;
 		this.emit({ changedTurnIds, reset: false });

@@ -55,6 +55,20 @@
 	display: none;
 }
 
+/* Terminal tab header (issue #105). The view toggle is dimmed and inert on a
+   remote endpoint, where the native view is unavailable (ADR-0002), rather
+   than missing; the observe/control eye applies to a terminal only, so it is
+   hidden while the tab shows the native view and comes back with the
+   terminal. Both keep their place in the header either way. */
+.herdr-view-toggle.is-disabled {
+	color: var(--text-faint);
+	cursor: default;
+}
+
+.herdr-mode-toggle.herdr-hidden {
+	display: none;
+}
+
 .herdr-agent-list-body {
 	display: flex;
 	flex-direction: column;
@@ -352,20 +366,81 @@
 	white-space: nowrap;
 }
 
+/* Table of contents sidebar (issue #100) ------------------------------------ */
+
+/*
+ * Turns with their headings nested beneath, like Obsidian's own outline. Every
+ * size and colour is a theme variable, and the nesting is a class per heading
+ * level, because no plugin code may write an inline style.
+ */
+.herdr-toc-turn {
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-toc-item {
+	border-radius: var(--radius-s);
+	color: var(--text-muted);
+	cursor: var(--cursor);
+	font-size: var(--font-ui-small);
+	overflow: hidden;
+	padding: var(--size-2-1) var(--size-4-1);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-toc-item:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-toc-prompt {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+.herdr-toc-heading.mod-level-1 { padding-inline-start: var(--size-4-3); }
+.herdr-toc-heading.mod-level-2 { padding-inline-start: var(--size-4-5); }
+.herdr-toc-heading.mod-level-3 { padding-inline-start: var(--size-4-6); }
+.herdr-toc-heading.mod-level-4 { padding-inline-start: var(--size-4-8); }
+.herdr-toc-heading.mod-level-5 { padding-inline-start: var(--size-4-10); }
+.herdr-toc-heading.mod-level-6 { padding-inline-start: var(--size-4-12); }
+
+.herdr-toc-empty {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	padding: var(--size-4-2);
+}
+
 /* Native view (issue #92) --------------------------------------------------- */
 
 /*
  * The native render mode mounts inside the same host box as a terminal, so it
- * scrolls itself rather than the leaf. `markdown-preview-view` on the same
- * element brings the vault's reading-mode typography with it, which is the
- * appearance the native view is meant to have.
+ * scrolls itself rather than the leaf. `markdown-preview-view` and
+ * `markdown-rendered` on the same element — the pair Obsidian's own reading
+ * view uses — bring the vault's reading-mode typography and the core and theme
+ * rules for tables and code blocks with them, which is the appearance the
+ * native view is meant to have (#108). Nothing here restates those rules.
+ *
+ * The root does not scroll: the turns do (#103). One scroll container, owned
+ * here and used by everything that acts on it — the prompt box pinned under it,
+ * open-at-bottom and following (#106), the TOC's jumps (#100) and the
+ * `content-visibility` estimates (#101). The prompt box is an ordinary flex
+ * sibling at the bottom rather than a sticky child, so no transcript can show
+ * through beside or beneath it. `container-type` makes the root the box the
+ * prompt box's cap is half of.
+ *
+ * No padding under the box: #103 asks for it flush with the view's bottom
+ * edge, and the root's bottom padding was the last strip of background between
+ * the two. The top and the sides keep theirs, which is what the transcript is
+ * read against.
  */
 .herdr-native-view {
+	container-type: size;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
-	overflow-y: auto;
-	padding: var(--size-4-4);
+	overflow: hidden;
+	padding: var(--size-4-4) var(--size-4-4) 0;
 }
 
 /*
@@ -378,16 +453,37 @@
 	order: 1;
 }
 
+/* The one scroll container (#103): `min-height` lets it shrink inside the flex
+ * column instead of pushing the prompt box off the bottom. */
 .herdr-native-turns {
+	flex: 1 1 auto;
+	min-height: 0;
 	order: 2;
+	overflow-y: auto;
 }
 
 .herdr-native-status {
+	flex: 0 0 auto;
 	order: 3;
 }
 
 .herdr-native-prompt-box {
+	flex: 0 0 auto;
 	order: 4;
+}
+
+/*
+ * The waiting card takes the prompt box's place at the bottom while the agent
+ * is blocked (#99): same order, same non-scrolling region, and the box is
+ * hidden rather than dropped so the draft typed into it survives the block.
+ */
+.herdr-native-waiting {
+	flex: 0 0 auto;
+	order: 4;
+}
+
+.herdr-native-prompt-box.herdr-is-hidden {
+	display: none;
 }
 
 .herdr-native-empty {
@@ -398,6 +494,13 @@
  * One turn: the human prompt, then what the agent did (#93). `content-visibility`
  * lets the browser skip laying out turns that are scrolled away, which is what
  * makes a whole session's history affordable (native-view-design.md).
+ *
+ * `auto` in front of the guess is what keeps it honest (#101): 200px is only
+ * the estimate for a turn that has never been laid out, and each turn's real
+ * height replaces it once it has. Until then `scrollHeight` is an estimate, so
+ * the jump to the bottom on open (#106) lands near the end rather than on it —
+ * which is why the view re-pins when the draw's Markdown has rendered and
+ * whenever the turn being written resizes, instead of scrolling once.
  */
 .herdr-native-turn {
 	contain-intrinsic-size: auto 200px;
@@ -435,38 +538,99 @@
 }
 
 /*
- * The prompt box (#97): the multi-line box and its button, held at the bottom
- * of the view while the transcript scrolls behind it.
+ * The prompt box (#97, #103): the box and its button on one row at the bottom
+ * of the view, with the transcript scrolling in its own container above. It is
+ * the last flex child rather than a sticky one, so there is no gap under it for
+ * anything to show through.
  */
 .herdr-native-prompt-box {
 	background-color: var(--background-primary);
 	border-top: 1px solid var(--background-modifier-border);
-	bottom: 0;
 	margin-top: var(--size-4-3);
 	padding-top: var(--size-4-2);
-	position: sticky;
 }
 
+/* The chat row: the text area takes the width, the button sits at its end. */
+.herdr-native-prompt-row {
+	align-items: flex-end;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+/*
+ * Grows with what is typed and stops at about half the view. `field-sizing`
+ * does the growing, so no height is ever measured or written in TypeScript;
+ * where it is unsupported the `rows` attribute sizes the box and `resize`
+ * still gives the user the drag. The `vh` cap is the fallback for a build
+ * without container queries; `cqh` overrides it where they work, the container
+ * being `.herdr-native-view`.
+ */
 .herdr-native-prompt-input {
+	field-sizing: content;
+	/* Zero basis: the row's width is the text area's, whatever the button needs. */
+	flex: 1 1 0;
 	font-family: var(--font-text);
-	min-height: 4em;
+	max-height: 50vh;
+	max-height: 50cqh;
+	min-height: 3em;
 	resize: vertical;
-	width: 100%;
 }
 
 .herdr-native-prompt-controls {
 	align-items: center;
 	display: flex;
+	flex: 0 0 auto;
 	gap: var(--size-4-2);
-	justify-content: flex-end;
-	padding-top: var(--size-4-1);
+	/* The button sits on the text area's last line, not above it. */
+	padding-bottom: var(--size-4-1);
+}
+
+/*
+ * The waiting card (#99): what the block is, and the one or two things to do
+ * about it. Bordered in the accent colour because it is the one thing in the
+ * view that is waiting on the reader.
+ */
+.herdr-native-waiting {
+	background-color: var(--background-secondary);
+	border: 1px solid var(--interactive-accent);
+	border-radius: var(--radius-m);
+	margin-top: var(--size-4-3);
+	padding: var(--size-4-3);
+}
+
+.herdr-native-waiting-title {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+/* The question, the plan or the tool's detail line, as it was written. */
+.herdr-native-waiting-body {
+	color: var(--text-muted);
+	margin-top: var(--size-4-1);
+	max-height: 12em;
+	overflow-y: auto;
+	white-space: pre-wrap;
+}
+
+/* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
+.herdr-native-waiting-option {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-waiting-actions {
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
 }
 
 /* Why the box is disabled, when the view does not say it already. */
 .herdr-native-prompt-hint {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
-	margin-right: auto;
+	padding-top: var(--size-4-1);
 }
 
 /*

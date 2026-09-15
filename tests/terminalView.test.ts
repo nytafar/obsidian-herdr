@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	parseTerminalState,
+	terminalHeaderActions,
+	terminalViewState,
 	stateMatchesPane,
 	terminalTabTitle,
+	planViewEffect,
+	PaneViewEvents,
 	HIDE_GRACE_MS,
 	hostKeyPolicyApplies,
 	keymapReturn,
@@ -26,6 +30,8 @@ import {
 } from '../src/views/paneTerminal';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
+import type { WorkspaceLeaf } from 'obsidian';
+import { NATIVE_REMOTE_REASON } from '../src/native/surface';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
 // the ghostty WASM and a live herdr. See tests/README.md for the smoke recipe.
@@ -66,21 +72,187 @@ describe('parseTerminalState', () => {
 		expect(parseTerminalState({ paneId: ' w4:p1 ' })?.paneId).toBe('w4:p1');
 	});
 
-	it('reads the tab’s render mode (#92)', () => {
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'native' })?.renderMode).toBe(
-			'native',
-		);
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' })?.renderMode).toBe(
-			'xterm.js',
+	it('reads the tab’s view and engine (#104)', () => {
+		expect(parseTerminalState({ paneId: 'w4:p1', view: 'native' })?.view).toBe('native');
+		expect(parseTerminalState({ paneId: 'w4:p1', view: 'terminal', engine: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
+	});
+
+	it('leaves each of the two unset when the tab never chose it (#92, #104)', () => {
+		// Undefined, not the default: the global settings are read at mount, so a
+		// tab that never chose follows a change to either of them, separately.
+		const none = parseTerminalState({ paneId: 'w4:p1' });
+		expect(none?.view).toBeUndefined();
+		expect(none?.engine).toBeUndefined();
+		const junk = parseTerminalState({ paneId: 'w4:p1', view: 'wat', engine: 7 });
+		expect(junk?.view).toBeUndefined();
+		expect(junk?.engine).toBeUndefined();
+		// A tab may have chosen one half and not the other.
+		expect(parseTerminalState({ paneId: 'w4:p1', engine: 'xterm.js' })?.view).toBeUndefined();
+	});
+
+	it('splits a render mode saved before #104, losing nothing', () => {
+		// The migration table from the ticket, read out of a stored layout.
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'native' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			// Native chose no engine, so the tab comes back to the default one.
+			view: 'native',
+		});
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'ghostty-web' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'ghostty-web',
+		});
+	});
+
+	it('leaves a tab that stored an unreadable render mode following the defaults', () => {
+		for (const renderMode of ['wat', 7, null]) {
+			const state = parseTerminalState({ paneId: 'w4:p1', renderMode });
+			expect(state?.view).toBeUndefined();
+			expect(state?.engine).toBeUndefined();
+		}
+	});
+});
+
+describe('terminalHeaderActions (issue #105)', () => {
+	it('says what a click switches to while the tab shows a terminal', () => {
+		const header = terminalHeaderActions({ view: 'terminal', remote: false });
+		expect(header.viewToggle).toEqual({
+			icon: 'book-open',
+			label: 'Switch to native view',
+			disabled: false,
+		});
+	});
+
+	it('says what a click switches to while the tab shows the native view', () => {
+		const header = terminalHeaderActions({ view: 'native', remote: false });
+		expect(header.viewToggle).toEqual({
+			icon: 'terminal',
+			label: 'Switch to terminal',
+			disabled: false,
+		});
+	});
+
+	it('keeps the observe/control eye for a terminal only (#105)', () => {
+		// The eye swaps the attach mode of a session a terminal is attached to;
+		// the native view reads a transcript and has no mode to swap.
+		expect(terminalHeaderActions({ view: 'terminal', remote: false }).controlToggle).toBe(true);
+		expect(terminalHeaderActions({ view: 'native', remote: false }).controlToggle).toBe(false);
+	});
+
+	it('disables the toggle on a remote endpoint, in the tab menu\u2019s words', () => {
+		const header = terminalHeaderActions({ view: 'terminal', remote: true });
+		expect(header.viewToggle).toEqual({
+			icon: 'book-open',
+			label: `Switch to native view (${NATIVE_REMOTE_REASON})`,
+			disabled: true,
+		});
+		// ADR-0002, and the same reason the tab menu shows beside native.
+		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
+		// A remote terminal is still a terminal: the eye stays.
+		expect(header.controlToggle).toBe(true);
+	});
+});
+
+describe('PaneViewEvents (#100, #105)', () => {
+	it('tells every subscriber which leaf swapped, and stops when one unsubscribes', () => {
+		const events = new PaneViewEvents();
+		const first: unknown[] = [];
+		const second: unknown[] = [];
+		const leaf = { id: 'leaf-1' } as unknown as WorkspaceLeaf;
+		const off = events.on((changed) => first.push(changed));
+		events.on((changed) => second.push(changed));
+
+		events.changed(leaf);
+		off();
+		events.changed(leaf);
+
+		expect(first).toEqual([leaf]);
+		expect(second).toEqual([leaf, leaf]);
+	});
+});
+
+describe('planViewEffect: what the default view does to an open tab (#104)', () => {
+	it('does nothing to a tab that pinned its own view', () => {
+		// The bug this replaced: `defaultView` carried the `engine` effect, so a
+		// tab pinned to the terminal rebuilt its renderer and restarted its
+		// bridge with `--takeover` when the vault default moved — reclaiming a
+		// pane the user had not touched. `docs/architecture.md`: only an engine
+		// change restarts the bridge.
+		expect(
+			planViewEffect({ stored: 'terminal', view: 'terminal', mounted: 'terminal' }),
+		).toBe('ignore');
+		expect(planViewEffect({ stored: 'native', view: 'native', mounted: 'native' })).toBe(
+			'ignore',
 		);
 	});
 
-	it('leaves the render mode unset when the tab never chose one (#92)', () => {
-		// Undefined, not the default: the global default render mode is read at
-		// mount, so a tab that never chose follows a change to it.
-		expect(parseTerminalState({ paneId: 'w4:p1' })?.renderMode).toBeUndefined();
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'wat' })?.renderMode).toBeUndefined();
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 7 })?.renderMode).toBeUndefined();
+	it('swaps the surface of a tab that follows the default, both ways', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: 'terminal' })).toBe('show');
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'native' })).toBe('show');
+	});
+
+	it('does nothing when the tab follows the default and shows it already', () => {
+		// A remote tab, where native is unavailable and the resolved view stays a
+		// terminal whatever the default says (ADR-0002).
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'terminal' })).toBe(
+			'ignore',
+		);
+	});
+
+	it('mounts when nothing is mounted yet', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: null })).toBe('show');
+	});
+});
+
+describe('terminalViewState (issue #104)', () => {
+	const identity = { paneId: 'w4:p1', mode: 'control', endpointId: 'local' } as const;
+
+	it('writes only the halves the tab chose for itself', () => {
+		expect(terminalViewState(identity, { view: null, engine: null })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+		});
+		expect(terminalViewState(identity, { view: 'native', engine: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'native',
+			engine: 'xterm.js',
+		});
+	});
+
+	it('writes a migrated tab back in the new shape, with no render mode left', () => {
+		const parsed = parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' });
+		const written = terminalViewState(identity, {
+			view: parsed?.view ?? null,
+			engine: parsed?.engine ?? null,
+		});
+		expect(written).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
+		expect('renderMode' in written).toBe(false);
 	});
 });
 

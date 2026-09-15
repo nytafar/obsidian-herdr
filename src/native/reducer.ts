@@ -119,12 +119,59 @@ export interface SteerEntry {
 
 export type TurnEntry = TextEntry | ThinkingEntry | ToolEntry | SteerEntry;
 
+/** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
+export interface TurnHeading {
+	/** 1 to 6, as the number of `#` says. */
+	level: number;
+	text: string;
+}
+
 /** A human prompt and everything the agent did until it stopped. */
 export interface Turn {
 	/** The prompt line's uuid; stable, so a view can redraw one turn in place. */
 	id: string;
 	prompt: string;
 	entries: TurnEntry[];
+	/**
+	 * The headings of this turn's assistant prose, in order (#100). Computed
+	 * here so the table of contents parses nothing; recomputed whenever the turn
+	 * changes, because prose arrives a block at a time.
+	 */
+	headings: TurnHeading[];
+}
+
+/** A Markdown ATX heading: up to three spaces, one to six hashes, then text. */
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
+/** A fenced code block's fence, which is what a heading inside one is not. */
+const FENCE = /^ {0,3}(```|~~~)/;
+
+/**
+ * The headings of a turn's assistant prose (#100).
+ *
+ * Only `text` entries are read: a thought is not prose, a prompt is the turn's
+ * own title and a tool call's output is not the agent speaking. Lines inside a
+ * fenced code block are skipped, because a shell comment opens with the same
+ * character as a heading and a transcript is full of them. The trailing hashes
+ * of a closed ATX heading are dropped, the way Markdown reads them.
+ */
+export function turnHeadings(entries: readonly TurnEntry[]): TurnHeading[] {
+	const headings: TurnHeading[] = [];
+	for (const entry of entries) {
+		if (entry.kind !== 'text') continue;
+		let fenced = false;
+		for (const line of entry.text.split('\n')) {
+			if (FENCE.test(line)) {
+				fenced = !fenced;
+				continue;
+			}
+			if (fenced) continue;
+			const match = HEADING.exec(line);
+			if (!match) continue;
+			const text = (match[2] ?? '').replace(/[ \t]+#*[ \t]*$/, '').trim();
+			if (text) headings.push({ level: (match[1] ?? '').length, text });
+		}
+	}
+	return headings;
 }
 
 export interface TranscriptState {
@@ -256,6 +303,8 @@ function isLocalCommandOutput(content: string): boolean {
 class Draft {
 	private readonly turns: Turn[];
 	private readonly changed: string[] = [];
+	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
+	private readonly changedIds = new Set<string>();
 	/** Turns already copied in this batch, by id: copy once, then mutate freely. */
 	private readonly mine = new Set<string>();
 
@@ -270,16 +319,23 @@ class Draft {
 	}
 
 	open(id: string, prompt: string): Turn {
-		const turn: Turn = { id, prompt, entries: [] };
+		const turn: Turn = { id, prompt, entries: [], headings: [] };
 		this.turns.push(turn);
 		this.mine.add(id);
 		this.touch(id);
 		return turn;
 	}
 
-	/** Marks a turn as changed by this batch. */
+	/**
+	 * Marks a turn as changed by this batch. Asked once per line, so the
+	 * "already marked?" question is a set rather than a scan of the list: a
+	 * first batch is the whole file, and a scan each would be quadratic in the
+	 * number of turns (#101).
+	 */
 	touch(id: string): void {
-		if (!this.changed.includes(id)) this.changed.push(id);
+		if (this.changedIds.has(id)) return;
+		this.changedIds.add(id);
+		this.changed.push(id);
 	}
 
 	/**
@@ -322,8 +378,24 @@ class Draft {
 		return this.turns.length;
 	}
 
-	/** The turns as they now stand; the caller assembles the state around them. */
+	/**
+	 * The turns as they now stand; the caller assembles the state around them.
+	 *
+	 * The headings of every turn this batch touched are recomputed here, in one
+	 * place: prose arrives a block at a time, and a turn the batch did not touch
+	 * still says what it said (#100).
+	 */
 	finish(): { turns: Turn[]; changedTurnIds: string[] } {
+		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed };
+		// Indexed once rather than searched per id: the first batch of a tail is
+		// the whole file, so every turn in a long session can be in `changed`, and
+		// a `find` each would be quadratic in exactly the case the native view's
+		// open time is measured on (#101).
+		const byId = new Map(this.turns.map((turn) => [turn.id, turn]));
+		for (const id of this.changed) {
+			const turn = byId.get(id);
+			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
+		}
 		return { turns: this.turns, changedTurnIds: this.changed };
 	}
 

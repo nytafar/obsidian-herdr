@@ -8,24 +8,20 @@
  * this interface, so nothing there changed for native mode — and
  * {@link NativePaneSurface} below is the other.
  *
- * Which one a tab mounts is its render mode's decision (`./renderMode.ts`),
+ * Which one a tab mounts is its view's decision (`./renderMode.ts`, #104),
  * and {@link PaneSurfaceHolder} performs the swap: detach the old surface,
  * then build and attach the new one. The terminal view owns the holder and
  * feeds it a factory, which is the seam `tests/paneSurface.test.ts` fakes.
  *
  * Remote endpoints keep a terminal surface (ADR-0002): everything the native
  * view reads is a path on the transcript's host, and the SSH adapters for that
- * do not exist yet, so {@link renderModeAvailability} reports native as
- * unavailable there and {@link effectiveRenderMode} falls back.
+ * do not exist yet, so {@link paneViewAvailability} reports native as
+ * unavailable there and {@link effectivePaneView} falls back.
  */
 
-import { Component, Keymap, MarkdownRenderer, type App } from 'obsidian';
+import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
-import {
-	engineForRenderMode,
-	NATIVE_RENDER_MODE,
-	type RenderMode,
-} from './renderMode';
+import { type PaneView } from './renderMode';
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
@@ -41,8 +37,9 @@ import {
 	type TurnItem,
 } from './toolCalls';
 import type { AgentStatus } from '../herdr/types.gen';
-import { PromptBox } from './promptBox';
-import type { PromptSender } from './promptSender';
+import { PromptBox, type PromptInputAttachment } from './promptBox';
+import type { KeySender, PromptSender } from './promptSender';
+import { waitingCard, type WaitingCardModel } from './waitingCard';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -68,55 +65,61 @@ export interface PaneSurface {
 	apply(effect: TerminalEffect): Promise<void>;
 }
 
-/** The two adapters a render mode can choose between. */
+/** The two adapters a view can be drawn by. */
 export type PaneSurfaceKind = 'terminal' | 'native';
 
-/** Which adapter shows a pane in this render mode. */
-export function surfaceKindFor(mode: RenderMode): PaneSurfaceKind {
-	return mode === NATIVE_RENDER_MODE ? 'native' : 'terminal';
+/**
+ * Which adapter shows a pane in this view. The two vocabularies coincide
+ * today — a view is exactly the surface that draws it — but they are separate
+ * seams: the view is what the user chose and what the tab stores, the kind is
+ * what {@link PaneSurfaceHolder} mounts.
+ */
+export function surfaceKindFor(view: PaneView): PaneSurfaceKind {
+	return view === 'native' ? 'native' : 'terminal';
 }
 
 /** Why the native view is not offered on a remote endpoint (ADR-0002). */
 export const NATIVE_REMOTE_REASON = 'local panes only';
 
-/** Whether a render mode can be chosen here, and why not when it cannot. */
-export interface RenderModeAvailability {
+/** Whether a view can be chosen here, and why not when it cannot. */
+export interface PaneViewAvailability {
 	available: boolean;
-	/** Shown beside the unavailable mode in the menu; null when it is available. */
+	/** Shown beside the unavailable view in the menu; null when it is available. */
 	reason: string | null;
 }
 
 /**
- * Whether a pane on this endpoint can be shown in this render mode. Only the
- * native mode is ever unavailable, and only on a remote endpoint: the
- * transcript it reads is a path on the pane's own host and the SSH adapters
- * are not built yet (ADR-0002, ADR-0003).
+ * Whether a pane on this endpoint can be shown in this view. Only the native
+ * view is ever unavailable, and only on a remote endpoint: the transcript it
+ * reads is a path on the pane's own host and the SSH adapters are not built
+ * yet (ADR-0002, ADR-0003).
  */
-export function renderModeAvailability(
-	mode: RenderMode,
+export function paneViewAvailability(
+	view: PaneView,
 	where: { remote: boolean },
-): RenderModeAvailability {
-	if (mode === NATIVE_RENDER_MODE && where.remote) {
+): PaneViewAvailability {
+	if (view === 'native' && where.remote) {
 		return { available: false, reason: NATIVE_REMOTE_REASON };
 	}
 	return { available: true, reason: null };
 }
 
 /**
- * The render mode a tab actually renders in: its own once it has chosen one,
- * else the global default — and never native on a remote endpoint, where it
- * keeps a terminal surface on the default engine instead.
+ * The view a tab actually shows: its own once it has chosen one, else the
+ * global default — and never native on a remote endpoint, which falls back to
+ * a terminal. Only what is *shown* falls back; the tab keeps the preference it
+ * stored, so moving the same tab to a local pane shows native again (#104).
  */
-export function effectiveRenderMode(input: {
-	/** The tab's stored render mode, or null while it follows the default. */
-	stored: RenderMode | null;
-	/** The global default render mode, normalized. */
-	fallback: RenderMode;
+export function effectivePaneView(input: {
+	/** The tab's stored view, or null while it follows the default. */
+	stored: PaneView | null;
+	/** The global default view, normalized. */
+	fallback: PaneView;
 	remote: boolean;
-}): RenderMode {
-	const mode = input.stored ?? input.fallback;
-	if (renderModeAvailability(mode, { remote: input.remote }).available) return mode;
-	return engineForRenderMode(mode);
+}): PaneView {
+	const view = input.stored ?? input.fallback;
+	if (paneViewAvailability(view, { remote: input.remote }).available) return view;
+	return 'terminal';
 }
 
 /**
@@ -159,7 +162,7 @@ export class PaneSurfaceHolder {
 	 * Makes `kind` the mounted surface on `hostEl`, building and attaching it if
 	 * it is not the one already there. Returns the surface, or null when the
 	 * request was overtaken while the old surface was detaching — by the view
-	 * closing, or by another render mode — in which case nothing is mounted and
+	 * closing, or by another view — in which case nothing is mounted and
 	 * nothing was built.
 	 */
 	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface | null> {
@@ -213,12 +216,29 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
+	/** How the waiting card's "Allow" reaches the pane's agent (#99). */
+	keySender: KeySender;
+	/** How a failure reaches the user. Defaults to an Obsidian notice. */
+	notify?: (message: string) => void;
+	/**
+	 * Switches this tab back to the terminal view, which is what the
+	 * waiting card's "Open in terminal" does: every block can be answered there,
+	 * including the three this view must never press Enter on (#99).
+	 */
+	openInTerminal: () => void;
+	/**
+	 * The global "Auto-accept permissions" setting (#99), read on every block so
+	 * a change reaches an open view. Permission blocks only, never a question, a
+	 * plan or the startup prompt.
+	 */
+	autoAcceptPermissions: () => boolean;
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
 	 * hang an autocomplete on it (#98), returning how to close it again when
-	 * the surface detaches. Left out by tests that only render.
+	 * the surface detaches and whether its popover is open (#103). Left out by
+	 * tests that only render.
 	 */
-	onPromptInput?: (inputEl: HTMLTextAreaElement) => (() => void) | void;
+	onPromptInput?: (inputEl: HTMLTextAreaElement) => PromptInputAttachment;
 	/**
 	 * How much of a turn's tool calls to fold away (#95). Read on every draw, so
 	 * a change to the setting reaches an open view through {@link
@@ -247,6 +267,32 @@ export function workingLine(status: AgentStatus): string {
 	if (status === 'working') return 'Working…';
 	if (status === 'blocked') return 'Waiting for you.';
 	return '';
+}
+
+/** What a failed Allow says, with herdr's own message in the tail (#99). */
+export function allowFailureMessage(error: unknown): string {
+	const reason = error instanceof Error ? error.message : String(error);
+	return `Herdr: could not allow the tool call (${reason})`;
+}
+
+/**
+ * How far from the bottom still counts as the bottom (#106).
+ *
+ * A couple of lines' worth. Sub-pixel rounding, a fractional device pixel ratio
+ * and a wheel notch that overshoots by a hair all leave a reader who never
+ * meant to move a few pixels short of the end, and none of them should stop the
+ * view from following.
+ */
+export const BOTTOM_SLACK_PX = 24;
+
+/** Whether a scroll container is showing its end, within {@link BOTTOM_SLACK_PX}. */
+export function isAtBottom(geometry: {
+	scrollTop: number;
+	scrollHeight: number;
+	clientHeight: number;
+}): boolean {
+	const furthest = geometry.scrollHeight - geometry.clientHeight;
+	return furthest - geometry.scrollTop <= BOTTOM_SLACK_PX;
 }
 
 /** One piece of a human prompt: literal text, or a wikilink to a note. */
@@ -315,6 +361,26 @@ export class NativePaneSurface implements PaneSurface {
 	private readonly turnComponents = new Map<string, Component>();
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
+	/** The surface's own listeners: the scroll on the turns element (#106). */
+	private readonly component = new Component();
+	/**
+	 * Whether the view is following the end of the session. True on open and
+	 * after a rotation, off the moment the reader scrolls up, on again when they
+	 * come back to the bottom (#106).
+	 */
+	private following = true;
+	/** Watches the turns element and the turn being written; null where there is none. */
+	private resizeObserver: ResizeObserver | null = null;
+	/** The turn the observer is watching, so only one ever is. */
+	private observedTurnEl: HTMLElement | null = null;
+	/** The Markdown renders of the current draw, which finish after it does. */
+	private renders: Promise<void>[] = [];
+	/** The waiting card (#99); null whenever the agent is not blocked. */
+	private waitingEl: HTMLElement | null = null;
+	/** The card's listeners, unloaded whenever it is drawn again or goes. */
+	private waitingComponent: Component | null = null;
+	/** The block this surface has already sent an Enter for; null for none. */
+	private allowedBlock: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -324,12 +390,33 @@ export class NativePaneSurface implements PaneSurface {
 	async attach(hostEl: HTMLElement): Promise<void> {
 		this.rootEl?.remove();
 		const root = hostEl.createDiv({ cls: 'herdr-native-view' });
-		// `markdown-preview-view` is what gives the view the reading-mode
-		// typography the user has set, which is the appearance the native view
-		// is meant to have (native-view-design.md).
-		root.addClass('markdown-preview-view');
-		this.turnsEl = root.createDiv({ cls: 'herdr-native-turns' });
+		// The two classes Obsidian's own reading view puts on one element:
+		// `createDiv("markdown-preview-view markdown-rendered")` in its app
+		// bundle. `markdown-preview-view` gives the reading-mode typography the
+		// user has set, and `markdown-rendered` is the ancestor almost every rule
+		// for the rendered blocks keys on — in Obsidian 1.10's `app.css`, tables
+		// are `.markdown-rendered table`, `.markdown-rendered td, .markdown-rendered th`
+		// (cell padding, borders, `--table-*` variables) and
+		// `.markdown-rendered th, .markdown-rendered td { text-align: start }`,
+		// and code blocks are `.markdown-rendered pre` and `.markdown-rendered code`.
+		// With only `markdown-preview-view` none of those reach, which is why
+		// tables rendered unpadded and unthemed (#108). Themes key on the same
+		// ancestor, so this needs no plugin CSS of its own.
+		root.addClass('markdown-preview-view', 'markdown-rendered');
+		// The turns are the view's one scroll container (#103), so everything that
+		// acts on the scroll — following here, the TOC's jumps (#100), the
+		// `content-visibility` estimates (#101) — acts on this element.
+		const turns = root.createDiv({ cls: 'herdr-native-turns' });
+		this.turnsEl = turns;
 		this.rootEl = root;
+		this.component.load();
+		// The only thing a scroll does: say whether the view is still following.
+		// Nothing is drawn, measured or unmounted here, because this runs on
+		// every frame of a flick through a long session (#101).
+		this.component.registerDomEvent(turns, 'scroll', () => {
+			this.following = isAtBottom(turns);
+		});
+		this.watchForGrowth(turns);
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
 			sender: this.options.sender,
@@ -341,8 +428,14 @@ export class NativePaneSurface implements PaneSurface {
 
 	async detach(): Promise<void> {
 		this.unbind();
+		this.clearWaiting();
 		this.promptBox?.destroy();
 		this.promptBox = null;
+		this.resizeObserver?.disconnect();
+		this.resizeObserver = null;
+		this.observedTurnEl = null;
+		this.component.unload();
+		this.renders = [];
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.turnsEl = null;
@@ -354,8 +447,14 @@ export class NativePaneSurface implements PaneSurface {
 	 * Nothing to hand back: there is no child process and no canvas here, so a
 	 * hidden tab keeps its session model and its subscription and is simply up
 	 * to date when it is revealed (#94, ADR-0003).
+	 *
+	 * What it does not keep is a layout — a hidden leaf measures nothing — so a
+	 * tab that was following is put back on the end when it is revealed, and a
+	 * tab whose reader had scrolled up is left exactly where they left it (#106).
 	 */
-	async setVisible(_visible: boolean): Promise<void> {}
+	async setVisible(visible: boolean): Promise<void> {
+		if (visible) this.pinToBottom();
+	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
 		const samePane = identity.paneId === this.identity.paneId;
@@ -381,9 +480,30 @@ export class NativePaneSurface implements PaneSurface {
 		this.renderAll();
 	}
 
-	/** Takes the pane's session model and draws what it already holds. */
+	/**
+	 * Brings one turn into view and stops following, which is what a click in
+	 * the table of contents does (#100, which calls this and draws the list).
+	 * A turn id this session does not hold moves nothing: the TOC and the view
+	 * share a session model, but a rotation can empty one before the other.
+	 */
+	scrollToTurn(turnId: string): void {
+		const turnEl = this.turnEls.get(turnId);
+		if (!turnEl) return;
+		this.following = false;
+		turnEl.scrollIntoView({ block: 'start' });
+	}
+
+	/**
+	 * Takes the pane's session model and draws what it already holds.
+	 *
+	 * At the bottom of it, always: this runs on open and again whenever the tab
+	 * is pointed at another pane, and another pane is another session the reader
+	 * has read nothing of. Where they had scrolled to in the pane before it says
+	 * nothing about where this one starts (#106).
+	 */
 	private bind(): void {
 		if (!this.rootEl) return;
+		this.following = true;
 		if (this.identity.paneId) {
 			this.handle = this.options.models.acquire(this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
@@ -409,6 +529,9 @@ export class NativePaneSurface implements PaneSurface {
 	private applyChange(change: SessionChange): void {
 		if (!this.rootEl) return;
 		if (change.reset) {
+			// Another session (`/clear`, `--resume`): its latest turn is what to
+			// show, whatever the reader was reading in the one that is gone.
+			this.following = true;
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
@@ -417,6 +540,7 @@ export class NativePaneSurface implements PaneSurface {
 				if (turn) this.renderTurn(turn);
 			}
 			this.updateEmpty();
+			this.settleScroll();
 		}
 		this.updateStatus();
 		this.report();
@@ -427,6 +551,7 @@ export class NativePaneSurface implements PaneSurface {
 		for (const turn of this.model?.state.turns ?? []) this.renderTurn(turn);
 		this.updateEmpty();
 		this.updateStatus();
+		this.settleScroll();
 	}
 
 	/** Drops every turn element and the components that went with them. */
@@ -434,6 +559,10 @@ export class NativePaneSurface implements PaneSurface {
 		for (const component of this.turnComponents.values()) component.unload();
 		this.turnComponents.clear();
 		this.turnEls.clear();
+		if (this.observedTurnEl) {
+			this.resizeObserver?.unobserve(this.observedTurnEl);
+			this.observedTurnEl = null;
+		}
 		this.turnsEl?.empty();
 	}
 
@@ -449,6 +578,8 @@ export class NativePaneSurface implements PaneSurface {
 		if (!turnEl) {
 			turnEl = turnsEl.createDiv({ cls: 'herdr-native-turn' });
 			this.turnEls.set(turn.id, turnEl);
+			// The turn Claude is writing is the one that grows under the view.
+			this.watchForGrowth(turnEl, this.observedTurnEl);
 		}
 		turnEl.empty();
 		this.turnComponents.get(turn.id)?.unload();
@@ -500,11 +631,7 @@ export class NativePaneSurface implements PaneSurface {
 	/** Assistant prose, through Obsidian's own renderer. */
 	private renderText(turnEl: HTMLElement, entry: TextEntry, component: Component): void {
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
-		// Obsidian's own renderer, so the vault's links, callouts and embeds
-		// come out exactly as they do in a note. It resolves relative links
-		// against `sourcePath`; a transcript is not a note in the vault, so
-		// that is the vault root.
-		void MarkdownRenderer.render(this.options.app, entry.text, blockEl, '', component);
+		this.renderMarkdown(entry.text, blockEl, component);
 	}
 
 	/**
@@ -524,7 +651,7 @@ export class NativePaneSurface implements PaneSurface {
 		const details = turnEl.createEl('details', { cls: 'herdr-native-thinking' });
 		details.createEl('summary', { cls: 'herdr-native-thinking-summary', text: 'Thought' });
 		const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
-		void MarkdownRenderer.render(this.options.app, entry.text, bodyEl, '', component);
+		this.renderMarkdown(entry.text, bodyEl, component);
 	}
 
 	/** The tool group: one summary line that expands to a row per call. */
@@ -581,7 +708,7 @@ export class NativePaneSurface implements PaneSurface {
 		const report = subagentReport(entry);
 		if (!report) return;
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-report' });
-		void MarkdownRenderer.render(this.options.app, report, blockEl, '', component);
+		this.renderMarkdown(report, blockEl, component);
 	}
 
 	/**
@@ -634,6 +761,67 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
+	/**
+	 * Markdown through Obsidian's own renderer, so the vault's links, callouts
+	 * and embeds come out exactly as they do in a note. It resolves relative
+	 * links against `sourcePath`; a transcript is not a note in the vault, so
+	 * that is the vault root.
+	 *
+	 * The render is async, so the draw is finished long before the view has its
+	 * real height: the promise is kept, and {@link settleScroll} pins the view
+	 * once every render of this draw has landed (#106).
+	 */
+	private renderMarkdown(markdown: string, el: HTMLElement, component: Component): void {
+		this.renders.push(MarkdownRenderer.render(this.options.app, markdown, el, '', component));
+	}
+
+	/**
+	 * Puts the view back on the end of the session, twice: now, and once the
+	 * Markdown of this draw has rendered.
+	 *
+	 * A single `scrollTop = scrollHeight` after a draw lands short — the
+	 * renderer has not run yet, and `content-visibility` makes the height an
+	 * estimate besides (#101) — so the pin that counts is the later one. What
+	 * lands later still, an image or an embed, is the resize observer's.
+	 */
+	private settleScroll(): void {
+		this.pinToBottom();
+		const renders = this.renders;
+		if (renders.length === 0) return;
+		this.renders = [];
+		void Promise.allSettled(renders).then(() => this.pinToBottom());
+	}
+
+	/** The end of the session, while the view is following it and still mounted. */
+	private pinToBottom(): void {
+		const turnsEl = this.turnsEl;
+		if (!turnsEl || !this.following) return;
+		turnsEl.scrollTop = turnsEl.scrollHeight;
+	}
+
+	/**
+	 * Watches an element for the height it gains after it was drawn, and gives
+	 * up the one it was watching before.
+	 *
+	 * Two elements at a time and no more: the turns element, which changes when
+	 * the leaf or the prompt box does, and the turn being written, which is the
+	 * one growing under a reader who is at the bottom. Watching every turn would
+	 * fire on every `content-visibility` change as the reader scrolls, which is
+	 * exactly the per-turn work a long session cannot afford (#101).
+	 *
+	 * Guarded for an environment with no `ResizeObserver` at all: the tests run
+	 * under node, where there is none, and the view must still mount.
+	 */
+	private watchForGrowth(el: HTMLElement, instead?: HTMLElement | null): void {
+		if (typeof ResizeObserver === 'undefined') return;
+		if (!this.resizeObserver) {
+			this.resizeObserver = new ResizeObserver(() => this.pinToBottom());
+		}
+		if (instead) this.resizeObserver.unobserve(instead);
+		if (el !== this.turnsEl) this.observedTurnEl = el;
+		this.resizeObserver.observe(el);
+	}
+
 	/** The line shown when there is nothing to show, and nothing when there is. */
 	private updateEmpty(): void {
 		const root = this.rootEl;
@@ -657,8 +845,10 @@ export class NativePaneSurface implements PaneSurface {
 		const root = this.rootEl;
 		if (!root) return;
 		const status = this.model?.agentStatus ?? 'unknown';
-		// What the box may do is the same status this line reports (#97).
+		// What the box may do is the same status this line reports (#97), and
+		// `blocked` is where the waiting card takes its place (#99).
 		this.promptBox?.setStatus(status);
+		this.updateWaiting(status);
 		const text = workingLine(status);
 		if (!text) {
 			this.statusEl?.remove();
@@ -667,6 +857,153 @@ export class NativePaneSurface implements PaneSurface {
 		}
 		if (!this.statusEl) this.statusEl = root.createDiv({ cls: 'herdr-native-status' });
 		this.statusEl.setText(text);
+	}
+
+	/**
+	 * The waiting card (#99), which is what a `blocked` agent gets instead of
+	 * the prompt box: only `blocked` refuses a prompt, and the card is the way
+	 * past it. The box is hidden rather than dropped, so the draft in it
+	 * survives the block.
+	 */
+	private updateWaiting(status: AgentStatus): void {
+		const root = this.rootEl;
+		if (!root) return;
+		if (status !== 'blocked') {
+			this.clearWaiting();
+			// The block is over: the next one is an Enter of its own.
+			this.allowedBlock = null;
+			this.promptBox?.setHidden(false);
+			return;
+		}
+		const card = waitingCard({
+			// No transcript at all is the workspace trust prompt: a freshly
+			// started Claude writes no file until its first turn (ADR-0003).
+			hasTranscript: this.model?.path != null,
+			turns: this.model?.state.turns ?? [],
+			vaultPath: this.options.vaultPath(),
+		});
+		this.renderWaiting(root, card);
+		this.promptBox?.setHidden(true);
+		this.autoAccept(card);
+	}
+
+	/** Drops the card and its listeners. Safe to call when there is none. */
+	private clearWaiting(): void {
+		this.waitingComponent?.unload();
+		this.waitingComponent = null;
+		this.waitingEl?.remove();
+		this.waitingEl = null;
+	}
+
+	/**
+	 * Draws the card: what the block is, and the one or two things to do about
+	 * it.
+	 *
+	 * **Allow is a permission block and nothing else.** Measured 2026-09-15
+	 * (`docs/architecture.md`, "What a bare Enter selects on each of Claude's
+	 * blocking dialogs"): the cursor sits on the first option in every variant,
+	 * and on a Write, an Edit or a Bash permission that first option is "Yes",
+	 * which allows the call once and changes no mode. On the other three it is
+	 * something no view may choose for the user — "No, exit" on the workspace
+	 * trust prompt, the question's own first answer, and "Yes, and use auto
+	 * mode" on plan approval, which is a lasting side effect. Those three get
+	 * "Open in terminal" alone.
+	 */
+	private renderWaiting(root: HTMLElement, card: WaitingCardModel): void {
+		this.clearWaiting();
+		const component = new Component();
+		component.load();
+		this.waitingComponent = component;
+		const el = root.createDiv({ cls: 'herdr-native-waiting' });
+		this.waitingEl = el;
+		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		for (const option of card.options) {
+			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
+		}
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		// Only once the transcript has been read, for the same reason
+		// {@link autoAccept} waits for it: until then a blocked session has no
+		// turns to scan and every block falls back to a permission with no call
+		// named, so the button would be offered on a question, a plan approval or
+		// the trust prompt just as readily as on a permission.
+		if (card.kind === 'permission' && this.model?.loaded === true) {
+			const allowEl = actions.createEl('button', {
+				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-allow', 'mod-cta'],
+				text: 'Allow',
+			});
+			component.registerDomEvent(allowEl, 'click', () => {
+				void this.allow(card.toolUseId);
+			});
+		}
+		const terminalEl = actions.createEl('button', {
+			cls: ['herdr-native-waiting-action', 'herdr-native-waiting-terminal'],
+			text: 'Open in terminal',
+		});
+		component.registerDomEvent(terminalEl, 'click', () => this.options.openInTerminal());
+	}
+
+	/**
+	 * Presses Allow for this block when the setting says to, once (#99). The
+	 * kind is checked here as well as where the button is drawn, because this
+	 * is the path with nobody looking at it.
+	 *
+	 * **Never before the transcript has been read.** The model knows the path as
+	 * soon as herdr names the agent session, and the tail reads the file after
+	 * that; in between, a session that is blocked has no turns to scan and the
+	 * card falls back to a permission with no call named. Pressing then would
+	 * send a bare Enter at whatever the dialog really is — auto mode on plan
+	 * approval, the first answer of a question (`docs/architecture.md`) — so a
+	 * model that has delivered nothing gets the card and no Enter.
+	 */
+	private autoAccept(card: WaitingCardModel): void {
+		if (card.kind !== 'permission') return;
+		if (!this.options.autoAcceptPermissions()) return;
+		const model = this.model;
+		if (!model?.loaded) return;
+		// And never a block whose call is not named. `loaded` says lines have
+		// arrived, not that the `tool_use` of *this* block is among them: an
+		// `agent_status` transition can beat the line that names the call, and
+		// the card falls back to a permission in that window too. An unnamed
+		// block is not known to be a permission at all, so it waits for the line
+		// — the card is drawn again for every line that lands under it.
+		if (card.toolUseId === '') return;
+		// One press per block for the pane, not one per view: the claim is the
+		// model's, which is the thing two tabs on one pane share (ADR-0003). It
+		// is also what makes this once per block at all, since the card is drawn
+		// again every time a transcript line lands under it.
+		if (!model.claimBlock(card.toolUseId)) return;
+		void this.allow(card.toolUseId);
+	}
+
+	/**
+	 * Allow: a bare Enter in the pane's agent, which takes the first option of
+	 * the permission dialog — "Yes", allowing the call once and changing no
+	 * mode (`docs/architecture.md`). Only ever called for a permission block.
+	 *
+	 * One Enter per block, whoever asks and however often. A second press —
+	 * two clicks before the status moves, or a click on a card auto-accept has
+	 * already answered — would land on whatever dialog the first one's "Yes"
+	 * opened. The block is the call the card names, as the model's claim is
+	 * (#99), and it is forgotten when the agent leaves `blocked`.
+	 */
+	private async allow(toolUseId: string): Promise<void> {
+		if (this.allowedBlock === toolUseId) return;
+		this.allowedBlock = toolUseId;
+		try {
+			await this.options.keySender.sendKeys(this.identity.paneId, ['Enter']);
+		} catch (error) {
+			this.notify(allowFailureMessage(error));
+		}
+	}
+
+	/** How a failure reaches the user; a Notice, as a failed send is (#97). */
+	private notify(message: string): void {
+		if (this.options.notify) {
+			this.options.notify(message);
+			return;
+		}
+		new Notice(message);
 	}
 
 	private report(): void {

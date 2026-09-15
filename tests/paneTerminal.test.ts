@@ -738,6 +738,7 @@ describe('the settings-effect matrix (issue #84)', () => {
 			terminalTheme: { effect: 'theme', keepsSession: true, defersWhenHidden: true },
 			terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
 			terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+			defaultView: { effect: 'view', keepsSession: true, defersWhenHidden: true },
 			terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
 			terminalFontFamily: {
 				effect: 'next-mount',
@@ -765,6 +766,10 @@ describe('the settings-effect matrix (issue #84)', () => {
 	});
 
 	it('restarts the session for the engine and for nothing else', () => {
+		// The contract in `docs/architecture.md`: only an engine change restarts
+		// the bridge. The default view is not one — a tab pinned to the terminal
+		// is not following it, and a tab that is swaps surface rather than
+		// rebuilding the terminal it already shows.
 		const restarts = Object.entries(TERMINAL_SETTING_EFFECTS)
 			.filter(([, spec]) => !spec.keepsSession)
 			.map(([setting]) => setting);
@@ -817,6 +822,15 @@ describe('collapseEffects (issue #84)', () => {
 
 	it('collapses a burst of the same effect into one', () => {
 		expect(collapseEffects(['theme', 'theme', 'theme'])).toEqual(['theme']);
+	});
+
+	it('runs a view swap before the engine rebuild queued beside it', () => {
+		// Both halves of the old render mode moved while the leaf was hidden
+		// (#104): the surface the tab shows, and the library its terminal draws
+		// with. The swap mounts from the current settings, and the rebuild is
+		// what a tab that stayed a terminal owes.
+		expect(collapseEffects(['engine', 'view'])).toEqual(['view', 'engine']);
+		expect(collapseEffects(['theme', 'view', 'cursor'])).toEqual(['view', 'theme', 'cursor']);
 	});
 
 	it('drops effects that are never queued, and has nothing to do for an empty set', () => {

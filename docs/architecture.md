@@ -10,7 +10,10 @@ it reconnects with backoff when the server restarts. On the connected edge the
 plugin loads `session.snapshot` (workspaces, panes, agent names) and then keeps
 the picture current from events. Reads: `ping`, `workspace.list`, `pane.list`,
 `tab.list`, `agent.list`, `session.snapshot`, `events.subscribe`. Writes only on
-your action: `pane.focus`, `tab.create`, `pane.split`, `agent.start`.
+your action: `pane.focus`, `tab.create`, `pane.split`, `agent.start`,
+`agent.prompt`, `agent.send_keys`. The last takes `{target, keys}` and nothing
+else, checked against the schema the installed 0.8.2 prints (`herdr api schema
+--json`, protocol 20), where both fields are required.
 
 Everything is filtered to one workspace on the plugin side. The list reacts to
 agent status transitions, never to the raw `pane.updated` stream, which is about
@@ -50,12 +53,14 @@ compares them is `scripts/bench-renderers.mjs`.
 
 What a settings change does to an open terminal is a table, not a call path:
 `TERMINAL_SETTING_EFFECTS` in `src/views/paneTerminal.ts` maps each setting to
-one named effect — `theme`, `cursor`, `engine`, `title`, `next-mount` — and the
-plugin calls one entry point per terminal leaf with the setting that moved.
-Theme and cursor refresh the renderer, in place when the engine can and by
-remount otherwise; the session is preserved either way, so a palette change can
-never reclaim a pane another controller took over. Only an engine change
-restarts the bridge. A hidden leaf holds every effect the renderer would show
+one named effect — `theme`, `cursor`, `engine`, `view`, `title`, `next-mount` —
+and the plugin calls one entry point per terminal leaf with the setting that
+moved. Theme and cursor refresh the renderer, in place when the engine can and
+by remount otherwise; the session is preserved either way, so a palette change
+can never reclaim a pane another controller took over. `view` is the vault's
+default view (#104), which reaches only a tab that is following it into a view
+it is not already showing, and swaps that tab's surface without touching the
+lifecycle. Only an engine change restarts the bridge. A hidden leaf holds every effect the renderer would show
 until it is revealed, except the title, whose tab header is on screen anyway.
 
 ## The settings tab
@@ -160,3 +165,31 @@ scratch pane created with `tab create` and `agent start`.
   wrapped to int32, `Math.abs(...).toString(36)`. The cwd is the session's, not
   the process's: an agent started from one directory and working in another
   writes under the first.
+- **What a bare Enter selects on each of Claude's blocking dialogs.** Measured
+  2026-09-15 against herdr 0.8.2 and Claude Code 2.1.266, in a scratch pane
+  started with `--permission-mode default` (this machine's Claude defaults to
+  auto mode, which shows no permission dialog at all, so Bash `echo` and other
+  allowlisted commands never block either). The cursor sits on the first option
+  in every variant, and `agent send-keys <pane> Enter` picks it:
+  - **Workspace trust prompt** (startup, `launch_pending`): first option is
+    "No, exit". Enter quits Claude. Never send a bare Enter here; `Down Enter`
+    trusts the folder.
+  - **Write and Edit permission** ("Do you want to create b.txt?"): options
+    "1. Yes", "2. Yes, and switch to accept edits …", "3. No". Enter allowed
+    the write and the status went `blocked` → `done`.
+  - **Bash permission** ("Do you want to proceed?"): "1. Yes", "2. Yes, and
+    don't ask again for … in <cwd>", "3. Yes, and switch to auto mode",
+    "4. No". Enter ran the command once, without changing any mode.
+  - **`AskUserQuestion`**: the options are the question's own answers,
+    "1. Tea", "2. Coffee", "3. Type something.", "4. Chat about this". Enter
+    chose the first answer. Answering a question is never "Allow".
+  - **Plan approval** (`ExitPlanMode`, "Ready to code?"): "1. Yes, and use
+    auto mode", "2. Yes, manually approve edits", "3. Tell Claude what to
+    change". Enter switches the session to auto mode, a lasting side effect.
+    Never send a bare Enter here.
+  So Allow is safe to wire as a bare Enter for the permission kind only (tool
+  `Bash`, `Write`, `Edit` and the like, recognised as the last `tool_use` with
+  no result), and must not be offered for questions, plan approval or startup.
+  The transcript shows a permission block as that dangling `tool_use`; a
+  question as a dangling `AskUserQuestion` call; plan approval as a dangling
+  `ExitPlanMode` call. `agent_status` is `blocked` in all of them.
