@@ -272,7 +272,7 @@ hand in the dev vault:
 
 The unit tests cover the decisions, not the wiring. Inside the dev vault:
 
-1. Command palette → **Herdr: Show herdr agents** opens the list in the left
+1. Command palette → **Herdr: Show agents** opens the list in the left
    sidebar (first time it is created with `getLeftLeaf(true)`; after that it is
    revealed wherever the user dragged it).
 2. Rows group by herdr tab and show a status dot, the agent name, the stripped

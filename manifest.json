@@ -3,7 +3,7 @@
 	"name": "Herdr",
 	"version": "0.3.0",
 	"minAppVersion": "1.7.2",
-	"description": "See, reach and start your herdr agents from inside Obsidian: live agent list, notifications, embedded pane terminals, new tabs at a note's folder.",
+	"description": "See, reach and start your herdr agents from your vault, with a live agent list, notifications, embedded pane terminals and new tabs at a note's folder.",
 	"author": "Lasse",
 	"authorUrl": "https://github.com/nytafar",
 	"isDesktopOnly": true

@@ -83,7 +83,7 @@ function harness(options: {
 	});
 	const placed = leaf('placed', {});
 	const workspace = {
-		activeLeaf: null,
+		getActiveViewOfType: () => null,
 		getLeavesOfType: (type: string) => (type === 'herdr-terminal' ? [terminalLeaf] : []),
 		getActiveFile: () => ({ path: NOTE }),
 		getMostRecentLeaf: () => (options.mostRecent === 'note' ? noteLeaf : terminalLeaf),

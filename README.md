@@ -59,7 +59,7 @@ into `<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
 3. **No workspace matched?** The plugin picks the herdr workspace whose label
    equals the vault folder name, else the one with the most panes inside the vault
    path. Label a workspace like your vault, or pin **Workspace ID**.
-4. Run **Herdr: Show herdr agents** from the command palette. The list opens in
+4. Run **Herdr: Show agents** from the command palette. The list opens in
    the left sidebar and stays wherever you drag it.
 
 Only panes that run an agent are listed; plain shells stay invisible.

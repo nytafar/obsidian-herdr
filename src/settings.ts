@@ -726,7 +726,7 @@ export function buildRemoteSection(
 	new Setting(containerEl)
 		.setName('Use a remote herdr')
 		.setDesc(
-			'Talk to herdr on another machine over SSH. The socket is forwarded locally and terminals are spawned through ssh.',
+			'Talk to herdr on another machine over SSH. The socket is forwarded locally and terminals are spawned through SSH.',
 		)
 		.addToggle((toggle) =>
 			toggle.setValue(settings.remote.enabled).onChange(async (value) => {
@@ -882,7 +882,7 @@ export function buildAgentsSection(
 
 	new Setting(containerEl)
 		.setName('Default agent kind')
-		.setDesc('Agent started by "Start agent here".')
+		.setDesc('Agent that folder actions start.')
 		.addDropdown((dropdown) => {
 			for (const kind of AGENT_KINDS) {
 				dropdown.addOption(kind, kind);
