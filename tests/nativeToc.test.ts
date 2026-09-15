@@ -25,6 +25,8 @@ import type { WorkspaceLeaf } from 'obsidian';
 class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	path: string | null = null;
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();
@@ -32,6 +34,11 @@ class FakeModel implements SessionModelView {
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
 	}
 
 	/** Puts turns in and tells the subscribers, as the real model does. */
@@ -196,6 +203,60 @@ describe('TocPanel', () => {
 		expect(el.find('herdr-toc-empty').textContent).toBe('No native view is active.');
 	});
 
+	it('follows a leaf that switched to the native view in place (#105)', () => {
+		// The header toggle swaps the surface inside one leaf. No leaf becomes
+		// active, so `active-leaf-change` never fires and nothing else would tell
+		// the list that the tab the reader is in is now a native view.
+		const models = new FakeModels();
+		const leaf = leafOf('tab');
+		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: '' }]]);
+		const { panel, el } = panelOn(models, facts);
+		panel.activeLeafChanged(leaf);
+		expect(el.find('herdr-toc-empty').textContent).toBe('No native view is active.');
+
+		facts.set(leaf, { inMainArea: true, nativePaneId: 'w4:p1' });
+		panel.surfaceChanged(leaf, true);
+		models.model('w4:p1').push([turn('u1', 'First prompt')]);
+
+		expect(models.acquired).toEqual(['w4:p1']);
+		expect(items(el)).toEqual(['First prompt']);
+	});
+
+	it('empties and gives the model back when that leaf goes back to a terminal', () => {
+		const models = new FakeModels();
+		const leaf = leafOf('tab');
+		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]);
+		const { panel, el } = panelOn(models, facts);
+		panel.activeLeafChanged(leaf);
+		models.model('w4:p1').push([turn('u1', 'First prompt')]);
+
+		facts.set(leaf, { inMainArea: true, nativePaneId: '' });
+		panel.surfaceChanged(leaf, true);
+
+		// Stale entries and a subscription nobody reads are the whole of the bug.
+		expect(models.released).toEqual(['w4:p1']);
+		expect(el.find('herdr-toc-empty').textContent).toBe('No native view is active.');
+	});
+
+	it('ignores a swap in a tab the reader is not in and does not follow', () => {
+		// A tab menu on a background tab switches its view without the reader
+		// leaving the tab they are reading.
+		const models = new FakeModels();
+		const read = leafOf('native');
+		const background = leafOf('background');
+		const facts = new Map([
+			[read, { inMainArea: true, nativePaneId: 'w4:p1' }],
+			[background, { inMainArea: true, nativePaneId: 'w4:p2' }],
+		]);
+		const { panel } = panelOn(models, facts);
+		panel.activeLeafChanged(read);
+
+		panel.surfaceChanged(background, false);
+
+		expect(models.acquired).toEqual(['w4:p1']);
+		expect(models.released).toEqual([]);
+	});
+
 	it('keeps the list when its own leaf is activated, so a second click still works', () => {
 		const models = new FakeModels();
 		const native = leafOf('native');
@@ -217,7 +278,7 @@ describe('TocPanel', () => {
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 		// A heading scrolls to the turn it belongs to (#100): the view's own seam
 		// is `scrollToTurn`, which also switches following off.
-		expect(scrollToTurn).toHaveBeenCalledWith('w4:p1', 'u1');
+		expect(scrollToTurn).toHaveBeenCalledWith(native, 'w4:p1', 'u1');
 	});
 
 	it('scrolls the view to the turn a click names', () => {
@@ -232,7 +293,32 @@ describe('TocPanel', () => {
 
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 
-		expect(scrollToTurn).toHaveBeenCalledWith('w4:p1', 'u2');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+	});
+
+	it('scrolls the leaf it follows, not the first tab showing that pane', () => {
+		// Two tabs on one pane share a session model (ADR-0003) and are two
+		// leaves. The list is about one of them, and a click must move that one:
+		// the other can be a background tab nobody is looking at.
+		const models = new FakeModels();
+		const first = leafOf('native-1');
+		const second = leafOf('native-2');
+		const { panel, el, scrollToTurn } = panelOn(
+			models,
+			new Map([
+				[first, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[second, { inMainArea: true, nativePaneId: 'w4:p1' }],
+			]),
+		);
+		panel.activeLeafChanged(first);
+		// The same pane, so the model and the list do not move — the leaf does.
+		panel.activeLeafChanged(second);
+		models.model('w4:p1').push([turn('u1', 'First prompt')]);
+
+		el.findAll('herdr-toc-item')[0]?.dispatch('click');
+
+		expect(scrollToTurn).toHaveBeenCalledWith(second, 'w4:p1', 'u1');
+		expect(models.acquired).toEqual(['w4:p1']);
 	});
 
 	it('gives the model back when the view closes', () => {

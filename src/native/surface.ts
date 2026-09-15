@@ -379,14 +379,6 @@ export class NativePaneSurface implements PaneSurface {
 	private waitingEl: HTMLElement | null = null;
 	/** The card's listeners, unloaded whenever it is drawn again or goes. */
 	private waitingComponent: Component | null = null;
-	/**
-	 * The block auto-accept has already pressed Allow for — the dangling
-	 * `tool_use` id, or an empty string for a permission with no call to name —
-	 * and null when this block has not been pressed. Cleared the moment the
-	 * status leaves `blocked`, so it is one press per block and no more: a
-	 * block is drawn again every time a transcript line lands under it.
-	 */
-	private autoAccepted: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -436,7 +428,6 @@ export class NativePaneSurface implements PaneSurface {
 	async detach(): Promise<void> {
 		this.unbind();
 		this.clearWaiting();
-		this.autoAccepted = null;
 		this.promptBox?.destroy();
 		this.promptBox = null;
 		this.resizeObserver?.disconnect();
@@ -514,9 +505,6 @@ export class NativePaneSurface implements PaneSurface {
 
 	/** Gives the model back. Safe to call when nothing is held. */
 	private unbind(): void {
-		// Another pane's block is another block: what was pressed for this one
-		// says nothing about it (#99).
-		this.autoAccepted = null;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.handle?.release();
@@ -873,8 +861,6 @@ export class NativePaneSurface implements PaneSurface {
 		if (!root) return;
 		if (status !== 'blocked') {
 			this.clearWaiting();
-			// The block is over: the next one is a block of its own to press.
-			this.autoAccepted = null;
 			this.promptBox?.setHidden(false);
 			return;
 		}
@@ -945,12 +931,25 @@ export class NativePaneSurface implements PaneSurface {
 	 * Presses Allow for this block when the setting says to, once (#99). The
 	 * kind is checked here as well as where the button is drawn, because this
 	 * is the path with nobody looking at it.
+	 *
+	 * **Never before the transcript has been read.** The model knows the path as
+	 * soon as herdr names the agent session, and the tail reads the file after
+	 * that; in between, a session that is blocked has no turns to scan and the
+	 * card falls back to a permission with no call named. Pressing then would
+	 * send a bare Enter at whatever the dialog really is — auto mode on plan
+	 * approval, the first answer of a question (`docs/architecture.md`) — so a
+	 * model that has delivered nothing gets the card and no Enter.
 	 */
 	private autoAccept(card: WaitingCardModel): void {
-		if (this.autoAccepted !== null) return;
 		if (card.kind !== 'permission') return;
 		if (!this.options.autoAcceptPermissions()) return;
-		this.autoAccepted = card.toolUseId;
+		const model = this.model;
+		if (!model?.loaded) return;
+		// One press per block for the pane, not one per view: the claim is the
+		// model's, which is the thing two tabs on one pane share (ADR-0003). It
+		// is also what makes this once per block at all, since the card is drawn
+		// again every time a transcript line lands under it.
+		if (!model.claimBlock(card.toolUseId)) return;
 		void this.allow();
 	}
 

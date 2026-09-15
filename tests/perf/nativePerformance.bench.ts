@@ -74,11 +74,17 @@ const NODE_BUDGET = 50_000;
 /** A model that only ever hands over one already-reduced state. */
 class StaticModel implements SessionModelView {
 	path: string | null = '/transcript.jsonl';
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = true;
 	agentSession = 'bench';
 	agentStatus: AgentStatus = 'idle';
 	constructor(readonly state: TranscriptState) {}
 	on(_listener: (change: SessionChange) => void): () => void {
 		return () => {};
+	}
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
 	}
 }
 

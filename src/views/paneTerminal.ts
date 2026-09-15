@@ -370,7 +370,7 @@ export function planThemeUpdate(input: ThemeUpdateInput): ThemeUpdatePlan {
  *   lands the next time the terminal is built; routing them through a rebuild
  *   would throw away a live terminal for a value nobody asked to see applied.
  */
-export type TerminalEffect = 'theme' | 'cursor' | 'engine' | 'title' | 'next-mount';
+export type TerminalEffect = 'theme' | 'cursor' | 'engine' | 'view' | 'title' | 'next-mount';
 
 /**
  * The settings an open terminal reacts to. Checked against `HerdrSettings`, so
@@ -431,8 +431,11 @@ export const TERMINAL_SETTING_EFFECTS: Readonly<Record<TerminalSetting, Terminal
 	terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
 	terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
 	// #104: the default view can mean the other surface altogether for a tab
-	// that never chose one, and the view decides it at mount.
-	defaultView: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
+	// that never chose one, and the view decides it at mount. Its own effect,
+	// not the engine's: a tab that pinned its view is not following the default
+	// at all, and one that is swaps surface rather than rebuilding the terminal
+	// it already shows, so no bridge is restarted either way.
+	defaultView: { effect: 'view', keepsSession: true, defersWhenHidden: true },
 	// #27: another library draws it, so the terminal is built again and the
 	// bridge with it.
 	terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
@@ -478,15 +481,20 @@ export function planSettingEffect(input: {
 /**
  * What a leaf that deferred effects runs when it is revealed, in order.
  *
- * An `engine` swallows the rest: it mounts a terminal from every current
- * setting, so a `theme` or a `cursor` queued beside it is already in the options
- * it is built with. Otherwise the theme goes first, since a remount would undo a
- * cursor applied before it, and effects that never defer are dropped.
+ * A `view` goes first: it decides which surface is mounted at all, and a
+ * surface it mounts is built from every current setting. An `engine` swallows
+ * the rest for the same reason — it mounts a terminal from the settings as they
+ * are — so a `theme` or a `cursor` queued beside it is already in its options.
+ * Otherwise the theme goes first, since a remount would undo a cursor applied
+ * before it, and effects that never defer are dropped.
  */
 export function collapseEffects(effects: Iterable<TerminalEffect>): TerminalEffect[] {
 	const queued = new Set(effects);
-	if (queued.has('engine')) return ['engine'];
-	return (['theme', 'cursor'] as const).filter((effect) => queued.has(effect));
+	const view: TerminalEffect[] = queued.has('view') ? ['view'] : [];
+	// The engine is still owed: a tab whose view did not actually change is
+	// showing the terminal that has to be rebuilt.
+	if (queued.has('engine')) return [...view, 'engine'];
+	return [...view, ...(['theme', 'cursor'] as const).filter((effect) => queued.has(effect))];
 }
 
 /** What a leaf is doing right now, as far as a settings change is concerned. */
@@ -885,9 +893,9 @@ export class PaneTerminal {
 	 *
 	 * The view calls this and nothing else; which setting it was, and whether a
 	 * hidden leaf should have held the effect back, are both decided before the
-	 * call. `title` and `next-mount` are listed and do nothing here on purpose:
-	 * the title belongs to the view, and the rest of the renderer options are
-	 * read fresh by the next mount.
+	 * call. `view`, `title` and `next-mount` are listed and do nothing here on
+	 * purpose: which surface a tab shows and what its header says are the view's,
+	 * and the rest of the renderer options are read fresh by the next mount.
 	 */
 	async apply(effect: TerminalEffect): Promise<void> {
 		switch (effect) {
@@ -900,6 +908,7 @@ export class PaneTerminal {
 			case 'engine':
 				await this.rebuildRenderer();
 				return;
+			case 'view':
 			case 'title':
 			case 'next-mount':
 				return;

@@ -337,6 +337,8 @@ describe('PromptBox: state per agent status', () => {
 class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	path: string | null = null;
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();
@@ -344,6 +346,11 @@ class FakeModel implements SessionModelView {
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
 	}
 
 	/** herdr moved the agent's status; no turn changed. */

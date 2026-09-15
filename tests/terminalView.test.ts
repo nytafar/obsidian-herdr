@@ -5,6 +5,8 @@ import {
 	terminalViewState,
 	stateMatchesPane,
 	terminalTabTitle,
+	planViewEffect,
+	PaneViewEvents,
 	HIDE_GRACE_MS,
 	hostKeyPolicyApplies,
 	keymapReturn,
@@ -28,6 +30,7 @@ import {
 } from '../src/views/paneTerminal';
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
+import type { WorkspaceLeaf } from 'obsidian';
 import { NATIVE_REMOTE_REASON } from '../src/native/surface';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
@@ -164,6 +167,57 @@ describe('terminalHeaderActions (issue #105)', () => {
 		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
 		// A remote terminal is still a terminal: the eye stays.
 		expect(header.controlToggle).toBe(true);
+	});
+});
+
+describe('PaneViewEvents (#100, #105)', () => {
+	it('tells every subscriber which leaf swapped, and stops when one unsubscribes', () => {
+		const events = new PaneViewEvents();
+		const first: unknown[] = [];
+		const second: unknown[] = [];
+		const leaf = { id: 'leaf-1' } as unknown as WorkspaceLeaf;
+		const off = events.on((changed) => first.push(changed));
+		events.on((changed) => second.push(changed));
+
+		events.changed(leaf);
+		off();
+		events.changed(leaf);
+
+		expect(first).toEqual([leaf]);
+		expect(second).toEqual([leaf, leaf]);
+	});
+});
+
+describe('planViewEffect: what the default view does to an open tab (#104)', () => {
+	it('does nothing to a tab that pinned its own view', () => {
+		// The bug this replaced: `defaultView` carried the `engine` effect, so a
+		// tab pinned to the terminal rebuilt its renderer and restarted its
+		// bridge with `--takeover` when the vault default moved — reclaiming a
+		// pane the user had not touched. `docs/architecture.md`: only an engine
+		// change restarts the bridge.
+		expect(
+			planViewEffect({ stored: 'terminal', view: 'terminal', mounted: 'terminal' }),
+		).toBe('ignore');
+		expect(planViewEffect({ stored: 'native', view: 'native', mounted: 'native' })).toBe(
+			'ignore',
+		);
+	});
+
+	it('swaps the surface of a tab that follows the default, both ways', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: 'terminal' })).toBe('show');
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'native' })).toBe('show');
+	});
+
+	it('does nothing when the tab follows the default and shows it already', () => {
+		// A remote tab, where native is unavailable and the resolved view stays a
+		// terminal whatever the default says (ADR-0002).
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'terminal' })).toBe(
+			'ignore',
+		);
+	});
+
+	it('mounts when nothing is mounted yet', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: null })).toBe('show');
 	});
 });
 

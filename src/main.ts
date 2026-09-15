@@ -45,6 +45,7 @@ import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
+	PaneViewEvents,
 	TERMINAL_VIEW_TYPE,
 	TerminalView,
 	parseTerminalState,
@@ -175,6 +176,12 @@ export default class HerdrPlugin extends Plugin {
 		source: new LocalTranscriptSource(),
 		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)),
 	});
+	/**
+	 * Tabs that swapped their surface where they stand (#100, #105). The table
+	 * of contents follows the active native view, and a swap inside one leaf
+	 * activates no leaf.
+	 */
+	readonly paneViews = new PaneViewEvents();
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */

@@ -34,6 +34,8 @@ import type { App } from 'obsidian';
 class FakeModel implements SessionModelView {
 	state: TranscriptState = emptyTranscript();
 	path: string | null = '/transcript.jsonl';
+	/** The tail has delivered the file's lines, as a read transcript has (#99). */
+	loaded = true;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();
@@ -41,6 +43,11 @@ class FakeModel implements SessionModelView {
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
 	}
 
 	/** What the model does when the reducer moved: new state, then the change. */

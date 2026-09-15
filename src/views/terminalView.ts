@@ -244,6 +244,30 @@ export function terminalHeaderActions(where: {
 	};
 }
 
+/**
+ * What the `defaultView` setting does to one open tab (#104).
+ *
+ * The vault default is not every tab's view. A tab that pinned its own view is
+ * not following the setting at all, and a tab that is following it can still
+ * resolve to the view it already shows — a remote tab, where native is
+ * unavailable and the resolved view stays a terminal whatever the default says
+ * (ADR-0002). In both cases the effect is nothing: the terminal on screen keeps
+ * its renderer and its bridge, and `docs/architecture.md`'s "only an engine
+ * change restarts the bridge" stays true. Otherwise the tab shows the other
+ * surface, which is a swap and not a rebuild.
+ */
+export function planViewEffect(input: {
+	/** The tab's own view, or null while it follows the default. */
+	stored: PaneView | null;
+	/** The view the tab resolves to now, endpoint and all. */
+	view: PaneView;
+	/** The surface mounted right now, null before the first mount. */
+	mounted: PaneSurfaceKind | null;
+}): 'ignore' | 'show' {
+	if (input.stored !== null) return 'ignore';
+	return surfaceKindFor(input.view) === input.mounted ? 'ignore' : 'show';
+}
+
 /** What a tab chose for itself, either half null while it follows the vault. */
 export interface ChosenPaneView {
 	view: PaneView | null;
@@ -441,6 +465,34 @@ export function hostKeyPolicyApplies(input: {
 	focusInside: boolean;
 }): boolean {
 	return input.mode === 'control' && input.focusInside;
+}
+
+/**
+ * Who to tell when a tab swaps its surface where it stands (#100, #105).
+ *
+ * The header toggle, the tab menu and the waiting card's "Open in terminal" all
+ * change which view a leaf shows without any leaf becoming active, so
+ * `active-leaf-change` is silent and a sidebar that follows the active native
+ * view — the table of contents — would go on listing a transcript nobody is
+ * looking at. A plugin-held listener set rather than a workspace event: the
+ * workspace's `on` is typed to its own event names, and this is nobody else's
+ * business.
+ *
+ * The plugin holds one; `src/main.ts` hands it to both ends.
+ */
+export class PaneViewEvents {
+	private readonly listeners = new Set<(leaf: WorkspaceLeaf) => void>();
+
+	/** Subscribes. The returned unsubscribe is what a view registers. */
+	on(listener: (leaf: WorkspaceLeaf) => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+
+	/** A tab mounted the other surface. Told by the tab itself. */
+	changed(leaf: WorkspaceLeaf): void {
+		for (const listener of [...this.listeners]) listener(leaf);
+	}
 }
 
 export class TerminalView extends ItemView {
@@ -868,7 +920,11 @@ export class TerminalView extends ItemView {
 		this.updateViewActions();
 		const host = this.hostEl;
 		if (!host) return;
+		const before = this.surfaces.kind;
 		await this.surfaces.show(surfaceKindFor(this.view()), host);
+		// A swap inside one leaf activates no leaf, so anything following the
+		// active native view has to be told (#100).
+		if (this.surfaces.kind !== before) this.plugin.paneViews.changed(this.leaf);
 	}
 
 	/**
@@ -1052,15 +1108,24 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * One effect on the mounted surface. `engine` is the view's and the engine's
-	 * setting (#92, #104): a changed default view can mean the other surface
-	 * altogether, and when it does not it is the lifecycle's ordinary renderer
-	 * rebuild — which the native surface ignores, so an engine switched while a
-	 * tab is in the native view simply waits for it to come back.
+	 * One effect on the mounted surface.
+	 *
+	 * `view` is the `defaultView` setting (#104), which reaches only a tab that
+	 * is following it into a view it is not already showing —
+	 * {@link planViewEffect} — and never the lifecycle: swapping the surface is
+	 * not rebuilding the terminal, so a tab that stays a terminal keeps its
+	 * bridge. `engine` is the lifecycle's ordinary renderer rebuild, which the
+	 * native surface ignores, so an engine switched while a tab is in the native
+	 * view simply waits for it to come back.
 	 */
 	private async applyEffect(effect: TerminalEffect): Promise<void> {
-		if (effect === 'engine' && surfaceKindFor(this.view()) !== this.surfaces.kind) {
-			await this.showSurface();
+		if (effect === 'view') {
+			const plan = planViewEffect({
+				stored: this.storedView,
+				view: this.view(),
+				mounted: this.surfaces.kind,
+			});
+			if (plan === 'show') await this.showSurface();
 			return;
 		}
 		await this.surfaces.current?.apply(effect);
@@ -1224,7 +1289,10 @@ export class TerminalView extends ItemView {
 		// Keeps the layout file in step with what the view is actually doing.
 		this.app.workspace.requestSaveLayout();
 		if (this.view() === before) return;
-		await this.applyEffect('engine');
+		// The tab's own switch, so the surface is swapped straight away: the
+		// `view` effect is the vault default reaching tabs that follow it, and
+		// this tab has just stopped following it.
+		await this.showSurface();
 	}
 
 	/**
