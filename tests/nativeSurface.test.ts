@@ -77,6 +77,8 @@ function surfaceOn(model: FakeModel): {
 		identity: { paneId: 'w4:p1', mode: 'control', endpointId: 'local' },
 		onStatus: () => {},
 		models,
+		// What a send does is `tests/promptBox.test.ts`; nothing here sends.
+		sender: { send: async () => {} },
 	});
 	return { surface, models, el, host, openLinkText };
 }

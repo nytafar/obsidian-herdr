@@ -431,3 +431,55 @@ a session.
    it is up to date at once, with no reload.
 6. Restart herdr (or stop and start the plugin's connection): the view keeps
    following, because the models rebind to the new scope.
+
+## Smoking the prompt box (#97)
+
+The button's label and enabled state per status, the text that goes out and the
+failure path are unit tested (`tests/promptBox.test.ts`), and that the
+`agent.prompt` request carries no `wait` field is pinned in
+`tests/promptSender.test.ts`. What needs a real pane is that herdr's delivery is
+what the facts say it is.
+
+1. In a native tab on an idle pane, type three lines with a blank one between
+   them and press ctrl/cmd-enter (or the **Send** button). The pane's Claude
+   receives the whole text as one prompt, newlines intact, and the box empties.
+2. While it works, the button reads **Queue** and stays enabled. Send a second
+   prompt: it is accepted, Claude consumes it inside the running turn, and
+   nothing is echoed into the view until the transcript says so.
+3. Block the agent (a permission prompt): the button is disabled and the view
+   says "Waiting for you.". Answer it in the terminal and the button comes back.
+4. Open a native tab on a pane with no agent: the box says "No agent in this
+   pane." and neither the box nor the button can be used.
+5. Send `/help` from the box: Claude opens its help overlay rather than typing
+   the text. `herdr agent send-keys <pane> esc` closes it again.
+6. On a freshly started Claude that has never been prompted, the view says "No
+   session yet." and the button reads **Send**. Sending the first prompt starts
+   the session; within seconds the view shows the turn, because
+   `agent_session` appeared and the tail started.
+7. Stop herdr and press send: a notice says the prompt could not be sent and the
+   text stays in the box.
+
+## Smoking the prompt autocomplete (#98)
+
+The catalog is tested against a real temp tree with all three scopes and
+symlinks (`tests/commandCatalog.test.ts`) and the form a mention goes out in is
+a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
+`AbstractInputSuggest` draws it, and only the app has one.
+
+1. In a native tab, type `/` as the first character: the list shows this pane's
+   commands and skills with their descriptions and argument hints, project
+   entries winning a name over user ones and user over plugin. Compare with
+   `ls ~/.claude/commands ~/.claude/skills <the pane's repo>/.claude/commands`.
+2. Pick one. The prompt reads `/name ` and sending it runs the command rather
+   than typing it; `/help` opens the help overlay (`send-keys <pane> esc`
+   closes it).
+3. A symlinked skill (`~/.claude/skills` is half symlinks here) is offered like
+   any other, under the link's own name.
+4. Type `@` after a space: vault files are offered. Pick one inside the pane's
+   cwd and the prompt gets a relative path; pick one outside it and the prompt
+   gets an absolute path. A file whose path has a space in it comes out in
+   double quotes.
+5. Send a prompt with a mention in it and check in the terminal that Claude
+   resolved the file rather than treating the text as prose.
+6. `/` in the middle of a prompt, and `@` glued to the end of a word, offer
+   nothing: neither is a trigger there.

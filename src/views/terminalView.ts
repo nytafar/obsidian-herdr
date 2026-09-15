@@ -57,6 +57,7 @@
  */
 
 import {
+	FileSystemAdapter,
 	ItemView,
 	Menu,
 	Notice,
@@ -113,6 +114,8 @@ import {
 	type PaneSurface,
 	type PaneSurfaceKind,
 } from '../native/surface';
+import { clientPromptSender } from '../native/promptSender';
+import { PromptSuggest } from '../native/promptSuggest';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -471,6 +474,16 @@ export class TerminalView extends ItemView {
 		});
 	}
 
+	/**
+	 * The pane's working directory as herdr last reported it, or the vault's
+	 * when it has none: what the prompt box's `/` and `@` are relative to (#98).
+	 */
+	private paneCwd(): string {
+		const paneId = this.terminal.identity.paneId;
+		const scope = this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.scope;
+		return (paneId ? scope?.get(paneId)?.cwd : '') ?? '';
+	}
+
 	/** Whether this tab is pinned to a remote herdr (issue #54, ADR-0002). */
 	private isRemote(): boolean {
 		return this.terminal.identity.endpointId !== LOCAL_ENDPOINT_ID;
@@ -488,6 +501,26 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
+			// Prompts go to the herdr that is connected now, over the local
+			// endpoint: native mode is local-only until the SSH adapters land
+			// (ADR-0002), and `--wait` is never asked for (#97, ADR-0003).
+			sender: clientPromptSender(
+				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
+			),
+			// `/` offers the pane's commands and skills, `@` the vault's files
+			// (#98). The pane's own cwd decides the project scope and the form a
+			// mention takes; the vault path is the local one, because a native
+			// view is local-only (ADR-0002) even with a remote profile enabled.
+			onPromptInput: (inputEl) => {
+				new PromptSuggest(inputEl, {
+					app: this.app,
+					cwd: () => this.paneCwd(),
+					vaultPath: () => {
+						const adapter = this.app.vault.adapter;
+						return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
+					},
+				});
+			},
 		});
 	}
 

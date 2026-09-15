@@ -361,9 +361,33 @@
  * appearance the native view is meant to have.
  */
 .herdr-native-view {
+	display: flex;
+	flex-direction: column;
 	height: 100%;
 	overflow-y: auto;
 	padding: var(--size-4-4);
+}
+
+/*
+ * The four children are created when they are first needed rather than in
+ * reading order — the prompt box exists from the first paint, the empty line
+ * and the status line come and go — so the order is stated here instead of
+ * being the order they were appended in (#97).
+ */
+.herdr-native-empty {
+	order: 1;
+}
+
+.herdr-native-turns {
+	order: 2;
+}
+
+.herdr-native-status {
+	order: 3;
+}
+
+.herdr-native-prompt-box {
+	order: 4;
 }
 
 .herdr-native-empty {
@@ -408,6 +432,57 @@
 	font-size: var(--font-ui-small);
 	font-style: italic;
 	padding: var(--size-4-2) 0;
+}
+
+/*
+ * The prompt box (#97): the multi-line box and its button, held at the bottom
+ * of the view while the transcript scrolls behind it.
+ */
+.herdr-native-prompt-box {
+	background-color: var(--background-primary);
+	border-top: 1px solid var(--background-modifier-border);
+	bottom: 0;
+	margin-top: var(--size-4-3);
+	padding-top: var(--size-4-2);
+	position: sticky;
+}
+
+.herdr-native-prompt-input {
+	font-family: var(--font-text);
+	min-height: 4em;
+	resize: vertical;
+	width: 100%;
+}
+
+.herdr-native-prompt-controls {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+	padding-top: var(--size-4-1);
+}
+
+/* Why the box is disabled, when the view does not say it already. */
+.herdr-native-prompt-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-right: auto;
+}
+
+/*
+ * One row of the prompt box's autocomplete (#98). The popover around it is
+ * Obsidian's own; these two lines are what the plugin puts inside a row.
+ */
+.herdr-prompt-suggestion-name {
+	color: var(--text-normal);
+}
+
+.herdr-prompt-suggestion-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* Thinking and tool calls, until the tickets that give them a shape. */
