@@ -541,6 +541,18 @@
 	margin: var(--size-4-1) 0;
 }
 
+/*
+ * A change that has not landed. The wording already says so (#91); these only
+ * make it as quiet, or as loud, as it deserves.
+ */
+.herdr-native-change.is-pending {
+	font-style: italic;
+}
+
+.herdr-native-change.is-error {
+	color: var(--text-error);
+}
+
 /* File explorer folder hover button (issue #30) ---------------------------- */
 
 /*

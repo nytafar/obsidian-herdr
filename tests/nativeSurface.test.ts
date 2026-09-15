@@ -99,14 +99,27 @@ function surfaceOn(
 	return { surface, models, el, host, openLinkText };
 }
 
-/** A tool call as the reducer hands it over. */
+/**
+ * A tool call as the reducer hands it over: pending until a result answers it,
+ * done once one has, which is what the reducer writes (#91). A case that wants
+ * another status says so.
+ */
 function tool(
 	id: string,
 	name: string,
 	input: Record<string, unknown> = {},
 	result: string | null = null,
 ): ToolEntry {
-	return { kind: 'tool', id, name, input, result, notification: null, report: null };
+	return {
+		kind: 'tool',
+		id,
+		name,
+		input,
+		result,
+		status: result === null ? 'pending' : 'done',
+		notification: null,
+		report: null,
+	};
 }
 
 beforeEach(() => {
@@ -206,7 +219,8 @@ describe('NativePaneSurface: tool groups', () => {
 		return turn('u1', 'Work through it', [
 			{ kind: 'text', messageId: 'm1', text: 'Reading first.' },
 			tool('t1', 'Read', { file_path: `${VAULT}/a.md` }),
-			tool('t2', 'Write', { file_path: `${VAULT}/notes/b.md` }),
+			// With their results in: an answered call is a change that landed (#91).
+			tool('t2', 'Write', { file_path: `${VAULT}/notes/b.md` }, 'File created successfully.'),
 			tool('t3', 'Read', { file_path: `${VAULT}/c.md` }),
 			tool('t4', 'WebSearch', { query: 'herdr protocol' }),
 			tool('t5', 'Bash', { command: 'npm test' }),
@@ -274,8 +288,13 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push(
 			[
 				turn('u1', 'Edit both', [
-					tool('t1', 'Write', { file_path: `${VAULT}/repos/obsidian-herdr/CONTEXT.md` }),
-					tool('t2', 'Edit', { file_path: '/etc/hosts' }),
+					tool(
+						't1',
+						'Write',
+						{ file_path: `${VAULT}/repos/obsidian-herdr/CONTEXT.md` },
+						'File created successfully.',
+					),
+					tool('t2', 'Edit', { file_path: '/etc/hosts' }, 'The file has been updated.'),
 				]),
 			],
 			{ changedTurnIds: ['u1'], reset: false },
@@ -292,6 +311,38 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(outside?.findAll('internal-link')).toEqual([]);
 		// Every call escaped the group, so there is no group left to draw.
 		expect(el.findAll('herdr-native-tools')).toEqual([]);
+	});
+
+	it('says what became of a change: updated, updating or refused', async () => {
+		// A vault change line reports the call's status (#91, #95): an edit that
+		// failed or has not answered yet must not read as one that landed.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const done = tool('t1', 'Write', { file_path: `${VAULT}/a.md` }, 'ok');
+		const pending = tool('t2', 'Edit', { file_path: `${VAULT}/b.md` });
+		const failed = tool('t3', 'Edit', { file_path: `${VAULT}/c.md` }, 'rejected');
+		failed.status = 'error';
+
+		model.push([turn('u1', 'Change three notes', [done, pending, failed])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
+
+		const changes = el.findAll('herdr-native-change');
+		expect(changes.map((line) => line.textContent)).toEqual([
+			'Updated a',
+			'Updating b…',
+			'Could not update c',
+		]);
+		// The state is in the class too, so `styles.css` can say it quietly.
+		expect([...(changes[1]?.classList ?? [])]).toEqual([
+			'herdr-native-change',
+			'is-pending',
+		]);
+		expect([...(changes[2]?.classList ?? [])]).toEqual(['herdr-native-change', 'is-error']);
+		// A note is still a link whatever became of the change.
+		expect(changes[2]?.find('internal-link').attrs['data-href']).toBe('c');
 	});
 
 	it('shows a thought collapsed, and shows nothing for a thought that is only a signature', async () => {
@@ -389,27 +440,26 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
 		await surface.attach(host);
-
-		model.push(
+		const launched = tool(
+			't1',
+			'Agent',
+			{ description: 'Check the styles' },
 			[
-				turn('u1', 'Start the long job', [
-					tool(
-						't1',
-						'Agent',
-						{ description: 'Check the styles' },
-						[
-							'Async agent launched successfully. (This tool result is internal metadata —',
-							'never quote or paste any part of it, including the agentId below, into a',
-							'user-facing reply.)',
-							'agentId: a043ce14b28b68b90 (internal ID - do not mention to user.)',
-							'The agent is working in the background. You will be notified automatically',
-							'when it completes.',
-						].join('\n'),
-					),
-				]),
-			],
-			{ changedTurnIds: ['u1'], reset: false },
+				'Async agent launched successfully. (This tool result is internal metadata —',
+				'never quote or paste any part of it, including the agentId below, into a',
+				'user-facing reply.)',
+				'agentId: a043ce14b28b68b90 (internal ID - do not mention to user.)',
+				'The agent is working in the background. You will be notified automatically',
+				'when it completes.',
+			].join('\n'),
 		);
+		// What the reducer says of a call whose work went to the background.
+		launched.status = 'running';
+
+		model.push([turn('u1', 'Start the long job', [launched])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
 
 		expect(el.findAll('herdr-native-report')).toEqual([]);
 		expect(MarkdownRenderer.calls).toEqual([]);

@@ -100,11 +100,62 @@ describe('reduce: tool results', () => {
 				name: 'Bash',
 				input: { command: 'npm test' },
 				result: '3 passed',
+				status: 'done',
 				notification: null,
 				report: null,
 			},
 			{ kind: 'text', messageId: 'msg_6', text: 'All green.' },
 		]);
+	});
+});
+
+describe('reduce: a tool call’s status (#91)', () => {
+	it('is pending until a result answers, error when the result failed', () => {
+		// The four states of the normalized model are `pending`, `running`,
+		// `done` and `error` (#91). A rejected edit carries `is_error: true` on
+		// the result block, which is how a refused or failed call looks in every
+		// transcript on this machine.
+		const { state } = reduceFixture('tool-status');
+
+		expect(state.turns[0]?.entries).toEqual([
+			{
+				kind: 'tool',
+				id: 'toolu_e1',
+				name: 'Edit',
+				input: {
+					file_path: '/home/lasse/hvelv/notes/b.md',
+					old_string: 'one',
+					new_string: 'two',
+				},
+				result:
+					"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)",
+				status: 'error',
+				notification: null,
+				report: null,
+			},
+			{
+				kind: 'tool',
+				id: 'toolu_e2',
+				name: 'Write',
+				input: { file_path: '/home/lasse/hvelv/notes/c.md', content: 'A new note.' },
+				result: null,
+				status: 'pending',
+				notification: null,
+				report: null,
+			},
+		]);
+	});
+
+	it('is running while an async subagent is in the background, and done when it reports', () => {
+		const lines = fixtureLines('steer-and-notification');
+		// Up to and including the launch notice, but before the notification.
+		const launched = reduce(emptyTranscript(), lines.slice(0, 4));
+		const finished = reduce(launched.state, lines.slice(4));
+
+		const running = launched.state.turns[0]?.entries[1];
+		const done = finished.state.turns[0]?.entries[1];
+		expect(running?.kind === 'tool' && running.status).toBe('running');
+		expect(done?.kind === 'tool' && done.status).toBe('done');
 	});
 });
 
@@ -128,6 +179,8 @@ describe('reduce: steers and task notifications', () => {
 				// The launch result is internal metadata, never the report; the
 				// report is read from the notification's output file (#96).
 				result: 'Async agent launched successfully. agentId: a1f2',
+				// The notification says the background work finished (#91).
+				status: 'done',
 				notification: {
 					taskId: 'a1f2',
 					outputFile: '/tmp/claude-1000/-home-lasse-hvelv/s1/tasks/a1f2.output',

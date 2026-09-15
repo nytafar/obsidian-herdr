@@ -29,6 +29,8 @@ import {
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
+	changeLine,
+	changeStateClass,
 	sourceText,
 	subagentReport,
 	toolDetail,
@@ -515,18 +517,23 @@ export class NativePaneSurface implements PaneSurface {
 	 * Inside the vault it is a link to the note, so a reader can go and read it;
 	 * outside there is nothing to strip and nothing to open, so the path shows
 	 * as it was. No diff either way (native-view-design.md).
+	 *
+	 * What the line says follows the call's status (#91): a change that was
+	 * refused, or that nothing has answered yet, must not read as one that
+	 * landed.
 	 */
 	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
 		const path = changedPath(entry);
 		if (!path) return;
 		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
-		el.appendText('Updated ');
+		const state = changeStateClass(entry.status);
+		if (state) el.addClass(state);
+		const { lead, trail } = changeLine(entry.status);
+		el.appendText(lead);
 		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (!link) {
-			el.appendText(path);
-			return;
-		}
-		this.renderPrompt(el, `[[${link}]]`, component);
+		if (link) this.renderPrompt(el, `[[${link}]]`, component);
+		else el.appendText(path);
+		if (trail) el.appendText(trail);
 	}
 
 	/**

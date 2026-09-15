@@ -19,7 +19,15 @@
  * settled.
  */
 
-import type { ThinkingEntry, TextEntry, SteerEntry, ToolEntry, TurnEntry } from './reducer';
+import {
+	isAsyncLaunchNotice,
+	type ThinkingEntry,
+	type TextEntry,
+	type SteerEntry,
+	type ToolEntry,
+	type ToolStatus,
+	type TurnEntry,
+} from './reducer';
 import { trimTrailingSlashes } from '../paths';
 
 /**
@@ -205,6 +213,24 @@ export function vaultNoteLink(path: string, vaultPath: string): string | null {
 	return relative.endsWith('.md') ? relative.slice(0, -'.md'.length) : relative;
 }
 
+/**
+ * What a vault-change line says around the note, for the state the call is in
+ * (#91, #95): an edit that was refused or has not answered yet must not read
+ * like one that landed. Sentence case, and the note itself goes between.
+ */
+export function changeLine(status: ToolStatus): { lead: string; trail: string } {
+	if (status === 'error') return { lead: 'Could not update ', trail: '' };
+	if (status === 'done') return { lead: 'Updated ', trail: '' };
+	return { lead: 'Updating ', trail: '…' };
+}
+
+/** The class a vault-change line carries beside its own, for a state worth showing. */
+export function changeStateClass(status: ToolStatus): string | null {
+	if (status === 'error') return 'is-error';
+	if (status === 'done') return null;
+	return 'is-pending';
+}
+
 /** The path a write or an edit changed, empty when the call named none. */
 export function changedPath(entry: ToolEntry): string {
 	const value = entry.input.file_path ?? entry.input.notebook_path ?? entry.input.path;
@@ -217,22 +243,6 @@ export function sourceText(entry: ToolEntry): { label: string; url: string | nul
 	if (url) return { label: url, url };
 	const query = typeof entry.input.query === 'string' ? entry.input.query : '';
 	return { label: `Searched the web for “${query}”`, url: null };
-}
-
-/**
- * How an async `Agent` call's `tool_result` opens: the launch notice Claude
- * Code writes when the subagent goes to the background. Measured across every
- * transcript on this machine on 2026-09-15; the rest of the notice is the
- * agent id, the output file and instructions not to quote any of it.
- */
-const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
-
-/**
- * Whether a tool result is an async subagent's launch notice rather than
- * anything a reader should see.
- */
-export function isAsyncLaunchNotice(result: string | null): boolean {
-	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
 }
 
 /**
