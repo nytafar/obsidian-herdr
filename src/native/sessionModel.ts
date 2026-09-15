@@ -64,11 +64,13 @@ export interface SessionWatcher {
 	/** Agent status transitions, one call per actual change. */
 	onStatus(handler: (paneId: string, status: AgentStatus) => void): Unsubscribe;
 	/**
-	 * A pane leaving the scoped workspace. Everything is scoped to one
-	 * workspace (CLAUDE.md), so a pane that leaves it stops being this vault's
-	 * and the model following it drops what it holds.
+	 * A pane joining or leaving the scoped workspace. Everything is scoped to
+	 * one workspace (CLAUDE.md), so a pane that leaves it stops being this
+	 * vault's and the model following it drops what it holds; one that joins it
+	 * — as every pane does when a fresh connection primes its scope — is
+	 * followed from then on.
 	 */
-	onRemoved(handler: (paneId: string) => void): Unsubscribe;
+	onMembership(handler: (paneId: string) => void): Unsubscribe;
 }
 
 /** What a subscriber is told when a model's state moved. */
@@ -112,7 +114,7 @@ export interface WatchableScope {
 		event: 'changed',
 		handler: (paneId: string, prev: PaneState, next: PaneState) => void,
 	): Unsubscribe;
-	on(event: 'removed', handler: (pane: PaneState) => void): Unsubscribe;
+	on(event: 'added' | 'removed', handler: (pane: PaneState) => void): Unsubscribe;
 }
 
 /** The part of a `HerdrClient` a watcher reads: one event name. */
@@ -168,7 +170,20 @@ export function scopeWatcher(session: WatchableSession | null): SessionWatcher |
 			};
 		},
 		onEvent(handler): Unsubscribe {
-			return client.on('pane_updated', handler);
+			// The client hands an event to its exact-name handlers before its `'*'`
+			// ones, and the scope ingests on `'*'`: read synchronously, `snapshot`
+			// would still hold the session this very event replaces. A microtask
+			// runs once the whole dispatch is done.
+			let live = true;
+			const off = client.on('pane_updated', (event) =>
+				queueMicrotask(() => {
+					if (live) handler(event);
+				}),
+			);
+			return () => {
+				live = false;
+				off();
+			};
 		},
 		onStatus(handler): Unsubscribe {
 			return scope.on('changed', (paneId, prev, next) => {
@@ -177,11 +192,17 @@ export function scopeWatcher(session: WatchableSession | null): SessionWatcher |
 				if (prev.agentStatus !== next.agentStatus) handler(paneId, next.agentStatus);
 			});
 		},
-		onRemoved(handler): Unsubscribe {
-			// The scope emits this when a pane leaves the scoped workspace, closes
-			// or moves to another workspace. Which of those it was does not matter
-			// here: the pane is no longer one this vault shows.
-			return scope.on('removed', (pane) => handler(pane.paneId));
+		onMembership(handler): Unsubscribe {
+			// `removed` is a pane that closed, left the scoped workspace or moved to
+			// another; `added` is one that arrived, including every pane a fresh
+			// connection's first prime finds after the models have already rebound
+			// to its still empty scope. Either way the model re-reads the pane.
+			const offAdded = scope.on('added', (pane) => handler(pane.paneId));
+			const offRemoved = scope.on('removed', (pane) => handler(pane.paneId));
+			return () => {
+				offAdded();
+				offRemoved();
+			};
 		},
 	};
 }
@@ -282,7 +303,7 @@ export class SessionModel implements SessionModelView {
 		this.bound.push(
 			watcher.onEvent((event) => this.onPaneEvent(event)),
 			watcher.onStatus((paneId, status) => this.onStatusChanged(paneId, status)),
-			watcher.onRemoved((paneId) => this.onPaneRemoved(paneId)),
+			watcher.onMembership((paneId) => this.onPaneMembership(paneId)),
 		);
 	}
 
@@ -302,13 +323,14 @@ export class SessionModel implements SessionModelView {
 	}
 
 	/**
-	 * The pane left the scoped workspace, so this model has nothing to follow:
-	 * `follow` finds no pane, closes the tail, empties the state and falls back
-	 * to `unknown`, which is also what disables the prompt box (#94, #97). Not a
-	 * special path — a pane out of scope and a pane with no agent look the same
-	 * from here, and both are "nothing of this vault's to show".
+	 * The pane joined or left the scoped workspace. Left, this model has nothing
+	 * to follow: `follow` finds no pane, closes the tail, empties the state and
+	 * falls back to `unknown`, which is also what disables the prompt box (#94,
+	 * #97). Not a special path — a pane out of scope and a pane with no agent
+	 * look the same from here, and both are "nothing of this vault's to show".
+	 * Joined, `follow` finds it and starts on its session.
 	 */
-	private onPaneRemoved(paneId: string): void {
+	private onPaneMembership(paneId: string): void {
 		if (paneId !== this.paneId) return;
 		this.follow();
 	}
@@ -327,12 +349,19 @@ export class SessionModel implements SessionModelView {
 	 */
 	private follow(): void {
 		const pane = this.options.watcher()?.snapshot(this.paneId) ?? null;
+		const status = pane?.agentStatus ?? 'unknown';
+		const statusMoved = status !== this.status;
 		this.session = pane?.agentSession ?? '';
-		this.status = pane?.agentStatus ?? 'unknown';
+		this.status = status;
 		const path = pane
 			? transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
 			: null;
-		if (path === this.currentPath && this.stream) return;
+		if (path === this.currentPath && this.stream) {
+			// The same session, so nothing to reload. A status read here rather
+			// than off a transition, as after a rebind, is still news to the view.
+			if (statusMoved) this.emit({ changedTurnIds: [], reset: false });
+			return;
+		}
 		this.stream?.close();
 		this.stream = null;
 		this.currentPath = path;

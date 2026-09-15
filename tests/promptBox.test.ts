@@ -101,6 +101,26 @@ describe('promptBoxState', () => {
 	});
 });
 
+describe('PromptBox: the box itself', () => {
+	it('names the text area for a screen reader', () => {
+		const { el } = boxOn('idle', fakeSender());
+		expect(input(el).attrs['aria-label']).toBe('Message the agent');
+	});
+
+	it('closes what was hung on the text area when the box goes, once', () => {
+		const { host } = hostEl();
+		const close = vi.fn();
+		const box = new PromptBox({ paneId: () => 'w4:p1', sender: fakeSender(), onInput: () => close });
+		box.mount(host);
+		expect(close).not.toHaveBeenCalled();
+
+		box.destroy();
+		box.destroy();
+
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('PromptBox: sending', () => {
 	it('sends the text verbatim, newlines and all, and empties the box', async () => {
 		const sender = fakeSender();

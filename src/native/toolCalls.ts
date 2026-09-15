@@ -267,10 +267,27 @@ export function searchSources(result: string | null): SourceLink[] {
 	for (const item of parsed) {
 		if (typeof item !== 'object' || item === null) continue;
 		const { title, url } = item as { title?: unknown; url?: unknown };
-		if (typeof url !== 'string' || !url) continue;
-		links.push({ title: typeof title === 'string' && title ? title : url, url });
+		const href = typeof url === 'string' ? webUrl(url) : null;
+		if (!href) continue;
+		links.push({ title: typeof title === 'string' && title ? title : href, url: href });
 	}
 	return links;
+}
+
+/**
+ * `value` when it names a web page, else null.
+ *
+ * Every url a source line shows comes out of a transcript, which is tool output
+ * and says whatever the page or the model said. Only `http:` and `https:` may
+ * become a link, so a `javascript:` url is shown as text and never followed.
+ */
+export function webUrl(value: string): string | null {
+	try {
+		const { protocol } = new URL(value);
+		return protocol === 'http:' || protocol === 'https:' ? value : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -283,7 +300,8 @@ export function sourceText(entry: ToolEntry): {
 	links: SourceLink[];
 } {
 	const url = typeof entry.input.url === 'string' ? entry.input.url : '';
-	if (url) return { label: url, url, links: [] };
+	// A url that is not a web page still reads as what was fetched, as text.
+	if (url) return { label: url, url: webUrl(url), links: [] };
 	const query = typeof entry.input.query === 'string' ? entry.input.query : '';
 	return {
 		label: `Searched the web for “${query}”`,
@@ -366,7 +384,11 @@ export function turnItems(
 		group.tools.push(entry);
 		// The call itself folds into the group; what the subagent reported is
 		// prose, and reads after it (#96).
-		if (subagentReport(entry)) items.push({ kind: 'report', entry });
+		// Prose ends the run, as a text block does, so a later call reads after it.
+		if (subagentReport(entry)) {
+			items.push({ kind: 'report', entry });
+			group = null;
+		}
 	}
 	return items;
 }

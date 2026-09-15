@@ -215,9 +215,10 @@ export interface NativePaneSurfaceOptions {
 	sender: PromptSender;
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
-	 * hang an autocomplete on it (#98). Left out by tests that only render.
+	 * hang an autocomplete on it (#98), returning how to close it again when
+	 * the surface detaches. Left out by tests that only render.
 	 */
-	onPromptInput?: (inputEl: HTMLTextAreaElement) => void;
+	onPromptInput?: (inputEl: HTMLTextAreaElement) => (() => void) | void;
 	/**
 	 * How much of a turn's tool calls to fold away (#95). Read on every draw, so
 	 * a change to the setting reaches an open view through {@link

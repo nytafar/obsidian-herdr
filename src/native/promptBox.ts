@@ -64,8 +64,11 @@ export interface PromptBoxOptions {
 	sender: PromptSender;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
-	/** Called once the box exists, so a suggest can attach to it (#98). */
-	onInput?: (inputEl: HTMLTextAreaElement) => void;
+	/**
+	 * Called once the box exists, so a suggest can attach to it (#98). What it
+	 * returns is called when the box goes, so an open popover goes with it.
+	 */
+	onInput?: (inputEl: HTMLTextAreaElement) => (() => void) | void;
 }
 
 /**
@@ -94,6 +97,8 @@ export class PromptBox {
 	private inputEl: HTMLTextAreaElement | null = null;
 	private buttonEl: HTMLButtonElement | null = null;
 	private hintEl: HTMLElement | null = null;
+	/** Undoes what `onInput` hung on the text area; null when nothing did. */
+	private closeInput: (() => void) | null = null;
 	private status: AgentStatus = 'unknown';
 	/** True from the moment a send starts until herdr has answered it. */
 	private sending = false;
@@ -108,7 +113,8 @@ export class PromptBox {
 		const root = parentEl.createDiv({ cls: 'herdr-native-prompt-box' });
 		const inputEl = root.createEl('textarea', {
 			cls: 'herdr-native-prompt-input',
-			attr: { rows: '3', placeholder: 'Message the agent…' },
+			// The placeholder is gone once something is typed; the label is not.
+			attr: { rows: '3', placeholder: 'Message the agent…', 'aria-label': 'Message the agent' },
 		});
 		const controls = root.createDiv({ cls: 'herdr-native-prompt-controls' });
 		this.hintEl = null;
@@ -131,11 +137,14 @@ export class PromptBox {
 			void this.send();
 		});
 		this.render();
-		this.options.onInput?.(inputEl);
+		const closeInput = this.options.onInput?.(inputEl);
+		this.closeInput = typeof closeInput === 'function' ? closeInput : null;
 	}
 
 	/** Drops the box and every listener on it. Idempotent. */
 	destroy(): void {
+		this.closeInput?.();
+		this.closeInput = null;
 		this.component.unload();
 		this.rootEl?.remove();
 		this.rootEl = null;

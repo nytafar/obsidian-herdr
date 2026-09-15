@@ -128,7 +128,11 @@ scratch pane created with `tab create` and `agent start`.
   `Agent` call holds only a "launched" notice; the report lives in the
   notification's `<output-file>` under `/tmp/claude-<uid>/…/tasks/` and in
   `<session>/subagents/agent-<id>.jsonl`. A synchronous `Agent` call puts the
-  report straight into its `tool_result`.
+  report straight into its `tool_result`. Measured 2026-09-15: all 137 async
+  agent output files still on this machine are symlinks to that same
+  `subagents/agent-<id>.jsonl`, so the output file is a JSONL transcript and
+  its report is the last assistant text, not plain text. A background shell
+  task's output file, by contrast, is a plain file holding its stdout.
 - **The shapes a tool call's outcome comes in.** Measured 2026-09-15 over every
   transcript on this machine. A steer's queue enqueue always precedes its
   `queued_command` attachment and carries the identical string, so the two pair

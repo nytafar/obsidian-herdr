@@ -153,7 +153,7 @@ function reportOf(model: { state: { turns: { entries: unknown[] }[] } }): string
 class FakeWatcher implements SessionWatcher {
 	private readonly eventHandlers = new Set<(event: HerdrEvent) => void>();
 	private readonly statusHandlers = new Set<(paneId: string, status: AgentStatus) => void>();
-	private readonly removedHandlers = new Set<(paneId: string) => void>();
+	private readonly membershipHandlers = new Set<(paneId: string) => void>();
 	constructor(private pane: PaneSnapshot | null) {}
 
 	snapshot(paneId: string): PaneSnapshot | null {
@@ -170,9 +170,9 @@ class FakeWatcher implements SessionWatcher {
 		return () => this.statusHandlers.delete(handler);
 	}
 
-	onRemoved(handler: (paneId: string) => void): Unsubscribe {
-		this.removedHandlers.add(handler);
-		return () => this.removedHandlers.delete(handler);
+	onMembership(handler: (paneId: string) => void): Unsubscribe {
+		this.membershipHandlers.add(handler);
+		return () => this.membershipHandlers.delete(handler);
 	}
 
 	/** What the pane now is, as far as herdr is concerned. */
@@ -218,7 +218,13 @@ class FakeWatcher implements SessionWatcher {
 	/** The pane left the scoped workspace: herdr still has it, this vault does not. */
 	removed(paneId: string): void {
 		if (this.pane?.paneId === paneId) this.pane = null;
-		for (const handler of [...this.removedHandlers]) handler(paneId);
+		for (const handler of [...this.membershipHandlers]) handler(paneId);
+	}
+
+	/** The pane joined the scope, as every pane does when a fresh scope primes. */
+	added(pane: PaneSnapshot): void {
+		this.pane = pane;
+		for (const handler of [...this.membershipHandlers]) handler(pane.paneId);
 	}
 }
 
@@ -380,6 +386,20 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
 	});
 
+	it('starts following a pane that joins the scope after the model was opened', () => {
+		// A reconnect rebinds the models before the fresh scope has primed, so
+		// the pane is not there yet; priming then announces it as added (#94).
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]), null);
+		const handle = registry.acquire('w4:p1');
+		expect(handle.model.agentStatus).toBe('unknown');
+
+		watcher.added(PANE);
+
+		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
+		expect(handle.model.agentStatus).toBe('idle');
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+	});
+
 	it('empties the view when the pane loses its session', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
 		const handle = registry.acquire('w4:p1');
@@ -438,6 +458,19 @@ describe('SessionModel: a replaced scope (#94)', () => {
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 		expect(source.openTails.map((tail) => tail.path)).toEqual([PATH_2]);
 	});
+
+	it('reports a status that moved across the rebind, on the same session', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		watcher.set({ ...PANE, agentStatus: 'working' });
+		registry.rebind();
+
+		expect(handle.model.agentStatus).toBe('working');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+	});
 });
 
 describe('scopeWatcher: the pane as herdr reports it', () => {
@@ -483,9 +516,11 @@ describe('scopeWatcher: the pane as herdr reports it', () => {
 	function recordingScope(): {
 		scope: WatchableScope;
 		changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[];
+		added: ((pane: PaneState) => void)[];
 		removed: ((pane: PaneState) => void)[];
 	} {
 		const changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[] = [];
+		const added: ((pane: PaneState) => void)[] = [];
 		const removed: ((pane: PaneState) => void)[] = [];
 		const scope = {
 			get: () => undefined,
@@ -493,13 +528,15 @@ describe('scopeWatcher: the pane as herdr reports it', () => {
 			on: (event: string, handler: unknown) => {
 				if (event === 'changed') {
 					changed.push(handler as (paneId: string, prev: PaneState, next: PaneState) => void);
+				} else if (event === 'added') {
+					added.push(handler as (pane: PaneState) => void);
 				} else if (event === 'removed') {
 					removed.push(handler as (pane: PaneState) => void);
 				}
 				return () => {};
 			},
 		} as unknown as WatchableScope;
-		return { scope, changed, removed };
+		return { scope, changed, added, removed };
 	}
 
 	it('reports no agent session for a pane that has not taken a prompt yet', () => {
@@ -512,15 +549,44 @@ describe('scopeWatcher: the pane as herdr reports it', () => {
 		expect(scopeWatcher({ scope, client })?.snapshot('w4:p1')?.agentSession).toBe('');
 	});
 
-	it('reports a pane leaving the scoped workspace', () => {
-		// Scope removal is how a pane stops being this vault's (CLAUDE.md).
-		const { scope, removed } = recordingScope();
-		const gone: string[] = [];
-		scopeWatcher({ scope, client })?.onRemoved((paneId) => gone.push(paneId));
+	it('reports a pane joining the scoped workspace and one leaving it', () => {
+		// Scope removal is how a pane stops being this vault's (CLAUDE.md); an
+		// addition is how a freshly primed scope first shows it.
+		const { scope, added, removed } = recordingScope();
+		const seen: string[] = [];
+		scopeWatcher({ scope, client })?.onMembership((paneId) => seen.push(paneId));
 
-		removed[0]?.({ paneId: 'w4:p1' } as PaneState);
+		added[0]?.({ paneId: 'w4:p1' } as PaneState);
+		removed[0]?.({ paneId: 'w4:p2' } as PaneState);
 
-		expect(gone).toEqual(['w4:p1']);
+		expect(seen).toEqual(['w4:p1', 'w4:p2']);
+	});
+
+	it('hands a pane update on only once the client’s whole dispatch is done', async () => {
+		// The client runs exact-name handlers before `'*'`, where the scope
+		// ingests the update; a snapshot read inside the dispatch is stale.
+		let push: (event: HerdrEvent) => void = () => {};
+		const deferring = {
+			on: (_type: 'pane_updated', handler: (event: HerdrEvent) => void) => {
+				push = handler;
+				return () => {};
+			},
+		};
+		const { scope } = recordingScope();
+		const seen: HerdrEvent[] = [];
+		const off = scopeWatcher({ scope, client: deferring })?.onEvent((event) => seen.push(event));
+		const event: HerdrEvent = { event: 'pane_updated', data: {} };
+
+		push(event);
+		expect(seen).toEqual([]);
+		await Promise.resolve();
+		expect(seen).toEqual([event]);
+
+		// An update still queued when the model lets go is dropped.
+		push(event);
+		off?.();
+		await Promise.resolve();
+		expect(seen).toHaveLength(1);
 	});
 
 	it('reports a status transition, and only a transition', () => {

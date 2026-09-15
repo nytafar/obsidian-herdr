@@ -131,6 +131,11 @@ describe('projectCommandRoots', () => {
 		]);
 	});
 
+	it('has no project scope before the pane has a cwd', () => {
+		// A relative walk from '' would read the plugin process's own directory.
+		expect(projectCommandRoots('')).toEqual([]);
+	});
+
 	it('stops at a worktree root, whose repository marker is a file (#98)', () => {
 		expect(projectCommandRoots(join(worktree, 'src'))).toEqual([
 			join(worktree, 'src', '.claude'),

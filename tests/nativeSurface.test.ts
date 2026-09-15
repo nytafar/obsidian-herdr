@@ -366,6 +366,37 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(el.find('herdr-native-source').findAll('herdr-native-source-link')).toEqual([]);
 	});
 
+	it('links only web pages, and shows any other url as text', async () => {
+		// Urls come out of tool output: a `javascript:` one must never become a
+		// link Obsidian would follow.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const search = tool(
+			't1',
+			'WebSearch',
+			{ query: 'herdr' },
+			[
+				'Web search results for query: "herdr"',
+				'',
+				'Links: [{"title":"Bad","url":"javascript:alert(1)"},{"title":"Good","url":"https://herdr.dev/"}]',
+			].join('\n'),
+		);
+		const fetch = tool('t2', 'WebFetch', { url: 'javascript:alert(1)' }, 'ok');
+
+		model.push([turn('u1', 'Look it up', [search, fetch])], {
+			changedTurnIds: ['u1'],
+			reset: false,
+		});
+
+		const [searched, fetched] = el.findAll('herdr-native-source');
+		expect(searched?.findAll('herdr-native-source-link').map((link) => link.attrs.href)).toEqual([
+			'https://herdr.dev/',
+		]);
+		expect(fetched?.findAll('external-link')).toEqual([]);
+		expect(fetched?.textContent).toBe('javascript:alert(1)');
+	});
+
 	it('says what became of a change: updated, updating or refused', async () => {
 		// A vault change line reports the call's status (#91, #95): an edit that
 		// failed or has not answered yet must not read as one that landed.
@@ -482,6 +513,27 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			'It settles **two** seams.',
 		]);
 		expect(el.find('herdr-native-report').textContent).toBe('It settles **two** seams.');
+	});
+
+	it('ends the tool group at a subagent report, so a later call reads after it', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Ask the researcher', [
+					tool('t1', 'Agent', { description: 'Research it' }, 'It settles it.'),
+					tool('t2', 'Read', { file_path: '/tmp/a.md' }, 'ok'),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(el.findAll('herdr-native-tools-summary').map((summary) => summary.textContent)).toEqual([
+			'Ran 1 subagent',
+			'Read 1 file',
+		]);
 	});
 
 	it('shows nothing for an asynchronous subagent that is still running', async () => {

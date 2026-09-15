@@ -513,7 +513,7 @@ export class TerminalView extends ItemView {
 			// mention takes; the vault path is the local one, because a native
 			// view is local-only (ADR-0002) even with a remote profile enabled.
 			onPromptInput: (inputEl) => {
-				new PromptSuggest(inputEl, {
+				const suggest = new PromptSuggest(inputEl, {
 					app: this.app,
 					cwd: () => this.paneCwd(),
 					vaultPath: () => {
@@ -521,6 +521,9 @@ export class TerminalView extends ItemView {
 						return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
 					},
 				});
+				// Closed with the box: a popover open on a mode switch or a closed
+				// tab must not outlive the text area it belongs to.
+				return () => suggest.close();
 			},
 			// Both read fresh on every draw, so a setting change and a vault the
 			// user moved reach a view that is already open (#95).

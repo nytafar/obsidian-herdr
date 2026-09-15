@@ -117,6 +117,9 @@ export interface CommandCatalogOptions {
  */
 export function projectCommandRoots(cwd: string): string[] {
 	const roots: string[] = [];
+	// No cwd, as before herdr has reported the pane, is no project: a walk from
+	// '' would read relative paths out of the plugin process's own directory.
+	if (!cwd) return roots;
 	let dir = cwd;
 	for (let level = 0; level < MAX_PROJECT_LEVELS; level++) {
 		roots.push(join(dir, '.claude'));
