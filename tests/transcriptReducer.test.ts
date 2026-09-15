@@ -188,6 +188,20 @@ describe('reduce: incremental', () => {
 		expect(second.state.turns[0]?.entries).toHaveLength(3);
 	});
 
+	it('names the turn that owns a tool call when its result lands late', () => {
+		// A background command answers after the next prompt has opened a turn.
+		// What the result changed is the turn holding the call, and that is the
+		// turn the view must redraw (#93, #94).
+		const lines = fixtureLines('late-tool-result');
+		const first = reduce(emptyTranscript(), lines.slice(0, -1));
+		const second = reduce(first.state, lines.slice(-1));
+
+		expect(first.state.turns.map((turn) => turn.id)).toEqual(['u1', 'u2']);
+		expect(second.changedTurnIds).toEqual(['u1']);
+		const call = second.state.turns[0]?.entries[0];
+		expect(call?.kind === 'tool' && call.result).toBe('3 passed');
+	});
+
 	it('leaves the entries of a snapshot it already returned untouched', () => {
 		// The reducer is pure: a turn this batch touches is copied entry by entry,
 		// so a view holding an older snapshot keeps seeing what it drew. Merging

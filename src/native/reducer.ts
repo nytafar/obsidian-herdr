@@ -380,16 +380,18 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					let attached = false;
 					for (const block of content) {
 						if (!isRecord(block) || block.type !== 'tool_result') continue;
-						const entry = draft.toolEntry(stringField(block, 'tool_use_id'));
+						const toolUseId = stringField(block, 'tool_use_id');
+						const entry = draft.toolEntry(toolUseId);
 						if (!entry) continue;
 						entry.result = resultText(block.content);
+						// The turn that changed is the one holding the call, which is
+						// not always the turn now open: a background command answers
+						// after the next prompt has started one (#93, #94).
+						const turn = draft.turnOf(toolUseId);
+						if (turn) draft.touch(turn.id);
 						attached = true;
 					}
 					if (!attached) countRaw(type);
-					else {
-						const turn = draft.current();
-						if (turn) draft.touch(turn.id);
-					}
 					continue;
 				}
 				if (typeof content !== 'string' || parsed.isMeta === true) {
