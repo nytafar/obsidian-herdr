@@ -53,12 +53,14 @@ compares them is `scripts/bench-renderers.mjs`.
 
 What a settings change does to an open terminal is a table, not a call path:
 `TERMINAL_SETTING_EFFECTS` in `src/views/paneTerminal.ts` maps each setting to
-one named effect — `theme`, `cursor`, `engine`, `title`, `next-mount` — and the
-plugin calls one entry point per terminal leaf with the setting that moved.
-Theme and cursor refresh the renderer, in place when the engine can and by
-remount otherwise; the session is preserved either way, so a palette change can
-never reclaim a pane another controller took over. Only an engine change
-restarts the bridge. A hidden leaf holds every effect the renderer would show
+one named effect — `theme`, `cursor`, `engine`, `view`, `title`, `next-mount` —
+and the plugin calls one entry point per terminal leaf with the setting that
+moved. Theme and cursor refresh the renderer, in place when the engine can and
+by remount otherwise; the session is preserved either way, so a palette change
+can never reclaim a pane another controller took over. `view` is the vault's
+default view (#104), which reaches only a tab that is following it into a view
+it is not already showing, and swaps that tab's surface without touching the
+lifecycle. Only an engine change restarts the bridge. A hidden leaf holds every effect the renderer would show
 until it is revealed, except the title, whose tab header is on screen anyway.
 
 ## The settings tab

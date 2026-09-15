@@ -5,6 +5,7 @@ import {
 	terminalViewState,
 	stateMatchesPane,
 	terminalTabTitle,
+	planViewEffect,
 	HIDE_GRACE_MS,
 	hostKeyPolicyApplies,
 	keymapReturn,
@@ -164,6 +165,39 @@ describe('terminalHeaderActions (issue #105)', () => {
 		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
 		// A remote terminal is still a terminal: the eye stays.
 		expect(header.controlToggle).toBe(true);
+	});
+});
+
+describe('planViewEffect: what the default view does to an open tab (#104)', () => {
+	it('does nothing to a tab that pinned its own view', () => {
+		// The bug this replaced: `defaultView` carried the `engine` effect, so a
+		// tab pinned to the terminal rebuilt its renderer and restarted its
+		// bridge with `--takeover` when the vault default moved — reclaiming a
+		// pane the user had not touched. `docs/architecture.md`: only an engine
+		// change restarts the bridge.
+		expect(
+			planViewEffect({ stored: 'terminal', view: 'terminal', mounted: 'terminal' }),
+		).toBe('ignore');
+		expect(planViewEffect({ stored: 'native', view: 'native', mounted: 'native' })).toBe(
+			'ignore',
+		);
+	});
+
+	it('swaps the surface of a tab that follows the default, both ways', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: 'terminal' })).toBe('show');
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'native' })).toBe('show');
+	});
+
+	it('does nothing when the tab follows the default and shows it already', () => {
+		// A remote tab, where native is unavailable and the resolved view stays a
+		// terminal whatever the default says (ADR-0002).
+		expect(planViewEffect({ stored: null, view: 'terminal', mounted: 'terminal' })).toBe(
+			'ignore',
+		);
+	});
+
+	it('mounts when nothing is mounted yet', () => {
+		expect(planViewEffect({ stored: null, view: 'native', mounted: null })).toBe('show');
 	});
 });
 
