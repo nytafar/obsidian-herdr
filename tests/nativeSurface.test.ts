@@ -91,6 +91,10 @@ function surfaceOn(
 		models,
 		// What a send does is `tests/promptBox.test.ts`; nothing here sends.
 		sender: { send: async () => {} },
+		// The waiting card is `tests/nativeWaiting.test.ts`; nothing here presses it.
+		keySender: { sendKeys: async () => {} },
+		openInTerminal: () => {},
+		autoAcceptPermissions: () => false,
 		// Both read fresh on every draw: the setting can change under an open
 		// view, and the vault is the app's, never a path this file invents.
 		presentation: () => options.presentation ?? 'highlight',

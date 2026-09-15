@@ -473,12 +473,18 @@ describe('native view section', () => {
 		const el = settingsContainer();
 		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
 
-		expect(settingNames(el)).toEqual(['Native view', 'Tool groups']);
+		expect(settingNames(el)).toEqual([
+			'Native view',
+			'Tool groups',
+			'Auto-accept permissions',
+		]);
 		expect(headings(el)).toEqual(['Native view']);
 		const dropdown = dropdownOf(el, 'Tool groups');
 		expect(dropdown.optionValues()).toEqual(['highlight', 'collapse']);
 		// Highlighting the notes a turn changed is the default (#95).
 		expect(dropdown.value).toBe('highlight');
+		// Answering a permission by itself is off until it is asked for (#99).
+		expect(toggleOf(el, 'Auto-accept permissions').value).toBe(false);
 	});
 
 	it('saves the presentation and redraws the open native views', async () => {

@@ -406,6 +406,20 @@
 	order: 4;
 }
 
+/*
+ * The waiting card takes the prompt box's place at the bottom while the agent
+ * is blocked (#99): same order, same non-scrolling region, and the box is
+ * hidden rather than dropped so the draft typed into it survives the block.
+ */
+.herdr-native-waiting {
+	flex: 0 0 auto;
+	order: 4;
+}
+
+.herdr-native-prompt-box.herdr-is-hidden {
+	display: none;
+}
+
 .herdr-native-empty {
 	color: var(--text-muted);
 }
@@ -503,6 +517,47 @@
 	gap: var(--size-4-2);
 	/* The button sits on the text area's last line, not above it. */
 	padding-bottom: var(--size-4-1);
+}
+
+/*
+ * The waiting card (#99): what the block is, and the one or two things to do
+ * about it. Bordered in the accent colour because it is the one thing in the
+ * view that is waiting on the reader.
+ */
+.herdr-native-waiting {
+	background-color: var(--background-secondary);
+	border: 1px solid var(--interactive-accent);
+	border-radius: var(--radius-m);
+	margin-top: var(--size-4-3);
+	padding: var(--size-4-3);
+}
+
+.herdr-native-waiting-title {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+/* The question, the plan or the tool's detail line, as it was written. */
+.herdr-native-waiting-body {
+	color: var(--text-muted);
+	margin-top: var(--size-4-1);
+	max-height: 12em;
+	overflow-y: auto;
+	white-space: pre-wrap;
+}
+
+/* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
+.herdr-native-waiting-option {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-waiting-actions {
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
 }
 
 /* Why the box is disabled, when the view does not say it already. */

@@ -149,6 +149,10 @@ async function draw(state: TranscriptState): Promise<FakeElement> {
 		onStatus: () => {},
 		models: new StaticModels(new StaticModel(state)),
 		sender: { send: async () => {} },
+		// The waiting card is `tests/nativeWaiting.test.ts`; nothing here presses it.
+		keySender: { sendKeys: async () => {} },
+		openInTerminal: () => {},
+		autoAcceptPermissions: () => false,
 		presentation: () => 'highlight',
 		vaultPath: () => '',
 	});

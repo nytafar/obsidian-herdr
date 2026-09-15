@@ -19,7 +19,7 @@
  * unavailable there and {@link effectiveRenderMode} falls back.
  */
 
-import { Component, Keymap, MarkdownRenderer, type App } from 'obsidian';
+import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import {
 	engineForRenderMode,
@@ -42,7 +42,8 @@ import {
 } from './toolCalls';
 import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
-import type { PromptSender } from './promptSender';
+import type { KeySender, PromptSender } from './promptSender';
+import { waitingCard, type WaitingCardModel } from './waitingCard';
 import type {
 	SessionChange,
 	SessionHandleOf,
@@ -213,6 +214,22 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
+	/** How the waiting card's "Allow" reaches the pane's agent (#99). */
+	keySender: KeySender;
+	/** How a failure reaches the user. Defaults to an Obsidian notice. */
+	notify?: (message: string) => void;
+	/**
+	 * Switches this tab back to a terminal render mode, which is what the
+	 * waiting card's "Open in terminal" does: every block can be answered there,
+	 * including the three this view must never press Enter on (#99).
+	 */
+	openInTerminal: () => void;
+	/**
+	 * The global "Auto-accept permissions" setting (#99), read on every block so
+	 * a change reaches an open view. Permission blocks only, never a question, a
+	 * plan or the startup prompt.
+	 */
+	autoAcceptPermissions: () => boolean;
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
 	 * hang an autocomplete on it (#98), returning how to close it again when
@@ -248,6 +265,12 @@ export function workingLine(status: AgentStatus): string {
 	if (status === 'working') return 'Working…';
 	if (status === 'blocked') return 'Waiting for you.';
 	return '';
+}
+
+/** What a failed Allow says, with herdr's own message in the tail (#99). */
+export function allowFailureMessage(error: unknown): string {
+	const reason = error instanceof Error ? error.message : String(error);
+	return `Herdr: could not allow the tool call (${reason})`;
 }
 
 /**
@@ -350,6 +373,18 @@ export class NativePaneSurface implements PaneSurface {
 	private observedTurnEl: HTMLElement | null = null;
 	/** The Markdown renders of the current draw, which finish after it does. */
 	private renders: Promise<void>[] = [];
+	/** The waiting card (#99); null whenever the agent is not blocked. */
+	private waitingEl: HTMLElement | null = null;
+	/** The card's listeners, unloaded whenever it is drawn again or goes. */
+	private waitingComponent: Component | null = null;
+	/**
+	 * The block auto-accept has already pressed Allow for — the dangling
+	 * `tool_use` id, or an empty string for a permission with no call to name —
+	 * and null when this block has not been pressed. Cleared the moment the
+	 * status leaves `blocked`, so it is one press per block and no more: a
+	 * block is drawn again every time a transcript line lands under it.
+	 */
+	private autoAccepted: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -389,6 +424,8 @@ export class NativePaneSurface implements PaneSurface {
 
 	async detach(): Promise<void> {
 		this.unbind();
+		this.clearWaiting();
+		this.autoAccepted = null;
 		this.promptBox?.destroy();
 		this.promptBox = null;
 		this.resizeObserver?.disconnect();
@@ -466,6 +503,9 @@ export class NativePaneSurface implements PaneSurface {
 
 	/** Gives the model back. Safe to call when nothing is held. */
 	private unbind(): void {
+		// Another pane's block is another block: what was pressed for this one
+		// says nothing about it (#99).
+		this.autoAccepted = null;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.handle?.release();
@@ -797,8 +837,10 @@ export class NativePaneSurface implements PaneSurface {
 		const root = this.rootEl;
 		if (!root) return;
 		const status = this.model?.agentStatus ?? 'unknown';
-		// What the box may do is the same status this line reports (#97).
+		// What the box may do is the same status this line reports (#97), and
+		// `blocked` is where the waiting card takes its place (#99).
 		this.promptBox?.setStatus(status);
+		this.updateWaiting(status);
 		const text = workingLine(status);
 		if (!text) {
 			this.statusEl?.remove();
@@ -807,6 +849,120 @@ export class NativePaneSurface implements PaneSurface {
 		}
 		if (!this.statusEl) this.statusEl = root.createDiv({ cls: 'herdr-native-status' });
 		this.statusEl.setText(text);
+	}
+
+	/**
+	 * The waiting card (#99), which is what a `blocked` agent gets instead of
+	 * the prompt box: only `blocked` refuses a prompt, and the card is the way
+	 * past it. The box is hidden rather than dropped, so the draft in it
+	 * survives the block.
+	 */
+	private updateWaiting(status: AgentStatus): void {
+		const root = this.rootEl;
+		if (!root) return;
+		if (status !== 'blocked') {
+			this.clearWaiting();
+			// The block is over: the next one is a block of its own to press.
+			this.autoAccepted = null;
+			this.promptBox?.setHidden(false);
+			return;
+		}
+		const card = waitingCard({
+			// No transcript at all is the workspace trust prompt: a freshly
+			// started Claude writes no file until its first turn (ADR-0003).
+			hasTranscript: this.model?.path != null,
+			turns: this.model?.state.turns ?? [],
+			vaultPath: this.options.vaultPath(),
+		});
+		this.renderWaiting(root, card);
+		this.promptBox?.setHidden(true);
+		this.autoAccept(card);
+	}
+
+	/** Drops the card and its listeners. Safe to call when there is none. */
+	private clearWaiting(): void {
+		this.waitingComponent?.unload();
+		this.waitingComponent = null;
+		this.waitingEl?.remove();
+		this.waitingEl = null;
+	}
+
+	/**
+	 * Draws the card: what the block is, and the one or two things to do about
+	 * it.
+	 *
+	 * **Allow is a permission block and nothing else.** Measured 2026-09-15
+	 * (`docs/architecture.md`, "What a bare Enter selects on each of Claude's
+	 * blocking dialogs"): the cursor sits on the first option in every variant,
+	 * and on a Write, an Edit or a Bash permission that first option is "Yes",
+	 * which allows the call once and changes no mode. On the other three it is
+	 * something no view may choose for the user — "No, exit" on the workspace
+	 * trust prompt, the question's own first answer, and "Yes, and use auto
+	 * mode" on plan approval, which is a lasting side effect. Those three get
+	 * "Open in terminal" alone.
+	 */
+	private renderWaiting(root: HTMLElement, card: WaitingCardModel): void {
+		this.clearWaiting();
+		const component = new Component();
+		component.load();
+		this.waitingComponent = component;
+		const el = root.createDiv({ cls: 'herdr-native-waiting' });
+		this.waitingEl = el;
+		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		for (const option of card.options) {
+			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
+		}
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		if (card.kind === 'permission') {
+			const allowEl = actions.createEl('button', {
+				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-allow', 'mod-cta'],
+				text: 'Allow',
+			});
+			component.registerDomEvent(allowEl, 'click', () => {
+				void this.allow();
+			});
+		}
+		const terminalEl = actions.createEl('button', {
+			cls: ['herdr-native-waiting-action', 'herdr-native-waiting-terminal'],
+			text: 'Open in terminal',
+		});
+		component.registerDomEvent(terminalEl, 'click', () => this.options.openInTerminal());
+	}
+
+	/**
+	 * Presses Allow for this block when the setting says to, once (#99). The
+	 * kind is checked here as well as where the button is drawn, because this
+	 * is the path with nobody looking at it.
+	 */
+	private autoAccept(card: WaitingCardModel): void {
+		if (this.autoAccepted !== null) return;
+		if (card.kind !== 'permission') return;
+		if (!this.options.autoAcceptPermissions()) return;
+		this.autoAccepted = card.toolUseId;
+		void this.allow();
+	}
+
+	/**
+	 * Allow: a bare Enter in the pane's agent, which takes the first option of
+	 * the permission dialog — "Yes", allowing the call once and changing no
+	 * mode (`docs/architecture.md`). Only ever called for a permission block.
+	 */
+	private async allow(): Promise<void> {
+		try {
+			await this.options.keySender.sendKeys(this.identity.paneId, ['Enter']);
+		} catch (error) {
+			this.notify(allowFailureMessage(error));
+		}
+	}
+
+	/** How a failure reaches the user; a Notice, as a failed send is (#97). */
+	private notify(message: string): void {
+		if (this.options.notify) {
+			this.options.notify(message);
+			return;
+		}
+		new Notice(message);
 	}
 
 	private report(): void {

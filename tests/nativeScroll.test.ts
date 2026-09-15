@@ -121,6 +121,10 @@ async function surfaceOn(
 		onStatus: () => {},
 		models: new FakeModels(model),
 		sender: { send: async () => {} },
+		// The waiting card is `tests/nativeWaiting.test.ts`; nothing here presses it.
+		keySender: { sendKeys: async () => {} },
+		openInTerminal: () => {},
+		autoAcceptPermissions: () => false,
 		presentation: () => 'highlight',
 		vaultPath: () => '',
 	});

@@ -205,6 +205,18 @@ export class PromptBox {
 		this.hintEl = null;
 	}
 
+	/**
+	 * Takes the box off screen while the waiting card stands in its place (#99),
+	 * and brings it back when the block is over.
+	 *
+	 * A class rather than a removal, and never an inline style (Obsidian
+	 * guidelines): the draft in the box is the only copy of what the user wrote,
+	 * so it has to survive a block it was typed through.
+	 */
+	setHidden(hidden: boolean): void {
+		this.rootEl?.toggleClass('herdr-is-hidden', hidden);
+	}
+
 	/** herdr's view of the agent changed; the button follows it. */
 	setStatus(status: AgentStatus): void {
 		if (status === this.status) return;
