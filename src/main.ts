@@ -40,6 +40,7 @@ import { SshTunnel } from './herdr/ssh';
 import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
+import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
@@ -223,6 +224,7 @@ export default class HerdrPlugin extends Plugin {
 		registerKindIcons(addIcon);
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
+		this.registerView(TOC_VIEW_TYPE, (leaf) => new TocView(leaf, this));
 		this.registerCommands();
 		this.registerStatusBar();
 		// A reconnect or an endpoint switch replaces the scope and the client the
@@ -578,6 +580,14 @@ export default class HerdrPlugin extends Plugin {
 			name: 'Show herdr agents',
 			callback: () => {
 				void this.activateAgentList();
+			},
+		});
+		// Where the list comes up, and what it follows, belong to the view (#100).
+		this.addCommand({
+			id: 'show-toc',
+			name: 'Show table of contents',
+			callback: () => {
+				void revealTocView(this);
 			},
 		});
 		// The menu it opens, and who may open it, belong to the view (#92).

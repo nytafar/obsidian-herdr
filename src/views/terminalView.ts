@@ -561,6 +561,21 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * The pane this tab shows while it shows it natively, else ''. What the
+	 * table of contents asks of a leaf that became active (#100); a tab in a
+	 * terminal mode has no transcript to list.
+	 */
+	nativePaneId(): string {
+		return this.surfaces.current instanceof NativePaneSurface ? this.paneId : '';
+	}
+
+	/** Brings a turn into view, for a click in the table of contents (#100). */
+	scrollNativeToTurn(turnId: string): void {
+		const surface = this.surfaces.current;
+		if (surface instanceof NativePaneSurface) surface.scrollToTurn(turnId);
+	}
+
+	/**
 	 * The published connection when it is the herdr this view is pinned to
 	 * (issue #81), with its scope, tab labels and endpoint snapshot; null while
 	 * the list is connected elsewhere, or to nothing. The one place this view

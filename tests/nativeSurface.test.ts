@@ -64,7 +64,7 @@ class FakeModels implements SessionModels {
 }
 
 function turn(id: string, prompt: string, entries: Turn['entries'] = []): Turn {
-	return { id, prompt, entries };
+	return { id, prompt, entries, headings: [] };
 }
 
 /** The vault the surface strips paths against, unless a case says otherwise. */

@@ -38,6 +38,8 @@ describe('reduce: a plain turn', () => {
 				id: 'u1',
 				prompt: 'Summarise [[native-view-design]] for me',
 				entries: [{ kind: 'text', messageId: 'msg_1', text: 'The design settles two seams.' }],
+				// Prose with no `#` line has no headings; the TOC shows the turn alone.
+				headings: [],
 			},
 		]);
 		expect(changedTurnIds).toEqual(['u1']);
@@ -59,6 +61,26 @@ describe('reduce: assistant blocks merged by message id', () => {
 				text: 'A turn starts at a human prompt.\n\nEverything after it belongs to that turn.',
 			},
 			{ kind: 'text', messageId: 'msg_3', text: 'A second message stays its own block.' },
+		]);
+	});
+});
+
+/**
+ * Headings per turn, for the table of contents (#100). The reducer computes
+ * them so the TOC parses nothing; the expected list is read off the fixture's
+ * Markdown by hand.
+ */
+describe('reduce: headings in a turn', () => {
+	it('lists the headings of the turn\u2019s assistant prose with their levels', () => {
+		const { state } = reduceFixture('headings');
+
+		expect(state.turns[0]?.headings).toEqual([
+			{ level: 1, text: 'The seam' },
+			{ level: 2, text: 'What it costs' },
+			// The `#` inside the fenced block is a shell comment, not a heading.
+			{ level: 3, text: 'Details' },
+			// A thought is not prose, so its `##` line is not a heading either.
+			{ level: 2, text: 'After the thought' },
 		]);
 	});
 });

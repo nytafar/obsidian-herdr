@@ -352,6 +352,51 @@
 	white-space: nowrap;
 }
 
+/* Table of contents sidebar (issue #100) ------------------------------------ */
+
+/*
+ * Turns with their headings nested beneath, like Obsidian's own outline. Every
+ * size and colour is a theme variable, and the nesting is a class per heading
+ * level, because no plugin code may write an inline style.
+ */
+.herdr-toc-turn {
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-toc-item {
+	border-radius: var(--radius-s);
+	color: var(--text-muted);
+	cursor: var(--cursor);
+	font-size: var(--font-ui-small);
+	overflow: hidden;
+	padding: var(--size-2-1) var(--size-4-1);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-toc-item:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-toc-prompt {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+.herdr-toc-heading.mod-level-1 { padding-inline-start: var(--size-4-3); }
+.herdr-toc-heading.mod-level-2 { padding-inline-start: var(--size-4-5); }
+.herdr-toc-heading.mod-level-3 { padding-inline-start: var(--size-4-6); }
+.herdr-toc-heading.mod-level-4 { padding-inline-start: var(--size-4-8); }
+.herdr-toc-heading.mod-level-5 { padding-inline-start: var(--size-4-10); }
+.herdr-toc-heading.mod-level-6 { padding-inline-start: var(--size-4-12); }
+
+.herdr-toc-empty {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	padding: var(--size-4-2);
+}
+
 /* Native view (issue #92) --------------------------------------------------- */
 
 /*

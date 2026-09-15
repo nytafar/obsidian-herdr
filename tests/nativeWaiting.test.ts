@@ -133,7 +133,7 @@ function tool(
 }
 
 function turn(id: string, prompt: string, entries: Turn['entries'] = []): Turn {
-	return { id, prompt, entries };
+	return { id, prompt, entries, headings: [] };
 }
 
 /** The card, or null when the view is showing none. */
