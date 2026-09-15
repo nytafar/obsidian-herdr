@@ -136,3 +136,12 @@ scratch pane created with `tab create` and `agent start`.
   session can therefore parse a real, current transcript; the file does not
   grow during the run, because the tool result that spawned it lands after
   it exits.
+- **The project folder is the session's cwd with every character that is not a
+  letter or a digit replaced by a dash.** Measured 2026-09-15 on all 24 project
+  folders under `~/.claude/projects`, each compared with the `cwd` its own
+  transcript records: `/home/lasse/.claude` is `-home-lasse--claude`, case and
+  existing dashes survive. Claude Code 2.1.266 caps the name at 200 characters
+  and appends `-<hash>`, the hash being `h = h * 31 + c` over the whole path,
+  wrapped to int32, `Math.abs(...).toString(36)`. The cwd is the session's, not
+  the process's: an agent started from one directory and working in another
+  writes under the first.

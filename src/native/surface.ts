@@ -19,12 +19,21 @@
  * unavailable there and {@link effectiveRenderMode} falls back.
  */
 
+import { Component, Keymap, MarkdownRenderer, type App } from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import {
 	engineForRenderMode,
 	NATIVE_RENDER_MODE,
 	type RenderMode,
 } from './renderMode';
+import type { Turn, TurnEntry } from './reducer';
+import type { AgentStatus } from '../herdr/types.gen';
+import type {
+	SessionChange,
+	SessionHandleOf,
+	SessionModels,
+	SessionModelView,
+} from './sessionModel';
 
 /**
  * What a terminal tab drives, whichever way the pane is shown. Every method is
@@ -149,30 +158,97 @@ export class PaneSurfaceHolder {
 
 /** What {@link NativePaneSurface} needs from the view around it. */
 export interface NativePaneSurfaceOptions {
+	/** The view's own app, never the global one (Obsidian guidelines). */
+	app: App;
 	identity: PaneIdentity;
 	/** The strip under the view, so native mode says what it is doing too. */
 	onStatus: (line: StatusLine) => void;
+	/** The plugin's session models; one is held for as long as this is attached. */
+	models: SessionModels;
 }
 
 /**
- * The native surface (issue #92): for now, an empty view that says there is no
- * session yet.
+ * What the view says the agent is doing, or an empty string when it should say
+ * nothing at all.
  *
- * This is the prefactor's half of the native view. It proves the seam — a tab
- * can be switched to native and back and get a working terminal again — and
- * leaves the session model, the reducer and the transcript source to the
- * issues that follow (#91). Everything it draws takes Obsidian's own theming
- * through `styles.css`: no inline styles, and no `innerHTML`.
+ * herdr's five states, not anything read out of the transcript: a turn that has
+ * stopped and a turn that is thinking look the same in the file, and the status
+ * is the only thing that tells them apart (ADR-0003). `blocked` gets a line of
+ * its own until the waiting card exists; `idle`, `done` and `unknown` get
+ * nothing, because a finished session should read as prose and nothing else.
+ */
+export function workingLine(status: AgentStatus): string {
+	if (status === 'working') return 'Working…';
+	if (status === 'blocked') return 'Waiting for you.';
+	return '';
+}
+
+/** One piece of a human prompt: literal text, or a wikilink to a note. */
+export type PromptSegment =
+	| { kind: 'text'; text: string }
+	| { kind: 'link'; target: string; label: string };
+
+/**
+ * A human prompt split into text and wikilinks.
+ *
+ * Human prompts are shown as the human typed them — plain, pre-wrapped text,
+ * not Markdown — with the one exception that a wikilink is a link, because a
+ * prompt in this vault is usually half references (native-view-design.md).
+ */
+export function promptSegments(prompt: string): PromptSegment[] {
+	const segments: PromptSegment[] = [];
+	const pattern = /\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]/g;
+	let at = 0;
+	for (let match = pattern.exec(prompt); match; match = pattern.exec(prompt)) {
+		if (match.index > at) segments.push({ kind: 'text', text: prompt.slice(at, match.index) });
+		const target = (match[1] ?? '').trim();
+		const alias = match[2]?.trim();
+		segments.push({ kind: 'link', target, label: alias || target });
+		at = match.index + match[0].length;
+	}
+	if (at < prompt.length) segments.push({ kind: 'text', text: prompt.slice(at) });
+	return segments;
+}
+
+/**
+ * The native surface (issues #92, #93): a pane's agent session as Obsidian
+ * Markdown.
+ *
+ * It owns no content of its own. The session model (`./sessionModel.ts`) holds
+ * the reduced transcript and says which turns moved; this draws those turns and
+ * nothing else, which is what keeps a long history cheap to keep up to date.
+ *
+ * What renders how (native-view-design.md): assistant prose through
+ * `MarkdownRenderer`, one element per block, so the vault's own wikilinks,
+ * callouts and embeds come out as they do anywhere else; human prompts as plain
+ * pre-wrapped text with their wikilinks linkified; thinking, tool calls and
+ * steers as plain placeholders until the tickets that give them a shape.
+ *
+ * Guidelines: no `innerHTML`, no inline styles (everything is in `styles.css`),
+ * `this.app` comes in from the view rather than the global, and every DOM
+ * listener and every rendered Markdown child hangs off a `Component` that is
+ * unloaded when its turn is redrawn or the surface detaches.
  */
 export class NativePaneSurface implements PaneSurface {
 	private identity: PaneIdentity;
-	private readonly onStatus: (line: StatusLine) => void;
+	private readonly options: NativePaneSurfaceOptions;
 	/** The element this surface added to the host; removed again on detach. */
 	private rootEl: HTMLElement | null = null;
+	private turnsEl: HTMLElement | null = null;
+	private emptyEl: HTMLElement | null = null;
+	/** What the agent is doing, shown between blocks; null when it is nothing. */
+	private statusEl: HTMLElement | null = null;
+	/** The model this surface holds, or null while it is detached or has no pane. */
+	private handle: SessionHandleOf<SessionModelView> | null = null;
+	private unsubscribe: (() => void) | null = null;
+	/** One element per turn id, in the order the turns arrived. */
+	private readonly turnEls = new Map<string, HTMLElement>();
+	/** One component per turn: its listeners and its rendered Markdown. */
+	private readonly turnComponents = new Map<string, Component>();
 
 	constructor(options: NativePaneSurfaceOptions) {
+		this.options = options;
 		this.identity = options.identity;
-		this.onStatus = options.onStatus;
 	}
 
 	async attach(hostEl: HTMLElement): Promise<void> {
@@ -182,31 +258,211 @@ export class NativePaneSurface implements PaneSurface {
 		// typography the user has set, which is the appearance the native view
 		// is meant to have (native-view-design.md).
 		root.addClass('markdown-preview-view');
-		root.createDiv({ cls: 'herdr-native-empty', text: 'No session yet.' });
+		this.turnsEl = root.createDiv({ cls: 'herdr-native-turns' });
 		this.rootEl = root;
-		this.report();
+		this.bind();
 	}
 
 	async detach(): Promise<void> {
+		this.unbind();
 		this.rootEl?.remove();
 		this.rootEl = null;
+		this.turnsEl = null;
+		this.emptyEl = null;
+		this.statusEl = null;
 	}
 
-	/** Nothing to hand back: there is no child process and no canvas here yet. */
-	async setVisible(): Promise<void> {}
+	/**
+	 * Nothing to hand back: there is no child process and no canvas here, so a
+	 * hidden tab keeps its session model and its subscription and is simply up
+	 * to date when it is revealed (#94, ADR-0003).
+	 */
+	async setVisible(_visible: boolean): Promise<void> {}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
+		const samePane = identity.paneId === this.identity.paneId;
 		this.identity = identity;
-		this.report();
+		if (samePane) {
+			this.report();
+			return;
+		}
+		// Another pane is another session: let the old model go and start over.
+		this.unbind();
+		this.bind();
 	}
 
 	/** Colours, cursors and engines are a terminal's business, not this view's. */
 	async apply(): Promise<void> {}
 
+	/** Takes the pane's session model and draws what it already holds. */
+	private bind(): void {
+		if (!this.rootEl) return;
+		if (this.identity.paneId) {
+			this.handle = this.options.models.acquire(this.identity.paneId);
+			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
+		}
+		this.renderAll();
+		this.report();
+	}
+
+	/** Gives the model back. Safe to call when nothing is held. */
+	private unbind(): void {
+		this.unsubscribe?.();
+		this.unsubscribe = null;
+		this.handle?.release();
+		this.handle = null;
+		this.clearTurns();
+	}
+
+	private get model(): SessionModelView | null {
+		return this.handle?.model ?? null;
+	}
+
+	/** Draws a change: a reset redraws everything, else only the turns named. */
+	private applyChange(change: SessionChange): void {
+		if (!this.rootEl) return;
+		if (change.reset) {
+			this.renderAll();
+		} else {
+			const turns = this.model?.state.turns ?? [];
+			for (const id of change.changedTurnIds) {
+				const turn = turns.find((candidate) => candidate.id === id);
+				if (turn) this.renderTurn(turn);
+			}
+			this.updateEmpty();
+		}
+		this.updateStatus();
+		this.report();
+	}
+
+	private renderAll(): void {
+		this.clearTurns();
+		for (const turn of this.model?.state.turns ?? []) this.renderTurn(turn);
+		this.updateEmpty();
+		this.updateStatus();
+	}
+
+	/** Drops every turn element and the components that went with them. */
+	private clearTurns(): void {
+		for (const component of this.turnComponents.values()) component.unload();
+		this.turnComponents.clear();
+		this.turnEls.clear();
+		this.turnsEl?.empty();
+	}
+
+	/**
+	 * Draws one turn into its own element, which is created on first sight and
+	 * reused afterwards: a turn that grows while Claude writes keeps its place
+	 * in the view, and the turns around it are not touched.
+	 */
+	private renderTurn(turn: Turn): void {
+		const turnsEl = this.turnsEl;
+		if (!turnsEl) return;
+		let turnEl = this.turnEls.get(turn.id);
+		if (!turnEl) {
+			turnEl = turnsEl.createDiv({ cls: 'herdr-native-turn' });
+			this.turnEls.set(turn.id, turnEl);
+		}
+		turnEl.empty();
+		this.turnComponents.get(turn.id)?.unload();
+		const component = new Component();
+		component.load();
+		this.turnComponents.set(turn.id, component);
+
+		if (turn.prompt) {
+			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt, component);
+		}
+		for (const entry of turn.entries) this.renderEntry(turnEl, entry, component);
+	}
+
+	private renderEntry(turnEl: HTMLElement, entry: TurnEntry, component: Component): void {
+		switch (entry.kind) {
+			case 'text': {
+				const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
+				// Obsidian's own renderer, so the vault's links, callouts and embeds
+				// come out exactly as they do in a note. It resolves relative links
+				// against `sourcePath`; a transcript is not a note in the vault, so
+				// that is the vault root.
+				void MarkdownRenderer.render(this.options.app, entry.text, blockEl, '', component);
+				return;
+			}
+			case 'thinking':
+				// A placeholder until the ticket that gives thinking a shape (#93).
+				turnEl.createDiv({ cls: 'herdr-native-aside', text: 'Thinking' });
+				return;
+			case 'tool':
+				turnEl.createDiv({ cls: 'herdr-native-aside', text: entry.name });
+				return;
+			case 'steer':
+				// A steer is shown where it entered the running turn (CONTEXT.md).
+				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), entry.text, component);
+				return;
+		}
+	}
+
+	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */
+	private renderPrompt(el: HTMLElement, prompt: string, component: Component): void {
+		for (const segment of promptSegments(prompt)) {
+			if (segment.kind === 'text') {
+				el.appendText(segment.text);
+				continue;
+			}
+			const linkEl = el.createEl('a', {
+				cls: 'internal-link',
+				text: segment.label,
+				href: segment.target,
+				attr: { 'data-href': segment.target },
+			});
+			component.registerDomEvent(linkEl, 'click', (event) => {
+				event.preventDefault();
+				// A mod-click opens the note in a new tab, as a link in a note does.
+				void this.options.app.workspace.openLinkText(
+					segment.target,
+					'',
+					Keymap.isModEvent(event),
+				);
+			});
+		}
+	}
+
+	/** The line shown when there is nothing to show, and nothing when there is. */
+	private updateEmpty(): void {
+		const root = this.rootEl;
+		if (!root) return;
+		if (this.turnEls.size > 0) {
+			this.emptyEl?.remove();
+			this.emptyEl = null;
+			return;
+		}
+		const text = this.model?.path ? 'No turns in this session yet.' : 'No session yet.';
+		if (!this.emptyEl) this.emptyEl = root.createDiv({ cls: 'herdr-native-empty' });
+		this.emptyEl.setText(text);
+	}
+
+	/**
+	 * What the agent is doing between blocks (#94). herdr's `agent_status`, not
+	 * anything guessed from the transcript: a turn that has stopped writing and
+	 * a turn that is thinking look identical in the file.
+	 */
+	private updateStatus(): void {
+		const root = this.rootEl;
+		if (!root) return;
+		const text = workingLine(this.model?.agentStatus ?? 'unknown');
+		if (!text) {
+			this.statusEl?.remove();
+			this.statusEl = null;
+			return;
+		}
+		if (!this.statusEl) this.statusEl = root.createDiv({ cls: 'herdr-native-status' });
+		this.statusEl.setText(text);
+	}
+
 	private report(): void {
-		this.onStatus({
-			text: this.identity.paneId
-				? `Native view of ${this.identity.paneId}. No session yet.`
+		const paneId = this.identity.paneId;
+		const session = this.model?.agentSession ?? '';
+		this.options.onStatus({
+			text: paneId
+				? `Native view of ${paneId}.${session ? '' : ' No session yet.'}`
 				: 'Native view. No pane.',
 			warning: false,
 			detail: null,

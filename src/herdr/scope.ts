@@ -339,6 +339,16 @@ export class WorkspaceScope {
 		return this.panes.get(paneId);
 	}
 
+	/**
+	 * The raw `PaneInfo` herdr last sent for a pane, whether or not it is in
+	 * scope. The one reader is the native view's session model, which needs
+	 * `agent_session` (issue #93): nothing renders that field, so `PaneState`
+	 * does not carry it. Everything renderable belongs in `PaneState`.
+	 */
+	paneInfo(paneId: string): PaneInfo | undefined {
+		return this.inventory.get(paneId);
+	}
+
 	get size(): number {
 		return this.panes.size;
 	}

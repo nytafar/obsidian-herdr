@@ -1,0 +1,7 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Start the long job"},"uuid":"u6","timestamp":"2026-09-15T09:40:00.000Z","origin":{"kind":"human"},"sessionId":"s1"}
+{"parentUuid":"u6","isSidechain":false,"type":"assistant","message":{"id":"msg_7","role":"assistant","content":[{"type":"text","text":"Starting it."}]},"uuid":"a9","timestamp":"2026-09-15T09:40:01.000Z","sessionId":"s1"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T09:40:02.000Z","sessionId":"s1","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"}
+{"parentUuid":"a9","isSidechain":false,"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"},"uuid":"u7","timestamp":"2026-09-15T09:40:03.000Z","sessionId":"s1"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T09:40:04.000Z","sessionId":"s1","content":"also check the styles"}
+{"parentUuid":"a9","isSidechain":false,"attachment":{"type":"queued_command","prompt":"also check the styles","source_uuid":"q1","commandMode":"prompt","origin":{"kind":"human"},"timestamp":"2026-09-15T09:40:04.000Z"},"type":"attachment","uuid":"at1","timestamp":"2026-09-15T09:40:04.000Z","sessionId":"s1"}
+{"parentUuid":"at1","isSidechain":false,"type":"assistant","message":{"id":"msg_8","role":"assistant","content":[{"type":"text","text":"Styles checked too."}]},"uuid":"a10","timestamp":"2026-09-15T09:40:20.000Z","sessionId":"s1"}

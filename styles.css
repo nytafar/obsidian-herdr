@@ -370,6 +370,53 @@
 	color: var(--text-muted);
 }
 
+/*
+ * One turn: the human prompt, then what the agent did (#93). `content-visibility`
+ * lets the browser skip laying out turns that are scrolled away, which is what
+ * makes a whole session's history affordable (native-view-design.md).
+ */
+.herdr-native-turn {
+	contain-intrinsic-size: auto 200px;
+	content-visibility: auto;
+	margin-bottom: var(--size-4-6);
+}
+
+/*
+ * A human prompt is shown as it was typed, so its newlines are its own; only
+ * wikilinks in it become links.
+ */
+.herdr-native-prompt {
+	border-left: 3px solid var(--interactive-accent);
+	color: var(--text-normal);
+	margin-bottom: var(--size-4-3);
+	padding-left: var(--size-4-3);
+	white-space: pre-wrap;
+}
+
+/* A steer: a prompt taken mid-turn, shown where it entered the context. */
+.herdr-native-steer {
+	border-left: 3px solid var(--text-faint);
+	color: var(--text-muted);
+	margin: var(--size-4-2) 0;
+	padding-left: var(--size-4-3);
+	white-space: pre-wrap;
+}
+
+/* What the agent is doing between blocks, from herdr's status (#94). */
+.herdr-native-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+	padding: var(--size-4-2) 0;
+}
+
+/* Thinking and tool calls, until the tickets that give them a shape. */
+.herdr-native-aside {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-1) 0;
+}
+
 /* File explorer folder hover button (issue #30) ---------------------------- */
 
 /*
