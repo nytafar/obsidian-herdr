@@ -35,6 +35,25 @@ function fakeSender(failWith?: string): PromptSender & { sent: { paneId: string;
 	};
 }
 
+/** A sender that holds the request open until the test finishes it. */
+function deferredSender(): PromptSender & {
+	sent: { paneId: string; text: string }[];
+	finish: () => void;
+} {
+	const sent: { paneId: string; text: string }[] = [];
+	let finish = (): void => {};
+	return {
+		sent,
+		finish: () => finish(),
+		async send(paneId: string, text: string): Promise<void> {
+			sent.push({ paneId, text });
+			await new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+		},
+	};
+}
+
 function boxOn(
 	status: AgentStatus,
 	sender: PromptSender,
@@ -92,6 +111,35 @@ describe('PromptBox: sending', () => {
 
 		expect(sender.sent).toEqual([{ paneId: 'w4:p1', text: 'first line\n\nthird line' }]);
 		expect(input(el).value).toBe('');
+	});
+
+	it('keeps what was typed while the send was in flight', async () => {
+		// Typing stays enabled during a request, so the box may hold more than
+		// was sent by the time herdr answers. Only the sent text goes (#97).
+		const sender = deferredSender();
+		const { box, el } = boxOn('idle', sender);
+		input(el).value = 'again';
+
+		const sending = box.send();
+		input(el).value = 'again and the styles too';
+		sender.finish();
+		await sending;
+
+		expect(sender.sent).toEqual([{ paneId: 'w4:p1', text: 'again' }]);
+		expect(input(el).value).toBe(' and the styles too');
+	});
+
+	it('keeps a draft that replaced the sent text entirely', async () => {
+		const sender = deferredSender();
+		const { box, el } = boxOn('idle', sender);
+		input(el).value = 'again';
+
+		const sending = box.send();
+		input(el).value = 'a different thought';
+		sender.finish();
+		await sending;
+
+		expect(input(el).value).toBe('a different thought');
 	});
 
 	it('sends a leading slash command as typed', async () => {
