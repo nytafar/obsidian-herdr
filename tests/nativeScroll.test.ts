@@ -84,7 +84,12 @@ class FakeResizeObserver {
 const globals = globalThis as unknown as { ResizeObserver?: unknown };
 
 function turn(id: string, prompt: string): Turn {
-	return { id, prompt, entries: [{ kind: 'text', messageId: `m-${id}`, text: `answer ${id}` }] };
+	return {
+		id,
+		prompt,
+		entries: [{ kind: 'text', messageId: `m-${id}`, text: `answer ${id}` }],
+		headings: [],
+	};
 }
 
 /** The turns element, which is the view's one scroll container (#103). */

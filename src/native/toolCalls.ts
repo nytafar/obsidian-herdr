@@ -340,14 +340,28 @@ export type TurnItem =
 	| { kind: 'report'; entry: ToolEntry };
 
 /**
+ * Whether this entry draws nothing at all.
+ *
+ * An encrypted thought carries only a signature and has no text, and the view
+ * shows nothing for it; an empty text block is the same. Between two tool calls
+ * that is the commonest thing a real transcript holds (#107), so an entry the
+ * reader never sees must not be allowed to split what they do see.
+ */
+function rendersNothing(entry: TurnEntry): boolean {
+	return (entry.kind === 'thinking' || entry.kind === 'text') && !entry.text.trim();
+}
+
+/**
  * A turn's entries as the things to draw.
  *
- * Consecutive tool calls join one group; anything else — prose, a thought, a
- * steer — ends the run, so a steer is never inside a group (issue #96). A call
- * that escapes the group is drawn where it happened and does not end the run:
- * the reads around a write are still one group, and the write sits after it,
- * before whatever prose comes next. A group whose calls all escaped is not
- * drawn at all.
+ * Consecutive tool calls join one group; anything *visible* — prose, a thought,
+ * a steer — ends the run, so a steer is never inside a group (issue #96). An
+ * entry that renders nothing, such as a signature-only thinking block, neither
+ * draws nor ends the run, so one stretch of work stays one summary (#107,
+ * amending #95's rule). A call that escapes the group is drawn where it
+ * happened and does not end the run: the reads around a write are still one
+ * group, and the write sits after it, before whatever prose comes next. A group
+ * whose calls all escaped is not drawn at all.
  */
 export function turnItems(
 	entries: readonly TurnEntry[],
@@ -357,6 +371,7 @@ export function turnItems(
 	let group: { kind: 'group'; tools: ToolEntry[] } | null = null;
 
 	for (const entry of entries) {
+		if (rendersNothing(entry)) continue;
 		if (entry.kind === 'text') {
 			group = null;
 			items.push({ kind: 'text', entry });
