@@ -188,6 +188,31 @@ describe('reduce: incremental', () => {
 		expect(second.state.turns[0]?.entries).toHaveLength(3);
 	});
 
+	it('leaves the entries of a snapshot it already returned untouched', () => {
+		// The reducer is pure: a turn this batch touches is copied entry by entry,
+		// so a view holding an older snapshot keeps seeing what it drew. Merging
+		// more of one message's text into it must not reach back.
+		const lines = fixtureLines('merged-blocks');
+		const first = reduce(emptyTranscript(), lines.slice(0, 3));
+		const firstEntries = JSON.stringify(first.state.turns[0]?.entries);
+
+		const second = reduce(first.state, lines.slice(3));
+
+		expect(JSON.stringify(first.state.turns[0]?.entries)).toBe(firstEntries);
+		expect(second.state.turns[0]?.entries).not.toEqual(first.state.turns[0]?.entries);
+	});
+
+	it('leaves an earlier snapshot’s tool call without the result that came later', () => {
+		const lines = fixtureLines('tool-results');
+		const first = reduce(emptyTranscript(), lines.slice(0, 3));
+		const second = reduce(first.state, lines.slice(3));
+
+		const before = first.state.turns[0]?.entries[1];
+		const after = second.state.turns[0]?.entries[1];
+		expect(before?.kind === 'tool' && before.result).toBeNull();
+		expect(after?.kind === 'tool' && after.result).toBe('3 passed');
+	});
+
 	it('reports a new turn once, however the lines are batched', () => {
 		const lines = fixtureLines('merged-blocks');
 		let state = emptyTranscript();

@@ -290,10 +290,18 @@ class Draft {
 		return { turns: this.turns, changedTurnIds: this.changed };
 	}
 
-	/** A copy of `turn` that this batch owns, swapped into the list on first ask. */
+	/**
+	 * A copy of `turn` that this batch owns, swapped into the list on first ask.
+	 *
+	 * The entries are copied too, one object each: a text merge, a tool result,
+	 * a notification and a report all write into an entry, and a snapshot the
+	 * view already drew must keep saying what it said. The `input` record and
+	 * the notification inside an entry are replaced rather than written into, so
+	 * sharing those costs nothing.
+	 */
 	private own(turn: Turn): Turn {
 		if (this.mine.has(turn.id)) return turn;
-		const copy: Turn = { ...turn, entries: [...turn.entries] };
+		const copy: Turn = { ...turn, entries: turn.entries.map((entry) => ({ ...entry })) };
 		this.turns[this.turns.indexOf(turn)] = copy;
 		this.mine.add(turn.id);
 		return copy;
