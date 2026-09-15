@@ -210,6 +210,16 @@ export interface HerdrSettings {
 	 * into it. See `native/toolCalls.ts`.
 	 */
 	nativeToolGroups: ToolGroupPresentation;
+	/**
+	 * Whether the native view's waiting card presses "Allow" by itself for a
+	 * permission block (issue #99). Off by default, and permissions only: a bare
+	 * Enter on the workspace trust prompt quits Claude, and on a question or on
+	 * plan approval it picks the first option, which switches the session to auto
+	 * mode (`docs/architecture.md`). One global switch is enough because this
+	 * vault is knowledge work only (native-view-design.md). See
+	 * `native/waitingCard.ts`.
+	 */
+	nativeAutoAcceptPermissions: boolean;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -397,6 +407,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalFontSize: 0,
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
+	nativeAutoAcceptPermissions: false,
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -1141,9 +1152,11 @@ export function buildTerminalSection(
 }
 
 /**
- * The native render mode (issue #95). One setting so far: how much of a turn's
- * tool calls the view folds away. It changes nothing a view holds, only how it
- * reads, so a change redraws the open native views and touches nothing else.
+ * The native render mode (issues #95, #99): how much of a turn's tool calls the
+ * view folds away, and whether the waiting card answers a permission by itself.
+ * The first changes nothing a view holds, only how it reads, so a change
+ * redraws the open native views; the second is read per block, so an open view
+ * picks it up at the next one.
  */
 export function buildNativeViewSection(
 	containerEl: HTMLElement,
@@ -1167,6 +1180,18 @@ export function buildNativeViewSection(
 					await callbacks.save();
 					callbacks.refreshNativeViews();
 				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Auto-accept permissions')
+		.setDesc(
+			'Answer a permission block in the native view without asking: the waiting card presses Allow once for each one. Questions, plan approval and the workspace trust prompt are never answered this way, because the key that allows a tool call chooses something else entirely on those. Off by default.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.nativeAutoAcceptPermissions === true).onChange(async (value) => {
+				settings.nativeAutoAcceptPermissions = value;
+				await callbacks.save();
+			}),
 		);
 }
 

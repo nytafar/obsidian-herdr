@@ -10,7 +10,10 @@ it reconnects with backoff when the server restarts. On the connected edge the
 plugin loads `session.snapshot` (workspaces, panes, agent names) and then keeps
 the picture current from events. Reads: `ping`, `workspace.list`, `pane.list`,
 `tab.list`, `agent.list`, `session.snapshot`, `events.subscribe`. Writes only on
-your action: `pane.focus`, `tab.create`, `pane.split`, `agent.start`.
+your action: `pane.focus`, `tab.create`, `pane.split`, `agent.start`,
+`agent.prompt`, `agent.send_keys`. The last takes `{target, keys}` and nothing
+else, checked against the schema the installed 0.8.2 prints (`herdr api schema
+--json`, protocol 20), where both fields are required.
 
 Everything is filtered to one workspace on the plugin side. The list reacts to
 agent status transitions, never to the raw `pane.updated` stream, which is about

@@ -114,7 +114,7 @@ import {
 	type PaneSurface,
 	type PaneSurfaceKind,
 } from '../native/surface';
-import { clientPromptSender } from '../native/promptSender';
+import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 
@@ -508,6 +508,24 @@ export class TerminalView extends ItemView {
 			sender: clientPromptSender(
 				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
 			),
+			// The waiting card's "Allow" (#99), over the same client and only ever a
+			// bare Enter on a permission block.
+			keySender: clientKeySender(
+				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
+			),
+			// "Open in terminal": the tab's own render mode switch (#92), which is
+			// how a block this view must never press Enter on gets answered. The
+			// mode it switches to is the engine the vault's default names, so the
+			// tab comes back as the terminal the user would have opened anyway.
+			openInTerminal: () => {
+				this.detached('open in terminal', () =>
+					this.setRenderMode(
+						engineForRenderMode(normalizeRenderMode(this.plugin.settings.terminalEngine)),
+					),
+				);
+			},
+			// Read per block, so the setting reaches an open view (#99).
+			autoAcceptPermissions: () => this.plugin.settings.nativeAutoAcceptPermissions === true,
 			// `/` offers the pane's commands and skills, `@` the vault's files
 			// (#98). The pane's own cwd decides the project scope and the form a
 			// mention takes; the vault path is the local one, because a native
