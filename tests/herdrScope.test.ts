@@ -495,6 +495,35 @@ describe('WorkspaceScope.ingest', () => {
 		]);
 	});
 
+	/**
+	 * Closing a tab is the one removal herdr announces only by the tab. Measured
+	 * live against 0.8.2 on 2026-09-15: closing a tab whose pane was running
+	 * Claude emitted `tab_closed` and, for the twelve seconds watched after it,
+	 * nothing else — no `pane_closed`, no `pane_exited`, no release, not one
+	 * `pane_updated` — while `pane.get` for the pane answered `pane_not_found`
+	 * straight away. Without this case the pane's row outlived its pane, and the
+	 * only action on it, terminate, then failed with `pane_not_found`.
+	 */
+	it('removes a closed tab’s panes, which is all tab_closed says (ghost rows)', () => {
+		const scope = new WorkspaceScope({ vaultPath: VAULT });
+		scope.prime(
+			[workspace('w4', 'hvelv')],
+			[
+				pane({ pane_id: 'w4:p1', tab_id: 'w4:t1' }),
+				pane({ pane_id: 'w4:p2', tab_id: 'w4:t2' }),
+				pane({ pane_id: 'w4:p3', tab_id: 'w4:t2' }),
+			],
+		);
+		const rec = record(scope);
+		scope.ingest(event('tab_closed', { tab_id: 'w4:t2', workspace_id: 'w4' }));
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p2', 'w4:p3']);
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+		// Out of the inventory too, or a later re-resolution rebuilds the ghost.
+		expect(scope.paneInfo('w4:p2')).toBeUndefined();
+		scope.ingest(event('tab_closed', { tab_id: 'w4:t2', workspace_id: 'w4' }));
+		expect(rec.removed).toHaveLength(2);
+	});
+
 	it('resolves later when a workspace is renamed to the vault name', () => {
 		const scope = new WorkspaceScope({ vaultPath: VAULT });
 		scope.prime([workspace('w4', 'scratch')], [pane({ pane_id: 'w4:p1', cwd: '/tmp' })]);
@@ -946,6 +975,98 @@ describe('pane_agent_detected admits the pane (issue #75)', () => {
 		scope.ingest(detected('w4:p2'));
 		expect(rec.added).toHaveLength(0);
 		expect(scope.size).toBe(1);
+	});
+});
+
+/**
+ * herdr 0.8.2 replays recent history to every new `events.subscribe`
+ * subscriber (issue #90), and it replays per event type rather than as one
+ * timeline. Measured against the installed 0.8.2 on 2026-09-15, in workspace
+ * `w2`: a fresh subscriber was sent a pane's `pane_created` and all four of its
+ * `pane_agent_detected` events first, and only then its ten `pane_updated`
+ * frames. For a pane whose tab had been closed while its agent was running —
+ * `pane.get` answers `pane_not_found` for it — the replay still carried
+ * `pane_updated` frames with `agent: "claude"`, and carried no `pane_closed`,
+ * no `pane_exited` and no release at all.
+ *
+ * So a `pane.updated` frame cannot be allowed to decide membership: admitting a
+ * row from one is how a dead agent became a row that no later event could ever
+ * remove, and whose terminate then failed with `pane_not_found`. Membership
+ * comes from the snapshot and from transitions; these frames only refresh a
+ * pane the list already holds.
+ */
+describe('pane_updated never changes membership (#90, ghost rows)', () => {
+	const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+	/** The scoped workspace as the snapshot found it: one live agent pane. */
+	function primed(): { scope: WorkspaceScope; rec: Recorded } {
+		const scope = new WorkspaceScope({
+			vaultPath: VAULT,
+			// What `pane.list` says now, which is the truth the replay contradicts.
+			lookupPanes: () => Promise.resolve([pane({ pane_id: 'w4:p1' })]),
+		});
+		scope.prime([workspace('w4', 'hvelv')], [pane({ pane_id: 'w4:p1' })]);
+		return { scope, rec: record(scope) };
+	}
+
+	it('does not raise a row for a pane herdr no longer has', async () => {
+		const { scope, rec } = primed();
+		// The capture, in the order herdr replayed it: the pane's creation and
+		// its detection before any of its updates.
+		scope.ingest(event('pane_created', { pane: pane({ pane_id: 'w4:p9', agent: null }) }));
+		scope.ingest(
+			event('pane_agent_detected', {
+				pane_id: 'w4:p9',
+				workspace_id: 'w4',
+				agent: 'claude',
+			}),
+		);
+		await flush();
+		scope.ingest(event('pane_updated', { pane: pane({ pane_id: 'w4:p9' }) }));
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p9', agent_status: 'working' }) }),
+		);
+		expect(rec.added).toHaveLength(0);
+		expect(scope.get('w4:p9')).toBeUndefined();
+		expect(scope.list().map((state) => state.paneId)).toEqual(['w4:p1']);
+	});
+
+	it('does not drop a live row for a replayed frame from before its agent started', () => {
+		const { scope, rec } = primed();
+		// The first replayed frame for a pane is its oldest, from before the
+		// agent was detected. Dropping the row on it would leave nothing to put
+		// it back, since the frames that follow may no longer add one.
+		scope.ingest(event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent: null }) }));
+		expect(rec.removed).toHaveLength(0);
+		expect(scope.get('w4:p1')?.agent).toBe('claude');
+	});
+
+	it('still applies a frame to a pane the list holds', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_updated', { pane: pane({ pane_id: 'w4:p1', agent_status: 'blocked' }) }),
+		);
+		expect(rec.changed.map((entry) => entry.next.agentStatus)).toEqual(['blocked']);
+	});
+
+	/**
+	 * The release as herdr 0.8.2 actually sends it: `agent` is the kind, not
+	 * null, and `final_status` carries the status it stopped at. Both an `/exit`
+	 * inside Claude and a `kill -9` of the process produced exactly this.
+	 */
+	it('removes the row on the release herdr really sends', () => {
+		const { scope, rec } = primed();
+		scope.ingest(
+			event('pane_agent_detected', {
+				pane_id: 'w4:p1',
+				workspace_id: 'w4',
+				agent: 'claude',
+				released: true,
+				final_status: 'idle',
+			}),
+		);
+		expect(rec.removed.map((state) => state.paneId)).toEqual(['w4:p1']);
+		expect(scope.size).toBe(0);
 	});
 });
 

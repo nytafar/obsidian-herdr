@@ -45,8 +45,42 @@ their own.
 - **A freshly opened stream replays the inventory**, `pane.created` and
   `pane.updated` for every pane herdr holds, at its stored revision, before any
   live event. That replay is how the stale `agent_status` above was read back.
+- **The replay is per event type, not one timeline, and it outlives the pane.**
+  194 events over 8.5 s in one measurement, at about ten a second, then
+  silence — which is also where the "about ten events per second" above comes
+  from. Within a pane, its `pane.created` and all four of its
+  `pane.agent_detected` events arrived before any of its ten `pane.updated`
+  frames, which is not the order they happened in. And a pane whose tab had
+  been closed while its agent was running, for which `pane.get` now answers
+  `pane_not_found`, was still replayed as `pane.created`, an agent detection
+  and `pane.updated` frames carrying `agent: "claude"`, with no `pane.closed`,
+  no `pane.exited` and no release anywhere in the stream. So a row raised from
+  a `pane.updated` frame can be a corpse that no later event will ever take
+  down: membership in the scoped list comes from `session.snapshot`, from the
+  poll above and from transitions, and `pane.updated` only refreshes a pane the
+  list already holds (`WorkspaceScope.upsert`).
 - **Closing a tab announces the tab, not its panes**: `tab.closed` and no
   `pane.closed` for what was in it. Closing a pane does emit `pane.closed`.
+  Nor is the agent in such a pane released: no `pane.agent_detected` with
+  `released` follows, and `pane.list` simply stops carrying the pane. The scope
+  therefore drops a tab's panes on `tab.closed` itself, which is the only
+  notice it gets.
+- **An agent that stops on its own *is* announced as a release, whatever
+  stopped it.** Both `/exit` inside Claude and `kill -9` of the `claude`
+  process produced `pane.agent_detected` with `released: true`,
+  `final_status: "idle"` and `agent: "claude"` — the kind, not null — followed
+  by a status change to `unknown`; `pane.updated` frames for the pane then stop
+  carrying the `agent` field, and `pane.get` and `agent.list` drop the agent at
+  once. The order of the release and the first agentless frame differs by
+  cause: `/exit` released first, the kill sent the frame first. So a listener
+  must take either order, and must read `released`, not `agent === null`.
+- **There is no `agent.stop`.** The CLI has no such subcommand and the schema
+  no such method; terminating an agent is `pane.close` on its pane. For a pane
+  id herdr does not have, that answers
+  `{"code":"pane_not_found","message":"pane w2:pZZ not found"}`, while
+  `agent.get` and `agent.focus` for a pane whose agent has been released answer
+  `agent_not_found`. The plugin treats `pane_not_found` from a close as the
+  outcome asked for, not as a failure, and takes the row with it.
 
 ### What `pane move` emits
 

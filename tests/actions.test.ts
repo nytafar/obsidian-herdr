@@ -87,6 +87,8 @@ interface Fake {
 	opened: string[];
 	/** Pane and endpoint of every `detachTerminalLeaves`, in order (issue #66). */
 	detached: { paneId: string; endpointId: string }[];
+	/** Pane and endpoint of every `forgetPane`, in order. */
+	forgotten: { paneId: string; endpointId: string }[];
 	responses: Map<string, unknown>;
 	taken: Set<string>;
 	clock: { now: number };
@@ -106,6 +108,7 @@ function fake(options: {
 	const notices: string[] = [];
 	const opened: string[] = [];
 	const detached: { paneId: string; endpointId: string }[] = [];
+	const forgotten: { paneId: string; endpointId: string }[] = [];
 	const taken = new Set<string>();
 	const clock = { now: 0 };
 	const client = { generation: 0 };
@@ -140,6 +143,9 @@ function fake(options: {
 		detachTerminalLeaves: (paneId, endpointId) => {
 			detached.push({ paneId, endpointId });
 		},
+		forgetPane: (paneId, endpointId) => {
+			forgotten.push({ paneId, endpointId });
+		},
 		sleep: async (ms) => {
 			clock.now += ms;
 		},
@@ -153,6 +159,7 @@ function fake(options: {
 		notices,
 		opened,
 		detached,
+		forgotten,
 		responses,
 		taken,
 		clock,
@@ -680,11 +687,34 @@ describe('closePane (issue #35)', () => {
 
 	it('reports a refusal as an ordinary error and returns false', async () => {
 		const f = fake({
-			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
+			responses: {
+				'pane.close': new HerdrError('pane_close_refused', 'pane w4:p3 is the last pane'),
+			},
 		});
 		expect(await f.actions.closePane('w4:p3', 'local')).toBe(false);
 		expect(f.notices).toEqual([
-			'Herdr: could not close the pane. pane w4:p3 not found (pane_not_found)',
+			'Herdr: could not close the pane. pane w4:p3 is the last pane (pane_close_refused)',
+		]);
+		expect(f.forgotten).toEqual([]);
+	});
+
+	/**
+	 * The ghost row: herdr replays stale `pane.updated` frames to a new
+	 * subscriber (issue #90), so a row could outlive its pane, and terminating
+	 * it then answered `pane_not_found` — measured against 0.8.2, which returns
+	 * exactly `{"code":"pane_not_found","message":"pane w2:pZZ not found"}`. The
+	 * pane being gone is what the user asked for, so the row goes too, rather
+	 * than the action reporting a failure and leaving it there.
+	 */
+	it('takes the row with it when herdr has no such pane any more', async () => {
+		const f = fake({
+			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
+		});
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(true);
+		expect(f.forgotten).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
+		expect(f.detached).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
+		expect(f.notices).toEqual([
+			'Herdr: that pane is already gone, so its row was removed from the list.',
 		]);
 	});
 
@@ -708,10 +738,22 @@ describe('closePane (issue #35)', () => {
 
 	it('does not detach any terminal leaf when the close fails', async () => {
 		const f = fake({
-			responses: { 'pane.close': new HerdrError('pane_not_found', 'pane w4:p3 not found') },
+			responses: {
+				'pane.close': new Error('herdr did not answer pane.close within 5000 ms'),
+			},
 		});
 		expect(await f.actions.closePane('w4:p3', 'local')).toBe(false);
 		expect(f.detached).toEqual([]);
+		expect(f.forgotten).toEqual([]);
+	});
+
+	// A successful close makes the row go now rather than when the `pane.closed`
+	// event comes back round, and closes the window in which the replayed
+	// `pane.updated` frames for the pane could still be applied.
+	it('takes the row out of the list on a successful close too', async () => {
+		const f = fake({ responses: { 'pane.close': {} } });
+		expect(await f.actions.closePane('w4:p3', 'local')).toBe(true);
+		expect(f.forgotten).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
 	});
 });
 

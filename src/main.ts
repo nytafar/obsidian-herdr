@@ -606,6 +606,12 @@ export default class HerdrPlugin extends Plugin {
 			openTerminal: (paneId: string) => this.openTerminal(paneId),
 			detachTerminalLeaves: (paneId: string, endpointId: string) =>
 				this.detachTerminalLeaves(paneId, endpointId),
+			// The scope of the endpoint the action was aimed at, not `this.scope`:
+			// the toolbar can switch herdrs while the close is in flight, and a
+			// same-id pane on the other one must keep its row (issue #54, PR #89).
+			forgetPane: (paneId: string, endpointId: string) => {
+				this.endpointSession(endpointId)?.scope.forget(paneId);
+			},
 			sleep: (ms: number) =>
 				new Promise<void>((resolve) => {
 					window.setTimeout(resolve, ms);
