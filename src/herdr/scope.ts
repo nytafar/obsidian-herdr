@@ -305,6 +305,8 @@ export class WorkspaceScope {
 	 * finds nothing to apply and cannot resurrect the row.
 	 */
 	private pendingLookups = new Map<string, string>();
+	/** The refresh in flight, so a tick that lands on a slow one asks for nothing. */
+	private refreshing: Promise<void> | null = null;
 	/** Counter behind `PaneState.statusChangedSeq`; only ever increases. */
 	private statusSeq = 0;
 	private resolvedId: string | null = null;
@@ -416,6 +418,51 @@ export class WorkspaceScope {
 		this.workspaces = workspaces;
 		this.inventory = new Map(panes.map((pane) => [pane.pane_id, pane]));
 		this.reconcile(true);
+	}
+
+	/**
+	 * Re-reads the scoped workspace's panes and applies what moved.
+	 *
+	 * The one thing in the plugin that asks rather than listens, because herdr
+	 * does not announce an agent status change on the stream the plugin can hold
+	 * (`docs/architecture.md`, measured against 0.8.2): a whole turn produced
+	 * `pane.agent_status_changed`, which is subscribed per pane id and so cannot
+	 * cover a workspace, and no `pane.updated` at all. `pane.updated` fires on a
+	 * `PaneInfo` revision bump, and a status change alone is not one, so the
+	 * `agent_status` the stream carries can sit at `working` — or at `unknown`
+	 * for a pane whose agent has just been detected — for as long as the agent
+	 * lives. Both are what a view then shows.
+	 *
+	 * Nothing about the poll reaches a view directly: `upsert` diffs, so a
+	 * refresh that finds nothing emits nothing and the N4 rule holds. Removal is
+	 * left to the events that do arrive (`pane.closed`, `pane.exited`, a
+	 * released detection), because a pane created while the question was out is
+	 * missing from the answer through no fault of its own.
+	 */
+	refresh(): Promise<void> {
+		if (this.refreshing) return this.refreshing;
+		const workspaceId = this.resolvedId;
+		const lookup = this.options.lookupPanes;
+		if (workspaceId === null || !lookup) return Promise.resolve();
+		this.refreshing = lookup(workspaceId)
+			.then(
+				(panes) => {
+					// The answer describes a workspace this vault no longer shows.
+					if (this.resolvedId !== workspaceId) return;
+					for (const pane of panes) {
+						if (pane.workspace_id !== workspaceId) continue;
+						this.inventory.set(pane.pane_id, pane);
+						this.upsert(pane);
+					}
+				},
+				// A failed poll is the state staying as it was until the next tick;
+				// the connection reports its own trouble.
+				() => undefined,
+			)
+			.finally(() => {
+				this.refreshing = null;
+			});
+		return this.refreshing;
 	}
 
 	/**
