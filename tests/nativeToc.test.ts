@@ -11,6 +11,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { TocPanel, tocTarget, type ActiveLeafFacts } from '../src/native/tocView';
+import { OutlineSwap, outlineSwapAction } from '../src/native/tocOutline';
 import { emptyTranscript, type Turn, type TranscriptState } from '../src/native/reducer';
 import type {
 	SessionChange,
@@ -397,5 +398,206 @@ describe('TocPanel', () => {
 		panel.unmount();
 
 		expect(models.released).toEqual(['w4:p1']);
+	});
+});
+
+/**
+ * The outline swap (#119): a fake workspace of leaves in tab groups, and what
+ * the plugin does to them when the reader moves between a note and a native
+ * herdr tab. Nothing here touches Obsidian; the swap takes every workspace
+ * operation it performs as a callback, which is exactly what the plugin side
+ * fills in with `getLeavesOfType`, `createLeafInParent` and `revealLeaf`.
+ */
+
+/** A tab group, which is only an identity: leaves in one share a `parent`. */
+function groupOf(name: string): WorkspaceLeaf['parent'] {
+	return { name } as unknown as WorkspaceLeaf['parent'];
+}
+
+/** A leaf in a tab group, as far as the swap looks at one. */
+function leafIn(name: string, parent: WorkspaceLeaf['parent']): WorkspaceLeaf {
+	return { name, parent } as unknown as WorkspaceLeaf;
+}
+
+/** The workspace the swap acts on, recording what it was asked to do. */
+class FakeWorkspace {
+	readonly revealed: WorkspaceLeaf[] = [];
+	readonly createdBeside: WorkspaceLeaf[] = [];
+	outlines: WorkspaceLeaf[] = [];
+	tocs: WorkspaceLeaf[] = [];
+
+	constructor(readonly facts: Map<WorkspaceLeaf, ActiveLeafFacts>) {}
+
+	swap(): OutlineSwap {
+		return new OutlineSwap({
+			facts: (leaf) => (leaf ? (this.facts.get(leaf) ?? null) : null),
+			outlineLeaves: () => this.outlines,
+			tocLeaves: () => this.tocs,
+			createTocLeaf: async (beside) => {
+				this.createdBeside.push(beside);
+				const leaf = leafIn(`toc-${this.tocs.length}`, beside.parent);
+				this.tocs.push(leaf);
+				return leaf;
+			},
+			reveal: async (leaf) => {
+				this.revealed.push(leaf);
+			},
+		});
+	}
+}
+
+describe('outlineSwapAction: which way the sidebar swaps (#119)', () => {
+	const outline = leafIn('outline', groupOf('right'));
+
+	it('shows the table of contents for a native view while the outline is up', () => {
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				outlineLeaf: outline,
+				hidden: null,
+			}),
+		).toEqual({ kind: 'toc', outlineLeaf: outline });
+	});
+
+	it('does nothing for a native view when no outline is up, or when it is already swapped', () => {
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				outlineLeaf: null,
+				hidden: null,
+			}),
+		).toEqual({ kind: 'none' });
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				outlineLeaf: outline,
+				hidden: outline,
+			}),
+		).toEqual({ kind: 'none' });
+	});
+
+	it('puts the outline back for any other main-area leaf, but only what it took away', () => {
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: true, nativePaneId: '' },
+				outlineLeaf: outline,
+				hidden: outline,
+			}),
+		).toEqual({ kind: 'outline', outlineLeaf: outline });
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: true, nativePaneId: '' },
+				outlineLeaf: outline,
+				hidden: null,
+			}),
+		).toEqual({ kind: 'none' });
+	});
+
+	it('ignores every leaf outside the main area, the sidebars included', () => {
+		// Revealing a leaf activates it, and that leaf is a sidebar leaf: a swap
+		// that answered it would swap itself back the moment it ran.
+		expect(
+			outlineSwapAction({
+				facts: { inMainArea: false, nativePaneId: '' },
+				outlineLeaf: outline,
+				hidden: outline,
+			}),
+		).toEqual({ kind: 'none' });
+		expect(outlineSwapAction({ facts: null, outlineLeaf: outline, hidden: outline })).toEqual({
+			kind: 'none',
+		});
+	});
+});
+
+describe('OutlineSwap against a fake workspace (#119)', () => {
+	it('opens the table of contents in the outline’s tab group and puts the outline back', async () => {
+		const sidebar = groupOf('right');
+		const outline = leafIn('outline', sidebar);
+		const native = leafIn('native', groupOf('main'));
+		const note = leafIn('note', groupOf('main'));
+		const workspace = new FakeWorkspace(
+			new Map([
+				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[note, { inMainArea: true, nativePaneId: '' }],
+			]),
+		);
+		workspace.outlines = [outline];
+		const swap = workspace.swap();
+
+		await swap.activeLeafChanged(native);
+
+		expect(workspace.createdBeside).toEqual([outline]);
+		const toc = workspace.tocs[0];
+		expect(toc?.parent).toBe(sidebar);
+		expect(workspace.revealed).toEqual([toc]);
+
+		await swap.activeLeafChanged(note);
+
+		// The outline is revealed again, and nothing was ever detached: the two
+		// leaves are both still there, one behind the other.
+		expect(workspace.revealed).toEqual([toc, outline]);
+		expect(workspace.createdBeside).toEqual([outline]);
+		expect(workspace.tocs).toHaveLength(1);
+	});
+
+	it('reuses the table of contents that is already in that group', async () => {
+		const sidebar = groupOf('right');
+		const outline = leafIn('outline', sidebar);
+		const toc = leafIn('toc', sidebar);
+		const native = leafIn('native', groupOf('main'));
+		const workspace = new FakeWorkspace(
+			new Map([[native, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+		);
+		workspace.outlines = [outline];
+		workspace.tocs = [toc];
+		const swap = workspace.swap();
+
+		await swap.activeLeafChanged(native);
+
+		expect(workspace.createdBeside).toEqual([]);
+		expect(workspace.revealed).toEqual([toc]);
+	});
+
+	it('does nothing at all while the outline is not open', async () => {
+		const native = leafIn('native', groupOf('main'));
+		const note = leafIn('note', groupOf('main'));
+		const workspace = new FakeWorkspace(
+			new Map([
+				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[note, { inMainArea: true, nativePaneId: '' }],
+			]),
+		);
+		const swap = workspace.swap();
+
+		await swap.activeLeafChanged(native);
+		await swap.activeLeafChanged(note);
+
+		expect(workspace.createdBeside).toEqual([]);
+		expect(workspace.revealed).toEqual([]);
+		expect(workspace.tocs).toEqual([]);
+	});
+
+	it('forgets an outline leaf that has gone, and never reveals it again', async () => {
+		const sidebar = groupOf('right');
+		const outline = leafIn('outline', sidebar);
+		const native = leafIn('native', groupOf('main'));
+		const note = leafIn('note', groupOf('main'));
+		const workspace = new FakeWorkspace(
+			new Map([
+				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[note, { inMainArea: true, nativePaneId: '' }],
+			]),
+		);
+		workspace.outlines = [outline];
+		const swap = workspace.swap();
+		await swap.activeLeafChanged(native);
+		const toc = workspace.tocs[0];
+
+		// The reader closed the outline tab, or collapsed the sidebar, while the
+		// table of contents was showing.
+		workspace.outlines = [];
+		await swap.activeLeafChanged(note);
+
+		expect(workspace.revealed).toEqual([toc]);
 	});
 });

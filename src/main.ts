@@ -43,6 +43,7 @@ import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
+import { registerOutlineSwap } from './native/tocOutline';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
@@ -277,6 +278,9 @@ export default class HerdrPlugin extends Plugin {
 
 		// Vault-facing work waits for the layout, per the Obsidian guidelines.
 		this.app.workspace.onLayoutReady(() => {
+			// The table of contents takes the outline's place while a native tab is
+			// in front (#119); nothing happens while the outline is not open.
+			registerOutlineSwap(this);
 			this.registerFileMenus();
 			this.refreshFolderHoverButton();
 			void this.connect();

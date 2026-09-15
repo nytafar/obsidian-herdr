@@ -23,7 +23,7 @@
  * no plugin code may set an inline style.
  */
 
-import { Component, ItemView, type WorkspaceLeaf } from 'obsidian';
+import { Component, ItemView, type App, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { TerminalView, TERMINAL_VIEW_TYPE } from '../views/terminalView';
 import type { SessionHandleOf, SessionModels, SessionModelView } from './sessionModel';
@@ -246,6 +246,21 @@ function firstLine(text: string): string {
 	return (text.split('\n', 1)[0] ?? '').trim();
 }
 
+/**
+ * What is true of a leaf, which is the one thing the panel cannot know: whether
+ * it is a main-area leaf, and which pane it shows natively if it shows one.
+ * Shared with the outline swap (`./tocOutline.ts`, #119), which asks the same
+ * question of the same leaves.
+ */
+export function leafFacts(app: App, leaf: WorkspaceLeaf | null): ActiveLeafFacts | null {
+	if (!leaf) return null;
+	const view = leaf.view;
+	return {
+		inMainArea: leaf.getRoot() === app.workspace.rootSplit,
+		nativePaneId: view instanceof TerminalView ? view.nativePaneId() : '',
+	};
+}
+
 /** The sidebar view around {@link TocPanel}. */
 export class TocView extends ItemView {
 	private readonly plugin: HerdrPlugin;
@@ -256,7 +271,7 @@ export class TocView extends ItemView {
 		this.plugin = plugin;
 		this.panel = new TocPanel({
 			models: this.plugin.sessionModels,
-			facts: (candidate) => this.leafFacts(candidate),
+			facts: (candidate) => leafFacts(this.app, candidate),
 			scrollToTurn: (leaf, paneId, turnId) =>
 				this.scrollNative(leaf, paneId, (view) => view.scrollNativeToTurn(turnId)),
 			scrollToHeading: (leaf, paneId, turnId, index) =>
@@ -273,7 +288,10 @@ export class TocView extends ItemView {
 	}
 
 	getIcon(): string {
-		return 'list';
+		// The core outline's own icon (`i.icon = "lucide-list"` in Obsidian
+		// 1.10): this view takes its place in the sidebar (#119), so the tab
+		// should read as one thing and not as two lists.
+		return 'lucide-list';
 	}
 
 	async onOpen(): Promise<void> {
@@ -295,16 +313,6 @@ export class TocView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.panel.unmount();
-	}
-
-	/** What is true of a leaf, which is the one thing the panel cannot know. */
-	private leafFacts(leaf: WorkspaceLeaf | null): ActiveLeafFacts | null {
-		if (!leaf) return null;
-		const view = leaf.view;
-		return {
-			inMainArea: leaf.getRoot() === this.app.workspace.rootSplit,
-			nativePaneId: view instanceof TerminalView ? view.nativePaneId() : '',
-		};
 	}
 
 	/**
