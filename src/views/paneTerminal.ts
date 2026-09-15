@@ -357,8 +357,9 @@ export function planThemeUpdate(input: ThemeUpdateInput): ThemeUpdatePlan {
  *   renderer is remounted when its engine cannot repaint in place
  *   ({@link planThemeUpdate}); the session is never touched either way.
  * - `cursor`: shape and blink, in place on both engines.
- * - `engine`: the renderer is a different library, so it is mounted afresh and
- *   the bridge restarted around it. The one effect that does not keep the
+ * - `engine`: the surface has to be built again — a terminal on a different
+ *   library, or the other surface entirely (#104) — so it is mounted afresh
+ *   and the bridge restarted around it. The one effect that does not keep the
  *   session; preserving it across an engine switch would be a behaviour change
  *   and is deliberately out of #84.
  * - `title`: the tab's name and the view header. The view's work, not the
@@ -379,6 +380,7 @@ export const TERMINAL_SETTING_KEYS = [
 	'terminalTheme',
 	'terminalCursorStyle',
 	'terminalCursorBlink',
+	'defaultView',
 	'terminalEngine',
 	'terminalFontFamily',
 	'terminalFontSize',
@@ -428,6 +430,9 @@ export const TERMINAL_SETTING_EFFECTS: Readonly<Record<TerminalSetting, Terminal
 	// #52: both engines take these in place.
 	terminalCursorStyle: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
 	terminalCursorBlink: { effect: 'cursor', keepsSession: true, defersWhenHidden: true },
+	// #104: the default view can mean the other surface altogether for a tab
+	// that never chose one, and the view decides it at mount.
+	defaultView: { effect: 'engine', keepsSession: false, defersWhenHidden: true },
 	// #27: another library draws it, so the terminal is built again and the
 	// bridge with it.
 	terminalEngine: { effect: 'engine', keepsSession: false, defersWhenHidden: true },

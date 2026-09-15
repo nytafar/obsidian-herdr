@@ -8,24 +8,20 @@
  * this interface, so nothing there changed for native mode — and
  * {@link NativePaneSurface} below is the other.
  *
- * Which one a tab mounts is its render mode's decision (`./renderMode.ts`),
+ * Which one a tab mounts is its view's decision (`./renderMode.ts`, #104),
  * and {@link PaneSurfaceHolder} performs the swap: detach the old surface,
  * then build and attach the new one. The terminal view owns the holder and
  * feeds it a factory, which is the seam `tests/paneSurface.test.ts` fakes.
  *
  * Remote endpoints keep a terminal surface (ADR-0002): everything the native
  * view reads is a path on the transcript's host, and the SSH adapters for that
- * do not exist yet, so {@link renderModeAvailability} reports native as
- * unavailable there and {@link effectiveRenderMode} falls back.
+ * do not exist yet, so {@link paneViewAvailability} reports native as
+ * unavailable there and {@link effectivePaneView} falls back.
  */
 
 import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
-import {
-	engineForRenderMode,
-	NATIVE_RENDER_MODE,
-	type RenderMode,
-} from './renderMode';
+import { type PaneView } from './renderMode';
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
@@ -69,55 +65,61 @@ export interface PaneSurface {
 	apply(effect: TerminalEffect): Promise<void>;
 }
 
-/** The two adapters a render mode can choose between. */
+/** The two adapters a view can be drawn by. */
 export type PaneSurfaceKind = 'terminal' | 'native';
 
-/** Which adapter shows a pane in this render mode. */
-export function surfaceKindFor(mode: RenderMode): PaneSurfaceKind {
-	return mode === NATIVE_RENDER_MODE ? 'native' : 'terminal';
+/**
+ * Which adapter shows a pane in this view. The two vocabularies coincide
+ * today — a view is exactly the surface that draws it — but they are separate
+ * seams: the view is what the user chose and what the tab stores, the kind is
+ * what {@link PaneSurfaceHolder} mounts.
+ */
+export function surfaceKindFor(view: PaneView): PaneSurfaceKind {
+	return view === 'native' ? 'native' : 'terminal';
 }
 
 /** Why the native view is not offered on a remote endpoint (ADR-0002). */
 export const NATIVE_REMOTE_REASON = 'local panes only';
 
-/** Whether a render mode can be chosen here, and why not when it cannot. */
-export interface RenderModeAvailability {
+/** Whether a view can be chosen here, and why not when it cannot. */
+export interface PaneViewAvailability {
 	available: boolean;
-	/** Shown beside the unavailable mode in the menu; null when it is available. */
+	/** Shown beside the unavailable view in the menu; null when it is available. */
 	reason: string | null;
 }
 
 /**
- * Whether a pane on this endpoint can be shown in this render mode. Only the
- * native mode is ever unavailable, and only on a remote endpoint: the
- * transcript it reads is a path on the pane's own host and the SSH adapters
- * are not built yet (ADR-0002, ADR-0003).
+ * Whether a pane on this endpoint can be shown in this view. Only the native
+ * view is ever unavailable, and only on a remote endpoint: the transcript it
+ * reads is a path on the pane's own host and the SSH adapters are not built
+ * yet (ADR-0002, ADR-0003).
  */
-export function renderModeAvailability(
-	mode: RenderMode,
+export function paneViewAvailability(
+	view: PaneView,
 	where: { remote: boolean },
-): RenderModeAvailability {
-	if (mode === NATIVE_RENDER_MODE && where.remote) {
+): PaneViewAvailability {
+	if (view === 'native' && where.remote) {
 		return { available: false, reason: NATIVE_REMOTE_REASON };
 	}
 	return { available: true, reason: null };
 }
 
 /**
- * The render mode a tab actually renders in: its own once it has chosen one,
- * else the global default — and never native on a remote endpoint, where it
- * keeps a terminal surface on the default engine instead.
+ * The view a tab actually shows: its own once it has chosen one, else the
+ * global default — and never native on a remote endpoint, which falls back to
+ * a terminal. Only what is *shown* falls back; the tab keeps the preference it
+ * stored, so moving the same tab to a local pane shows native again (#104).
  */
-export function effectiveRenderMode(input: {
-	/** The tab's stored render mode, or null while it follows the default. */
-	stored: RenderMode | null;
-	/** The global default render mode, normalized. */
-	fallback: RenderMode;
+export function effectivePaneView(input: {
+	/** The tab's stored view, or null while it follows the default. */
+	stored: PaneView | null;
+	/** The global default view, normalized. */
+	fallback: PaneView;
 	remote: boolean;
-}): RenderMode {
-	const mode = input.stored ?? input.fallback;
-	if (renderModeAvailability(mode, { remote: input.remote }).available) return mode;
-	return engineForRenderMode(mode);
+}): PaneView {
+	const view = input.stored ?? input.fallback;
+	if (paneViewAvailability(view, { remote: input.remote }).available) return view;
+	return 'terminal';
 }
 
 /**
@@ -160,7 +162,7 @@ export class PaneSurfaceHolder {
 	 * Makes `kind` the mounted surface on `hostEl`, building and attaching it if
 	 * it is not the one already there. Returns the surface, or null when the
 	 * request was overtaken while the old surface was detaching — by the view
-	 * closing, or by another render mode — in which case nothing is mounted and
+	 * closing, or by another view — in which case nothing is mounted and
 	 * nothing was built.
 	 */
 	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface | null> {
@@ -219,7 +221,7 @@ export interface NativePaneSurfaceOptions {
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
-	 * Switches this tab back to a terminal render mode, which is what the
+	 * Switches this tab back to the terminal view, which is what the
 	 * waiting card's "Open in terminal" does: every block can be answered there,
 	 * including the three this view must never press Enter on (#99).
 	 */

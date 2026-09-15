@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	parseTerminalState,
+	terminalViewState,
 	stateMatchesPane,
 	terminalTabTitle,
 	HIDE_GRACE_MS,
@@ -66,21 +67,96 @@ describe('parseTerminalState', () => {
 		expect(parseTerminalState({ paneId: ' w4:p1 ' })?.paneId).toBe('w4:p1');
 	});
 
-	it('reads the tab’s render mode (#92)', () => {
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'native' })?.renderMode).toBe(
-			'native',
-		);
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' })?.renderMode).toBe(
-			'xterm.js',
-		);
+	it('reads the tab’s view and engine (#104)', () => {
+		expect(parseTerminalState({ paneId: 'w4:p1', view: 'native' })?.view).toBe('native');
+		expect(parseTerminalState({ paneId: 'w4:p1', view: 'terminal', engine: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
 	});
 
-	it('leaves the render mode unset when the tab never chose one (#92)', () => {
-		// Undefined, not the default: the global default render mode is read at
-		// mount, so a tab that never chose follows a change to it.
-		expect(parseTerminalState({ paneId: 'w4:p1' })?.renderMode).toBeUndefined();
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'wat' })?.renderMode).toBeUndefined();
-		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 7 })?.renderMode).toBeUndefined();
+	it('leaves each of the two unset when the tab never chose it (#92, #104)', () => {
+		// Undefined, not the default: the global settings are read at mount, so a
+		// tab that never chose follows a change to either of them, separately.
+		const none = parseTerminalState({ paneId: 'w4:p1' });
+		expect(none?.view).toBeUndefined();
+		expect(none?.engine).toBeUndefined();
+		const junk = parseTerminalState({ paneId: 'w4:p1', view: 'wat', engine: 7 });
+		expect(junk?.view).toBeUndefined();
+		expect(junk?.engine).toBeUndefined();
+		// A tab may have chosen one half and not the other.
+		expect(parseTerminalState({ paneId: 'w4:p1', engine: 'xterm.js' })?.view).toBeUndefined();
+	});
+
+	it('splits a render mode saved before #104, losing nothing', () => {
+		// The migration table from the ticket, read out of a stored layout.
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'native' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			// Native chose no engine, so the tab comes back to the default one.
+			view: 'native',
+		});
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
+		expect(parseTerminalState({ paneId: 'w4:p1', renderMode: 'ghostty-web' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'ghostty-web',
+		});
+	});
+
+	it('leaves a tab that stored an unreadable render mode following the defaults', () => {
+		for (const renderMode of ['wat', 7, null]) {
+			const state = parseTerminalState({ paneId: 'w4:p1', renderMode });
+			expect(state?.view).toBeUndefined();
+			expect(state?.engine).toBeUndefined();
+		}
+	});
+});
+
+describe('terminalViewState (issue #104)', () => {
+	const identity = { paneId: 'w4:p1', mode: 'control', endpointId: 'local' } as const;
+
+	it('writes only the halves the tab chose for itself', () => {
+		expect(terminalViewState(identity, { view: null, engine: null })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+		});
+		expect(terminalViewState(identity, { view: 'native', engine: 'xterm.js' })).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'native',
+			engine: 'xterm.js',
+		});
+	});
+
+	it('writes a migrated tab back in the new shape, with no render mode left', () => {
+		const parsed = parseTerminalState({ paneId: 'w4:p1', renderMode: 'xterm.js' });
+		const written = terminalViewState(identity, {
+			view: parsed?.view ?? null,
+			engine: parsed?.engine ?? null,
+		});
+		expect(written).toEqual({
+			paneId: 'w4:p1',
+			mode: 'control',
+			endpointId: 'local',
+			view: 'terminal',
+			engine: 'xterm.js',
+		});
+		expect('renderMode' in written).toBe(false);
 	});
 });
 

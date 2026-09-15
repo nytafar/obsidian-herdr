@@ -14,6 +14,7 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	HerdrSettingTab,
+	migrateRenderMode,
 	normalizePinnedPanes,
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
@@ -273,9 +274,14 @@ export default class HerdrPlugin extends Plugin {
 
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<HerdrSettings> | null;
+		// The v1 render mode setting split into a view and an engine (#104); a
+		// file that still holds the old `native` is written back once, below.
+		const renderMode = migrateRenderMode(stored);
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			...stored,
+			defaultView: renderMode.defaultView,
+			terminalEngine: renderMode.terminalEngine,
 			remote: { ...DEFAULT_SETTINGS.remote, ...stored?.remote },
 			notifications: {
 				...DEFAULT_SETTINGS.notifications,
@@ -293,6 +299,7 @@ export default class HerdrPlugin extends Plugin {
 			// sort (issue #35).
 			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
 		};
+		if (renderMode.migrated) await this.saveSettings();
 	}
 
 	async saveSettings() {

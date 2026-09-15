@@ -6,11 +6,16 @@ import type { RowClickAction } from './views/rowModel';
 import type { TerminalSetting } from './views/paneTerminal';
 import {
 	DEFAULT_CURSOR_STYLE,
+	DEFAULT_TERMINAL_ENGINE,
 	normalizeCursorStyle,
+	normalizeEngineName,
 	TERMINAL_CURSOR_STYLES,
 	TERMINAL_CURSOR_STYLE_LABELS,
+	TERMINAL_ENGINES,
+	TERMINAL_ENGINE_LABELS,
 	type CursorOptions,
 	type TerminalCursorStyle,
+	type TerminalEngine,
 } from './views/renderer/TerminalRenderer';
 import {
 	DEFAULT_TOOL_GROUP_PRESENTATION,
@@ -18,11 +23,12 @@ import {
 	type ToolGroupPresentation,
 } from './native/toolCalls';
 import {
-	DEFAULT_RENDER_MODE,
-	normalizeRenderMode,
-	RENDER_MODES,
-	RENDER_MODE_LABELS,
-	type RenderMode,
+	DEFAULT_PANE_VIEW,
+	normalizePaneView,
+	PANE_VIEWS,
+	PANE_VIEW_LABELS,
+	splitRenderMode,
+	type PaneView,
 } from './native/renderMode';
 import {
 	DEFAULT_TERMINAL_THEME,
@@ -185,14 +191,19 @@ export interface HerdrSettings {
 	 */
 	terminalTheme: TerminalThemeName;
 	/**
-	 * The render mode a new terminal tab starts in (issues #27, #92). Stored
-	 * under its v1 name because the two terminal modes are still the engine
-	 * names: `ghostty-web`, the default and the v1 behaviour, `xterm.js`, the
-	 * mature alternative, and `native`, the Markdown view of the pane's agent
-	 * session. A tab stores its own render mode once it switches; see
-	 * `native/renderMode.ts` and `native/surface.ts`.
+	 * What a new tab shows (issue #104): a terminal, or the native Markdown view
+	 * of the pane's agent session. A tab stores its own view once it switches,
+	 * and follows this one until it does; see `native/renderMode.ts`.
 	 */
-	terminalEngine: RenderMode;
+	defaultView: PaneView;
+	/**
+	 * Which library draws a tab's terminal (issues #27, #104): `ghostty-web`,
+	 * the default and the v1 behaviour, or `xterm.js`, the mature alternative.
+	 * Applies to every terminal whatever {@link defaultView} says, so a tab in
+	 * the native view comes back to the terminal this names. Before #104 this
+	 * field also held `native`; {@link migrateRenderMode} splits that out.
+	 */
+	terminalEngine: TerminalEngine;
 	/**
 	 * Cursor shape in the terminal view (issue #52). `block` is both engines'
 	 * own default. See `views/renderer/TerminalRenderer.ts`.
@@ -401,7 +412,8 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
 	terminalTheme: DEFAULT_TERMINAL_THEME,
-	terminalEngine: DEFAULT_RENDER_MODE,
+	defaultView: DEFAULT_PANE_VIEW,
+	terminalEngine: DEFAULT_TERMINAL_ENGINE,
 	terminalCursorStyle: DEFAULT_CURSOR_STYLE,
 	terminalCursorBlink: true,
 	terminalFontSize: 0,
@@ -422,6 +434,47 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	agentListRowClick: 'terminal',
 	pinnedPanes: {},
 };
+
+/** The two fields the v1 render mode setting becomes, and whether it moved. */
+export interface RenderModeMigration {
+	defaultView: PaneView;
+	terminalEngine: TerminalEngine;
+	/**
+	 * True when the stored file said something this build no longer stores, so
+	 * `loadSettings` writes the split back once. Only the old `native` render
+	 * mode sets it: every other value already means what it says, and an
+	 * unreadable one has always been normalized on read rather than rewritten.
+	 */
+	migrated: boolean;
+}
+
+/**
+ * The stored render mode (issue #92) read as a view plus an engine (#104).
+ *
+ * Before #104 one field, `terminalEngine`, held `ghostty-web`, `xterm.js` or
+ * `native`. A file holding `native` is migrated: the view becomes native and
+ * the engine goes back to the default, which is what such a vault would have
+ * come back to on a switch to a terminal anyway. A file this build wrote has a
+ * `defaultView` of its own and needs nothing. Both keys present with the old
+ * `native` in the engine is a hand-edit; the legacy value wins, because it is
+ * the one that cannot survive as it stands.
+ *
+ * Takes `unknown`: this reads `data.json`, which may hold anything, and
+ * normalises rather than throwing.
+ */
+export function migrateRenderMode(stored: unknown): RenderModeMigration {
+	const record = (typeof stored === 'object' && stored !== null ? stored : {}) as Record<
+		string,
+		unknown
+	>;
+	const legacy = splitRenderMode(record.terminalEngine);
+	const migrated = legacy?.view === 'native';
+	return {
+		defaultView: migrated ? 'native' : normalizePaneView(record.defaultView),
+		terminalEngine: normalizeEngineName(record.terminalEngine),
+		migrated,
+	};
+}
 
 /**
  * Why the remote profile cannot turn a vault folder into a remote cwd, or null
@@ -1054,21 +1107,35 @@ export function buildTerminalSection(
 		});
 
 	new Setting(containerEl)
-		.setName('Default render mode')
+		.setName('Default view')
 		.setDesc(
-			'How a terminal tab is shown until it chooses for itself. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows; the native view shows the pane’s agent session as Markdown instead of a terminal, and is offered for local panes only. Each tab keeps its own choice, switched from its tab menu; open tabs that never chose follow this one and are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
+			'What a tab shows until it chooses for itself. A terminal, or the native view, which shows the pane’s agent session as Markdown with a prompt box and is offered for local panes only. Each tab keeps its own choice, switched from its header button or its tab menu; open tabs that never chose follow this one and are rebuilt on change.',
 		)
 		.addDropdown((dropdown) => {
-			for (const name of RENDER_MODES) {
-				dropdown.addOption(name, RENDER_MODE_LABELS[name]);
+			for (const view of PANE_VIEWS) {
+				dropdown.addOption(view, PANE_VIEW_LABELS[view]);
 			}
-			dropdown
-				.setValue(normalizeRenderMode(settings.terminalEngine))
-				.onChange(async (value) => {
-					settings.terminalEngine = normalizeRenderMode(value);
-					await callbacks.save();
-					callbacks.applyTerminalSetting('terminalEngine');
-				});
+			dropdown.setValue(normalizePaneView(settings.defaultView)).onChange(async (value) => {
+				settings.defaultView = normalizePaneView(value);
+				await callbacks.save();
+				callbacks.applyTerminalSetting('defaultView');
+			});
+		});
+
+	new Setting(containerEl)
+		.setName('Terminal engine')
+		.setDesc(
+			'Which library draws a terminal. Ghostty web is the default and repaints a canvas continuously; xterm.js draws into the DOM and only repaints changed rows. Applies to every tab showing a terminal, whatever the default view is. Open terminals are rebuilt on change, so their scrollback is replayed as plain text and colours from before the switch are lost.',
+		)
+		.addDropdown((dropdown) => {
+			for (const name of TERMINAL_ENGINES) {
+				dropdown.addOption(name, TERMINAL_ENGINE_LABELS[name]);
+			}
+			dropdown.setValue(normalizeEngineName(settings.terminalEngine)).onChange(async (value) => {
+				settings.terminalEngine = normalizeEngineName(value);
+				await callbacks.save();
+				callbacks.applyTerminalSetting('terminalEngine');
+			});
 		});
 
 	new Setting(containerEl)
@@ -1152,7 +1219,7 @@ export function buildTerminalSection(
 }
 
 /**
- * The native render mode (issues #95, #99): how much of a turn's tool calls the
+ * The native view (issues #95, #99): how much of a turn's tool calls the
  * view folds away, and whether the waiting card answers a permission by itself.
  * The first changes nothing a view holds, only how it reads, so a change
  * redraws the open native views; the second is read per block, so an open view
