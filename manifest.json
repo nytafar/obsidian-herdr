@@ -1,7 +1,7 @@
 {
 	"id": "herdr",
 	"name": "Herdr",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"minAppVersion": "1.7.2",
 	"description": "See, reach and start your herdr agents from your vault, with a live agent list, notifications, embedded pane terminals and new tabs at a note's folder.",
 	"author": "Lasse",
