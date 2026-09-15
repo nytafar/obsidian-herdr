@@ -160,6 +160,25 @@ describe('reduce: steers and task notifications', () => {
 	});
 });
 
+describe('reduce: a prompt that repeats an earlier steer', () => {
+	it('opens a turn for it, because the steer consumed its own enqueue', () => {
+		// A steer is enqueued and then rendered from its `queued_command`
+		// attachment; no `user` line ever carries it (ADR-0003, and measured on
+		// this machine's transcripts: the enqueue always precedes the
+		// attachment). The enqueue must be consumed with it, or the next prompt
+		// of the same words is taken for injected content and vanishes.
+		const { state } = reduceFixture('steer-repeated-prompt');
+
+		expect(state.pendingQueue).toEqual([]);
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Start the long job', 'again']);
+		expect(state.turns[0]?.entries).toEqual([
+			{ kind: 'text', messageId: 'msg_1', text: 'Starting it.' },
+			{ kind: 'steer', text: 'again' },
+			{ kind: 'text', messageId: 'msg_2', text: 'Done twice.' },
+		]);
+	});
+});
+
 describe('reduce: a slash command run at the keyboard', () => {
 	it('shows the command the human ran, and not the caveat or the output around it', () => {
 		const { state } = reduceFixture('local-command');

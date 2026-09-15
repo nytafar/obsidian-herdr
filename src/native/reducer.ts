@@ -361,6 +361,12 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				const text = stringField(attachment, 'prompt');
+				// The steer's own enqueue is spent here: it was pushed when the
+				// prompt was accepted and no `user` line will ever pair with it.
+				// Left behind, it would swallow the next ordinary prompt of the
+				// same words as injected content (#93, #96).
+				const enqueued = pendingQueue.indexOf(text);
+				if (enqueued !== -1) pendingQueue.splice(enqueued, 1);
 				const turn = draft.current();
 				if (turn) {
 					// A steer is consumed inside the turn already running, and shows
