@@ -33,6 +33,17 @@ export class FakeElement {
 	readonly nodes: Node[] = [];
 	readonly listeners: { type: string; handler: (event: unknown) => void }[] = [];
 	parent: FakeElement | null = null;
+	/**
+	 * Scroll geometry, as a scroll container reports it (#106). A test sets the
+	 * two a layout would have produced; `scrollTop` clamps the way a real
+	 * container does, so "the bottom" is a number a test can work out by hand
+	 * rather than the one the code under test wrote.
+	 */
+	scrollHeight = 0;
+	clientHeight = 0;
+	/** Every `scrollIntoView` call, with the options it was given (#100). */
+	readonly scrolledIntoView: unknown[] = [];
+	private scrollTopValue = 0;
 	/** `<textarea>`'s own property; the prompt box reads and clears it (#97). */
 	value = '';
 	/** `<button>`'s and `<textarea>`'s own property, not an attribute (#97). */
@@ -125,6 +136,19 @@ export class FakeElement {
 
 	focus(): void {
 		this.focused = true;
+	}
+
+	get scrollTop(): number {
+		return this.scrollTopValue;
+	}
+
+	set scrollTop(value: number) {
+		const furthest = Math.max(0, this.scrollHeight - this.clientHeight);
+		this.scrollTopValue = Math.max(0, Math.min(value, furthest));
+	}
+
+	scrollIntoView(options?: unknown): void {
+		this.scrolledIntoView.push(options ?? null);
 	}
 
 	addEventListener(type: string, handler: (event: unknown) => void): void {
