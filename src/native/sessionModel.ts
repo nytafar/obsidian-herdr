@@ -63,6 +63,12 @@ export interface SessionWatcher {
 	onEvent(handler: (event: HerdrEvent) => void): Unsubscribe;
 	/** Agent status transitions, one call per actual change. */
 	onStatus(handler: (paneId: string, status: AgentStatus) => void): Unsubscribe;
+	/**
+	 * A pane leaving the scoped workspace. Everything is scoped to one
+	 * workspace (CLAUDE.md), so a pane that leaves it stops being this vault's
+	 * and the model following it drops what it holds.
+	 */
+	onRemoved(handler: (paneId: string) => void): Unsubscribe;
 }
 
 /** What a subscriber is told when a model's state moved. */
@@ -106,6 +112,7 @@ export interface WatchableScope {
 		event: 'changed',
 		handler: (paneId: string, prev: PaneState, next: PaneState) => void,
 	): Unsubscribe;
+	on(event: 'removed', handler: (pane: PaneState) => void): Unsubscribe;
 }
 
 /** The part of a `HerdrClient` a watcher reads: one event name. */
@@ -169,6 +176,12 @@ export function scopeWatcher(session: WatchableSession | null): SessionWatcher |
 				// a second and the scope passes on every renderable difference.
 				if (prev.agentStatus !== next.agentStatus) handler(paneId, next.agentStatus);
 			});
+		},
+		onRemoved(handler): Unsubscribe {
+			// The scope emits this when a pane leaves the scoped workspace, closes
+			// or moves to another workspace. Which of those it was does not matter
+			// here: the pane is no longer one this vault shows.
+			return scope.on('removed', (pane) => handler(pane.paneId));
 		},
 	};
 }
@@ -269,6 +282,7 @@ export class SessionModel implements SessionModelView {
 		this.bound.push(
 			watcher.onEvent((event) => this.onPaneEvent(event)),
 			watcher.onStatus((paneId, status) => this.onStatusChanged(paneId, status)),
+			watcher.onRemoved((paneId) => this.onPaneRemoved(paneId)),
 		);
 	}
 
@@ -284,6 +298,18 @@ export class SessionModel implements SessionModelView {
 	private onPaneEvent(event: HerdrEvent): void {
 		const session = agentSessionFromEvent(event, this.paneId);
 		if (session === undefined || session === this.session) return;
+		this.follow();
+	}
+
+	/**
+	 * The pane left the scoped workspace, so this model has nothing to follow:
+	 * `follow` finds no pane, closes the tail, empties the state and falls back
+	 * to `unknown`, which is also what disables the prompt box (#94, #97). Not a
+	 * special path — a pane out of scope and a pane with no agent look the same
+	 * from here, and both are "nothing of this vault's to show".
+	 */
+	private onPaneRemoved(paneId: string): void {
+		if (paneId !== this.paneId) return;
 		this.follow();
 	}
 

@@ -20,6 +20,7 @@ import {
 	type SessionChange,
 	type SessionWatcher,
 	type Unsubscribe,
+	type WatchableScope,
 } from '../src/native/sessionModel';
 import type {
 	TailOptions,
@@ -152,6 +153,7 @@ function reportOf(model: { state: { turns: { entries: unknown[] }[] } }): string
 class FakeWatcher implements SessionWatcher {
 	private readonly eventHandlers = new Set<(event: HerdrEvent) => void>();
 	private readonly statusHandlers = new Set<(paneId: string, status: AgentStatus) => void>();
+	private readonly removedHandlers = new Set<(paneId: string) => void>();
 	constructor(private pane: PaneSnapshot | null) {}
 
 	snapshot(paneId: string): PaneSnapshot | null {
@@ -166,6 +168,11 @@ class FakeWatcher implements SessionWatcher {
 	onStatus(handler: (paneId: string, status: AgentStatus) => void): Unsubscribe {
 		this.statusHandlers.add(handler);
 		return () => this.statusHandlers.delete(handler);
+	}
+
+	onRemoved(handler: (paneId: string) => void): Unsubscribe {
+		this.removedHandlers.add(handler);
+		return () => this.removedHandlers.delete(handler);
 	}
 
 	/** What the pane now is, as far as herdr is concerned. */
@@ -206,6 +213,12 @@ class FakeWatcher implements SessionWatcher {
 
 	statusChanged(paneId: string, status: AgentStatus): void {
 		for (const handler of [...this.statusHandlers]) handler(paneId, status);
+	}
+
+	/** The pane left the scoped workspace: herdr still has it, this vault does not. */
+	removed(paneId: string): void {
+		if (this.pane?.paneId === paneId) this.pane = null;
+		for (const handler of [...this.removedHandlers]) handler(paneId);
 	}
 }
 
@@ -337,6 +350,36 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
 	});
 
+	it('drops everything when the pane leaves the workspace', () => {
+		// Everything is scoped to one workspace (CLAUDE.md). A pane that leaves
+		// it is not this vault's any more: the tail closes, the turns go, and the
+		// status falls back to "no agent here", which is also what disables the
+		// prompt box (#94, #97).
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		watcher.removed('w4:p1');
+
+		expect(source.openTails).toEqual([]);
+		expect(handle.model.path).toBeNull();
+		expect(handle.model.state.turns).toEqual([]);
+		expect(handle.model.agentSession).toBe('');
+		expect(handle.model.agentStatus).toBe('unknown');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: true }]);
+	});
+
+	it('ignores another pane leaving the workspace', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+
+		watcher.removed('w4:p2');
+
+		expect(source.openTails).toHaveLength(1);
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+	});
+
 	it('empties the view when the pane loses its session', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
 		const handle = registry.acquire('w4:p1');
@@ -436,6 +479,29 @@ describe('scopeWatcher: the pane as herdr reports it', () => {
 		expect(scopeWatcher(null)).toBeNull();
 	});
 
+	/** A scope that records the handlers it was given, one list per event. */
+	function recordingScope(): {
+		scope: WatchableScope;
+		changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[];
+		removed: ((pane: PaneState) => void)[];
+	} {
+		const changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[] = [];
+		const removed: ((pane: PaneState) => void)[] = [];
+		const scope = {
+			get: () => undefined,
+			paneInfo: () => undefined,
+			on: (event: string, handler: unknown) => {
+				if (event === 'changed') {
+					changed.push(handler as (paneId: string, prev: PaneState, next: PaneState) => void);
+				} else if (event === 'removed') {
+					removed.push(handler as (pane: PaneState) => void);
+				}
+				return () => {};
+			},
+		} as unknown as WatchableScope;
+		return { scope, changed, removed };
+	}
+
 	it('reports no agent session for a pane that has not taken a prompt yet', () => {
 		const scope = {
 			get: () => ({ paneId: 'w4:p1', cwd: '/home/lasse', agentStatus: 'idle' }) as PaneState,
@@ -446,25 +512,27 @@ describe('scopeWatcher: the pane as herdr reports it', () => {
 		expect(scopeWatcher({ scope, client })?.snapshot('w4:p1')?.agentSession).toBe('');
 	});
 
+	it('reports a pane leaving the scoped workspace', () => {
+		// Scope removal is how a pane stops being this vault's (CLAUDE.md).
+		const { scope, removed } = recordingScope();
+		const gone: string[] = [];
+		scopeWatcher({ scope, client })?.onRemoved((paneId) => gone.push(paneId));
+
+		removed[0]?.({ paneId: 'w4:p1' } as PaneState);
+
+		expect(gone).toEqual(['w4:p1']);
+	});
+
 	it('reports a status transition, and only a transition', () => {
-		const handlers: ((paneId: string, prev: PaneState, next: PaneState) => void)[] = [];
-		const scope = {
-			get: () => undefined,
-			paneInfo: () => undefined,
-			on: (event: string, handler: (paneId: string, prev: PaneState, next: PaneState) => void) => {
-				expect(event).toBe('changed');
-				handlers.push(handler);
-				return () => {};
-			},
-		};
+		const { scope, changed } = recordingScope();
 		const seen: [string, AgentStatus][] = [];
 		scopeWatcher({ scope, client })?.onStatus((paneId, status) => seen.push([paneId, status]));
 
 		const idle = { agentStatus: 'idle' } as PaneState;
 		const working = { agentStatus: 'working' } as PaneState;
-		handlers[0]?.('w4:p1', idle, working);
+		changed[0]?.('w4:p1', idle, working);
 		// A title or token change is not a transition, and moves nothing here.
-		handlers[0]?.('w4:p1', working, working);
+		changed[0]?.('w4:p1', working, working);
 
 		expect(seen).toEqual([['w4:p1', 'working']]);
 	});
