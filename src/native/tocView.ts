@@ -62,8 +62,12 @@ export interface TocPanelOptions {
 	models: SessionModels;
 	/** What is true of a leaf, which only the view around the panel can say. */
 	facts(leaf: WorkspaceLeaf | null): ActiveLeafFacts | null;
-	/** Brings a turn into view in the native view of that pane. */
-	scrollToTurn(paneId: string, turnId: string): void;
+	/**
+	 * Brings a turn into view in the native view the list is about: that leaf
+	 * when it is still open, else any leaf showing the pane. The leaf is passed
+	 * rather than held, and the view around the panel resolves it at the click.
+	 */
+	scrollToTurn(leaf: WorkspaceLeaf | null, paneId: string, turnId: string): void;
 }
 
 /**
@@ -189,7 +193,7 @@ export class TocPanel {
 	private renderRow(parentEl: HTMLElement, cls: string[], text: string, turnId: string): void {
 		const rowEl = parentEl.createDiv({ cls, text });
 		this.component.registerDomEvent(rowEl, 'click', () => {
-			if (this.paneId) this.options.scrollToTurn(this.paneId, turnId);
+			if (this.paneId) this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
 		});
 	}
 }
@@ -210,7 +214,7 @@ export class TocView extends ItemView {
 		this.panel = new TocPanel({
 			models: this.plugin.sessionModels,
 			facts: (candidate) => this.leafFacts(candidate),
-			scrollToTurn: (paneId, turnId) => this.scrollToTurn(paneId, turnId),
+			scrollToTurn: (leaf, paneId, turnId) => this.scrollToTurn(leaf, paneId, turnId),
 		});
 	}
 
@@ -258,18 +262,23 @@ export class TocView extends ItemView {
 	}
 
 	/**
-	 * The native view of that pane, found now rather than held (CLAUDE.md): a
-	 * pane can be shown by a leaf that was closed and reopened since the list
-	 * was drawn.
+	 * Scrolls the native view the list is about.
+	 *
+	 * **The leaf the list follows**, not the first leaf showing that pane: two
+	 * tabs can be on one pane (ADR-0003), and scrolling the other one moves
+	 * nothing the reader can see. The leaf comes in from the panel and is only
+	 * ever matched by identity against what `getLeavesOfType` hands back now, so
+	 * no view is held anywhere (CLAUDE.md) and a leaf that has been closed since
+	 * the list was drawn simply does not match. It falls back to any leaf on the
+	 * pane, which is what a tab closed and reopened since then looks like.
 	 */
-	private scrollToTurn(paneId: string, turnId: string): void {
-		for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
-			const view = leaf.view;
-			if (view instanceof TerminalView && view.nativePaneId() === paneId) {
-				view.scrollNativeToTurn(turnId);
-				return;
-			}
-		}
+	private scrollToTurn(followed: WorkspaceLeaf | null, paneId: string, turnId: string): void {
+		const showing = this.app.workspace
+			.getLeavesOfType(TERMINAL_VIEW_TYPE)
+			.filter((leaf) => leaf.view instanceof TerminalView && leaf.view.nativePaneId() === paneId);
+		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
+		const view = leaf?.view;
+		if (view instanceof TerminalView) view.scrollNativeToTurn(turnId);
 	}
 }
 

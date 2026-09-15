@@ -278,7 +278,7 @@ describe('TocPanel', () => {
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 		// A heading scrolls to the turn it belongs to (#100): the view's own seam
 		// is `scrollToTurn`, which also switches following off.
-		expect(scrollToTurn).toHaveBeenCalledWith('w4:p1', 'u1');
+		expect(scrollToTurn).toHaveBeenCalledWith(native, 'w4:p1', 'u1');
 	});
 
 	it('scrolls the view to the turn a click names', () => {
@@ -293,7 +293,32 @@ describe('TocPanel', () => {
 
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 
-		expect(scrollToTurn).toHaveBeenCalledWith('w4:p1', 'u2');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+	});
+
+	it('scrolls the leaf it follows, not the first tab showing that pane', () => {
+		// Two tabs on one pane share a session model (ADR-0003) and are two
+		// leaves. The list is about one of them, and a click must move that one:
+		// the other can be a background tab nobody is looking at.
+		const models = new FakeModels();
+		const first = leafOf('native-1');
+		const second = leafOf('native-2');
+		const { panel, el, scrollToTurn } = panelOn(
+			models,
+			new Map([
+				[first, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[second, { inMainArea: true, nativePaneId: 'w4:p1' }],
+			]),
+		);
+		panel.activeLeafChanged(first);
+		// The same pane, so the model and the list do not move — the leaf does.
+		panel.activeLeafChanged(second);
+		models.model('w4:p1').push([turn('u1', 'First prompt')]);
+
+		el.findAll('herdr-toc-item')[0]?.dispatch('click');
+
+		expect(scrollToTurn).toHaveBeenCalledWith(second, 'w4:p1', 'u1');
+		expect(models.acquired).toEqual(['w4:p1']);
 	});
 
 	it('gives the model back when the view closes', () => {
