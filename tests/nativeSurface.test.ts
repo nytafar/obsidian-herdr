@@ -268,6 +268,39 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(el.find('herdr-native-source').textContent).toBe('Searched the web for “herdr protocol”');
 	});
 
+	it('keeps one tool group across signature-only thinking blocks, with the counts combined', async () => {
+		// The shape a real transcript has between two calls (#107, measured over
+		// the last 60 transcripts on this machine): a thinking block carrying only
+		// a signature, which the view draws nothing for. An entry that renders
+		// nothing must not end the run, or one stretch of work reads as three
+		// summaries in a row.
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		model.push(
+			[
+				turn('u1', 'Work through it', [
+					tool('t1', 'Read', { file_path: `${VAULT}/a.md` }),
+					{ kind: 'thinking', messageId: 'm1', text: '' },
+					tool('t2', 'Bash', { command: 'npm test' }),
+					tool('t3', 'Read', { file_path: `${VAULT}/b.md` }),
+					{ kind: 'thinking', messageId: 'm2', text: '' },
+					tool('t4', 'Bash', { command: 'ls' }),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		expect(itemClasses(el.find('herdr-native-turn'))).toEqual([
+			'herdr-native-prompt',
+			'herdr-native-tools',
+		]);
+		expect(el.find('herdr-native-tools-summary').textContent).toBe(
+			'Read 2 files, ran 2 commands',
+		);
+	});
+
 	it('moves the vault change and the source inside the group when the setting collapses everything', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model, { presentation: 'collapse' });
