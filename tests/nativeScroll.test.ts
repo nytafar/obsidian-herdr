@@ -45,6 +45,11 @@ class FakeModel implements SessionModelView {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
+	}
+
 	/** What the model does when the reducer moved: new state, then the change. */
 	push(turns: Turn[], change: SessionChange): void {
 		this.state = { ...this.state, turns };

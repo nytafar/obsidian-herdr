@@ -42,6 +42,15 @@ class FakeModel implements SessionModelView {
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	private readonly listeners = new Set<(change: SessionChange) => void>();
+	/** The pane's one claim on the block it is in, as the real model holds it. */
+	private blockClaim: string | null = null;
+
+	/** True for the first caller of a block, false for every one after it (#99). */
+	claimBlock(toolUseId: string): boolean {
+		if (this.blockClaim !== null) return false;
+		this.blockClaim = toolUseId;
+		return true;
+	}
 
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
@@ -51,6 +60,8 @@ class FakeModel implements SessionModelView {
 	/** herdr's status moved, with whatever the transcript holds by then. */
 	setStatus(status: AgentStatus): void {
 		this.agentStatus = status;
+		// The block is over: the next one is a block of its own to claim.
+		if (status !== 'blocked') this.blockClaim = null;
 		for (const listener of [...this.listeners]) listener({ changedTurnIds: [], reset: false });
 	}
 
@@ -384,6 +395,23 @@ describe('waiting card: auto-accept permissions (#99)', () => {
 
 			expect(keys.calls).toEqual([]);
 		}
+	});
+
+	it('presses once for a pane, not once per view, when two tabs show it', async () => {
+		// Two tabs on one pane share one session model (ADR-0003) and each draws
+		// the same card. One block, one Enter: the second would land on whatever
+		// dialog the first one's "Yes" opened.
+		const model = new FakeModel();
+		const first = await surfaceOn(model, { autoAccept: true });
+		const second = await surfaceOn(model, { autoAccept: true });
+		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'echo hi' })])]);
+
+		model.setStatus('blocked');
+		await Promise.resolve();
+
+		expect([...first.keys.calls, ...second.keys.calls]).toEqual([
+			{ paneId: 'w4:p1', keys: ['Enter'] },
+		]);
 	});
 
 	it('presses nothing until the transcript has been read, path or no path', async () => {

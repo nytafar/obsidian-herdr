@@ -36,6 +36,11 @@ class FakeModel implements SessionModelView {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
+	}
+
 	/** Puts turns in and tells the subscribers, as the real model does. */
 	push(turns: Turn[]): void {
 		this.state = { ...this.state, turns };

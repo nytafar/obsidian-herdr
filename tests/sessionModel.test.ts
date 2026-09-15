@@ -458,6 +458,42 @@ describe('SessionModel: the agent’s status', () => {
 		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
 	});
 
+	it('grants the block claim once, and again after the block is over (#99)', () => {
+		// The claim is the pane's, not a view's: two tabs on one pane hold this
+		// same model, and each draws the same waiting card (ADR-0003).
+		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		const second = registry.acquire('w4:p1');
+		expect(second.model).toBe(handle.model);
+
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
+		expect(second.model.claimBlock('toolu_01XB')).toBe(false);
+
+		// The block ended and another one started: a claim of its own.
+		watcher.statusChanged('w4:p1', 'working');
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('toolu_02YC')).toBe(true);
+
+		handle.release();
+		second.release();
+	});
+
+	it('drops the block claim when the session rotates', () => {
+		const { registry, watcher } = registryWith(
+			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),
+		);
+		const handle = registry.acquire('w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
+
+		// `/clear` while blocked: another session, so another block.
+		watcher.set({ ...PANE, agentSession: 'session-2', agentStatus: 'blocked' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+
+		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
+	});
+
 	it('ignores another pane’s status', () => {
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
 		const handle = registry.acquire('w4:p1');

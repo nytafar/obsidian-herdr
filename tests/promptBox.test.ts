@@ -348,6 +348,11 @@ class FakeModel implements SessionModelView {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
+	}
+
 	/** herdr moved the agent's status; no turn changed. */
 	setStatus(status: AgentStatus): void {
 		this.agentStatus = status;

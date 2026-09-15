@@ -82,6 +82,10 @@ class StaticModel implements SessionModelView {
 	on(_listener: (change: SessionChange) => void): () => void {
 		return () => {};
 	}
+	/** Nothing here is blocked, so the claim is always free (#99). */
+	claimBlock(): boolean {
+		return true;
+	}
 }
 
 class StaticModels implements SessionModels {

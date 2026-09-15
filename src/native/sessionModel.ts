@@ -101,6 +101,19 @@ export interface SessionModelView {
 	readonly loaded: boolean;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
+	/**
+	 * Claims the block the pane is sitting in for whatever answers it without
+	 * being asked, and says whether this caller got it (#99).
+	 *
+	 * Per pane, not per view. Two tabs on one pane share this model (ADR-0003)
+	 * and each of them draws the same waiting card, so a guard held by a view
+	 * sends one Enter per view — and the second lands on whatever dialog the
+	 * first one's "Yes" opened. True for the first caller of a block, false for
+	 * every one after it, until the pane leaves `blocked` or the session
+	 * rotates. `toolUseId` is the dangling `tool_use` the claim was made for,
+	 * empty when no call dangles.
+	 */
+	claimBlock(toolUseId: string): boolean;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
 }
 
@@ -238,6 +251,12 @@ export class SessionModel implements SessionModelView {
 	private stream: TranscriptStream | null = null;
 	/** Whether the current tail has delivered anything; see {@link loaded}. */
 	private delivered = false;
+	/**
+	 * The dangling `tool_use` this pane's block has been claimed for, or null
+	 * while it is unclaimed. Per pane rather than per view, which is the whole
+	 * point of it living here; see {@link SessionModelView.claimBlock}.
+	 */
+	private blockClaim: string | null = null;
 	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
 	/**
@@ -301,6 +320,13 @@ export class SessionModel implements SessionModelView {
 		return this.status;
 	}
 
+	/** The one automatic answer this block gets, for the first caller (#99). */
+	claimBlock(toolUseId: string): boolean {
+		if (this.blockClaim !== null) return false;
+		this.blockClaim = toolUseId;
+		return true;
+	}
+
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
 	on(listener: (change: SessionChange) => void): Unsubscribe {
 		this.listeners.add(listener);
@@ -358,6 +384,8 @@ export class SessionModel implements SessionModelView {
 	private onStatusChanged(paneId: string, status: AgentStatus): void {
 		if (paneId !== this.paneId || status === this.status) return;
 		this.status = status;
+		// The block is over, so the next one is a block of its own to answer.
+		if (status !== 'blocked') this.blockClaim = null;
 		// No turn changed; the view redraws what it shows between blocks.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -373,6 +401,7 @@ export class SessionModel implements SessionModelView {
 		const statusMoved = status !== this.status;
 		this.session = pane?.agentSession ?? '';
 		this.status = status;
+		if (status !== 'blocked') this.blockClaim = null;
 		const path = pane
 			? transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
 			: null;
@@ -388,6 +417,8 @@ export class SessionModel implements SessionModelView {
 		this.transcript = emptyTranscript();
 		// Nothing of the new file has been read, whatever was read of the old one.
 		this.delivered = false;
+		// Another session is another block, whatever the status still says.
+		this.blockClaim = null;
 		this.generation++;
 		this.readingReports.clear();
 		// Said now, not when the new file's first lines land: a tail delivers
