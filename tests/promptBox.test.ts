@@ -107,6 +107,39 @@ describe('PromptBox: the box itself', () => {
 		expect(input(el).attrs['aria-label']).toBe('Message the agent');
 	});
 
+	it('puts the send button on the same row as the text area (#103)', () => {
+		const { el } = boxOn('idle', fakeSender());
+		const row = el.find('herdr-native-prompt-row');
+		expect(row.findAll('herdr-native-prompt-input')).toHaveLength(1);
+		expect(row.findAll('herdr-native-prompt-send')).toHaveLength(1);
+	});
+
+	it('keeps a manual resize until the box is emptied (#103)', () => {
+		const { el } = boxOn('idle', fakeSender());
+		// What a drag on the text area's resizer leaves behind: the browser
+		// writes the height itself, and it wins over the auto-grow until there
+		// is nothing left to size.
+		input(el).attrs.style = 'height: 320px;';
+
+		input(el).value = 'still typing';
+		input(el).dispatch('input');
+		expect(input(el).attrs.style).toBe('height: 320px;');
+
+		input(el).value = '';
+		input(el).dispatch('input');
+		expect(input(el).attrs.style).toBeUndefined();
+	});
+
+	it('drops a manual resize once a send has emptied the box (#103)', async () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		input(el).value = 'Summarise the design';
+		input(el).attrs.style = 'height: 320px;';
+
+		await box.send();
+
+		expect(input(el).attrs.style).toBeUndefined();
+	});
+
 	it('closes what was hung on the text area when the box goes, once', () => {
 		const { host } = hostEl();
 		const close = vi.fn();
@@ -207,17 +240,72 @@ describe('PromptBox: sending', () => {
 		expect(input(el).value).toBe('Summarise the design');
 	});
 
-	it('sends on mod+enter and not on a plain enter', async () => {
+	it('sends on a plain enter, and on mod+enter too (#103)', async () => {
 		const sender = fakeSender();
 		const { el } = boxOn('idle', sender);
 		input(el).value = 'Summarise the design';
 
 		input(el).dispatch('keydown', { key: 'Enter', ctrlKey: false, metaKey: false });
-		expect(sender.sent).toEqual([]);
-
-		input(el).dispatch('keydown', { key: 'Enter', ctrlKey: true, metaKey: false });
 		await Promise.resolve();
 		expect(sender.sent).toEqual([{ paneId: 'w4:p1', text: 'Summarise the design' }]);
+
+		input(el).value = 'And the tests';
+		input(el).dispatch('keydown', { key: 'Enter', ctrlKey: true, metaKey: false });
+		await Promise.resolve();
+		expect(sender.sent).toEqual([
+			{ paneId: 'w4:p1', text: 'Summarise the design' },
+			{ paneId: 'w4:p1', text: 'And the tests' },
+		]);
+	});
+
+	it('makes a newline on shift+enter and sends nothing', async () => {
+		const sender = fakeSender();
+		const { el } = boxOn('idle', sender);
+		input(el).value = 'first line';
+		const preventDefault = vi.fn();
+
+		input(el).dispatch('keydown', { key: 'Enter', shiftKey: true, preventDefault });
+		await Promise.resolve();
+
+		expect(sender.sent).toEqual([]);
+		// The text area's own newline: nothing stops it.
+		expect(preventDefault).not.toHaveBeenCalled();
+	});
+
+	it('leaves the enter to an input method that is composing (#49)', async () => {
+		const sender = fakeSender();
+		const { el } = boxOn('idle', sender);
+		input(el).value = 'にほんご';
+		const preventDefault = vi.fn();
+
+		input(el).dispatch('keydown', { key: 'Enter', isComposing: true, preventDefault });
+		await Promise.resolve();
+
+		expect(sender.sent).toEqual([]);
+		expect(preventDefault).not.toHaveBeenCalled();
+	});
+
+	it('leaves the enter to the suggest while its popover is open (#98)', async () => {
+		const sender = fakeSender();
+		const { el, host } = hostEl();
+		let open = true;
+		const box = new PromptBox({
+			paneId: () => 'w4:p1',
+			sender,
+			onInput: () => ({ close: () => {}, isOpen: () => open }),
+		});
+		box.mount(host);
+		box.setStatus('idle');
+		input(el).value = '/clear';
+
+		input(el).dispatch('keydown', { key: 'Enter' });
+		await Promise.resolve();
+		expect(sender.sent).toEqual([]);
+
+		open = false;
+		input(el).dispatch('keydown', { key: 'Enter' });
+		await Promise.resolve();
+		expect(sender.sent).toEqual([{ paneId: 'w4:p1', text: '/clear' }]);
 	});
 });
 

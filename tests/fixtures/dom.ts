@@ -97,6 +97,15 @@ export class FakeElement {
 		this.attrs[name] = value;
 	}
 
+	/**
+	 * Drops an attribute. The prompt box uses it on `style` to give an emptied
+	 * box its auto-grown height back, the height a drag on the resizer wrote
+	 * being the browser's own inline style (#103).
+	 */
+	removeAttribute(name: string): void {
+		delete this.attrs[name];
+	}
+
 	empty(): void {
 		for (const node of this.nodes) if (typeof node !== 'string') node.parent = null;
 		this.nodes.length = 0;

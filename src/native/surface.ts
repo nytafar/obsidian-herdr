@@ -41,7 +41,7 @@ import {
 	type TurnItem,
 } from './toolCalls';
 import type { AgentStatus } from '../herdr/types.gen';
-import { PromptBox } from './promptBox';
+import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { PromptSender } from './promptSender';
 import type {
 	SessionChange,
@@ -216,9 +216,10 @@ export interface NativePaneSurfaceOptions {
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
 	 * hang an autocomplete on it (#98), returning how to close it again when
-	 * the surface detaches. Left out by tests that only render.
+	 * the surface detaches and whether its popover is open (#103). Left out by
+	 * tests that only render.
 	 */
-	onPromptInput?: (inputEl: HTMLTextAreaElement) => (() => void) | void;
+	onPromptInput?: (inputEl: HTMLTextAreaElement) => PromptInputAttachment;
 	/**
 	 * How much of a turn's tool calls to fold away (#95). Read on every draw, so
 	 * a change to the setting reaches an open view through {@link

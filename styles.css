@@ -359,12 +359,21 @@
  * scrolls itself rather than the leaf. `markdown-preview-view` on the same
  * element brings the vault's reading-mode typography with it, which is the
  * appearance the native view is meant to have.
+ *
+ * The root does not scroll: the turns do (#103). One scroll container, owned
+ * here and used by everything that acts on it — the prompt box pinned under it,
+ * open-at-bottom and following (#106), the TOC's jumps (#100) and the
+ * `content-visibility` estimates (#101). The prompt box is an ordinary flex
+ * sibling at the bottom rather than a sticky child, so no transcript can show
+ * through beside or beneath it. `container-type` makes the root the box the
+ * prompt box's cap is half of.
  */
 .herdr-native-view {
+	container-type: size;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
-	overflow-y: auto;
+	overflow: hidden;
 	padding: var(--size-4-4);
 }
 
@@ -378,15 +387,22 @@
 	order: 1;
 }
 
+/* The one scroll container (#103): `min-height` lets it shrink inside the flex
+ * column instead of pushing the prompt box off the bottom. */
 .herdr-native-turns {
+	flex: 1 1 auto;
+	min-height: 0;
 	order: 2;
+	overflow-y: auto;
 }
 
 .herdr-native-status {
+	flex: 0 0 auto;
 	order: 3;
 }
 
 .herdr-native-prompt-box {
+	flex: 0 0 auto;
 	order: 4;
 }
 
@@ -435,38 +451,58 @@
 }
 
 /*
- * The prompt box (#97): the multi-line box and its button, held at the bottom
- * of the view while the transcript scrolls behind it.
+ * The prompt box (#97, #103): the box and its button on one row at the bottom
+ * of the view, with the transcript scrolling in its own container above. It is
+ * the last flex child rather than a sticky one, so there is no gap under it for
+ * anything to show through.
  */
 .herdr-native-prompt-box {
 	background-color: var(--background-primary);
 	border-top: 1px solid var(--background-modifier-border);
-	bottom: 0;
 	margin-top: var(--size-4-3);
 	padding-top: var(--size-4-2);
-	position: sticky;
 }
 
+/* The chat row: the text area takes the width, the button sits at its end. */
+.herdr-native-prompt-row {
+	align-items: flex-end;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+/*
+ * Grows with what is typed and stops at about half the view. `field-sizing`
+ * does the growing, so no height is ever measured or written in TypeScript;
+ * where it is unsupported the `rows` attribute sizes the box and `resize`
+ * still gives the user the drag. The `vh` cap is the fallback for a build
+ * without container queries; `cqh` overrides it where they work, the container
+ * being `.herdr-native-view`.
+ */
 .herdr-native-prompt-input {
+	field-sizing: content;
+	/* Zero basis: the row's width is the text area's, whatever the button needs. */
+	flex: 1 1 0;
 	font-family: var(--font-text);
-	min-height: 4em;
+	max-height: 50vh;
+	max-height: 50cqh;
+	min-height: 3em;
 	resize: vertical;
-	width: 100%;
 }
 
 .herdr-native-prompt-controls {
 	align-items: center;
 	display: flex;
+	flex: 0 0 auto;
 	gap: var(--size-4-2);
-	justify-content: flex-end;
-	padding-top: var(--size-4-1);
+	/* The button sits on the text area's last line, not above it. */
+	padding-bottom: var(--size-4-1);
 }
 
 /* Why the box is disabled, when the view does not say it already. */
 .herdr-native-prompt-hint {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
-	margin-right: auto;
+	padding-top: var(--size-4-1);
 }
 
 /*

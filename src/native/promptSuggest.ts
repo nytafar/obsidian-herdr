@@ -18,10 +18,16 @@
  * typed reference to the element. Everything else — the popover, the keyboard
  * handling, the lifetime — is Obsidian's.
  *
- * Nothing here is unit tested: what it decides is the trigger and the text it
- * writes back, and both are pure functions below that the catalog and mention
- * tests cover through their own modules. The popover itself is a manual check
- * (`tests/README.md`).
+ * The popover owns the enter key while it is open — that is how a suggestion is
+ * picked — so the prompt box has to know when it is, or Enter-to-send (#103)
+ * would send a half-typed `/comm` instead of completing it. Obsidian opens and
+ * closes the popover through {@link PopoverSuggest.open} and `close`, so
+ * {@link PromptSuggest.isOpen} follows those two calls and nothing else.
+ *
+ * Only that is unit tested (`tests/promptSuggest.test.ts`): what the rest
+ * decides is the trigger and the text it writes back, and both are pure
+ * functions below that the catalog and mention tests cover through their own
+ * modules. The popover itself is a manual check (`tests/README.md`).
  */
 
 import { AbstractInputSuggest, type App, type TFile } from 'obsidian';
@@ -102,6 +108,8 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private cached: { cwd: string; at: number; entries: CatalogEntry[] } | null = null;
 	/** The trigger the offered suggestions were built for. */
 	private trigger: PromptTrigger | null = null;
+	/** Whether the popover is showing; see {@link PromptSuggest.isOpen}. */
+	private showing = false;
 
 	constructor(inputEl: HTMLTextAreaElement, options: PromptSuggestOptions) {
 		// The base class types its element as an input or a contenteditable div;
@@ -110,6 +118,25 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		super(options.app, inputEl as unknown as HTMLInputElement);
 		this.textEl = inputEl;
 		this.options = options;
+	}
+
+	/**
+	 * Whether the popover is showing, which is the one thing the prompt box asks
+	 * of the suggest: the enter picks a suggestion while it is, and sends the
+	 * prompt only when it is not (#103).
+	 */
+	isOpen(): boolean {
+		return this.showing;
+	}
+
+	open(): void {
+		this.showing = true;
+		super.open();
+	}
+
+	close(): void {
+		this.showing = false;
+		super.close();
 	}
 
 	/** A text area keeps its text in `value`, which the base class cannot know. */
@@ -154,6 +181,9 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 
 	selectSuggestion(suggestion: PromptSuggestion): void {
 		const trigger = this.trigger;
+		// Closed first, and whatever happens: once a suggestion has been taken
+		// the popover is gone, and the next enter is the prompt box's (#103).
+		this.close();
 		if (!trigger) return;
 		const cursor = this.textEl.selectionStart ?? this.textEl.value.length;
 		const replacement =
@@ -162,7 +192,6 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		this.setValue(next.text);
 		this.textEl.setSelectionRange(next.cursor, next.cursor);
 		this.textEl.focus();
-		this.close();
 	}
 
 	/** The mention text for a vault file, in the form the pane's agent can open. */
