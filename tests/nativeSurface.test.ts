@@ -143,6 +143,25 @@ describe('NativePaneSurface: no session yet', () => {
 	});
 });
 
+/**
+ * The classes the root carries, which is what decides whether the theme's own
+ * rules reach the rendered Markdown (#108).
+ */
+describe('NativePaneSurface: reading-view classes', () => {
+	it('gives the root the pair Obsidian\u2019s own reading view uses', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+
+		await surface.attach(host);
+
+		expect([...el.find('herdr-native-view').classList]).toEqual([
+			'herdr-native-view',
+			'markdown-preview-view',
+			'markdown-rendered',
+		]);
+	});
+});
+
 describe('NativePaneSurface: a turn', () => {
 	it('renders the human prompt as plain text and the assistant prose as Markdown', async () => {
 		const model = new FakeModel();

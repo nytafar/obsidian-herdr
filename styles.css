@@ -356,9 +356,11 @@
 
 /*
  * The native render mode mounts inside the same host box as a terminal, so it
- * scrolls itself rather than the leaf. `markdown-preview-view` on the same
- * element brings the vault's reading-mode typography with it, which is the
- * appearance the native view is meant to have.
+ * scrolls itself rather than the leaf. `markdown-preview-view` and
+ * `markdown-rendered` on the same element — the pair Obsidian's own reading
+ * view uses — bring the vault's reading-mode typography and the core and theme
+ * rules for tables and code blocks with them, which is the appearance the
+ * native view is meant to have (#108). Nothing here restates those rules.
  *
  * The root does not scroll: the turns do (#103). One scroll container, owned
  * here and used by everything that acts on it — the prompt box pinned under it,

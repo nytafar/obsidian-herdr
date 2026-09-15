@@ -394,10 +394,19 @@ export class NativePaneSurface implements PaneSurface {
 	async attach(hostEl: HTMLElement): Promise<void> {
 		this.rootEl?.remove();
 		const root = hostEl.createDiv({ cls: 'herdr-native-view' });
-		// `markdown-preview-view` is what gives the view the reading-mode
-		// typography the user has set, which is the appearance the native view
-		// is meant to have (native-view-design.md).
-		root.addClass('markdown-preview-view');
+		// The two classes Obsidian's own reading view puts on one element:
+		// `createDiv("markdown-preview-view markdown-rendered")` in its app
+		// bundle. `markdown-preview-view` gives the reading-mode typography the
+		// user has set, and `markdown-rendered` is the ancestor almost every rule
+		// for the rendered blocks keys on — in Obsidian 1.10's `app.css`, tables
+		// are `.markdown-rendered table`, `.markdown-rendered td, .markdown-rendered th`
+		// (cell padding, borders, `--table-*` variables) and
+		// `.markdown-rendered th, .markdown-rendered td { text-align: start }`,
+		// and code blocks are `.markdown-rendered pre` and `.markdown-rendered code`.
+		// With only `markdown-preview-view` none of those reach, which is why
+		// tables rendered unpadded and unthemed (#108). Themes key on the same
+		// ancestor, so this needs no plugin CSS of its own.
+		root.addClass('markdown-preview-view', 'markdown-rendered');
 		// The turns are the view's one scroll container (#103), so everything that
 		// acts on the scroll — following here, the TOC's jumps (#100), the
 		// `content-visibility` estimates (#101) — acts on this element.
