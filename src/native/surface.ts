@@ -41,7 +41,7 @@ import {
 	type TurnItem,
 } from './toolCalls';
 import type { AgentStatus } from '../herdr/types.gen';
-import { PromptBox } from './promptBox';
+import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { PromptSender } from './promptSender';
 import type {
 	SessionChange,
@@ -216,9 +216,10 @@ export interface NativePaneSurfaceOptions {
 	/**
 	 * Called with the prompt box's text area once it exists, so the view can
 	 * hang an autocomplete on it (#98), returning how to close it again when
-	 * the surface detaches. Left out by tests that only render.
+	 * the surface detaches and whether its popover is open (#103). Left out by
+	 * tests that only render.
 	 */
-	onPromptInput?: (inputEl: HTMLTextAreaElement) => (() => void) | void;
+	onPromptInput?: (inputEl: HTMLTextAreaElement) => PromptInputAttachment;
 	/**
 	 * How much of a turn's tool calls to fold away (#95). Read on every draw, so
 	 * a change to the setting reaches an open view through {@link
@@ -247,6 +248,26 @@ export function workingLine(status: AgentStatus): string {
 	if (status === 'working') return 'Working…';
 	if (status === 'blocked') return 'Waiting for you.';
 	return '';
+}
+
+/**
+ * How far from the bottom still counts as the bottom (#106).
+ *
+ * A couple of lines' worth. Sub-pixel rounding, a fractional device pixel ratio
+ * and a wheel notch that overshoots by a hair all leave a reader who never
+ * meant to move a few pixels short of the end, and none of them should stop the
+ * view from following.
+ */
+export const BOTTOM_SLACK_PX = 24;
+
+/** Whether a scroll container is showing its end, within {@link BOTTOM_SLACK_PX}. */
+export function isAtBottom(geometry: {
+	scrollTop: number;
+	scrollHeight: number;
+	clientHeight: number;
+}): boolean {
+	const furthest = geometry.scrollHeight - geometry.clientHeight;
+	return furthest - geometry.scrollTop <= BOTTOM_SLACK_PX;
 }
 
 /** One piece of a human prompt: literal text, or a wikilink to a note. */
@@ -315,6 +336,20 @@ export class NativePaneSurface implements PaneSurface {
 	private readonly turnComponents = new Map<string, Component>();
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
+	/** The surface's own listeners: the scroll on the turns element (#106). */
+	private readonly component = new Component();
+	/**
+	 * Whether the view is following the end of the session. True on open and
+	 * after a rotation, off the moment the reader scrolls up, on again when they
+	 * come back to the bottom (#106).
+	 */
+	private following = true;
+	/** Watches the turns element and the turn being written; null where there is none. */
+	private resizeObserver: ResizeObserver | null = null;
+	/** The turn the observer is watching, so only one ever is. */
+	private observedTurnEl: HTMLElement | null = null;
+	/** The Markdown renders of the current draw, which finish after it does. */
+	private renders: Promise<void>[] = [];
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -328,8 +363,21 @@ export class NativePaneSurface implements PaneSurface {
 		// typography the user has set, which is the appearance the native view
 		// is meant to have (native-view-design.md).
 		root.addClass('markdown-preview-view');
-		this.turnsEl = root.createDiv({ cls: 'herdr-native-turns' });
+		// The turns are the view's one scroll container (#103), so everything that
+		// acts on the scroll — following here, the TOC's jumps (#100), the
+		// `content-visibility` estimates (#101) — acts on this element.
+		const turns = root.createDiv({ cls: 'herdr-native-turns' });
+		this.turnsEl = turns;
 		this.rootEl = root;
+		this.component.load();
+		this.following = true;
+		// The only thing a scroll does: say whether the view is still following.
+		// Nothing is drawn, measured or unmounted here, because this runs on
+		// every frame of a flick through a long session (#101).
+		this.component.registerDomEvent(turns, 'scroll', () => {
+			this.following = isAtBottom(turns);
+		});
+		this.watchForGrowth(turns);
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
 			sender: this.options.sender,
@@ -343,6 +391,11 @@ export class NativePaneSurface implements PaneSurface {
 		this.unbind();
 		this.promptBox?.destroy();
 		this.promptBox = null;
+		this.resizeObserver?.disconnect();
+		this.resizeObserver = null;
+		this.observedTurnEl = null;
+		this.component.unload();
+		this.renders = [];
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.turnsEl = null;
@@ -354,8 +407,14 @@ export class NativePaneSurface implements PaneSurface {
 	 * Nothing to hand back: there is no child process and no canvas here, so a
 	 * hidden tab keeps its session model and its subscription and is simply up
 	 * to date when it is revealed (#94, ADR-0003).
+	 *
+	 * What it does not keep is a layout — a hidden leaf measures nothing — so a
+	 * tab that was following is put back on the end when it is revealed, and a
+	 * tab whose reader had scrolled up is left exactly where they left it (#106).
 	 */
-	async setVisible(_visible: boolean): Promise<void> {}
+	async setVisible(visible: boolean): Promise<void> {
+		if (visible) this.pinToBottom();
+	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
 		const samePane = identity.paneId === this.identity.paneId;
@@ -379,6 +438,19 @@ export class NativePaneSurface implements PaneSurface {
 	refresh(): void {
 		if (!this.rootEl) return;
 		this.renderAll();
+	}
+
+	/**
+	 * Brings one turn into view and stops following, which is what a click in
+	 * the table of contents does (#100, which calls this and draws the list).
+	 * A turn id this session does not hold moves nothing: the TOC and the view
+	 * share a session model, but a rotation can empty one before the other.
+	 */
+	scrollToTurn(turnId: string): void {
+		const turnEl = this.turnEls.get(turnId);
+		if (!turnEl) return;
+		this.following = false;
+		turnEl.scrollIntoView({ block: 'start' });
 	}
 
 	/** Takes the pane's session model and draws what it already holds. */
@@ -409,6 +481,9 @@ export class NativePaneSurface implements PaneSurface {
 	private applyChange(change: SessionChange): void {
 		if (!this.rootEl) return;
 		if (change.reset) {
+			// Another session (`/clear`, `--resume`): its latest turn is what to
+			// show, whatever the reader was reading in the one that is gone.
+			this.following = true;
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
@@ -417,6 +492,7 @@ export class NativePaneSurface implements PaneSurface {
 				if (turn) this.renderTurn(turn);
 			}
 			this.updateEmpty();
+			this.settleScroll();
 		}
 		this.updateStatus();
 		this.report();
@@ -427,6 +503,7 @@ export class NativePaneSurface implements PaneSurface {
 		for (const turn of this.model?.state.turns ?? []) this.renderTurn(turn);
 		this.updateEmpty();
 		this.updateStatus();
+		this.settleScroll();
 	}
 
 	/** Drops every turn element and the components that went with them. */
@@ -434,6 +511,10 @@ export class NativePaneSurface implements PaneSurface {
 		for (const component of this.turnComponents.values()) component.unload();
 		this.turnComponents.clear();
 		this.turnEls.clear();
+		if (this.observedTurnEl) {
+			this.resizeObserver?.unobserve(this.observedTurnEl);
+			this.observedTurnEl = null;
+		}
 		this.turnsEl?.empty();
 	}
 
@@ -449,6 +530,8 @@ export class NativePaneSurface implements PaneSurface {
 		if (!turnEl) {
 			turnEl = turnsEl.createDiv({ cls: 'herdr-native-turn' });
 			this.turnEls.set(turn.id, turnEl);
+			// The turn Claude is writing is the one that grows under the view.
+			this.watchForGrowth(turnEl, this.observedTurnEl);
 		}
 		turnEl.empty();
 		this.turnComponents.get(turn.id)?.unload();
@@ -500,11 +583,7 @@ export class NativePaneSurface implements PaneSurface {
 	/** Assistant prose, through Obsidian's own renderer. */
 	private renderText(turnEl: HTMLElement, entry: TextEntry, component: Component): void {
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
-		// Obsidian's own renderer, so the vault's links, callouts and embeds
-		// come out exactly as they do in a note. It resolves relative links
-		// against `sourcePath`; a transcript is not a note in the vault, so
-		// that is the vault root.
-		void MarkdownRenderer.render(this.options.app, entry.text, blockEl, '', component);
+		this.renderMarkdown(entry.text, blockEl, component);
 	}
 
 	/**
@@ -524,7 +603,7 @@ export class NativePaneSurface implements PaneSurface {
 		const details = turnEl.createEl('details', { cls: 'herdr-native-thinking' });
 		details.createEl('summary', { cls: 'herdr-native-thinking-summary', text: 'Thought' });
 		const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
-		void MarkdownRenderer.render(this.options.app, entry.text, bodyEl, '', component);
+		this.renderMarkdown(entry.text, bodyEl, component);
 	}
 
 	/** The tool group: one summary line that expands to a row per call. */
@@ -581,7 +660,7 @@ export class NativePaneSurface implements PaneSurface {
 		const report = subagentReport(entry);
 		if (!report) return;
 		const blockEl = turnEl.createDiv({ cls: 'herdr-native-report' });
-		void MarkdownRenderer.render(this.options.app, report, blockEl, '', component);
+		this.renderMarkdown(report, blockEl, component);
 	}
 
 	/**
@@ -632,6 +711,67 @@ export class NativePaneSurface implements PaneSurface {
 				);
 			});
 		}
+	}
+
+	/**
+	 * Markdown through Obsidian's own renderer, so the vault's links, callouts
+	 * and embeds come out exactly as they do in a note. It resolves relative
+	 * links against `sourcePath`; a transcript is not a note in the vault, so
+	 * that is the vault root.
+	 *
+	 * The render is async, so the draw is finished long before the view has its
+	 * real height: the promise is kept, and {@link settleScroll} pins the view
+	 * once every render of this draw has landed (#106).
+	 */
+	private renderMarkdown(markdown: string, el: HTMLElement, component: Component): void {
+		this.renders.push(MarkdownRenderer.render(this.options.app, markdown, el, '', component));
+	}
+
+	/**
+	 * Puts the view back on the end of the session, twice: now, and once the
+	 * Markdown of this draw has rendered.
+	 *
+	 * A single `scrollTop = scrollHeight` after a draw lands short — the
+	 * renderer has not run yet, and `content-visibility` makes the height an
+	 * estimate besides (#101) — so the pin that counts is the later one. What
+	 * lands later still, an image or an embed, is the resize observer's.
+	 */
+	private settleScroll(): void {
+		this.pinToBottom();
+		const renders = this.renders;
+		if (renders.length === 0) return;
+		this.renders = [];
+		void Promise.allSettled(renders).then(() => this.pinToBottom());
+	}
+
+	/** The end of the session, while the view is following it and still mounted. */
+	private pinToBottom(): void {
+		const turnsEl = this.turnsEl;
+		if (!turnsEl || !this.following) return;
+		turnsEl.scrollTop = turnsEl.scrollHeight;
+	}
+
+	/**
+	 * Watches an element for the height it gains after it was drawn, and gives
+	 * up the one it was watching before.
+	 *
+	 * Two elements at a time and no more: the turns element, which changes when
+	 * the leaf or the prompt box does, and the turn being written, which is the
+	 * one growing under a reader who is at the bottom. Watching every turn would
+	 * fire on every `content-visibility` change as the reader scrolls, which is
+	 * exactly the per-turn work a long session cannot afford (#101).
+	 *
+	 * Guarded for an environment with no `ResizeObserver` at all: the tests run
+	 * under node, where there is none, and the view must still mount.
+	 */
+	private watchForGrowth(el: HTMLElement, instead?: HTMLElement | null): void {
+		if (typeof ResizeObserver === 'undefined') return;
+		if (!this.resizeObserver) {
+			this.resizeObserver = new ResizeObserver(() => this.pinToBottom());
+		}
+		if (instead) this.resizeObserver.unobserve(instead);
+		if (el !== this.turnsEl) this.observedTurnEl = el;
+		this.resizeObserver.observe(el);
 	}
 
 	/** The line shown when there is nothing to show, and nothing when there is. */
