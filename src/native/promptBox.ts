@@ -156,7 +156,9 @@ export class PromptBox {
 	/** Builds the box inside `parentEl`. Called once, from the surface's attach. */
 	mount(parentEl: HTMLElement): void {
 		this.component.load();
-		const root = parentEl.createDiv({ cls: 'herdr-native-prompt-box' });
+		// `herdr-native-sizer`: the box sits at the width of the prose above it
+		// when the vault asks for a readable line width (#117).
+		const root = parentEl.createDiv({ cls: ['herdr-native-prompt-box', 'herdr-native-sizer'] });
 		// The text area and the button share a row, the way a chat input does
 		// (#103); the hint, when there is one, comes under them.
 		const row = root.createDiv({ cls: 'herdr-native-prompt-row' });
