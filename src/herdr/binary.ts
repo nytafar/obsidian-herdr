@@ -157,9 +157,9 @@ export function localCandidates(
 		found.push({ path, source });
 	};
 	const fixed = deps.platform === 'win32' ? WINDOWS_BINARY_DIRECTORIES : BINARY_DIRECTORIES;
+	for (const directory of fixed) add(directory, 'directory');
 	for (const directory of splitPath(options.extraPath ?? '', deps.platform)) add(directory, 'extra-path');
 	for (const directory of splitPath(deps.env.PATH ?? '', deps.platform)) add(directory, 'path');
-	for (const directory of fixed) add(directory, 'directory');
 	return found;
 }
 

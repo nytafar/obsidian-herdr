@@ -85,8 +85,7 @@ export function isPathInside(child: string, root: string, style: PathStyle): boo
 	const normalRoot = trimTrailingHostSeparators(root, style);
 	if (!normalChild || !normalRoot) return false;
 	if (sameHostPath(normalChild, normalRoot, style)) return true;
-	const from = style === 'win32' ? normalRoot.toLowerCase() : normalRoot;
-	const to = style === 'win32' ? normalChild.toLowerCase() : normalChild;
-	const relative = api.relative(from, to);
-	return relative !== '' && relative !== '..' && !relative.startsWith(`..${api.sep}`) && !api.isAbsolute(relative);
+	const relative = api.relative(normalRoot, normalChild);
+	const lowered = style === 'win32' ? relative.toLowerCase() : relative;
+	return lowered !== '' && lowered !== '..' && !lowered.startsWith(`..${api.sep}`) && !api.isAbsolute(relative);
 }

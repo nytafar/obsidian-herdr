@@ -114,15 +114,15 @@ describe('resolveHerdrBinary (M2)', () => {
 		const calls: Call[] = [];
 		const resolved = await resolveHerdrBinary(
 			{},
-			deps(['C:\\Users\\test\\AppData\\Local\\Programs\\herdr\\bin\\herdr.exe'], {
+			deps(['C:\\custom\\bin\\herdr.exe'], {
 				platform: 'win32',
 				home: 'C:\\Users\\test',
-				env: { PATH: 'C:\\Users\\test\\AppData\\Local\\Programs\\herdr\\bin;C:\\Windows\\System32' },
+				env: { PATH: 'C:\\custom\\bin;C:\\Windows\\System32' },
 				calls,
 			}),
 		);
 		expect(resolved).toEqual({
-			path: 'C:\\Users\\test\\AppData\\Local\\Programs\\herdr\\bin\\herdr.exe',
+			path: 'C:\\custom\\bin\\herdr.exe',
 			source: 'path',
 		});
 		expect(calls).toHaveLength(0);
