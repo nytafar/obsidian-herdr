@@ -17,6 +17,7 @@ import { lastPathSegment, trimTrailingSlashes } from '../paths';
 import { cacheBadge, type RowBadge } from '../herdr/cacheBadge';
 import { isUnder, type PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
+import type { PathStyle } from '../platform';
 
 // A badge's shape is part of what a row says, so the types belong to this
 // module's vocabulary; the code behind them sits under `herdr/` because the
@@ -121,6 +122,8 @@ export interface RowModelOptions {
 	 * the pinned rows follow that same sort. Empty pins nothing.
 	 */
 	pinnedPaneIds?: readonly string[];
+	/** Filesystem style of the endpoint paths. */
+	pathStyle?: PathStyle;
 }
 
 const DEFAULTS: Required<RowModelOptions> = {
@@ -128,6 +131,7 @@ const DEFAULTS: Required<RowModelOptions> = {
 	sort: 'priority',
 	homePath: '',
 	pinnedPaneIds: [],
+	pathStyle: 'posix',
 };
 
 type GroupBy = Required<RowModelOptions>['groupBy'];
@@ -158,11 +162,11 @@ export function countStatuses(panes: readonly PaneState[]): { blocked: number; d
  * vault root itself renders as an empty string, since repeating the vault name
  * on every row says nothing.
  */
-export function relativeCwd(cwd: string, vaultPath: string): string {
+export function relativeCwd(cwd: string, vaultPath: string, pathStyle: PathStyle = 'posix'): string {
 	if (!cwd) return '';
-	const root = trimTrailingSlashes(vaultPath);
-	if (!root || !isUnder(cwd, root)) return cwd;
-	return cwd.slice(root.length).replace(/^\/+/, '');
+	const root = trimTrailingSlashes(vaultPath, pathStyle);
+	if (!root || !isUnder(cwd, root, pathStyle)) return cwd;
+	return cwd.slice(root.length).replace(/^[/\\]+/, '');
 }
 
 /**
@@ -175,14 +179,19 @@ export function relativeCwd(cwd: string, vaultPath: string): string {
  * (`main.ts` picks which one). The vault wins over the home, because a vault
  * inside the home would otherwise lose its short relative paths.
  */
-export function fullPathLabel(cwd: string, vaultPath: string, homePath = ''): string {
+export function fullPathLabel(
+	cwd: string,
+	vaultPath: string,
+	homePath = '',
+	pathStyle: PathStyle = 'posix',
+): string {
 	if (!cwd) return '';
-	const root = trimTrailingSlashes(vaultPath);
-	if (root && isUnder(cwd, root)) return relativeCwd(cwd, root);
-	const home = trimTrailingSlashes(homePath);
-	if (!home || !isUnder(cwd, home)) return cwd;
-	const rest = cwd.slice(home.length).replace(/^\/+/, '');
-	return rest ? `~/${rest}` : '~';
+	const root = trimTrailingSlashes(vaultPath, pathStyle);
+	if (root && isUnder(cwd, root, pathStyle)) return relativeCwd(cwd, root, pathStyle);
+	const home = trimTrailingSlashes(homePath, pathStyle);
+	if (!home || !isUnder(cwd, home, pathStyle)) return cwd;
+	const rest = cwd.slice(home.length).replace(/^[/\\]+/, '');
+	return rest ? `~/${rest.replace(/\\/g, '/')}` : '~';
 }
 
 /**
@@ -202,12 +211,17 @@ const OUTSIDE_SEGMENTS = 2;
  * already at two segments or fewer is left exactly as it was, keeping `/opt/x`,
  * `~/code` and `~` whole rather than trading a leading slash for nothing.
  */
-export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string {
-	const label = fullPathLabel(cwd, vaultPath, homePath);
-	const root = trimTrailingSlashes(vaultPath);
+export function pathLabel(
+	cwd: string,
+	vaultPath: string,
+	homePath = '',
+	pathStyle: PathStyle = 'posix',
+): string {
+	const label = fullPathLabel(cwd, vaultPath, homePath, pathStyle);
+	const root = trimTrailingSlashes(vaultPath, pathStyle);
 	// Inside the vault the label is already relative to something the reader
 	// knows; only foreign roots are worth cutting.
-	if (root && cwd && isUnder(cwd, root)) return label;
+	if (root && cwd && isUnder(cwd, root, pathStyle)) return label;
 	const segments = label.split('/').filter((segment) => segment !== '');
 	if (segments.length <= OUTSIDE_SEGMENTS) return label;
 	return segments.slice(-OUTSIDE_SEGMENTS).join('/');
@@ -218,9 +232,14 @@ export function pathLabel(cwd: string, vaultPath: string, homePath = ''): string
  * nothing was cut. The view puts it on `title` and `aria-label`, so a row never
  * hides which of two similarly named roots it is in.
  */
-export function pathTooltip(cwd: string, vaultPath: string, homePath = ''): string {
-	const full = fullPathLabel(cwd, vaultPath, homePath);
-	return full === pathLabel(cwd, vaultPath, homePath) ? '' : full;
+export function pathTooltip(
+	cwd: string,
+	vaultPath: string,
+	homePath = '',
+	pathStyle: PathStyle = 'posix',
+): string {
+	const full = fullPathLabel(cwd, vaultPath, homePath, pathStyle);
+	return full === pathLabel(cwd, vaultPath, homePath, pathStyle) ? '' : full;
 }
 
 function statusRank(status: AgentStatus): number {
@@ -240,6 +259,7 @@ interface GroupContext {
 	tabLabels: ReadonlyMap<string, string>;
 	vaultPath: string;
 	homePath: string;
+	pathStyle: PathStyle;
 }
 
 /**
@@ -260,14 +280,14 @@ const GROUPS: Record<GroupBy, Grouping> = {
 			// The same label a row's path shows, so the two never disagree. At the
 			// vault root that is empty, where the vault's own name reads better.
 			return (
-				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath) ||
-				lastPathSegment(ctx.vaultPath) ||
+				pathLabel(pane.cwd, ctx.vaultPath, ctx.homePath, ctx.pathStyle) ||
+				lastPathSegment(ctx.vaultPath, ctx.pathStyle) ||
 				pane.cwd
 			);
 		},
 		// Abridged the same way a row is (issue #46), so it needs the same tooltip.
 		tooltip: (pane, ctx) =>
-			pane.cwd ? pathTooltip(pane.cwd, ctx.vaultPath, ctx.homePath) : '',
+			pane.cwd ? pathTooltip(pane.cwd, ctx.vaultPath, ctx.homePath, ctx.pathStyle) : '',
 	},
 	none: { key: () => '', label: () => '' },
 };
@@ -327,6 +347,7 @@ export function toRow(
 	homePath = '',
 	showPath = true,
 	pinned = false,
+	pathStyle: PathStyle = 'posix',
 ): RowModel {
 	const displayName = agentDisplayName(pane);
 	return {
@@ -334,8 +355,8 @@ export function toRow(
 		kind: pane.agent,
 		displayName,
 		title: pane.title && pane.title !== displayName ? pane.title : '',
-		pathLabel: showPath ? pathLabel(pane.cwd, vaultPath, homePath) : '',
-		pathTooltip: showPath ? pathTooltip(pane.cwd, vaultPath, homePath) : '',
+		pathLabel: showPath ? pathLabel(pane.cwd, vaultPath, homePath, pathStyle) : '',
+		pathTooltip: showPath ? pathTooltip(pane.cwd, vaultPath, homePath, pathStyle) : '',
 		status: pane.agentStatus,
 		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
 		focused: pane.focused,
@@ -357,12 +378,12 @@ export function buildRows(
 	vaultPath: string,
 	options: RowModelOptions = {},
 ): RowGroup[] {
-	const { groupBy, sort, homePath, pinnedPaneIds } = { ...DEFAULTS, ...options };
+	const { groupBy, sort, homePath, pinnedPaneIds, pathStyle } = { ...DEFAULTS, ...options };
 	const pinned = new Set(pinnedPaneIds);
 	const grouping = GROUPS[groupBy] ?? GROUPS.tab;
 	// Grouping by folder already names the folder above the rows (issue #39).
 	const showPath = groupBy !== 'folder';
-	const context: GroupContext = { tabLabels, vaultPath, homePath };
+	const context: GroupContext = { tabLabels, vaultPath, homePath, pathStyle };
 	// One sort up front fixes the row order inside every group.
 	const ordered = [...panes].sort(withPinTier(COMPARE[sort] ?? COMPARE.priority, pinned));
 
@@ -388,7 +409,7 @@ export function buildRows(
 			entry.urgency = urgency;
 		}
 		entry.group.rows.push(
-			toRow(pane, vaultPath, homePath, showPath, pinned.has(pane.paneId)),
+			toRow(pane, vaultPath, homePath, showPath, pinned.has(pane.paneId), pathStyle),
 		);
 	}
 

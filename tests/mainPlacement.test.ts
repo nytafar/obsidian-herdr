@@ -111,7 +111,7 @@ function harness(options: {
 	plugin.settings = { ...DEFAULT_SETTINGS, ...options.settings };
 	plugin.connection = {
 		current: {
-			endpoint: { id: 'local' },
+			endpoint: { id: 'local', pathStyle: 'posix' },
 			client: {
 				request: async (method: string) => {
 					requests.push(method);

@@ -19,6 +19,12 @@ describe('trimTrailingSlashes', () => {
 		expect(trimTrailingSlashes('/')).toBe('');
 		expect(trimTrailingSlashes('')).toBe('');
 	});
+
+	it('under win32, trims both separator spellings and keeps the drive root', () => {
+		expect(trimTrailingSlashes('C:\\Users\\lasse\\hvelv\\', 'win32')).toBe('C:\\Users\\lasse\\hvelv');
+		expect(trimTrailingSlashes('C:/Users/lasse/hvelv///', 'win32')).toBe('C:\\Users\\lasse\\hvelv');
+		expect(trimTrailingSlashes('C:\\', 'win32')).toBe('C:\\');
+	});
 });
 
 describe('lastPathSegment', () => {
@@ -32,5 +38,10 @@ describe('lastPathSegment', () => {
 		// `folderName` turns this one into '/'; a group label falls back to the cwd.
 		expect(lastPathSegment('/')).toBe('');
 		expect(lastPathSegment('')).toBe('');
+	});
+
+	it('reads a Windows basename regardless of slash direction', () => {
+		expect(lastPathSegment('C:\\Users\\lasse\\hvelv', 'win32')).toBe('hvelv');
+		expect(lastPathSegment('C:/Users/lasse/hvelv/', 'win32')).toBe('hvelv');
 	});
 });

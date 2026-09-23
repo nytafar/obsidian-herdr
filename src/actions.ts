@@ -21,6 +21,14 @@ import { lastPathSegment, trimTrailingSlashes } from './paths';
 import { clampPanesPerTab, remoteVaultPathIssue, type HerdrSettings } from './settings';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
+import {
+	joinHostPath,
+	localPathStyle,
+	normalizeHostPath,
+	pathApi,
+	sameHostPath,
+	type PathStyle,
+} from './platform';
 
 /** herdr's own rule from `src/app/agents.rs`: `[a-z][a-z0-9_-]{0,31}`. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -141,6 +149,8 @@ export interface PathRoots {
 	basePath: string;
 	/** `settings.remote.remoteVaultPath`, only when the remote profile is on. */
 	remoteVaultPath?: string;
+	/** Filesystem style of the endpoint receiving the path. */
+	pathStyle?: PathStyle;
 }
 
 /**
@@ -152,18 +162,21 @@ export interface PathRoots {
  * folder outside the vault might.
  */
 export function resolveFolderPath(vaultRelativePath: string, roots: PathRoots): string {
+	const style = roots.pathStyle ?? 'posix';
+	const api = pathApi(style);
 	const relative = vaultRelativePath.trim();
-	if (relative.startsWith('/')) return normalizePosixPath(relative);
-	const root = trimTrailingSlashes(roots.remoteVaultPath?.trim() || roots.basePath);
-	if (!root) return normalizePosixPath(relative);
+	const root = trimTrailingSlashes(roots.remoteVaultPath?.trim() || roots.basePath, style);
 	// The vault root itself comes through as '' or '/' from TFolder.isRoot().
-	if (relative === '' || relative === '/' || relative === '.') return normalizePosixPath(root);
-	return normalizePosixPath(`${root}/${relative}`);
+	if (relative === '' || relative === '.') return normalizeHostPath(root, style);
+	if (api.isAbsolute(relative)) return normalizeHostPath(relative, style);
+	if (!root) return normalizeHostPath(relative, style);
+	const segments = relative.split('/').filter((segment) => segment.length > 0);
+	return joinHostPath(style, root, ...segments);
 }
 
 /** Last path segment, used as a tab label and for `{folder}`. The root is `/`. */
-export function folderName(absolutePath: string): string {
-	return lastPathSegment(absolutePath) || '/';
+export function folderName(absolutePath: string, style: PathStyle = 'posix'): string {
+	return lastPathSegment(absolutePath, style) || '/';
 }
 
 /**
@@ -222,18 +235,19 @@ export function chooseSplitTarget(
 	panes: readonly AgentPaneSummary[],
 	folderPath: string,
 	panesPerTab: number,
+	pathStyle: PathStyle = 'posix',
 ): SplitTarget {
 	const cap = clampPanesPerTab(panesPerTab);
 	// A cap of one is "always a new tab": no tab can be under it and non-empty.
 	if (cap < 2) return { kind: 'new-tab' };
-	const folder = normalizePosixPath(folderPath);
+	const folder = normalizeHostPath(folderPath, pathStyle);
 	if (folder === '' || folder === '.') return { kind: 'new-tab' };
 
 	const tabs = new Map<string, TabTally>();
 	for (const pane of panes) {
 		if (!pane.paneId || !pane.tabId) continue;
 		const seq = typeof pane.statusChangedSeq === 'number' ? pane.statusChangedSeq : 0;
-		const sameFolder = pane.cwd ? normalizePosixPath(pane.cwd) === folder : false;
+		const sameFolder = pane.cwd ? sameHostPath(pane.cwd, folder, pathStyle) : false;
 		const tally = tabs.get(pane.tabId);
 		if (!tally) {
 			tabs.set(pane.tabId, {
@@ -363,7 +377,9 @@ export class HerdrActions {
 	async newTabHere(folderAbsPath: string): Promise<TabInfo | null> {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
-		const label = folderName(folderAbsPath);
+		const settings = this.host.settings();
+		const pathStyle: PathStyle = settings.remote.enabled ? 'posix' : localPathStyle();
+		const label = folderName(folderAbsPath, pathStyle);
 		try {
 			const result = await this.host.request<TabCreatedResult>('tab.create', {
 				workspace_id: workspaceId,
@@ -387,6 +403,8 @@ export class HerdrActions {
 	async splitHere(folderAbsPath: string): Promise<PaneInfo | null> {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
+		const settings = this.host.settings();
+		const pathStyle: PathStyle = settings.remote.enabled ? 'posix' : localPathStyle();
 		try {
 			const result = await this.host.request<PaneResult>('pane.split', {
 				direction: 'right',
@@ -394,7 +412,7 @@ export class HerdrActions {
 				cwd: folderAbsPath,
 				focus: true,
 			});
-			this.host.notice(`Herdr: split in ${folderName(folderAbsPath)}`);
+			this.host.notice(`Herdr: split in ${folderName(folderAbsPath, pathStyle)}`);
 			return result.pane ?? null;
 		} catch (error) {
 			this.reportFailure('split a pane', error);
@@ -417,11 +435,12 @@ export class HerdrActions {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
 		const settings = this.host.settings();
-		const label = folderName(folderAbsPath);
+		const pathStyle: PathStyle = settings.remote.enabled ? 'posix' : localPathStyle();
+		const label = folderName(folderAbsPath, pathStyle);
 
 		// Sharing off: every agent gets its own tab, the herdr way (issue #29).
 		const target: SplitTarget = settings.splitIntoFolderTab
-			? chooseSplitTarget(this.host.agentPanes(), folderAbsPath, settings.panesPerTab)
+			? chooseSplitTarget(this.host.agentPanes(), folderAbsPath, settings.panesPerTab, pathStyle)
 			: { kind: 'new-tab' };
 		let tabId = '';
 		let paneId: string | null = null;

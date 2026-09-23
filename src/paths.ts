@@ -22,8 +22,9 @@
  * `/` becomes the empty string, which is what every caller wants: it is used to
  * build `${root}/${rest}` or to compare against another trimmed path.
  */
-export function trimTrailingSlashes(path: string): string {
-	return path.replace(/\/+$/, '');
+export function trimTrailingSlashes(path: string, style: PathStyle = 'posix'): string {
+	const trimmed = trimTrailingHostSeparators(path, style);
+	return style === 'posix' && trimmed === '/' ? '' : trimmed;
 }
 
 /**
@@ -32,8 +33,8 @@ export function trimTrailingSlashes(path: string): string {
  * (or an empty path) has none, so the answer is empty — callers that need a
  * label decide what to show instead.
  */
-export function lastPathSegment(path: string): string {
-	const trimmed = trimTrailingSlashes(path);
-	const slash = trimmed.lastIndexOf('/');
-	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
+export function lastPathSegment(path: string, style: PathStyle = 'posix'): string {
+	const trimmed = trimTrailingSlashes(path, style);
+	return basenameHostPath(trimmed, style);
 }
+import { basenameHostPath, trimTrailingHostSeparators, type PathStyle } from './platform';

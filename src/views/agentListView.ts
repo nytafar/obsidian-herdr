@@ -391,6 +391,7 @@ export class AgentListView extends ItemView {
 			groupBy: settings.agentListGroupBy,
 			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
+			pathStyle: this.plugin.endpoint.pathStyle,
 			// Pins are per endpoint (issue #35): a local pane id says nothing about
 			// a remote pane that happens to share it.
 			pinnedPaneIds: pinnedPaneIds(settings, this.plugin.endpoint.id),

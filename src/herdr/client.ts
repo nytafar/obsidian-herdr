@@ -21,7 +21,6 @@
  */
 
 import { connect, type Socket } from 'node:net';
-import { homedir } from 'node:os';
 
 import { LineSplitter } from './lineSplitter';
 import {
@@ -35,6 +34,7 @@ import {
 } from './types.gen';
 
 import { clearTimer, setTimer } from '../timers';
+import { expandHome } from '../platform';
 
 /** Request line cap on the server side; keep well under it. */
 export const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -87,7 +87,7 @@ export interface ProtocolMismatch {
 export type EventStreamState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 export interface HerdrClientOptions {
-	/** Unix socket path. `~` is expanded. */
+	/** IPC endpoint path (Unix socket or Windows named pipe). `~` is expanded. */
 	socketPath: string;
 	/** Per-request timeout, connect plus response. */
 	requestTimeoutMs?: number;
@@ -150,12 +150,7 @@ type EventHandler = (event: HerdrEvent) => void;
 type MetaHandler = (...args: never[]) => void;
 export type Unsubscribe = () => void;
 
-/** Expands a leading `~` and nothing else; herdr paths are otherwise absolute. */
-export function expandHome(path: string): string {
-	if (path === '~') return homedir();
-	if (path.startsWith('~/')) return `${homedir()}/${path.slice(2)}`;
-	return path;
-}
+export { expandHome };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -21,6 +21,8 @@ function deps(
 	executables: string[],
 	options: {
 		env?: NodeJS.ProcessEnv;
+		home?: string;
+		platform?: NodeJS.Platform;
 		responses?: Record<string, RunResult>;
 		calls?: Call[];
 	} = {},
@@ -34,7 +36,8 @@ function deps(
 			return options.responses?.[key] ?? { stdout: '', stderr: 'not found', code: 127 };
 		},
 		env: options.env ?? {},
-		home: HOME,
+		home: options.home ?? HOME,
+		platform: options.platform ?? 'darwin',
 	};
 }
 
@@ -106,6 +109,24 @@ describe('resolveHerdrBinary (M2)', () => {
 	it('returns null when nothing is found', async () => {
 		expect(await resolveHerdrBinary({ skipLoginShell: true }, deps([]))).toBeNull();
 	});
+
+	it('finds herdr.exe from PATH on Windows without using a login shell', async () => {
+		const calls: Call[] = [];
+		const resolved = await resolveHerdrBinary(
+			{},
+			deps(['C:\\custom\\bin\\herdr.exe'], {
+				platform: 'win32',
+				home: 'C:\\Users\\test',
+				env: { PATH: 'C:\\custom\\bin;C:\\Windows\\System32' },
+				calls,
+			}),
+		);
+		expect(resolved).toEqual({
+			path: 'C:\\custom\\bin\\herdr.exe',
+			source: 'path',
+		});
+		expect(calls).toHaveLength(0);
+	});
 });
 
 describe('buildSpawnPath', () => {
@@ -120,6 +141,27 @@ describe('buildSpawnPath', () => {
 			'/usr/local/bin',
 			`${HOME}/.local/bin`,
 			'/usr/bin',
+		]);
+	});
+
+	it('joins PATH entries with the Windows delimiter', async () => {
+		const value = await buildSpawnPath(
+			{
+				extraPath: 'C:\\tools;C:\\Users\\test\\bin',
+				skipLoginShell: true,
+			},
+			deps([], {
+				platform: 'win32',
+				home: 'C:\\Users\\test',
+				env: { PATH: 'C:\\Windows\\System32;C:\\tools' },
+			}),
+		);
+		expect(value.split(';')).toEqual([
+			'C:\\tools',
+			'C:\\Users\\test\\bin',
+			'C:\\Users\\test\\AppData\\Local\\Programs\\herdr\\bin',
+			'C:\\Users\\test\\AppData\\Local\\Microsoft\\WinGet\\Links',
+			'C:\\Windows\\System32',
 		]);
 	});
 });
@@ -206,6 +248,19 @@ describe('resolveSocketPath (M1)', () => {
 		expect(resolveSocketPath({}, { env: {}, home: HOME })).toBe(
 			`${HOME}/.config/herdr/herdr.sock`,
 		);
+	});
+
+	it('on Windows, does not fabricate a HERDR_SESSION Unix socket path', () => {
+		expect(
+			resolveSocketPath(
+				{},
+				{
+					env: { HERDR_SESSION: 'work', HERDR_SOCKET_PATH: '\\\\.\\pipe\\herdr-work' },
+					home: 'C:\\Users\\test',
+					platform: 'win32',
+				},
+			),
+		).toBe('\\\\.\\pipe\\herdr-work');
 	});
 });
 

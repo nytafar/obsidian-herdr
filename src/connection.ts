@@ -21,6 +21,7 @@ import type { DiscoveryResult } from './herdr/binary';
 import type { ClientEventMap, HerdrEvent, Subscription } from './herdr/client';
 import type { AgentInfo, PaneInfo, SessionSnapshot, WorkspaceInfo } from './herdr/types.gen';
 import type { RemoteSettings } from './settings';
+import { localPathStyle, type PathStyle } from './platform';
 
 /** Endpoint id of the local herdr; a remote one reads `ssh:<host>:<remote socket>`. */
 export const LOCAL_ENDPOINT_ID = 'local';
@@ -39,6 +40,8 @@ export interface Endpoint {
 	readonly id: string;
 	/** Remote settings as they were; `enabled` is false for the local endpoint. */
 	readonly remote: Readonly<RemoteSettings>;
+	/** Filesystem style herdr paths on this endpoint use. */
+	readonly pathStyle: PathStyle;
 }
 
 /** The id of the endpoint these remote settings describe. */
@@ -58,7 +61,11 @@ export function endpointOf(remote: RemoteSettings): Endpoint {
 		remoteBinary: remote.remoteBinary.trim(),
 		remoteVaultPath: remote.remoteVaultPath.trim(),
 	});
-	return { id: endpointIdOf(snapshot), remote: snapshot };
+	return {
+		id: endpointIdOf(snapshot),
+		remote: snapshot,
+		pathStyle: snapshot.enabled ? 'posix' : localPathStyle(),
+	};
 }
 
 /**

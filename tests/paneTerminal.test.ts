@@ -63,6 +63,7 @@ function settle(): Promise<void> {
 
 const LOCAL: Endpoint = {
 	id: 'local',
+	pathStyle: 'posix',
 	remote: {
 		enabled: false,
 		host: '',

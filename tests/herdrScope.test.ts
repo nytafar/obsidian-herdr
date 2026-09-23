@@ -70,6 +70,13 @@ describe('isUnder', () => {
 		expect(isUnder(`${VAULT}-old/notes`, VAULT)).toBe(false);
 		expect(isUnder('', VAULT)).toBe(false);
 	});
+
+	it('handles win32 paths case-insensitively', () => {
+		expect(isUnder('C:\\Users\\Lasse\\Vault\\notes', 'c:\\users\\lasse\\vault', 'win32')).toBe(true);
+		expect(isUnder('C:\\Users\\Lasse\\Vault-old\\notes', 'c:\\users\\lasse\\vault', 'win32')).toBe(
+			false,
+		);
+	});
 });
 
 describe('toPaneState (M7)', () => {
