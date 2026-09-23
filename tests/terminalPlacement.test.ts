@@ -99,6 +99,18 @@ describe('decidePlacement (issue #28)', () => {
 			before: false,
 		});
 	});
+
+	it('resolves vault-relative note paths against a Windows vault root', () => {
+		expect(
+			decidePlacement(
+				input({
+					vaultPath: 'C:\\Users\\lasse\\Vaults\\hvelv',
+					paneCwd: 'C:\\Users\\lasse\\Vaults\\hvelv\\projects\\herdr',
+					pathStyle: 'win32',
+				}),
+			),
+		).toEqual({ kind: 'split', before: false });
+	});
 });
 
 function target(overrides: Partial<OpenTargetInput> = {}): OpenTargetInput {

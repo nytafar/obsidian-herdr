@@ -69,6 +69,7 @@ import {
 } from './input/inputRouter';
 import { pickModifiers } from './input/mouseEncoder';
 import { WheelAccumulator } from './input/wheelAccumulator';
+import { joinPathList, pathListDelimiter, splitPathList } from '../platform';
 
 /** How long a burst of container resizes is collapsed before a `terminal.resize`. */
 export const RESIZE_DEBOUNCE_MS = 100;
@@ -236,20 +237,21 @@ export class PerfCounter {
  * a GUI launch may not see `~/.local/bin`; the same `extraPath` setting that
  * feeds binary discovery is prepended here (deduplicated, order preserved).
  */
-export function spawnEnv(env: NodeJS.ProcessEnv, extraPath: string): NodeJS.ProcessEnv {
-	const extra = extraPath
-		.split(':')
-		.map((part) => part.trim())
-		.filter((part) => part.length > 0);
+export function spawnEnv(
+	env: NodeJS.ProcessEnv,
+	extraPath: string,
+	delimiter = pathListDelimiter(),
+): NodeJS.ProcessEnv {
+	const extra = splitPathList(extraPath, delimiter);
 	if (extra.length === 0) return { ...env };
 	const seen = new Set<string>();
 	const parts: string[] = [];
-	for (const part of [...extra, ...(env.PATH ?? '').split(':')]) {
+	for (const part of [...extra, ...splitPathList(env.PATH ?? '', delimiter)]) {
 		if (part.length === 0 || seen.has(part)) continue;
 		seen.add(part);
 		parts.push(part);
 	}
-	return { ...env, PATH: parts.join(':') };
+	return { ...env, PATH: joinPathList(parts, delimiter) };
 }
 
 /** What the status line shows, derived from the session's last words. */

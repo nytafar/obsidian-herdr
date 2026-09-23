@@ -21,24 +21,22 @@
 import { execFile } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { executableName, expandHome, joinPathList, localPathStyle, pathListDelimiter, splitPathList } from '../platform';
+import { joinHostPath } from '../platform';
 
 /** Where herdr is looked for, in order, after the settings override. */
 export const BINARY_DIRECTORIES = ['/opt/homebrew/bin', '/usr/local/bin', '~/.local/bin'] as const;
+const WINDOWS_BINARY_DIRECTORIES = ['~/AppData/Local/Programs/herdr/bin', '~/AppData/Local/Microsoft/WinGet/Links'] as const;
 
 const DEFAULT_PROBE_TIMEOUT_MS = 5000;
 const DEFAULT_SHELL_TIMEOUT_MS = 5000;
 const DEFAULT_SOCKET_PATH = '~/.config/herdr/herdr.sock';
 
 /** Expands a leading `~`. Duplicated from client.ts to keep the modules apart. */
-export function expandHome(path: string, home: string = homedir()): string {
-	if (path === '~') return home;
-	if (path.startsWith('~/')) return `${home}/${path.slice(2)}`;
-	return path;
-}
+export { expandHome };
 
 /** How the binary was found; shown in settings so a wrong pick is obvious. */
-export type BinarySource = 'setting' | 'directory' | 'extra-path' | 'login-shell';
+export type BinarySource = 'setting' | 'directory' | 'extra-path' | 'path' | 'login-shell';
 
 export interface ResolvedBinary {
 	path: string;
@@ -64,6 +62,7 @@ export interface DiscoveryDeps {
 	run: Runner;
 	env: NodeJS.ProcessEnv;
 	home: string;
+	platform: NodeJS.Platform;
 }
 
 export const defaultRunner: Runner = (file, args, options) =>
@@ -97,13 +96,14 @@ export function defaultDeps(): DiscoveryDeps {
 		run: defaultRunner,
 		env: process.env,
 		home: homedir(),
+		platform: process.platform,
 	};
 }
 
 export interface ResolveOptions {
 	/** Settings override. Empty or whitespace means auto-discovery. */
 	override?: string;
-	/** Colon-separated extra directories from settings, searched before PATH. */
+	/** Path-delimiter-separated extra directories from settings, searched before PATH. */
 	extraPath?: string;
 	/** Skip the login-shell step (it spawns a shell and can be slow). */
 	skipLoginShell?: boolean;
@@ -120,6 +120,7 @@ export async function loginShellPath(
 	deps: DiscoveryDeps,
 	timeoutMs = DEFAULT_SHELL_TIMEOUT_MS,
 ): Promise<string | null> {
+	if (deps.platform === 'win32') return null;
 	const shell = deps.env.SHELL;
 	if (!shell) return null;
 	try {
@@ -143,14 +144,22 @@ export function localCandidates(
 ): ResolvedBinary[] {
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
+	const binaryName = executableName('herdr', deps.platform);
 	const add = (directory: string, source: BinarySource): void => {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+		const style = localPathStyle(deps.platform);
+		const path = joinHostPath(
+			style,
+			expandHome(directory, { home: deps.home, style }),
+			binaryName,
+		);
 		if (seen.has(path) || !deps.isExecutable(path)) return;
 		seen.add(path);
 		found.push({ path, source });
 	};
-	for (const directory of BINARY_DIRECTORIES) add(directory, 'directory');
-	for (const directory of splitPath(options.extraPath ?? '')) add(directory, 'extra-path');
+	const fixed = deps.platform === 'win32' ? WINDOWS_BINARY_DIRECTORIES : BINARY_DIRECTORIES;
+	for (const directory of splitPath(options.extraPath ?? '', deps.platform)) add(directory, 'extra-path');
+	for (const directory of splitPath(deps.env.PATH ?? '', deps.platform)) add(directory, 'path');
+	for (const directory of fixed) add(directory, 'directory');
 	return found;
 }
 
@@ -163,8 +172,14 @@ export async function loginShellCandidates(
 	const shellPath = await loginShellPath(deps, options.loginShellTimeoutMs);
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
-	for (const directory of splitPath(shellPath ?? '')) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+	const binaryName = executableName('herdr', deps.platform);
+	const style = localPathStyle(deps.platform);
+	for (const directory of splitPath(shellPath ?? '', deps.platform)) {
+		const path = joinHostPath(
+			style,
+			expandHome(directory, { home: deps.home, style }),
+			binaryName,
+		);
 		if (seen.has(path) || !deps.isExecutable(path)) continue;
 		seen.add(path);
 		found.push({ path, source: 'login-shell' });
@@ -184,7 +199,7 @@ function overrideBinary(
 ): { binary: ResolvedBinary | null } | null {
 	const override = options.override?.trim();
 	if (!override) return null;
-	const path = expandHome(override, deps.home);
+	const path = expandHome(override, { home: deps.home, style: localPathStyle(deps.platform) });
 	return { binary: deps.isExecutable(path) ? { path, source: 'setting' } : null };
 }
 
@@ -210,11 +225,8 @@ export async function resolveHerdrBinary(
 	return (await loginShellCandidates(options, deps))[0] ?? null;
 }
 
-function splitPath(value: string): string[] {
-	return value
-		.split(':')
-		.map((part) => part.trim())
-		.filter((part) => part.length > 0);
+function splitPath(value: string, platform: NodeJS.Platform): string[] {
+	return splitPathList(value, pathListDelimiter(platform));
 }
 
 /**
@@ -226,18 +238,20 @@ export async function buildSpawnPath(
 	deps: DiscoveryDeps = defaultDeps(),
 ): Promise<string> {
 	const parts: string[] = [];
+	const delimiter = pathListDelimiter(deps.platform);
 	const push = (dir: string): void => {
-		const expanded = expandHome(dir, deps.home);
+		const expanded = expandHome(dir, { home: deps.home, style: localPathStyle(deps.platform) });
 		if (expanded.length > 0 && !parts.includes(expanded)) parts.push(expanded);
 	};
-	for (const dir of splitPath(options.extraPath ?? '')) push(dir);
-	for (const dir of BINARY_DIRECTORIES) push(dir);
-	for (const dir of splitPath(deps.env.PATH ?? '')) push(dir);
+	const fixed = deps.platform === 'win32' ? WINDOWS_BINARY_DIRECTORIES : BINARY_DIRECTORIES;
+	for (const dir of splitPath(options.extraPath ?? '', deps.platform)) push(dir);
+	for (const dir of fixed) push(dir);
+	for (const dir of splitPath(deps.env.PATH ?? '', deps.platform)) push(dir);
 	if (!options.skipLoginShell) {
 		const shellPath = await loginShellPath(deps, options.loginShellTimeoutMs);
-		for (const dir of splitPath(shellPath ?? '')) push(dir);
+		for (const dir of splitPath(shellPath ?? '', deps.platform)) push(dir);
 	}
-	return parts.join(':');
+	return joinPathList(parts, delimiter);
 }
 
 /** `herdr status server --json`, tolerant of unknown and missing fields. */
@@ -418,17 +432,23 @@ export function binaryMatchesServer(
  */
 export function resolveSocketPath(
 	options: { override?: string; status?: ServerStatus | null },
-	deps: Pick<DiscoveryDeps, 'env' | 'home'> = { env: process.env, home: homedir() },
+	deps: Pick<DiscoveryDeps, 'env' | 'home'> & { platform?: NodeJS.Platform } = {
+		env: process.env,
+		home: homedir(),
+		platform: process.platform,
+	},
 ): string {
+	const platform = deps.platform ?? process.platform;
+	const style = localPathStyle(platform);
 	const override = options.override?.trim();
-	if (override) return expandHome(override, deps.home);
+	if (override) return expandHome(override, { home: deps.home, style });
 	const reported = options.status?.socket?.trim();
-	if (reported) return expandHome(reported, deps.home);
+	if (reported) return expandHome(reported, { home: deps.home, style });
 	const session = deps.env.HERDR_SESSION?.trim();
-	if (session) return `${deps.home}/.config/herdr/sessions/${session}/herdr.sock`;
+	if (session && platform !== 'win32') return `${deps.home}/.config/herdr/sessions/${session}/herdr.sock`;
 	const fromEnv = deps.env.HERDR_SOCKET_PATH?.trim();
-	if (fromEnv) return expandHome(fromEnv, deps.home);
-	return expandHome(DEFAULT_SOCKET_PATH, deps.home);
+	if (fromEnv) return expandHome(fromEnv, { home: deps.home, style });
+	return expandHome(DEFAULT_SOCKET_PATH, { home: deps.home, style });
 }
 
 export interface DiscoveryResult {
@@ -472,7 +492,7 @@ export async function discoverHerdr(
 			socketPath: resolveSocketPath({ override: options.socketOverride }, deps),
 			error: options.override?.trim()
 				? `herdr is not executable at ${options.override.trim()}`
-				: 'herdr was not found in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or the login shell PATH',
+				: 'herdr was not found in configured paths, known install directories or PATH',
 		};
 	}
 

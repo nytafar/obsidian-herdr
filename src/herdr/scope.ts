@@ -30,7 +30,8 @@
  * reusable from the remote profile.
  */
 
-import { lastPathSegment, trimTrailingSlashes } from '../paths';
+import { lastPathSegment } from '../paths';
+import { isPathInside, type PathStyle } from '../platform';
 import { sameCacheBadge } from './cacheBadge';
 import type { HerdrEvent } from './client';
 import type { AgentInfo, AgentStatus, PaneInfo, WorkspaceInfo } from './types.gen';
@@ -131,6 +132,8 @@ export interface ScopeOptions {
 	 * because the panes' cwds are remote paths (PRD S5, M19).
 	 */
 	remoteVaultPath?: string;
+	/** Filesystem style of paths herdr reports for this endpoint. */
+	pathStyle?: PathStyle;
 	/**
 	 * Panes of one workspace, normally `pane.list` with a `workspace_id`. The
 	 * scope calls it only when `pane_agent_detected` announces an agent on a pane
@@ -157,11 +160,8 @@ const RELEVANT: (keyof PaneState)[] = [
 ];
 
 /** True when `cwd` is the root itself or sits below it. Not a string prefix. */
-export function isUnder(cwd: string, root: string): boolean {
-	if (!cwd || !root) return false;
-	const normalRoot = trimTrailingSlashes(root);
-	if (cwd === normalRoot) return true;
-	return cwd.startsWith(`${normalRoot}/`);
+export function isUnder(cwd: string, root: string, pathStyle: PathStyle = 'posix'): boolean {
+	return isPathInside(cwd, root, pathStyle);
 }
 
 /**
@@ -256,7 +256,8 @@ export function resolveWorkspace(
 	const override = options.workspaceId?.trim();
 	if (override) return { workspaceId: override, method: 'setting' };
 
-	const name = (options.vaultName ?? lastPathSegment(options.vaultPath)).trim();
+	const style = options.pathStyle ?? 'posix';
+	const name = (options.vaultName ?? lastPathSegment(options.vaultPath, style)).trim();
 	if (name) {
 		const exact = workspaces.find((workspace) => workspace.label === name);
 		if (exact) return { workspaceId: exact.workspace_id, method: 'label' };
@@ -273,7 +274,7 @@ export function resolveWorkspace(
 		const hits = new Map<string, number>();
 		for (const pane of panes) {
 			const cwd = pane.cwd ?? pane.foreground_cwd ?? '';
-			if (!isUnder(cwd, root)) continue;
+			if (!isUnder(cwd, root, style)) continue;
 			hits.set(pane.workspace_id, (hits.get(pane.workspace_id) ?? 0) + 1);
 		}
 		let best: string | null = null;

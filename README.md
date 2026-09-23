@@ -37,7 +37,7 @@ attach to also shows up, whatever started it.
 ## Requirements
 
 - Obsidian **desktop** 1.7.2 or newer. No mobile build.
-- macOS or Linux.
+- macOS, Linux, or Windows (native local mode; remote-profile combinations remain best-effort).
 - **herdr 0.8.0 or newer, already running.** The plugin never starts, stops or
   updates a herdr server; it attaches to the one you have.
 - For the remote profile: `ssh` on this machine, key-based login that does not

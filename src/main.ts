@@ -471,6 +471,7 @@ export default class HerdrPlugin extends Plugin {
 			activeFilePath: workspace.getActiveFile()?.path ?? null,
 			// herdr's view of the vault, because the cwd is herdr's (PRD S5, M19).
 			vaultPath: this.herdrVaultPath(),
+			pathStyle: this.endpoint.pathStyle,
 		});
 		if (decision.kind === 'tab') return workspace.getLeaf('tab');
 		const source = this.activeNoteLeaf();
@@ -645,6 +646,7 @@ export default class HerdrPlugin extends Plugin {
 		return resolveFolderPath(folder?.path ?? '', {
 			basePath: this.vaultPath(),
 			remoteVaultPath: remote.enabled ? remote.remoteVaultPath : undefined,
+			pathStyle: this.endpoint.pathStyle,
 		});
 	}
 
@@ -852,6 +854,7 @@ export default class HerdrPlugin extends Plugin {
 			workspaceId: this.settings.workspaceId,
 			vaultPath: this.vaultPath(),
 			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
+			pathStyle: endpoint.pathStyle,
 			// The one request the scope makes: what `pane_agent_detected` leaves out
 			// for a pane that just gained an agent (issue #75). Answered by the
 			// client of the connection this scope belongs to, and only while that

@@ -13,10 +13,10 @@
  * it lines up with the pane's cwd, which is a path on the machine herdr runs on.
  */
 
-import { normalizePosixPath } from './actions';
-import { trimTrailingSlashes } from './paths';
+import { resolveFolderPath } from './actions';
 import { isUnder } from './herdr/scope';
 import type { TerminalPlacement, TerminalTabMode } from './settings';
+import type { PathStyle } from './platform';
 
 export interface PlacementInput {
 	/** The `terminalPlacement` setting. */
@@ -27,6 +27,8 @@ export interface PlacementInput {
 	activeFilePath: string | null;
 	/** Vault path as herdr sees it (`herdrVaultPath()`). Empty when unknown. */
 	vaultPath: string;
+	/** Filesystem style of the endpoint this pane belongs to. */
+	pathStyle?: PathStyle;
 }
 
 /** A tab, or a split beside the note; `before` puts the terminal on the left. */
@@ -47,10 +49,11 @@ export function decidePlacement(input: PlacementInput): PlacementDecision {
 	const relative = input.activeFilePath?.trim() ?? '';
 	const cwd = input.paneCwd.trim();
 	const vault = input.vaultPath.trim();
+	const style = input.pathStyle ?? 'posix';
 	if (!relative || !cwd || !vault) return TAB;
 
-	const notePath = normalizePosixPath(`${trimTrailingSlashes(vault)}/${relative}`);
-	if (!isUnder(notePath, cwd)) return TAB;
+	const notePath = resolveFolderPath(relative, { basePath: vault, pathStyle: style });
+	if (!isUnder(notePath, cwd, style)) return TAB;
 
 	return { kind: 'split', before: input.placement === 'split-left' };
 }

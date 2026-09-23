@@ -494,6 +494,16 @@ describe('spawnEnv', () => {
 		expect(result).toEqual({ HOME: '/Users/lasse', PATH: '/opt/homebrew/bin' });
 		expect(env).toEqual({ HOME: '/Users/lasse' });
 	});
+
+	it('uses the Windows PATH delimiter when asked', () => {
+		expect(
+			spawnEnv(
+				{ PATH: 'C:\\Windows\\System32;C:\\tools' },
+				'C:\\Users\\me\\bin; C:\\tools ',
+				';',
+			),
+		).toEqual({ PATH: 'C:\\Users\\me\\bin;C:\\tools;C:\\Windows\\System32' });
+	});
 });
 
 describe('isRecoverable (notes/herdr-terminal-bridge.md reasons)', () => {

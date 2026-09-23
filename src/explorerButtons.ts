@@ -48,6 +48,7 @@ import { resolveFolderPath } from './actions';
 import { trimTrailingSlashes } from './paths';
 import { isUnder, type PaneState } from './herdr/scope';
 import { asElement } from './views/dom';
+import type { PathStyle } from './platform';
 
 /** View type of the built-in file explorer. */
 const FILE_EXPLORER_VIEW_TYPE = 'file-explorer';
@@ -153,9 +154,13 @@ export function vaultRelativeLabel(dataPath: string): string {
  * relative path first: {@link resolveFolderPath} would otherwise take it for an
  * absolute path and hand back the filesystem root.
  */
-export function folderAbsPath(dataPath: string, herdrVaultPath: string): string {
+export function folderAbsPath(
+	dataPath: string,
+	herdrVaultPath: string,
+	pathStyle: PathStyle = 'posix',
+): string {
 	const relative = vaultRelativeLabel(dataPath);
-	return resolveFolderPath(relative === '/' ? '' : relative, { basePath: herdrVaultPath });
+	return resolveFolderPath(relative === '/' ? '' : relative, { basePath: herdrVaultPath, pathStyle });
 }
 
 /**
@@ -389,7 +394,8 @@ export class ExplorerFolderButtons {
 	}
 
 	private openMenu(button: HTMLElement, dataPath: string, show: MenuAnchor): void {
-		const absolute = folderAbsPath(dataPath, this.plugin.herdrVaultPath());
+		const style = this.plugin.endpoint?.pathStyle ?? 'posix';
+		const absolute = folderAbsPath(dataPath, this.plugin.herdrVaultPath(), style);
 		const panes = this.plugin.scope?.list() ?? [];
 		const menu = new Menu();
 		for (const item of menuItemsFor(absolute, panes)) {
