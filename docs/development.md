@@ -64,7 +64,7 @@ build in a running vault.
 ## Releases
 
 `.github/workflows/release.yml` builds on a bare version tag (e.g. `0.1.0`, no
-`v` prefix — Obsidian's own contract, see AGENTS.md and the official sample
+`v` prefix — Obsidian's own contract, see `docs/agents/obsidian-plugin.md` and the official sample
 plugin) matching `manifest.json`'s version, and ships exactly `main.js`,
 `manifest.json` and `styles.css`. The build asserts the embedded, Brotli-compressed
 WebAssembly is present and that no stray files are emitted.
