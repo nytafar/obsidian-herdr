@@ -479,10 +479,16 @@
  * off Obsidian's own class so no theme rule written for a note's sizer lands on
  * a text area, and it invents no width: `--file-line-width` is the same
  * variable Obsidian reads.
+ *
+ * `width: 100%` because these are flex items of the view's column: auto side
+ * margins turn off the cross-axis stretch, and without a width the prompt box
+ * shrinks to what is typed in it, growing only up to the cap.
  */
 .herdr-native-view.is-readable-line-width .herdr-native-sizer {
+	box-sizing: border-box;
 	margin-inline: auto;
 	max-width: var(--file-line-width);
+	width: 100%;
 }
 
 .herdr-native-status {
