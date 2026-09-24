@@ -44,6 +44,7 @@ import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { registerOutlineSwap } from './native/tocOutline';
+import { HOVER_LINK_SOURCE } from './native/noteLinks';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
@@ -251,6 +252,8 @@ export default class HerdrPlugin extends Plugin {
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerView(TOC_VIEW_TYPE, (leaf) => new TocView(leaf, this));
+		// Page preview for links in the native view (#114), behind the mod key.
+		this.registerHoverLinkSource(HOVER_LINK_SOURCE, { display: 'Herdr', defaultMod: true });
 		this.registerCommands();
 		this.registerStatusBar();
 		// A reconnect or an endpoint switch replaces the scope and the client the

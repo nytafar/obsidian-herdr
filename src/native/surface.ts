@@ -19,7 +19,16 @@
  * unavailable there and {@link effectivePaneView} falls back.
  */
 
-import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
+import {
+	Component,
+	Keymap,
+	MarkdownRenderer,
+	Notice,
+	type App,
+	type HoverParent,
+	type HoverPopover,
+	type WorkspaceLeaf,
+} from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import { type PaneView } from './renderMode';
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
@@ -40,6 +49,8 @@ import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { waitingCard, type WaitingCardModel } from './waitingCard';
+import { HOVER_LINK_SOURCE, fillUriLink, linkVaultUris, openLinkBeside } from './noteLinks';
+import { findObsidianUris, resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
 import type {
 	SessionChange,
@@ -252,6 +263,24 @@ export interface NativePaneSurfaceOptions {
 	 * every path outside the vault.
 	 */
 	vaultPath: () => string;
+	/**
+	 * The leaf this view sits in, so a link opens beside it and never in it
+	 * (#114). Read on every click; null, or left out by a test that does not
+	 * click, opens links in a new tab instead of a split.
+	 */
+	leaf?: () => WorkspaceLeaf | null;
+	/**
+	 * Whether a note split off beside this view goes before (left of) it, which
+	 * mirrors the terminal placement setting: a terminal placed right of its
+	 * note gets its links on the left (#114). Defaults to false.
+	 */
+	noteSplitBefore?: () => boolean;
+	/**
+	 * What links in the prose and prompts resolve against: a path in the pane's
+	 * cwd when that is inside the vault (`./noteLinks.ts`, `linkSourcePath`),
+	 * else the vault root. Defaults to the vault root.
+	 */
+	linkSourcePath?: () => string;
 }
 
 /**
@@ -296,16 +325,20 @@ export function isAtBottom(geometry: {
 	return furthest - geometry.scrollTop <= BOTTOM_SLACK_PX;
 }
 
-/** One piece of a human prompt: literal text, or a wikilink to a note. */
+/**
+ * One piece of a human prompt: literal text, a wikilink to a note, or an
+ * `obsidian://` URI (#114), which is resolved when it is drawn.
+ */
 export type PromptSegment =
 	| { kind: 'text'; text: string }
-	| { kind: 'link'; target: string; label: string };
+	| { kind: 'link'; target: string; label: string }
+	| { kind: 'uri'; uri: string };
 
 /**
- * A human prompt split into text and wikilinks.
+ * A human prompt split into text, wikilinks and `obsidian://` URIs.
  *
  * Human prompts are shown as the human typed them — plain, pre-wrapped text,
- * not Markdown — with the one exception that a wikilink is a link, because a
+ * not Markdown — with the one exception that a link is a link, because a
  * prompt in this vault is usually half references (native-view-design.md).
  */
 export function promptSegments(prompt: string): PromptSegment[] {
@@ -313,14 +346,34 @@ export function promptSegments(prompt: string): PromptSegment[] {
 	const pattern = /\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]/g;
 	let at = 0;
 	for (let match = pattern.exec(prompt); match; match = pattern.exec(prompt)) {
-		if (match.index > at) segments.push({ kind: 'text', text: prompt.slice(at, match.index) });
+		if (match.index > at) segments.push(...textSegments(prompt.slice(at, match.index)));
 		const target = (match[1] ?? '').trim();
 		const alias = match[2]?.trim();
 		segments.push({ kind: 'link', target, label: alias || target });
 		at = match.index + match[0].length;
 	}
-	if (at < prompt.length) segments.push({ kind: 'text', text: prompt.slice(at) });
+	if (at < prompt.length) segments.push(...textSegments(prompt.slice(at)));
 	return segments;
+}
+
+/** A run of prompt text between wikilinks, with its `obsidian://` URIs split out. */
+function textSegments(text: string): PromptSegment[] {
+	const segments: PromptSegment[] = [];
+	let at = 0;
+	for (const match of findObsidianUris(text)) {
+		if (match.start > at) segments.push({ kind: 'text', text: text.slice(at, match.start) });
+		segments.push({ kind: 'uri', uri: match.uri });
+		at = match.end;
+	}
+	if (at < text.length) segments.push({ kind: 'text', text: text.slice(at) });
+	return segments;
+}
+
+/** The link an event inside the view landed on, if it landed on one (#114). */
+function linkAt(target: EventTarget | null): HTMLElement | null {
+	const el = target as HTMLElement | null;
+	if (typeof el?.closest !== 'function') return null;
+	return el.closest<HTMLElement>('a.internal-link');
 }
 
 /**
@@ -365,7 +418,9 @@ interface TurnDraw {
  * listener and every rendered Markdown child hangs off a `Component` that is
  * unloaded when its turn is redrawn or the surface detaches.
  */
-export class NativePaneSurface implements PaneSurface {
+export class NativePaneSurface implements PaneSurface, HoverParent {
+	/** The page preview a hovered link opened, as `HoverParent` asks (#114). */
+	hoverPopover: HoverPopover | null = null;
 	private identity: PaneIdentity;
 	private readonly options: NativePaneSurfaceOptions;
 	/** The element this surface added to the host; removed again on detach. */
@@ -466,6 +521,11 @@ export class NativePaneSurface implements PaneSurface {
 		this.component.registerDomEvent(turns, 'scroll', () => {
 			this.following = isAtBottom(turns);
 		});
+		// Every link in the view, prose and prompts alike, through one handler
+		// (#114): Obsidian's renderer wires no clicks of its own here.
+		this.component.registerDomEvent(root, 'click', (event) => this.onLinkClick(event, 0));
+		this.component.registerDomEvent(root, 'auxclick', (event) => this.onLinkClick(event, 1));
+		this.component.registerDomEvent(root, 'mouseover', (event) => this.onLinkHover(event));
 		this.watchForGrowth(turns);
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
@@ -674,7 +734,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.turnComponents.set(turn.id, component);
 
 		if (turn.prompt) {
-			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt, component);
+			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt);
 		}
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
 		// folded into groups with the vault changes and sources left outside.
@@ -702,7 +762,7 @@ export class NativePaneSurface implements PaneSurface {
 				this.renderToolGroup(turnEl, item.tools);
 				return;
 			case 'change':
-				this.renderVaultChange(turnEl, item.entry, component);
+				this.renderVaultChange(turnEl, item.entry);
 				return;
 			case 'source':
 				this.renderSource(turnEl, item.entry);
@@ -712,11 +772,7 @@ export class NativePaneSurface implements PaneSurface {
 				return;
 			case 'steer':
 				// A steer is shown where it entered the running turn (CONTEXT.md).
-				this.renderPrompt(
-					turnEl.createDiv({ cls: 'herdr-native-steer' }),
-					item.entry.text,
-					component,
-				);
+				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), item.entry.text);
 				return;
 		}
 	}
@@ -820,7 +876,7 @@ export class NativePaneSurface implements PaneSurface {
 	 * refused, or that nothing has answered yet, must not read as one that
 	 * landed.
 	 */
-	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
+	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry): void {
 		const path = changedPath(entry);
 		if (!path) return;
 		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
@@ -829,7 +885,7 @@ export class NativePaneSurface implements PaneSurface {
 		const { lead, trail } = changeLine(entry.status);
 		el.appendText(lead);
 		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (link) this.renderPrompt(el, `[[${link}]]`, component);
+		if (link) this.renderPrompt(el, `[[${link}]]`);
 		else el.appendText(path);
 		if (trail) el.appendText(trail);
 	}
@@ -876,29 +932,78 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
-	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */
-	private renderPrompt(el: HTMLElement, prompt: string, component: Component): void {
+	/**
+	 * A human prompt: text as typed, wikilinks and `obsidian://` URIs as links.
+	 * A click on one is the view's delegated handler's ({@link onLinkClick}).
+	 */
+	private renderPrompt(el: HTMLElement, prompt: string): void {
 		for (const segment of promptSegments(prompt)) {
 			if (segment.kind === 'text') {
 				el.appendText(segment.text);
 				continue;
 			}
-			const linkEl = el.createEl('a', {
+			if (segment.kind === 'uri') {
+				fillUriLink(el.createEl('a'), segment.uri, this.resolveUri(segment.uri));
+				continue;
+			}
+			el.createEl('a', {
 				cls: 'internal-link',
 				text: segment.label,
 				href: segment.target,
 				attr: { 'data-href': segment.target },
 			});
-			component.registerDomEvent(linkEl, 'click', (event) => {
-				event.preventDefault();
-				// A mod-click opens the note in a new tab, as a link in a note does.
-				void this.options.app.workspace.openLinkText(
-					segment.target,
-					'',
-					Keymap.isModEvent(event),
-				);
-			});
 		}
+	}
+
+	/** The vault path an `obsidian://` URI opens in this vault, or null (#114). */
+	private resolveUri(uri: string): string | null {
+		return resolveObsidianUri(uri, vaultLookup(this.options.app, this.options.vaultPath()));
+	}
+
+	/** What the view's links resolve against (#114). */
+	private sourcePath(): string {
+		return this.options.linkSourcePath?.() ?? '';
+	}
+
+	/**
+	 * A click on a link: beside the view on a plain click, where Obsidian would
+	 * on a mod-click, a new tab on a middle click (#114). Never the operating
+	 * system's protocol handler, and never this view's own leaf.
+	 *
+	 * A click something inside the link already handled — an embed's own
+	 * reading view wires its links — is left to it.
+	 */
+	private onLinkClick(event: MouseEvent, button: number): void {
+		if (event.defaultPrevented || (event.button ?? 0) !== button) return;
+		const linkEl = linkAt(event.target);
+		const linktext = linkEl?.getAttribute('data-href') ?? linkEl?.getAttribute('href');
+		if (!linktext) return;
+		event.preventDefault();
+		openLinkBeside(this.options.app, {
+			linktext,
+			sourcePath: this.sourcePath(),
+			ownLeaf: this.options.leaf?.() ?? null,
+			newLeaf: button === 1 ? 'tab' : Keymap.isModEvent(event),
+			splitBefore: this.options.noteSplitBefore?.() ?? false,
+		}).catch((error: unknown) => {
+			const reason = error instanceof Error ? error.message : String(error);
+			this.notify(`Herdr: could not open ${linktext} (${reason})`);
+		});
+	}
+
+	/** A hover over a link: Obsidian's page preview, as in a note (#114). */
+	private onLinkHover(event: MouseEvent): void {
+		const linkEl = linkAt(event.target);
+		const linktext = linkEl?.getAttribute('data-href');
+		if (!linkEl || !linktext) return;
+		this.options.app.workspace.trigger('hover-link', {
+			event,
+			source: HOVER_LINK_SOURCE,
+			hoverParent: this,
+			targetEl: linkEl,
+			linktext,
+			sourcePath: this.sourcePath(),
+		});
 	}
 
 	/**
@@ -916,7 +1021,13 @@ export class NativePaneSurface implements PaneSurface {
 		el: HTMLElement,
 		component: Component,
 	): Promise<void> {
-		const rendering = MarkdownRenderer.render(this.options.app, markdown, el, '', component);
+		const rendering = MarkdownRenderer.render(
+			this.options.app,
+			markdown,
+			el,
+			this.sourcePath(),
+			component,
+		).then(() => linkVaultUris(el, (uri) => this.resolveUri(uri)));
 		this.renders.push(rendering);
 		return rendering;
 	}

@@ -11,9 +11,20 @@ read those. Coding work keeps the terminal; it is one click away on every tab.
 - **The agent's prose, rendered as a note.** Every assistant block goes
   through Obsidian's own Markdown renderer, so wikilinks resolve, callouts and
   embeds work, code blocks highlight, and your theme, fonts and readable line
-  length apply. Clicking a wikilink opens the note.
+  length apply. Relative links resolve from the agent's folder when it is
+  inside the vault.
 - **Your prompts** as plain text with wikilinks made clickable, so pasted
   snippets and `@` paths are not mangled.
+- **Links open beside the view.** Clicking a wikilink opens the note next to
+  the transcript, in the split beside it or in a leaf already showing that
+  note, and never in place of the view. Ctrl-click (Cmd-click on macOS) opens
+  a new tab, as in a note. Hold the same key while hovering for a page
+  preview.
+- **`obsidian://` links as note paths.** A link to a note in this vault, such
+  as `obsidian://open?vault=…&file=…`, shows as the note's path from the vault
+  root and opens inside the vault the same way, in prose (bare, in inline code
+  or as a Markdown link, which keeps its label) and in your prompts. A link to
+  another vault stays an ordinary external link.
 - **Tool calls collapsed into one line per run**, such as "Read 4 files, ran 2
   commands", which expands to the individual calls. Two kinds stay visible in
   the text at the point they happened: vault edits, shown as "Updated

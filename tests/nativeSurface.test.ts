@@ -336,9 +336,11 @@ describe('NativePaneSurface: a turn', () => {
 		// The text around the link survives, whitespace and all.
 		expect(prompt.textContent).toBe('Read the design first');
 
-		link.dispatch('click');
+		// A mod-click is Obsidian's to place; where a plain click opens the note,
+		// beside the view, is `tests/nativeLinks.test.ts` (#114).
+		link.dispatch('click', { ctrlKey: true });
 
-		expect(openLinkText).toHaveBeenCalledWith('native-view-design', '', false);
+		expect(openLinkText).toHaveBeenCalledWith('native-view-design', '', true);
 	});
 
 	it('shows a steer where it entered the turn', async () => {
@@ -489,8 +491,8 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(inside?.textContent).toBe('Updated repos/obsidian-herdr/CONTEXT');
 		const link = inside?.find('internal-link');
 		expect(link?.attrs['data-href']).toBe('repos/obsidian-herdr/CONTEXT');
-		link?.dispatch('click');
-		expect(openLinkText).toHaveBeenCalledWith('repos/obsidian-herdr/CONTEXT', '', false);
+		link?.dispatch('click', { ctrlKey: true });
+		expect(openLinkText).toHaveBeenCalledWith('repos/obsidian-herdr/CONTEXT', '', true);
 		// Outside the vault there is nothing to strip and nothing to link to.
 		expect(outside?.textContent).toBe('Updated /etc/hosts');
 		expect(outside?.findAll('internal-link')).toEqual([]);

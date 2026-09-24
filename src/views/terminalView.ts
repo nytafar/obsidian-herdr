@@ -76,6 +76,7 @@ import {
 import type HerdrPlugin from '../main';
 import {
 	cursorOptions,
+	normalizeTerminalPlacement,
 	normalizeTerminalTitleSource,
 	scrollbackBytes,
 	type AttachMode,
@@ -129,6 +130,7 @@ import {
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
+import { linkSourcePath } from '../native/noteLinks';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -724,6 +726,13 @@ export class TerminalView extends ItemView {
 			// user moved reach a view that is already open (#95).
 			presentation: () => normalizeToolGroupPresentation(this.plugin.settings.nativeToolGroups),
 			vaultPath: () => this.plugin.vaultPath(),
+			// Links open beside this leaf, never in it (#114), on the side
+			// opposite the one a terminal is placed on beside its note.
+			leaf: () => this.leaf,
+			noteSplitBefore: () =>
+				normalizeTerminalPlacement(this.plugin.settings.terminalPlacement) !== 'split-left',
+			// Relative links resolve from the pane's cwd when it is in the vault.
+			linkSourcePath: () => linkSourcePath(this.paneCwd(), this.plugin.vaultPath()),
 		});
 	}
 
