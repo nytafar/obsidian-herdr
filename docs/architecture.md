@@ -286,7 +286,19 @@ scratch pane created with `tab create` and `agent start`.
   permission mode, and a question and plan approval are the user's; the native
   view shows those three and leaves them to the terminal (the "Allow" button
   and the auto-accept setting of #99 were withdrawn on 2026-09-15 for that
-  reason). The transcript shows a permission block as a dangling `tool_use`; a
-  question as a dangling `AskUserQuestion` call; plan approval as a dangling
-  `ExitPlanMode` call; the trust prompt as no transcript at all.
-  `agent_status` is `blocked` in all of them.
+  reason). The transcript shows a permission block as a dangling `tool_use`;
+  plan approval as a dangling `ExitPlanMode` call; the trust prompt as no
+  transcript at all. `agent_status` is `blocked` in all of them.
+- **A pending question is not in the transcript.** Re-measured 2026-09-24
+  against herdr 0.8.2 and Claude Code 2.1.281 (2.1.266 above read otherwise):
+  the `AskUserQuestion` `tool_use` line is written only once the question is
+  answered, together with its `tool_result`, whose `toolUseResult.answers`
+  holds the choices. A Write or Bash permission and `ExitPlanMode` are still
+  dangling `tool_use` lines written before their dialog. So a `blocked` agent
+  with no dangling call, past startup, is showing a question, and the
+  question's text and options are only on screen (`pane.read`). The dialog
+  takes keys: a digit selects an answer (toggles one, on a multi-select), and
+  on a dialog with more than one question `right` then `1` submits; a
+  one-question single-select dialog submits on the digit. Details and the
+  probe in the docs root, `findings/native-view-session-chrome.md` and
+  `findings/native-view-control-channels.md`.
