@@ -44,7 +44,7 @@ import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { registerOutlineSwap } from './native/tocOutline';
-import { countStatuses } from './views/rowModel';
+import { countStatuses, type TerminalRef } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
 	PaneViewEvents,
@@ -542,6 +542,20 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	isTerminalOpen(paneId: string, endpointId: string): boolean {
 		return this.terminalLeaf(paneId, endpointId) !== null;
+	}
+
+	/**
+	 * The terminal in the active tab, or null when that tab is something else
+	 * (issue #76). "Active" is the most recent main-area or pop-out leaf, not
+	 * `activeLeaf`: clicking a row makes the sidebar active, and the tab the
+	 * user was just in must stay marked, as the file explorer keeps marking the
+	 * active file. The persisted state is read, as {@link terminalLeaf} does.
+	 */
+	activeTerminalPane(): TerminalRef | null {
+		const viewState = this.app.workspace.getMostRecentLeaf()?.getViewState();
+		if (viewState?.type !== TERMINAL_VIEW_TYPE) return null;
+		const state = parseTerminalState(viewState.state);
+		return state ? { paneId: state.paneId, endpointId: state.endpointId } : null;
 	}
 
 	/**
