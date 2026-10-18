@@ -103,6 +103,11 @@
 	padding: var(--size-2-2) var(--size-4-2);
 	border-radius: var(--radius-s);
 	cursor: var(--cursor);
+	/* The faint tier of the live background (issue #76): the full tier at half
+	   strength, so the two read as one signal in two strengths and the faint one
+	   inherits whatever legibility the theme gave the full one. A property, so a
+	   snippet can retune it without touching the rules. */
+	--herdr-row-live-faint: color-mix(in srgb, var(--nav-item-background-active) 50%, transparent);
 }
 
 .herdr-agent-row:hover {
@@ -115,20 +120,45 @@
 }
 
 /*
- * The pane herdr has focused. `--nav-item-background-active` and not
- * `--background-modifier-active-hover`, which is Obsidian's blend for an item
- * that is active *and* hovered and so is faint by design: as a resting state it
- * came out invisible in both RedShift and Gruvbox (issue #77). A theme has to
- * keep the nav-item variables legible or its own file explorer stops marking the
- * active file, which is the guarantee we want and the modifier does not carry.
+ * The live background (issue #76): the surface the row *body* opens, which is
+ * the Obsidian terminal by default and herdr focus when the row-click setting
+ * is swapped. `mod-live-full` is the active terminal tab, or the herdr-focused
+ * pane when swapped; `mod-live-faint` is a terminal open in some other tab.
+ * Which tier a row gets is `rowModel.ts`; this file only paints the class.
  *
- * It stays put under the pointer rather than swapping to the active-hover blend,
- * because that blend is the faint value this rule exists to get away from. The
- * hover feedback on a focused row is the action icon appearing.
+ * `--nav-item-background-active` and not `--background-modifier-active-hover`,
+ * which is Obsidian's blend for an item that is active *and* hovered and so is
+ * faint by design: as a resting state it came out invisible in both RedShift
+ * and Gruvbox (issue #77). A theme has to keep the nav-item variables legible or
+ * its own file explorer stops marking the active file, which is the guarantee we
+ * want and the modifier does not carry. The full tier takes the matching
+ * `--nav-item-color-active` for the name, the pair the theme tuned together.
+ *
+ * Both tiers stay put under the pointer: the live treatment wins over hover
+ * rather than blending with it, and a hover that swapped in
+ * `--background-modifier-hover` would, in the default theme, be the very value
+ * the full tier uses. Hover on such a row is an inset ring instead, drawn with
+ * `outline` so it never fights the `box-shadow` focus ring, plus the action icon
+ * appearing as on every row.
  */
-.herdr-agent-row.is-focused,
-.herdr-agent-row.is-focused:hover {
+.herdr-agent-row.mod-live-faint,
+.herdr-agent-row.mod-live-faint:hover {
+	background-color: var(--herdr-row-live-faint);
+}
+
+.herdr-agent-row.mod-live-full,
+.herdr-agent-row.mod-live-full:hover {
 	background-color: var(--nav-item-background-active);
+}
+
+.herdr-agent-row.mod-live-full .herdr-agent-name {
+	color: var(--nav-item-color-active);
+}
+
+.herdr-agent-row.mod-live-faint:hover,
+.herdr-agent-row.mod-live-full:hover {
+	outline: 1px solid var(--background-modifier-border-hover);
+	outline-offset: -1px;
 }
 
 .herdr-agent-text {
@@ -222,7 +252,15 @@
    (issue #42) — twenty quiet rows each with an icon is noise. It keeps its place
    in the layout while hidden, so nothing shifts when the pointer arrives, and it
    stays a `button` in the tab order: only `opacity` hides it, and `:focus-within`
-   brings it back the moment Tab reaches the row or the button itself. */
+   brings it back the moment Tab reaches the row or the button itself.
+
+   It also stays visible while its own surface is live for the agent (issue #76),
+   so a persistent icon only ever means what clicking it does: by default the
+   arrow marks the pane herdr is on, swapped the terminal icon marks an open
+   terminal. `mod-faint` is the weaker tier, an open terminal that is not the
+   active tab, at reduced opacity; hover and focus still bring it to full, which
+   is also the hover cue on that row. The two live rules come before the reveal
+   so the reveal, at equal specificity, wins. */
 
 .herdr-row-action {
 	flex: 0 0 auto;
@@ -232,6 +270,15 @@
 	pointer-events: none;
 }
 
+.herdr-row-action.is-live {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.herdr-row-action.is-live.mod-faint {
+	opacity: 0.5;
+}
+
 .herdr-agent-row:hover .herdr-row-action,
 .herdr-agent-row:focus-within .herdr-row-action {
 	opacity: 1;
@@ -239,9 +286,11 @@
 }
 
 /* A pointer that cannot hover — touch, pen — would never see the reveal, so
-   there the button is simply always visible. */
+   there the button is simply always visible. The faint live tier is lifted too:
+   at half opacity among full ones it would read as the *least* live row. */
 @media (hover: none) {
-	.herdr-row-action {
+	.herdr-row-action,
+	.herdr-row-action.is-live.mod-faint {
 		opacity: 1;
 		pointer-events: auto;
 	}

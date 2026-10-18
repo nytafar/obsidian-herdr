@@ -56,7 +56,13 @@ import type { RowMenuItem } from './rowMenu';
 import { RowDispatcher, type PaneRef, type RowDispatchHost } from './rowDispatch';
 import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
-import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
+import {
+	buildRows,
+	rowActions,
+	type RowGroup,
+	type RowModel,
+	type TerminalRef,
+} from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -88,12 +94,33 @@ export function endpointToggle(settings: Pick<HerdrSettings, 'remote'>): Endpoin
 	};
 }
 
+/** The live terminals one repaint draws from (issue #76). */
+interface LiveTerminals {
+	open: TerminalRef[];
+	active: TerminalRef | null;
+}
+
+/**
+ * A comparable spelling of {@link LiveTerminals}. Pane ids carry no newline or
+ * tab, and the open list is in scope order, which only a scope event changes —
+ * and a scope event repaints anyway.
+ */
+function liveKey(live: LiveTerminals): string {
+	const ref = (r: TerminalRef): string => `${r.endpointId}\t${r.paneId}`;
+	return [live.active ? ref(live.active) : '', ...live.open.map(ref)].join('\n');
+}
+
 export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private listEl: HTMLElement | null = null;
 	/** The local/remote toggle (issue #54); null until the toolbar is built. */
 	private endpointToggleEl: HTMLElement | null = null;
 	private pendingRender = 0;
+	/**
+	 * Which terminals the last repaint marked live, as {@link liveKey} spells
+	 * it (issue #76). A workspace event repaints only when this has moved.
+	 */
+	private renderedLive = '';
 	/** Unsubscribes from the scope and label cache bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
 	/** Turns an event on a row into an effect (issue #82). */
@@ -135,6 +162,10 @@ export class AgentListView extends ItemView {
 		// a plugin reload rebuilds this view before it too; rebinding on replace is
 		// what turns "Not connected to herdr." into rows without a manual reopen.
 		this.register(this.plugin.onScopeReplaced(() => this.bindScope()));
+		// Where an agent is live follows the tabs (issue #76): switching tabs and
+		// opening or closing a terminal must repaint without a manual refresh.
+		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.liveMaybeMoved()));
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.liveMaybeMoved()));
 		this.register(() => {
 			if (this.pendingRender) this.containerEl.win.cancelAnimationFrame(this.pendingRender);
 			this.pendingRender = 0;
@@ -341,6 +372,32 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
+	 * Repaints after a workspace event only when the live terminals differ from
+	 * what is drawn. Clicking a row makes this sidebar the active leaf, and a
+	 * repaint then would swap the row out between mousedown and mouseup and
+	 * lose the click; the active tab it marks has not changed, so nothing is
+	 * scheduled. A real change still goes through {@link scheduleRender}.
+	 */
+	private liveMaybeMoved(): void {
+		const scope = this.session()?.scope;
+		// Without a workspace there are no rows to mark.
+		if (!scope?.workspaceId) return;
+		if (liveKey(this.liveTerminals(scope.list())) !== this.renderedLive) this.scheduleRender();
+	}
+
+	/**
+	 * The terminal tabs this list's panes have on the connected endpoint, and
+	 * the one in the active tab, which may belong to anything.
+	 */
+	private liveTerminals(panes: readonly { paneId: string }[]): LiveTerminals {
+		const endpointId = this.plugin.endpoint.id;
+		const open = panes
+			.filter((pane) => this.plugin.isTerminalOpen(pane.paneId, endpointId))
+			.map((pane) => ({ endpointId, paneId: pane.paneId }));
+		return { open, active: this.plugin.activeTerminalPane() };
+	}
+
+	/**
 	 * Coalesces a burst of scope events into one repaint per animation frame, on
 	 * the window this view lives in so a popout sidebar still gets frames.
 	 */
@@ -361,6 +418,7 @@ export class AgentListView extends ItemView {
 		const list = this.listEl;
 		if (!list) return;
 		list.empty();
+		this.renderedLive = '';
 		// The host may have been typed into settings since the toolbar was built,
 		// and the settings tab's own toggle flips the same flag.
 		this.updateEndpointToggle();
@@ -377,6 +435,8 @@ export class AgentListView extends ItemView {
 			return;
 		}
 		const panes = scope.list();
+		const live = this.liveTerminals(panes);
+		this.renderedLive = liveKey(live);
 		if (panes.length === 0) {
 			list.createDiv({ cls: 'herdr-empty', text: 'No agents in this workspace.' });
 			return;
@@ -394,6 +454,11 @@ export class AgentListView extends ItemView {
 			// Pins are per endpoint (issue #35): a local pane id says nothing about
 			// a remote pane that happens to share it.
 			pinnedPaneIds: pinnedPaneIds(settings, this.plugin.endpoint.id),
+			// Where each agent is live (issue #76), matched on endpoint and pane.
+			rowClick: settings.agentListRowClick,
+			endpointId: this.plugin.endpoint.id,
+			openTerminals: live.open,
+			activeTerminal: live.active,
 		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
@@ -414,12 +479,19 @@ export class AgentListView extends ItemView {
 
 	private renderRow(parent: HTMLElement, model: RowModel): void {
 		const rowClasses = ['herdr-agent-row'];
+		// A hook only since issue #76: what herdr focus looks like depends on the
+		// row-click setting, so the paint comes from the channel classes below.
 		if (model.focused) rowClasses.push('is-focused');
 		if (model.pinned) rowClasses.push('is-pinned');
+		// The background channel (issue #76): the body's surface, in two strengths.
+		if (model.backgroundTier !== 'none') rowClasses.push(`mod-live-${model.backgroundTier}`);
 		const row = parent.createDiv({ cls: rowClasses });
 		row.dataset.paneId = model.paneId;
 		row.tabIndex = 0;
 		row.setAttribute('role', 'button');
+		// Colour is not the only carrier: the row whose terminal is the active tab
+		// says so to a screen reader too.
+		if (model.current) row.setAttribute('aria-current', 'true');
 
 		// The harness mark (issue #19), which since issue #34 also carries the
 		// status: the `herdr-status-*` class colours the mark itself, so the row
@@ -471,9 +543,14 @@ export class AgentListView extends ItemView {
 		// The button records its own action in the dataset,
 		// so a click is dispatched by what was drawn — and promised in the tooltip
 		// — rather than by a setting that may have changed since the last repaint.
+		// Since issue #76 it also stays visible, unhovered, while its own surface is
+		// live for this agent: `is-live`, at reduced opacity for the faint tier.
 		const actions = rowActions(this.plugin.settings.agentListRowClick);
+		const buttonClasses = ['clickable-icon', 'herdr-row-action'];
+		if (model.iconTier !== 'none') buttonClasses.push('is-live');
+		if (model.iconTier === 'faint') buttonClasses.push('mod-faint');
 		const button = row.createEl('button', {
-			cls: 'clickable-icon herdr-row-action',
+			cls: buttonClasses,
 			attr: { type: 'button' },
 		});
 		button.dataset.herdrAction = actions.button;
