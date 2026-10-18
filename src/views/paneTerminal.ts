@@ -630,6 +630,12 @@ export interface PaneTerminalHost {
 	onStarted(): void;
 	/** The renderer would not mount; the view tells the user. */
 	onRendererError(error: unknown): void;
+	/**
+	 * Whether a control-mode start may focus the renderer. False while the leaf
+	 * was opened without the keyboard and the reader has not come to it yet
+	 * (#78). Absent means always.
+	 */
+	mayTakeFocus?(): boolean;
 	/** The identity changed, before the restart. The view retitles from here. */
 	onIdentityChanged(change: PaneIdentityChange): void;
 }
@@ -1173,7 +1179,7 @@ export class PaneTerminal {
 			// The spawn argv already carries the grid; this adds the cell metrics
 			// herdr uses for pixel-aware programs.
 			session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
-			renderer.focus();
+			if (this.host.mayTakeFocus?.() !== false) renderer.focus();
 		}
 		this.host.onStatus(this.status());
 	}

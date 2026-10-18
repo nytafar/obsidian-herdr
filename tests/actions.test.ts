@@ -50,6 +50,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalScrollbackMb: 10,
 		nativeToolGroups: 'highlight',
 		nativeAutoTrustFolders: false,
+		revealCwdInExplorer: true,
 		openTerminalAfterStart: true,
 		splitIntoFolderTab: true,
 		panesPerTab: 2,
@@ -60,6 +61,8 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalTab: 'per-agent',
 		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
+		followActiveNote: false,
+		followActiveNoteMinDepth: 2,
 		pinnedPanes: {},
 		...overrides,
 	};

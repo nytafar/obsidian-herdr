@@ -16,7 +16,7 @@
  * - `getLeaf('tab')` opens the tab in the most recent leaf's own tab group.
  *
  * The plugin is built with `Object.create` rather than `new`: `openTerminal`
- * needs the workspace, the settings and the scope, and nothing else, while a
+ * needs the workspace, the settings, the scope and the focus hold, and nothing else, while a
  * real construction would start a connection coordinator.
  */
 
@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import HerdrPlugin from '../src/main';
 import { HerdrActions, type ActionHost } from '../src/actions';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
+import { FocusHold } from '../src/terminalPlacement';
 import { FileSystemAdapter } from './fixtures/obsidian';
 
 const VAULT = '/home/lasse/hvelv';
@@ -58,6 +59,8 @@ interface Harness {
 	calls: string[];
 	noteLeaf: FakeLeaf;
 	terminalLeaf: FakeLeaf;
+	/** The leaf a new terminal is placed in. */
+	placed: FakeLeaf;
 	/** Every JSON API method the plugin's action host sent, in order. */
 	requests: string[];
 }
@@ -109,6 +112,7 @@ function harness(options: {
 	const plugin = Object.create(HerdrPlugin.prototype) as Record<string, unknown>;
 	plugin.app = { workspace, vault: { adapter, getName: () => 'hvelv' } };
 	plugin.settings = { ...DEFAULT_SETTINGS, ...options.settings };
+	plugin.terminalFocusHold = new FocusHold<object>();
 	plugin.connection = {
 		current: {
 			endpoint: { id: 'local' },
@@ -133,7 +137,7 @@ function harness(options: {
 			},
 		},
 	};
-	return { plugin: plugin as unknown as HerdrPlugin, calls, noteLeaf, terminalLeaf, requests };
+	return { plugin: plugin as unknown as HerdrPlugin, calls, noteLeaf, terminalLeaf, placed, requests };
 }
 
 describe('openTerminal places a new terminal (issue #28)', () => {
@@ -180,6 +184,30 @@ describe('openTerminal places a new terminal (issue #28)', () => {
 		const { plugin, calls } = harness({ mostRecent: 'note' });
 		await plugin.openTerminal('w2:pA');
 		expect(calls).toEqual(['reveal terminal']);
+	});
+});
+
+describe('openTerminal without the keyboard (issue #78)', () => {
+	it('places the terminal as usual, inactive, and holds its renderer off the focus', async () => {
+		const { plugin, calls, placed, noteLeaf } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		expect(calls).toEqual(['split vertical of note before=false', 'reveal placed']);
+		expect(placed.state.active).toBe(false);
+		expect(plugin.terminalFocusHold.mayFocus(placed as never, noteLeaf as never)).toBe(false);
+	});
+
+	it('holds an existing terminal it only reveals, and a plain open releases it', async () => {
+		const { plugin, terminalLeaf, noteLeaf } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pA', undefined, { focus: false });
+		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(false);
+		await plugin.openTerminal('w2:pA');
+		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(true);
+	});
+
+	it('activates the placed terminal on an ordinary open', async () => {
+		const { plugin, placed } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pB');
+		expect(placed.state.active).toBe(true);
 	});
 });
 

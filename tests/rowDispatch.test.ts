@@ -27,6 +27,7 @@ import type { RowClickAction } from '../src/views/rowModel';
 
 const LOCAL = 'local';
 const REMOTE = 'ssh:lasse@xl:/home/lasse/.config/herdr/herdr.sock';
+const VAULT = '/Users/lasse/Vaults/hvelv';
 
 /* ------------------------------------------------------------------ fakes */
 
@@ -115,6 +116,8 @@ interface Fake {
 	panes: Map<string, RowPane>;
 	closeResult: boolean;
 	rowClick: RowClickAction;
+	/** `herdrVaultPath()` as the host answers it. */
+	vaultPath: string;
 }
 
 function fake(options: { rowClick?: RowClickAction; panes?: RowPane[]; pins?: string[] } = {}): Fake {
@@ -137,6 +140,7 @@ function fake(options: { rowClick?: RowClickAction; panes?: RowPane[]; pins?: st
 		panes: new Map((options.panes ?? [pane()]).map((entry) => [entry.paneId, entry])),
 		closeResult: true,
 		rowClick: options.rowClick ?? 'terminal',
+		vaultPath: VAULT,
 	};
 	const key = (ref: PaneRef): string => `${ref.endpointId}|${ref.paneId}`;
 	state.host = {
@@ -152,6 +156,11 @@ function fake(options: { rowClick?: RowClickAction; panes?: RowPane[]; pins?: st
 		},
 		openTerminal: (ref) => state.calls.push({ effect: 'openTerminal', ref }),
 		focusPane: (ref) => state.calls.push({ effect: 'focusPane', ref }),
+		vaultPath: () => state.vaultPath,
+		revealFolder: async (folder) => {
+			state.calls.push({ effect: 'revealFolder', extra: folder });
+			await Promise.resolve();
+		},
 		renameAgent: async (ref, name) => {
 			state.calls.push({ effect: 'renameAgent', ref, extra: name });
 			await Promise.resolve();
@@ -371,6 +380,53 @@ describe('the row menu', () => {
 			initial: string;
 		};
 		expect(prompt.initial).toBe('notes');
+	});
+});
+
+describe('reveal folder', () => {
+	it('leads the menu, set apart, for a pane working inside the vault', () => {
+		const world = fake({ panes: [pane({ cwd: `${VAULT}/inputs/corpora` })] });
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		const items = world.menus[0]?.items ?? [];
+		expect(items.map((item) => item.action)).toEqual(['reveal', 'pin', 'rename', 'close']);
+		expect(items.map((item) => item.separatorBefore)).toEqual([false, true, false, true]);
+	});
+
+	it('is left out for a pane outside the vault, a sibling folder, or with no cwd', () => {
+		for (const cwd of ['/Users/lasse/code/herdr', `${VAULT}-old/notes`, '', undefined]) {
+			const world = fake({ panes: [pane({ cwd })] });
+			world.dispatch.contextMenu(event(row('w4:p3').text));
+			expect(world.menus[0]?.items.map((item) => item.action)).toEqual(['pin', 'rename', 'close']);
+		}
+	});
+
+	it('reveals the vault-relative folder, the root as the empty path', async () => {
+		const world = fake({ panes: [pane({ cwd: `${VAULT}/inputs/corpora/` })] });
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		await choose(world, 'reveal');
+		expect(world.calls.slice(1)).toEqual([{ effect: 'revealFolder', extra: 'inputs/corpora' }]);
+
+		const root = fake({ panes: [pane({ cwd: VAULT })] });
+		root.dispatch.contextMenu(event(row('w4:p3').text));
+		await choose(root, 'reveal');
+		expect(root.calls.slice(1)).toEqual([{ effect: 'revealFolder', extra: '' }]);
+	});
+
+	it('maps the cwd against the vault as herdr sees it, the remote one included', async () => {
+		const world = fake({ panes: [pane({ cwd: '/home/lasse/hvelv/efforts' })] });
+		world.vaultPath = '/home/lasse/hvelv';
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		await choose(world, 'reveal');
+		expect(world.calls.slice(1)).toEqual([{ effect: 'revealFolder', extra: 'efforts' }]);
+	});
+
+	it('still reveals after the toolbar switched herdrs: nothing goes to herdr', async () => {
+		const world = fake({ panes: [pane({ cwd: `${VAULT}/efforts` })] });
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		world.target = { endpointId: REMOTE, connection: { generation: 2 } };
+		await choose(world, 'reveal');
+		expect(effects(world)).toEqual(['showRowMenu', 'revealFolder']);
+		expect(world.notices).toEqual([]);
 	});
 });
 

@@ -77,7 +77,10 @@ from the terminal title, a prompt-cache countdown while one is running, and its
 folder. The header button sets sort (herdr's own priority order, or alphabetical)
 and grouping (herdr tab, working directory, or none). Clicking a row opens the
 agent's terminal; the button that appears on hover jumps to the pane in the herdr
-TUI. A setting swaps the two.
+TUI. A setting swaps the two. Right-click a row to reveal the agent's folder in
+the file explorer (when it works inside the vault), pin it to the top of its
+group, rename it or terminate it. **Follow active note**, off by default, brings
+the agent working in a note's folder into view whenever you focus that note.
 
 **The native view.** Clicking a Claude Code agent opens its session as
 Markdown: the prose reads like a note, each turn's tool calls collapse into one

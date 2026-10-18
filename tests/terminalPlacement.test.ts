@@ -6,9 +6,13 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	chooseFollowPane,
 	chooseNoteLeaf,
 	decideOpenTarget,
 	decidePlacement,
+	FocusHold,
+	FocusRecency,
+	type FollowCandidate,
 	type OpenTargetInput,
 	type PlacementInput,
 } from '../src/terminalPlacement';
@@ -174,5 +178,151 @@ describe('chooseNoteLeaf: the leaf the split is taken beside', () => {
 			chooseNoteLeaf({ activeFilePath: NOTE, mostRecent: terminal, rootLeaves: [terminal] }),
 		).toBeNull();
 		expect(chooseNoteLeaf({ activeFilePath: null, mostRecent: note, rootLeaves: [note] })).toBeNull();
+	});
+});
+
+describe('chooseFollowPane (issue #78)', () => {
+	const NOTE = 'inputs/corpora/silva-cacao/notes/harvest.md';
+
+	function candidate(paneId: string, folder: string, overrides: Partial<FollowCandidate> = {}): FollowCandidate {
+		return { paneId, cwd: folder ? `${VAULT}/${folder}` : VAULT, pinned: false, focusRank: 0, ...overrides };
+	}
+
+	function choose(panes: FollowCandidate[], notePath = NOTE, minDepth = 2, vaultPath = VAULT) {
+		return chooseFollowPane({ notePath, vaultPath, minDepth, panes });
+	}
+
+	it('matches an agent whose folder holds the note', () => {
+		expect(choose([candidate('a', 'inputs/corpora/silva-cacao')])).toBe('a');
+		expect(choose([candidate('a', 'inputs/corpora/silva-cacao/notes')])).toBe('a');
+	});
+
+	it('skips agents shallower than the minimum depth, and the root always', () => {
+		// The issue's own example, at the default depth of 2.
+		expect(choose([candidate('root', '')])).toBeNull();
+		expect(choose([candidate('top', 'inputs')])).toBeNull();
+		expect(choose([candidate('two', 'inputs/corpora')])).toBe('two');
+		expect(choose([candidate('two', 'inputs/corpora')], NOTE, 3)).toBeNull();
+		expect(choose([candidate('top', 'inputs')], NOTE, 1)).toBe('top');
+		// A depth of 0 would hand every note to an agent at the root; it is read as 1.
+		expect(choose([candidate('root', '')], NOTE, 0)).toBeNull();
+	});
+
+	it('does nothing for a note above the agent, in another folder or in a sibling', () => {
+		const pane = candidate('a', 'inputs/corpora/silva-cacao');
+		expect(choose([pane], 'inputs/corpora/index.md')).toBeNull();
+		expect(choose([pane], 'efforts/x/y.md')).toBeNull();
+		expect(choose([pane], 'inputs/corpora/silva-cacao-old/a.md')).toBeNull();
+	});
+
+	it('ignores agents outside the vault and in a sibling of it', () => {
+		const outside = { ...candidate('out', ''), cwd: '/Users/lasse/code/herdr' };
+		const sibling = { ...candidate('old', ''), cwd: `${VAULT}-old/inputs/corpora/silva-cacao` };
+		expect(choose([outside, sibling])).toBeNull();
+	});
+
+	it('compares against the vault as herdr sees it, the remote one included', () => {
+		const remote = { ...candidate('r', ''), cwd: '/home/lasse/hvelv/inputs/corpora/silva-cacao' };
+		expect(choose([remote], NOTE, 2, '/home/lasse/hvelv/')).toBe('r');
+		expect(choose([remote])).toBeNull();
+		expect(choose([candidate('a', 'inputs/corpora')], NOTE, 2, '')).toBeNull();
+	});
+
+	it('gives the note to the deepest matching folder', () => {
+		const panes = [
+			candidate('shallow', 'inputs/corpora', { pinned: true, focusRank: 9 }),
+			candidate('deep', 'inputs/corpora/silva-cacao'),
+			candidate('other', 'inputs/corpora/elsewhere'),
+		];
+		expect(choose(panes)).toBe('deep');
+	});
+
+	it('breaks a tie of depth by pin first, then by the most recent herdr focus', () => {
+		const folder = 'inputs/corpora/silva-cacao';
+		expect(
+			choose([
+				candidate('recent', folder, { focusRank: 5 }),
+				candidate('pinned', folder, { pinned: true, focusRank: 1 }),
+			]),
+		).toBe('pinned');
+		expect(
+			choose([
+				candidate('older', folder, { focusRank: 2 }),
+				candidate('recent', folder, { focusRank: 7 }),
+			]),
+		).toBe('recent');
+		expect(
+			choose([
+				candidate('pinned-old', folder, { pinned: true, focusRank: 1 }),
+				candidate('pinned-new', folder, { pinned: true, focusRank: 3 }),
+			]),
+		).toBe('pinned-new');
+	});
+
+	it('keeps herdr’s pane order when nothing else separates two panes', () => {
+		const folder = 'inputs/corpora/silva-cacao';
+		expect(choose([candidate('first', folder), candidate('second', folder)])).toBe('first');
+	});
+});
+
+describe('FocusRecency', () => {
+	it('ranks panes by when herdr last focused them, the focused one first', () => {
+		const recency = new FocusRecency();
+		recency.observe({ paneId: 'a', focused: true }, false);
+		recency.observe({ paneId: 'b', focused: true }, false);
+		recency.observe({ paneId: 'a', focused: false }, true);
+		const a = recency.rank({ paneId: 'a', focused: false });
+		const b = recency.rank({ paneId: 'b', focused: false });
+		expect(b).toBeGreaterThan(a);
+		expect(recency.rank({ paneId: 'never', focused: false })).toBe(0);
+		// Focused before the plugin connected, so never seen to become focused.
+		expect(recency.rank({ paneId: 'c', focused: true })).toBeGreaterThan(b);
+	});
+
+	it('counts a pane once per focus, not per update that keeps it focused', () => {
+		const recency = new FocusRecency();
+		recency.observe({ paneId: 'a', focused: true }, false);
+		recency.observe({ paneId: 'b', focused: true }, false);
+		// Another change on `a` while it stays unfocused, and on `b` while focused.
+		recency.observe({ paneId: 'a', focused: false }, false);
+		recency.observe({ paneId: 'b', focused: true }, true);
+		expect(recency.rank({ paneId: 'b', focused: false })).toBeGreaterThan(
+			recency.rank({ paneId: 'a', focused: false }),
+		);
+	});
+
+	it('forgets a removed pane and everything on reset', () => {
+		const recency = new FocusRecency();
+		recency.observe({ paneId: 'a', focused: true }, false);
+		recency.observe({ paneId: 'b', focused: true }, false);
+		recency.forget('a');
+		expect(recency.rank({ paneId: 'a', focused: false })).toBe(0);
+		recency.reset();
+		expect(recency.rank({ paneId: 'b', focused: false })).toBe(0);
+	});
+});
+
+describe('FocusHold', () => {
+	it('lets an ordinary leaf focus, and a held one only once it is active', () => {
+		const hold = new FocusHold<object>();
+		const note = {};
+		const quiet = {};
+		const other = {};
+		expect(hold.mayFocus(other, note)).toBe(true);
+		hold.hold(quiet);
+		expect(hold.mayFocus(quiet, note)).toBe(false);
+		expect(hold.mayFocus(quiet, null)).toBe(false);
+		// The reader came to it: from now on it is an ordinary terminal.
+		expect(hold.mayFocus(quiet, quiet)).toBe(true);
+		expect(hold.mayFocus(quiet, note)).toBe(true);
+	});
+
+	it('ends the hold when the leaf is opened the ordinary way', () => {
+		const hold = new FocusHold<object>();
+		const note = {};
+		const quiet = {};
+		hold.hold(quiet);
+		hold.release(quiet);
+		expect(hold.mayFocus(quiet, note)).toBe(true);
 	});
 });
