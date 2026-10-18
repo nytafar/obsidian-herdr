@@ -19,7 +19,17 @@
  * unavailable there and {@link effectivePaneView} falls back.
  */
 
-import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
+import {
+	Component,
+	Keymap,
+	MarkdownRenderer,
+	Notice,
+	type App,
+	type PaneType,
+	type WorkspaceLeaf,
+} from 'obsidian';
+import { openLinkBeside } from '../openBeside';
+import { linkAction, linkSourcePath } from './links';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import { type PaneView } from './renderMode';
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
@@ -252,6 +262,18 @@ export interface NativePaneSurfaceOptions {
 	 * every path outside the vault.
 	 */
 	vaultPath: () => string;
+	/**
+	 * The leaf this surface is drawn in, so a clicked link opens beside it
+	 * rather than in it (#114, `../openBeside.ts`). Read on every click, never
+	 * kept. Left out, or null, a link opens wherever Obsidian puts it.
+	 */
+	panelLeaf?: () => WorkspaceLeaf | null;
+	/**
+	 * The pane's working directory, so the links in its transcript resolve
+	 * from that folder when it is inside the vault (#114). Left out, they
+	 * resolve from the vault root.
+	 */
+	cwd?: () => string;
 }
 
 /**
@@ -321,6 +343,17 @@ export function promptSegments(prompt: string): PromptSegment[] {
 	}
 	if (at < prompt.length) segments.push({ kind: 'text', text: prompt.slice(at) });
 	return segments;
+}
+
+/**
+ * The anchor a click landed on or inside, or null (#114). Duck-typed rather
+ * than an `instanceof` check, which a pop-out window's elements fail because
+ * they belong to another window's globals.
+ */
+function anchorOf(target: EventTarget | null): HTMLAnchorElement | null {
+	const element = target as Partial<Element> | null;
+	if (typeof element?.closest !== 'function') return null;
+	return element.closest('a');
 }
 
 /**
@@ -465,6 +498,14 @@ export class NativePaneSurface implements PaneSurface {
 		// every frame of a flick through a long session (#101).
 		this.component.registerDomEvent(turns, 'scroll', () => {
 			this.following = isAtBottom(turns);
+		});
+		// Every link in every turn, prose and prompts alike, through one
+		// delegated listener (#114): rendered Markdown carries no handler of its
+		// own outside a note, and a turn is redrawn too often to hang one on
+		// each link. A middle click is a new tab, as it is on a link in a note.
+		this.component.registerDomEvent(turns, 'click', (event) => this.onLinkClick(event));
+		this.component.registerDomEvent(turns, 'auxclick', (event) => {
+			if (event.button === 1) this.onLinkClick(event, 'tab');
 		});
 		this.watchForGrowth(turns);
 		this.promptBox = new PromptBox({
@@ -674,7 +715,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.turnComponents.set(turn.id, component);
 
 		if (turn.prompt) {
-			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt, component);
+			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt);
 		}
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
 		// folded into groups with the vault changes and sources left outside.
@@ -702,7 +743,7 @@ export class NativePaneSurface implements PaneSurface {
 				this.renderToolGroup(turnEl, item.tools);
 				return;
 			case 'change':
-				this.renderVaultChange(turnEl, item.entry, component);
+				this.renderVaultChange(turnEl, item.entry);
 				return;
 			case 'source':
 				this.renderSource(turnEl, item.entry);
@@ -712,11 +753,7 @@ export class NativePaneSurface implements PaneSurface {
 				return;
 			case 'steer':
 				// A steer is shown where it entered the running turn (CONTEXT.md).
-				this.renderPrompt(
-					turnEl.createDiv({ cls: 'herdr-native-steer' }),
-					item.entry.text,
-					component,
-				);
+				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), item.entry.text);
 				return;
 		}
 	}
@@ -820,7 +857,7 @@ export class NativePaneSurface implements PaneSurface {
 	 * refused, or that nothing has answered yet, must not read as one that
 	 * landed.
 	 */
-	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
+	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry): void {
 		const path = changedPath(entry);
 		if (!path) return;
 		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
@@ -829,7 +866,7 @@ export class NativePaneSurface implements PaneSurface {
 		const { lead, trail } = changeLine(entry.status);
 		el.appendText(lead);
 		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (link) this.renderPrompt(el, `[[${link}]]`, component);
+		if (link) this.renderPrompt(el, `[[${link}]]`);
 		else el.appendText(path);
 		if (trail) el.appendText(trail);
 	}
@@ -876,36 +913,69 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
-	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */
-	private renderPrompt(el: HTMLElement, prompt: string, component: Component): void {
+	/**
+	 * A human prompt: text as typed, wikilinks as the same `a.internal-link`
+	 * Obsidian renders, so the turns' one click listener opens both (#114).
+	 */
+	private renderPrompt(el: HTMLElement, prompt: string): void {
 		for (const segment of promptSegments(prompt)) {
 			if (segment.kind === 'text') {
 				el.appendText(segment.text);
 				continue;
 			}
-			const linkEl = el.createEl('a', {
+			el.createEl('a', {
 				cls: 'internal-link',
 				text: segment.label,
 				href: segment.target,
 				attr: { 'data-href': segment.target },
 			});
-			component.registerDomEvent(linkEl, 'click', (event) => {
-				event.preventDefault();
-				// A mod-click opens the note in a new tab, as a link in a note does.
-				void this.options.app.workspace.openLinkText(
-					segment.target,
-					'',
-					Keymap.isModEvent(event),
-				);
-			});
 		}
+	}
+
+	/**
+	 * A click anywhere in the turns, acted on only when it landed on a link this
+	 * view opens itself (#114): a wikilink, or an `obsidian://` url for this
+	 * vault. Those open beside the panel, and a mod-click where Obsidian puts
+	 * it. A web page is left to the browser and any other url to the OS, with
+	 * the event untouched, exactly as before.
+	 */
+	private onLinkClick(event: MouseEvent, newLeaf?: PaneType | boolean): void {
+		const anchor = anchorOf(event.target);
+		if (!anchor) return;
+		const app = this.options.app;
+		const action = linkAction(
+			{
+				internal: anchor.hasClass('internal-link'),
+				dataHref: anchor.getAttribute('data-href'),
+				href: anchor.getAttribute('href'),
+			},
+			{ name: app.vault.getName(), path: this.options.vaultPath() },
+		);
+		if (action.kind !== 'note') return;
+		event.preventDefault();
+		// Obsidian's own handling of an external link must not open it a second
+		// time through the OS.
+		event.stopPropagation();
+		void openLinkBeside(
+			app,
+			this.options.panelLeaf?.() ?? null,
+			action.linktext,
+			this.sourcePath(),
+			newLeaf ?? Keymap.isModEvent(event),
+		);
+	}
+
+	/** Where this pane's links resolve from (#114, `./links.ts`). */
+	private sourcePath(): string {
+		return linkSourcePath(this.options.cwd?.() ?? '', this.options.vaultPath());
 	}
 
 	/**
 	 * Markdown through Obsidian's own renderer, so the vault's links, callouts
 	 * and embeds come out exactly as they do in a note. It resolves relative
 	 * links against `sourcePath`; a transcript is not a note in the vault, so
-	 * that is the vault root.
+	 * that is a stand-in inside the pane's working directory, or the vault root
+	 * when the pane works outside the vault (#114).
 	 *
 	 * The render is async, so the draw is finished long before the view has its
 	 * real height: the promise is kept, and {@link settleScroll} pins the view
@@ -916,7 +986,13 @@ export class NativePaneSurface implements PaneSurface {
 		el: HTMLElement,
 		component: Component,
 	): Promise<void> {
-		const rendering = MarkdownRenderer.render(this.options.app, markdown, el, '', component);
+		const rendering = MarkdownRenderer.render(
+			this.options.app,
+			markdown,
+			el,
+			this.sourcePath(),
+			component,
+		);
 		this.renders.push(rendering);
 		return rendering;
 	}

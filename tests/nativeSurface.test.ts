@@ -25,7 +25,14 @@ import type {
 	SessionModelView,
 } from '../src/native/sessionModel';
 import type { AgentStatus } from '../src/herdr/types.gen';
-import type { App } from 'obsidian';
+import type { App, WorkspaceLeaf } from 'obsidian';
+import {
+	FakeWorkspace,
+	fakeMetadataCache,
+	note,
+	panelState,
+	type FakeLeaf,
+} from './fixtures/workspace';
 
 /** A session model a test drives by hand. */
 class FakeModel implements SessionModelView {
@@ -91,6 +98,11 @@ class FakeVault {
 		return key === 'readableLineLength' ? this.readableLineLength : undefined;
 	}
 
+	/** What an `obsidian://` url names this vault by (#114). */
+	getName(): string {
+		return 'hvelv';
+	}
+
 	on(name: string, callback: (key: string) => void): (key: string) => void {
 		if (name === 'config-changed') this.listeners.add(callback);
 		return callback;
@@ -114,7 +126,15 @@ class FakeVault {
 
 function surfaceOn(
 	model: FakeModel,
-	options: { presentation?: ToolGroupPresentation; vaultPath?: string } = {},
+	options: {
+		presentation?: ToolGroupPresentation;
+		vaultPath?: string;
+		/** A laid-out workspace, for the cases about where a link opens (#114). */
+		workspace?: FakeWorkspace;
+		panel?: FakeLeaf;
+		files?: string[];
+		cwd?: string;
+	} = {},
 ): {
 	surface: NativePaneSurface;
 	models: FakeModels;
@@ -127,7 +147,11 @@ function surfaceOn(
 	const models = new FakeModels(model);
 	const openLinkText = vi.fn();
 	const vault = new FakeVault();
-	const app = { workspace: { openLinkText }, vault } as unknown as App;
+	const app = {
+		workspace: options.workspace ?? { openLinkText },
+		vault,
+		metadataCache: fakeMetadataCache(options.files ?? []),
+	} as unknown as App;
 	const surface = new NativePaneSurface({
 		app,
 		identity: { paneId: 'w4:p1', mode: 'control', endpointId: 'local' },
@@ -143,6 +167,8 @@ function surfaceOn(
 		// view, and the vault is the app's, never a path this file invents.
 		presentation: () => options.presentation ?? 'highlight',
 		vaultPath: () => options.vaultPath ?? VAULT,
+		...(options.panel ? { panelLeaf: () => options.panel as unknown as WorkspaceLeaf } : {}),
+		...(options.cwd !== undefined ? { cwd: () => options.cwd ?? '' } : {}),
 	});
 	return { surface, models, el, host, openLinkText, vault };
 }
@@ -336,7 +362,7 @@ describe('NativePaneSurface: a turn', () => {
 		// The text around the link survives, whitespace and all.
 		expect(prompt.textContent).toBe('Read the design first');
 
-		link.dispatch('click');
+		link.click();
 
 		expect(openLinkText).toHaveBeenCalledWith('native-view-design', '', false);
 	});
@@ -360,6 +386,142 @@ describe('NativePaneSurface: a turn', () => {
  * the order Claude made them, and the expected summary is the one the issue
  * names — "Read 4 files, ran 2 commands" — for exactly these calls.
  */
+describe('NativePaneSurface: links open beside the panel (#114)', () => {
+	/**
+	 * The layout the terminal placement makes: the panel split to the left of
+	 * the note the reader came from, one tab group each, and one turn with a
+	 * wikilink in the prompt and a block of prose to hang rendered links on.
+	 */
+	async function besideANote(options: { cwd?: string } = {}): Promise<{
+		el: FakeElement;
+		workspace: FakeWorkspace;
+		panel: FakeLeaf;
+		neighbour: FakeLeaf;
+		/** An anchor as Obsidian's renderer would have put it in the prose. */
+		proseLink: (cls: string, attrs: Record<string, string>) => FakeElement;
+	}> {
+		const workspace = new FakeWorkspace();
+		const panel = workspace.add('panel', {}, panelState());
+		const neighbour = workspace.add('neighbour', {}, note('Daily.md'));
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model, {
+			workspace,
+			panel,
+			files: ['notes/Plan.md', 'repos/obsidian-herdr/CONTEXT.md'],
+			...options,
+		});
+		await surface.attach(host);
+		model.push(
+			[
+				turn('u1', 'Read [[Plan]] first', [
+					{ kind: 'text', messageId: 'm1', text: 'See the plan.' },
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+		const block = el.find('herdr-native-block');
+		const proseLink = (cls: string, attrs: Record<string, string>): FakeElement =>
+			block.createEl('a', { cls, text: 'Link', attr: attrs });
+		return { el, workspace, panel, neighbour, proseLink };
+	}
+
+	it('opens a wikilink in the prompt in the split neighbour, not the panel’s own leaf', async () => {
+		const { el, workspace, panel, neighbour } = await besideANote();
+
+		const outcome = el.find('herdr-native-prompt').find('internal-link').click();
+		await Promise.resolve();
+
+		expect(outcome.defaultPrevented).toBe(true);
+		expect(panel.opened).toEqual([]);
+		expect(neighbour.opened.map((open) => open.file.path)).toEqual(['notes/Plan.md']);
+		expect(workspace.openLinkText).not.toHaveBeenCalled();
+		expect(workspace.createLeafBySplit).not.toHaveBeenCalled();
+	});
+
+	it('opens a wikilink rendered in the prose the same way', async () => {
+		const { workspace, panel, neighbour, proseLink } = await besideANote();
+
+		proseLink('internal-link', { 'data-href': 'Plan#Goals', href: 'Plan#Goals' }).click();
+		await Promise.resolve();
+
+		expect(panel.opened).toEqual([]);
+		expect(neighbour.opened).toEqual([
+			{ file: { path: 'notes/Plan.md' }, state: { active: true, eState: { subpath: '#Goals' } } },
+		]);
+		expect(workspace.openLinkText).not.toHaveBeenCalled();
+	});
+
+	it('opens a mod-click in a new tab, as Obsidian does', async () => {
+		const { el, workspace, neighbour } = await besideANote();
+
+		el.find('herdr-native-prompt').find('internal-link').click({ ctrlKey: true });
+
+		expect(workspace.openLinkText).toHaveBeenCalledWith('Plan', '', true);
+		expect(neighbour.opened).toEqual([]);
+	});
+
+	it('opens a middle click in a new tab', async () => {
+		const { el, workspace } = await besideANote();
+
+		el.find('herdr-native-prompt').find('internal-link').bubble('auxclick', { button: 1 });
+
+		expect(workspace.openLinkText).toHaveBeenCalledWith('Plan', '', 'tab');
+	});
+
+	it('opens an obsidian:// link for this vault beside the panel, without the OS handler', async () => {
+		const { panel, neighbour, proseLink } = await besideANote();
+
+		const outcome = proseLink('external-link', {
+			href: 'obsidian://open?vault=hvelv&file=repos%2Fobsidian-herdr%2FCONTEXT',
+		}).click();
+		await Promise.resolve();
+
+		// Default prevented and propagation stopped: neither the browser nor
+		// Obsidian's own external-link handling sees it.
+		expect(outcome).toEqual({ defaultPrevented: true, stopped: true });
+		expect(panel.opened).toEqual([]);
+		expect(neighbour.opened.map((open) => open.file.path)).toEqual([
+			'repos/obsidian-herdr/CONTEXT.md',
+		]);
+	});
+
+	it('leaves an obsidian:// link for another vault and a web page alone', async () => {
+		const { workspace, neighbour, proseLink } = await besideANote();
+
+		const otherVault = proseLink('external-link', {
+			href: 'obsidian://open?vault=work&file=Plan',
+		}).click();
+		const web = proseLink('external-link', { href: 'https://example.com/' }).click();
+
+		expect(otherVault).toEqual({ defaultPrevented: false, stopped: false });
+		expect(web).toEqual({ defaultPrevented: false, stopped: false });
+		expect(neighbour.opened).toEqual([]);
+		expect(workspace.openLinkText).not.toHaveBeenCalled();
+	});
+
+	it('resolves links and renders prose from the pane’s folder inside the vault', async () => {
+		const { el, workspace } = await besideANote({ cwd: `${VAULT}/repos/obsidian-herdr` });
+
+		expect(MarkdownRenderer.calls.at(-1)?.sourcePath).toBe('repos/obsidian-herdr/.herdr-session');
+		el.find('herdr-native-prompt').find('internal-link').click({ metaKey: true });
+		expect(workspace.openLinkText).toHaveBeenCalledWith(
+			'Plan',
+			'repos/obsidian-herdr/.herdr-session',
+			true,
+		);
+	});
+
+	it('does nothing for a click that is not on a link', async () => {
+		const { el, workspace, neighbour } = await besideANote();
+
+		const outcome = el.find('herdr-native-prompt').click();
+
+		expect(outcome.defaultPrevented).toBe(false);
+		expect(neighbour.opened).toEqual([]);
+		expect(workspace.openLinkText).not.toHaveBeenCalled();
+	});
+});
+
 describe('NativePaneSurface: tool groups', () => {
 	/** The classes of a turn's own items, in the order they were drawn. */
 	function itemClasses(turnEl: FakeElement): string[] {
@@ -489,7 +651,7 @@ describe('NativePaneSurface: tool groups', () => {
 		expect(inside?.textContent).toBe('Updated repos/obsidian-herdr/CONTEXT');
 		const link = inside?.find('internal-link');
 		expect(link?.attrs['data-href']).toBe('repos/obsidian-herdr/CONTEXT');
-		link?.dispatch('click');
+		link?.click();
 		expect(openLinkText).toHaveBeenCalledWith('repos/obsidian-herdr/CONTEXT', '', false);
 		// Outside the vault there is nothing to strip and nothing to link to.
 		expect(outside?.textContent).toBe('Updated /etc/hosts');

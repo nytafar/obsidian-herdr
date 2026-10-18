@@ -108,6 +108,28 @@ export class FakeElement {
 		this.attrs[name] = value;
 	}
 
+	getAttribute(name: string): string | null {
+		return this.attrs[name] ?? null;
+	}
+
+	/**
+	 * The nearest element at or above this one with the tag a bare tag selector
+	 * names, as the native view's link listener asks for `a` (#114). Anything
+	 * but a bare tag throws, like {@link querySelectorAll}.
+	 */
+	closest(selector: string): FakeElement | null {
+		const tag = selector.trim().toLowerCase();
+		if (!/^[a-z][a-z0-9]*$/.test(tag)) throw new Error(`unsupported selector: ${selector}`);
+		return this.selfAndAncestors().find((at) => at.tag.toLowerCase() === tag) ?? null;
+	}
+
+	/** This element, then its parent, and so on up to the root. */
+	private selfAndAncestors(): FakeElement[] {
+		const chain: FakeElement[] = [this];
+		for (let at = this.parent; at; at = at.parent) chain.push(at);
+		return chain;
+	}
+
 	/**
 	 * Drops an attribute. The prompt box uses it on `style` to give an emptied
 	 * box its auto-grown height back, the height a drag on the resizer wrote
@@ -213,8 +235,42 @@ export class FakeElement {
 
 	/** Fires every listener registered for `type`, in order. */
 	dispatch(type: string, event: Record<string, unknown> = {}): void {
-		const detail = { preventDefault: () => {}, ...event };
+		const detail = { preventDefault: () => {}, stopPropagation: () => {}, ...event };
 		for (const listener of this.listeners) if (listener.type === type) listener.handler(detail);
+	}
+
+	/**
+	 * A click on this element as a browser delivers one: the event bubbles from
+	 * here through every ancestor, `target` is this element throughout, and
+	 * `stopPropagation` ends the walk (#114, the native view's delegated link
+	 * listener). Returns what became of it, for a test to assert.
+	 */
+	click(event: Record<string, unknown> = {}): { defaultPrevented: boolean; stopped: boolean } {
+		return this.bubble('click', event);
+	}
+
+	/** {@link click} for any event type, `auxclick` among them. */
+	bubble(
+		type: string,
+		event: Record<string, unknown> = {},
+	): { defaultPrevented: boolean; stopped: boolean } {
+		const outcome = { defaultPrevented: false, stopped: false };
+		const detail = {
+			button: 0,
+			...event,
+			target: this,
+			preventDefault: () => {
+				outcome.defaultPrevented = true;
+			},
+			stopPropagation: () => {
+				outcome.stopped = true;
+			},
+		};
+		for (const at of this.selfAndAncestors()) {
+			if (outcome.stopped) break;
+			for (const listener of [...at.listeners]) if (listener.type === type) listener.handler(detail);
+		}
+		return outcome;
 	}
 }
 
