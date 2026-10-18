@@ -105,6 +105,14 @@ describe('toPaneState (M7)', () => {
 			toPaneState(pane({ pane_id: 'w4:p1', cwd: null, foreground_cwd: '/tmp/x' }))?.cwd,
 		).toBe('/tmp/x');
 	});
+
+	it('keeps foreground_cwd beside cwd when herdr sends one, and leaves it out otherwise (#116)', () => {
+		const both = toPaneState(pane({ pane_id: 'w4:p1', cwd: '/a', foreground_cwd: '/a/b' }));
+		expect(both?.cwd).toBe('/a');
+		expect(both?.foregroundCwd).toBe('/a/b');
+		const none = toPaneState(pane({ pane_id: 'w4:p1', cwd: '/a', foreground_cwd: null }));
+		expect(none && 'foregroundCwd' in none).toBe(false);
+	});
 });
 
 describe('stripTitleSpinner (N4)', () => {

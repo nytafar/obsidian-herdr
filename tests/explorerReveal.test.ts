@@ -151,7 +151,9 @@ describe('folderRevealNotice', () => {
 		expect(folderRevealNotice('no-folder', 'inputs/corpora')).toBe(
 			'Herdr: the folder "inputs/corpora" is not in this vault.',
 		);
-		expect(folderRevealNotice('no-explorer', 'efforts')).toMatch(/file explorer is not open/);
+		expect(folderRevealNotice('no-explorer', 'efforts')).toBe(
+			'Herdr: the file explorer is not open. Open it, or turn on the core Files plugin, to reveal folders.',
+		);
 		expect(folderRevealNotice('unsupported', 'efforts')).toMatch(/cannot reveal folders/);
 	});
 });
@@ -163,6 +165,19 @@ describe('cwdRevealTarget', () => {
 	it('is the pane folder inside the vault, the root as the empty path', () => {
 		expect(cwdRevealTarget(base)).toBe('inputs/corpora');
 		expect(cwdRevealTarget({ ...base, cwd: `${VAULT}/` })).toBe('');
+	});
+
+	it('prefers the foreground cwd when it differs and lies inside the vault', () => {
+		expect(cwdRevealTarget({ ...base, foregroundCwd: `${VAULT}/inputs/corpora/silva` })).toBe(
+			'inputs/corpora/silva',
+		);
+		expect(cwdRevealTarget({ ...base, foregroundCwd: base.cwd })).toBe('inputs/corpora');
+	});
+
+	it('falls back to the cwd when the foreground cwd is outside the vault or absent', () => {
+		expect(cwdRevealTarget({ ...base, foregroundCwd: '/tmp/build' })).toBe('inputs/corpora');
+		expect(cwdRevealTarget({ ...base, foregroundCwd: null })).toBe('inputs/corpora');
+		expect(cwdRevealTarget({ ...base, cwd: '/tmp', foregroundCwd: '/tmp/x' })).toBeNull();
 	});
 
 	it('follows the vault as herdr sees it under a remote profile', () => {
@@ -192,22 +207,27 @@ describe('registerCwdReveal', () => {
 		getViewState(): { type: string; state: Record<string, unknown> };
 	}
 
-	function setup(options: { enabled?: boolean; stealActive?: boolean } = {}) {
+	/** The element the explorer's tree is, for the focus checks. */
+	const EXPLORER_EL = { name: 'explorer tree' };
+
+	function setup(
+		options: {
+			enabled?: boolean;
+			/** What `revealInFolder` does to the workspace besides revealing. */
+			onReveal?: 'take-active' | 'take-focus' | 'activate-note';
+			/**
+			 * When `setActiveLeaf` fires `active-leaf-change`: inside the call, as
+			 * Obsidian has been seen to, or on a later microtask.
+			 */
+			dispatch?: 'sync' | 'async';
+			/** Where the keyboard is before anything happens. */
+			focusInExplorer?: boolean;
+		} = {},
+	) {
 		const log: string[] = [];
-		const doc = { activeElement: null as unknown };
+		const doc = { activeElement: (options.focusInExplorer ? EXPLORER_EL : null) as unknown };
 		let handler: ((leaf: FakeLeaf | null) => void) | null = null;
-		let active: unknown = null;
-		const explorerLeaf = {
-			isDeferred: false,
-			getRoot: () => ({}),
-			view: {
-				containerEl: { contains: () => false, isShown: () => true },
-				revealInFolder: (folder: FakeFolder) => {
-					log.push(`reveal:${folder.path}`);
-					if (options.stealActive) active = explorerLeaf;
-				},
-			},
-		};
+		let active: FakeLeaf | null = null;
 		const leafOf = (type: string, state: Record<string, unknown>): FakeLeaf => {
 			const leaf: FakeLeaf = {
 				state: { type, state },
@@ -216,12 +236,43 @@ describe('registerCwdReveal', () => {
 			};
 			return leaf;
 		};
+		const fire = (leaf: FakeLeaf | null): void => {
+			if (options.dispatch === 'async') queueMicrotask(() => handler?.(leaf));
+			else handler?.(leaf);
+		};
+		const noteLeaf = leafOf('markdown', { file: 'efforts/alpha/a.md' });
+		const explorerLeaf = {
+			...leafOf('file-explorer', {}),
+			isDeferred: false,
+			getRoot: () => ({}),
+		};
+		Object.assign(explorerLeaf.view, {
+			containerEl: {
+				ownerDocument: doc,
+				contains: (el: unknown) => el === EXPLORER_EL,
+				isShown: () => true,
+			},
+			revealInFolder: (folder: FakeFolder) => {
+				log.push(`reveal:${folder.path}`);
+				if (options.onReveal === 'take-active') {
+					active = explorerLeaf;
+					doc.activeElement = EXPLORER_EL;
+					fire(explorerLeaf);
+				} else if (options.onReveal === 'take-focus') {
+					doc.activeElement = EXPLORER_EL;
+				} else if (options.onReveal === 'activate-note') {
+					active = noteLeaf;
+					fire(noteLeaf);
+				}
+			},
+		});
 		const terminal = (paneId: string, endpointId = 'local'): FakeLeaf =>
 			leafOf('herdr-terminal', { paneId, mode: 'control', endpointId });
-		const cwds: Record<string, string> = {
-			'w4:p1': `${VAULT}/efforts/alpha`,
-			'w4:p2': `${VAULT}/inputs/corpora`,
-			'w4:p3': '/Users/lasse/code/herdr',
+		const panes: Record<string, { cwd: string; foregroundCwd?: string }> = {
+			'w4:p1': { cwd: `${VAULT}/efforts/alpha` },
+			'w4:p2': { cwd: `${VAULT}/inputs/corpora` },
+			'w4:p3': { cwd: '/Users/lasse/code/herdr' },
+			'w4:p4': { cwd: `${VAULT}/efforts`, foregroundCwd: `${VAULT}/efforts/beta` },
 		};
 		const workspace = {
 			leftSplit: { collapsed: false },
@@ -233,12 +284,13 @@ describe('registerCwdReveal', () => {
 			},
 			getLeavesOfType: () => [explorerLeaf],
 			revealLeaf: () => Promise.resolve(),
-			getActiveViewOfType: () => ({ leaf: active }),
-			setActiveLeaf: (leaf: FakeLeaf) => {
-				log.push(`setActiveLeaf:${String(leaf.state.state.paneId)}`);
+			getActiveViewOfType: () =>
+				active ? { leaf: active, getViewType: () => active?.getViewState().type } : null,
+			setActiveLeaf: (leaf: FakeLeaf, params: { focus?: boolean }) => {
+				log.push(`setActiveLeaf:${String(leaf.state.state.paneId)} focus=${String(params.focus)}`);
 				active = leaf;
-				// Obsidian fires the event from inside setActiveLeaf.
-				handler?.(leaf);
+				if (params.focus) doc.activeElement = null;
+				fire(leaf);
 			},
 		};
 		const plugin = {
@@ -252,22 +304,19 @@ describe('registerCwdReveal', () => {
 			settings: { revealCwdInExplorer: options.enabled ?? true },
 			registerEvent: () => undefined,
 			endpointSession: (endpointId: string) =>
-				endpointId === 'local'
-					? {
-							scope: {
-								get: (paneId: string) => (cwds[paneId] ? { cwd: cwds[paneId] } : undefined),
-							},
-						}
-					: null,
+				endpointId === 'local' ? { scope: { get: (paneId: string) => panes[paneId] } } : null,
 			herdrVaultPath: () => VAULT,
 		};
 		registerCwdReveal(plugin as unknown as HerdrPlugin);
+		const settle = async (): Promise<void> => {
+			for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+		};
 		const activate = async (leaf: FakeLeaf | null): Promise<void> => {
 			active = leaf;
 			handler?.(leaf);
-			for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+			await settle();
 		};
-		return { log, activate, terminal, leafOf };
+		return { log, activate, terminal, leafOf, noteLeaf };
 	}
 
 	it('reveals the folder of each herdr tab as it comes to the front', async () => {
@@ -275,6 +324,12 @@ describe('registerCwdReveal', () => {
 		await activate(terminal('w4:p1'));
 		await activate(terminal('w4:p2'));
 		expect(log).toEqual(['reveal:efforts/alpha', 'reveal:inputs/corpora']);
+	});
+
+	it('reveals the foreground folder when it differs from the cwd', async () => {
+		const { log, activate, terminal } = setup();
+		await activate(terminal('w4:p4'));
+		expect(log).toEqual(['reveal:efforts/beta']);
 	});
 
 	it('does nothing for a note, a pane outside the vault, another herdr, or no leaf', async () => {
@@ -292,9 +347,47 @@ describe('registerCwdReveal', () => {
 		expect(log).toEqual([]);
 	});
 
-	it('hands the active leaf back when the explorer took it, without revealing twice', async () => {
-		const { log, activate, terminal } = setup({ stealActive: true });
+	it.each<'sync' | 'async'>(['sync', 'async'])(
+		'hands the active leaf back when the explorer took it, revealing once (%s dispatch)',
+		async (dispatch) => {
+			const { log, activate, terminal } = setup({ onReveal: 'take-active', dispatch });
+			await activate(terminal('w4:p1'));
+			expect(log).toEqual(['reveal:efforts/alpha', 'setActiveLeaf:w4:p1 focus=true']);
+		},
+	);
+
+	it('hands the focus back when the explorer took only that', async () => {
+		const { log, activate, terminal } = setup({ onReveal: 'take-focus', dispatch: 'async' });
 		await activate(terminal('w4:p1'));
-		expect(log).toEqual(['reveal:efforts/alpha', 'setActiveLeaf:w4:p1']);
+		expect(log).toEqual(['reveal:efforts/alpha', 'setActiveLeaf:w4:p1 focus=true']);
+	});
+
+	it('does not reveal the same tab twice when it comes back without another leaf between', async () => {
+		const { log, activate, terminal } = setup({ dispatch: 'async' });
+		const tab = terminal('w4:p1');
+		await activate(tab);
+		await activate(tab);
+		expect(log).toEqual(['reveal:efforts/alpha']);
+	});
+
+	it('reveals a tab again once another leaf has been in front', async () => {
+		const { log, activate, terminal, noteLeaf } = setup();
+		const tab = terminal('w4:p1');
+		await activate(tab);
+		await activate(noteLeaf);
+		await activate(tab);
+		expect(log).toEqual(['reveal:efforts/alpha', 'reveal:efforts/alpha']);
+	});
+
+	it('leaves a note that took the active leaf alone (#78)', async () => {
+		const { log, activate, terminal } = setup({ onReveal: 'activate-note' });
+		await activate(terminal('w4:p1'));
+		expect(log).toEqual(['reveal:efforts/alpha']);
+	});
+
+	it('leaves focus the explorer already had before the reveal where it is', async () => {
+		const { log, activate, terminal } = setup({ onReveal: 'take-focus', focusInExplorer: true });
+		await activate(terminal('w4:p1'));
+		expect(log).toEqual(['reveal:efforts/alpha']);
 	});
 });

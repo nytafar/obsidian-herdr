@@ -23,11 +23,9 @@
 
 import { View, type App, type TAbstractFile, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from './main';
+import { FILE_EXPLORER_VIEW_TYPE, leafOnScreen } from './leafOnScreen';
 import { vaultRelativeFolder } from './paths';
 import { parseTerminalState, TERMINAL_VIEW_TYPE } from './views/terminalView';
-
-/** View type of the built-in file explorer. */
-export const FILE_EXPLORER_VIEW_TYPE = 'file-explorer';
 
 /** The one undocumented explorer method this module calls. */
 interface RevealingExplorer {
@@ -62,27 +60,10 @@ export function folderRevealNotice(outcome: FolderRevealOutcome, folderPath: str
 		case 'no-folder':
 			return `Herdr: the folder "${folderPath || '/'}" is not in this vault.`;
 		case 'no-explorer':
-			return 'Herdr: the file explorer is not open. Turn on the core files plugin to reveal folders.';
+			return 'Herdr: the file explorer is not open. Open it, or turn on the core Files plugin, to reveal folders.';
 		case 'unsupported':
 			return 'Herdr: this version of Obsidian cannot reveal folders in the file explorer.';
 	}
-}
-
-/**
- * Whether a leaf is on screen: in the main area or an expanded sidebar, and
- * the front tab of its group. A collapsed sidebar or a background tab shows
- * nothing, and revealing into it would open a panel nobody asked for.
- * `isShown` is Obsidian's own `HTMLElement` extension; where it is missing the
- * sidebar check alone decides.
- */
-function leafOnScreen(app: App, leaf: WorkspaceLeaf): boolean {
-	const workspace = app.workspace;
-	const root = leaf.getRoot();
-	for (const sidebar of [workspace.leftSplit, workspace.rightSplit]) {
-		if (root === sidebar && sidebar.collapsed) return false;
-	}
-	const el = leaf.view?.containerEl as (HTMLElement & { isShown?: () => boolean }) | undefined;
-	return typeof el?.isShown === 'function' ? el.isShown() : true;
 }
 
 /**
@@ -104,7 +85,7 @@ export async function revealVaultFolder(
 	const leaf = app.workspace.getLeavesOfType(FILE_EXPLORER_VIEW_TYPE).at(0);
 	if (!leaf) return 'no-explorer';
 	if (options.showExplorer) await app.workspace.revealLeaf(leaf);
-	else if (leaf.isDeferred || !leafOnScreen(app, leaf)) return 'explorer-hidden';
+	else if (!leafOnScreen(app.workspace, leaf)) return 'explorer-hidden';
 	// Read after the reveal: a deferred leaf only has its real view once loaded.
 	const explorer = revealingExplorer(leaf.view);
 	if (!explorer) return 'unsupported';
@@ -123,8 +104,11 @@ export async function revealFolderFromMenu(app: App, folderPath: string): Promis
  * leaf that is not a herdr tab, a pane the published connection does not hold,
  * or a cwd outside the vault.
  *
- * `cwd` is `PaneState.cwd`: herdr's `cwd`, with `foreground_cwd` used when
- * herdr reports no `cwd` at all.
+ * `foregroundCwd` is herdr's `foreground_cwd`, where the program in front is
+ * working, and wins when it differs from `cwd` and lies inside the vault: an
+ * agent that has moved into a subfolder is working there. Otherwise `cwd`
+ * decides, which is `PaneState.cwd`: herdr's `cwd`, with `foreground_cwd`
+ * used when herdr reports no `cwd` at all.
  */
 export function cwdRevealTarget(input: {
 	enabled: boolean;
@@ -132,10 +116,17 @@ export function cwdRevealTarget(input: {
 	paneId: string | null;
 	/** The pane's cwd as herdr reports it, or null when the scope lacks it. */
 	cwd: string | null;
+	/** The pane's `foreground_cwd`, or null when herdr sent none. */
+	foregroundCwd?: string | null;
 	/** `herdrVaultPath()`. */
 	vaultPath: string;
 }): string | null {
 	if (!input.enabled || !input.paneId || input.cwd === null) return null;
+	const foreground = input.foregroundCwd ?? null;
+	if (foreground !== null && foreground !== input.cwd) {
+		const folder = vaultRelativeFolder(foreground, input.vaultPath);
+		if (folder !== null) return folder;
+	}
 	return vaultRelativeFolder(input.cwd, input.vaultPath);
 }
 
@@ -148,46 +139,76 @@ function explorerHasFocus(app: App, doc: Document): boolean {
 		.some((leaf) => leaf.view?.containerEl.contains(active) === true);
 }
 
+/** True when the active view is a file explorer. */
+function explorerIsActive(app: App): boolean {
+	return app.workspace.getActiveViewOfType(View)?.getViewType() === FILE_EXPLORER_VIEW_TYPE;
+}
+
 /**
  * Follows the focused herdr tab in the file explorer (#116): on
  * `active-leaf-change` only, never on `pane.updated`, and silently.
  *
  * The explorer may take the active leaf or the keyboard focus while it
- * reveals; Obsidian does not document whether `revealInFolder` does either, so
- * if the active leaf moved off the herdr tab, or the focus into the explorer,
- * the tab gets it back. The restore activates the herdr leaf again, which would
- * re-enter here, so that one event is skipped.
+ * reveals; Obsidian does not document whether `revealInFolder` does either. If
+ * the reveal moved the active leaf into the explorer, or the focus into it,
+ * the herdr tab gets back what was taken, and nothing else: a note that took
+ * the active leaf meanwhile (follow active note handing it back, #78) is left
+ * alone, and focus the explorer already had before the reveal was the
+ * reader's, not the reveal's.
+ *
+ * The restore activates the herdr leaf again, which re-enters here, and
+ * Obsidian does not document whether that event fires inside `setActiveLeaf`
+ * or later. Two guards make it not matter: the restored leaf is pending until
+ * the next event, which is skipped when it is that leaf; and the last (leaf,
+ * folder) revealed is not revealed again until some other leaf has come to the
+ * front. The explorer's own leaf coming to the front counts as neither, so its
+ * event, whenever it lands, does not reset the second guard.
  */
 export function registerCwdReveal(plugin: HerdrPlugin): void {
 	const app = plugin.app;
 	const workspace = app.workspace;
-	let restoring = false;
+	let pendingRestore: WorkspaceLeaf | null = null;
+	let last: { leaf: WorkspaceLeaf; folder: string } | null = null;
 	plugin.registerEvent(
 		workspace.on('active-leaf-change', (leaf) => {
-			if (restoring || !leaf) return;
+			const restored = pendingRestore !== null && pendingRestore === leaf;
+			pendingRestore = null;
+			if (restored || !leaf) return;
 			// The persisted state, not `leaf.view`: a restored tab may still be
 			// deferred, and no view is held (PRD N1).
 			const viewState = leaf.getViewState();
+			if (viewState.type === FILE_EXPLORER_VIEW_TYPE) return;
 			const state = viewState.type === TERMINAL_VIEW_TYPE ? parseTerminalState(viewState.state) : null;
-			const session = state ? plugin.endpointSession(state.endpointId) : null;
+			const pane = state
+				? plugin.endpointSession(state.endpointId)?.scope.get(state.paneId)
+				: undefined;
 			const folder = cwdRevealTarget({
 				enabled: plugin.settings.revealCwdInExplorer,
 				paneId: state?.paneId ?? null,
-				cwd: state ? (session?.scope.get(state.paneId)?.cwd ?? null) : null,
+				cwd: pane?.cwd ?? null,
+				foregroundCwd: pane?.foregroundCwd ?? null,
 				vaultPath: plugin.herdrVaultPath(),
 			});
-			if (folder === null) return;
+			if (folder === null) {
+				last = null;
+				return;
+			}
+			if (last !== null && last.leaf === leaf && last.folder === folder) return;
+			last = { leaf, folder };
+			const doc = leaf.view.containerEl.ownerDocument;
+			const focusedBefore = explorerHasFocus(app, doc);
+			const activeBefore = explorerIsActive(app);
 			void revealVaultFolder(app, folder, { showExplorer: false }).then((outcome) => {
-				if (outcome !== 'revealed') return;
-				const activeNow = workspace.getActiveViewOfType(View)?.leaf ?? null;
-				const doc = leaf.view.containerEl.ownerDocument;
-				if (activeNow === leaf && !explorerHasFocus(app, doc)) return;
-				restoring = true;
-				try {
-					workspace.setActiveLeaf(leaf, { focus: true });
-				} finally {
-					restoring = false;
+				if (outcome !== 'revealed') {
+					// Nothing was shown: the tab coming back may try again.
+					if (last?.leaf === leaf) last = null;
+					return;
 				}
+				const tookActive = !activeBefore && explorerIsActive(app);
+				const tookFocus = !focusedBefore && explorerHasFocus(app, doc);
+				if (!tookActive && !tookFocus) return;
+				pendingRestore = leaf;
+				workspace.setActiveLeaf(leaf, { focus: tookFocus });
 			});
 		}),
 	);
