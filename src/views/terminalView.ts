@@ -69,6 +69,7 @@ import {
 	Scope,
 	setIcon,
 	setTooltip,
+	View,
 	type App,
 	type ViewStateResult,
 	type WorkspaceLeaf,
@@ -614,6 +615,13 @@ export class TerminalView extends ItemView {
 			onRendererError: (error) => {
 				new Notice(`Herdr: terminal renderer failed to start (${String(error)})`);
 			},
+			// A terminal the active note opened for the reader stays out of the
+			// keyboard until the reader comes to it (#78).
+			mayTakeFocus: () =>
+				this.plugin.terminalFocusHold.mayFocus(
+					this.leaf,
+					this.app.workspace.getActiveViewOfType(View)?.leaf ?? null,
+				),
 			onIdentityChanged: ({ switchedPane }) => {
 				// Another agent's name has nothing to do with this one's.
 				if (switchedPane) this.lastTitle = '';

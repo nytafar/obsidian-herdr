@@ -61,6 +61,8 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalTab: 'per-agent',
 		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
+		followActiveNote: false,
+		followActiveNoteMinDepth: 2,
 		pinnedPanes: {},
 		...overrides,
 	};

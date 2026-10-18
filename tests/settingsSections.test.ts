@@ -32,8 +32,10 @@ import {
 	buildRemoteSection,
 	buildTerminalSection,
 	DEFAULT_SETTINGS,
+	MAX_FOLLOW_DEPTH,
 	MAX_PANES_PER_TAB,
 	MAX_SCROLLBACK_MB,
+	MIN_FOLLOW_DEPTH,
 	MIN_PANES_PER_TAB,
 	MIN_SCROLLBACK_MB,
 	SETTINGS_SECTIONS,
@@ -309,7 +311,13 @@ describe('agent list section', () => {
 		const el = settingsContainer();
 		buildAgentListSection(el, settingsOf(), recorder().callbacks);
 
-		expect(settingNames(el)).toEqual(['Agent list', 'Sort', 'Group by', 'Clicking an agent row']);
+		expect(settingNames(el)).toEqual([
+			'Agent list',
+			'Sort',
+			'Group by',
+			'Clicking an agent row',
+			'Follow active note',
+		]);
 		expect(dropdownOf(el, 'Sort').optionValues()).toEqual(['priority', 'alphabetical']);
 		expect(dropdownOf(el, 'Group by').optionValues()).toEqual(['tab', 'folder', 'none']);
 		expect(dropdownOf(el, 'Clicking an agent row').optionValues()).toEqual([
@@ -339,6 +347,38 @@ describe('agent list section', () => {
 			'save',
 			'refreshAgentList',
 		]);
+	});
+
+	it('follows the active note only when asked, with the depth shown only then', () => {
+		const off = settingsContainer();
+		buildAgentListSection(off, settingsOf(), recorder().callbacks);
+		// Off by default (#78), and the depth means nothing while it is.
+		expect(toggleOf(off, 'Follow active note').value).toBe(false);
+		expect(settingNames(off)).not.toContain('Minimum folder depth');
+
+		const on = settingsContainer();
+		buildAgentListSection(on, settingsOf({ followActiveNote: true }), recorder().callbacks);
+		expect(settingNames(on).slice(-2)).toEqual(['Follow active note', 'Minimum folder depth']);
+		const depth = sliderOf(on, 'Minimum folder depth');
+		expect(depth.limits).toEqual({ min: MIN_FOLLOW_DEPTH, max: MAX_FOLLOW_DEPTH, step: 1 });
+		expect(depth.value).toBe(2);
+	});
+
+	it('redisplays when following is switched, and clamps the depth', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildAgentListSection(el, settings, callbacks);
+		await toggleOf(el, 'Follow active note').change(true);
+		expect(settings.followActiveNote).toBe(true);
+		expect(calls).toEqual(['save', 'redisplay']);
+
+		const shown = settingsContainer();
+		const recorded = recorder();
+		buildAgentListSection(shown, settings, recorded.callbacks);
+		await sliderOf(shown, 'Minimum folder depth').change(99);
+		expect(settings.followActiveNoteMinDepth).toBe(MAX_FOLLOW_DEPTH);
+		expect(recorded.calls).toEqual(['save']);
 	});
 });
 

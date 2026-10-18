@@ -295,6 +295,8 @@ interface HarnessOptions {
 	identity?: Partial<PaneIdentity>;
 	/** Renderers created from this point on hold their mount open. */
 	deferMounts?: boolean;
+	/** The host's answer to `mayTakeFocus`; absent leaves the method out. */
+	mayTakeFocus?: () => boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -332,6 +334,7 @@ function harness(options: HarnessOptions = {}) {
 		onStarted: () => started.push(renderers.length),
 		onRendererError: (error) => rendererErrors.push(error),
 		onIdentityChanged: ({ switchedPane }) => identityChanges.push(switchedPane),
+		...(options.mayTakeFocus ? { mayTakeFocus: options.mayTakeFocus } : {}),
 	};
 
 	const terminal = new PaneTerminal({
@@ -413,6 +416,19 @@ describe('PaneTerminal.attach', () => {
 		expect(h.renderer().focused).toBe(1);
 		expect(h.started).toEqual([1]);
 		expect(h.lastStatus().text).toBe('Controlling this pane on local.');
+	});
+
+	it('leaves the keyboard alone while the host holds the focus (#78)', async () => {
+		let allowed = false;
+		const h = harness({ mayTakeFocus: () => allowed });
+		await h.terminal.attach(h.hostEl);
+		expect(h.renderer().focused).toBe(0);
+		// The session is controlled all the same; only the focus is held.
+		expect(h.session().resizes).toEqual([[100, 40, 8, 16]]);
+
+		allowed = true;
+		await h.terminal.reconnect();
+		expect(h.renderer().focused).toBe(1);
 	});
 
 	it('starts nothing without a pane id', async () => {

@@ -276,6 +276,18 @@ export interface HerdrSettings {
 	 */
 	agentListRowClick: RowClickAction;
 	/**
+	 * Whether focusing a markdown note brings the agent working in its folder
+	 * into view, the way a click on its row would (issue #78). Off by default.
+	 * See `followNote.ts`.
+	 */
+	followActiveNote: boolean;
+	/**
+	 * How many folders below the vault root an agent's cwd must be before it
+	 * owns the notes under it, for {@link followActiveNote}. See
+	 * {@link clampFollowDepth}.
+	 */
+	followActiveNoteMinDepth: number;
+	/**
 	 * Rows pinned to the top of their group in the agent list (issue #35), as
 	 * pane ids keyed by the endpoint id they belong to (`connection.ts`). Pane
 	 * ids are only meaningful on the herdr that issued them, so a local pin
@@ -385,6 +397,23 @@ export function clampPanesPerTab(value: unknown): number {
 	return Math.min(MAX_PANES_PER_TAB, Math.max(MIN_PANES_PER_TAB, whole));
 }
 
+/**
+ * Bounds for the follow-active-note depth (issue #78). One is the least that
+ * means anything, since an agent at the vault root never owns a note; eight is
+ * deeper than any vault this was designed against is organised. Two, the
+ * default, skips `efforts/` and matches `inputs/corpora/`.
+ */
+export const MIN_FOLLOW_DEPTH = 1;
+export const MAX_FOLLOW_DEPTH = 8;
+export const DEFAULT_FOLLOW_DEPTH = 2;
+
+/** Whatever `data.json` holds as a whole depth inside the supported range. */
+export function clampFollowDepth(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_FOLLOW_DEPTH;
+	const whole = Math.round(value);
+	return Math.min(MAX_FOLLOW_DEPTH, Math.max(MIN_FOLLOW_DEPTH, whole));
+}
+
 /** The two cursor knobs (issue #52) as the renderer interface takes them. */
 export function cursorOptions(settings: HerdrSettings): CursorOptions {
 	return {
@@ -439,6 +468,8 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalTab: DEFAULT_TERMINAL_TAB,
 	terminalTitleSource: DEFAULT_TERMINAL_TITLE_SOURCE,
 	agentListRowClick: 'terminal',
+	followActiveNote: false,
+	followActiveNoteMinDepth: DEFAULT_FOLLOW_DEPTH,
 	pinnedPanes: {},
 };
 
@@ -995,7 +1026,11 @@ export function buildFileExplorerSection(
 		);
 }
 
-/** Row order, grouping and what a click does (issue #20). Each repaints the list. */
+/**
+ * Row order, grouping and what a click does (issue #20), each of which
+ * repaints the list; then following the active note (issue #78), which does
+ * what a row click does and only saves.
+ */
 export function buildAgentListSection(
 	containerEl: HTMLElement,
 	settings: HerdrSettings,
@@ -1052,6 +1087,38 @@ export function buildAgentListSection(
 					settings.agentListRowClick = value as RowClickAction;
 					await callbacks.save();
 					callbacks.refreshAgentList();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Follow active note')
+		.setDesc(
+			'When you focus a note, bring the agent working in its folder into view, the way clicking its row would: its terminal opens beside the note without taking the cursor, or its pane is focused in herdr. The deepest matching folder wins. Notes no agent works in leave everything as it is.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.followActiveNote === true).onChange(async (value) => {
+				settings.followActiveNote = value;
+				await callbacks.save();
+				// The depth below only means something while following is on.
+				callbacks.redisplay();
+			}),
+		);
+
+	if (settings.followActiveNote !== true) return;
+
+	new Setting(containerEl)
+		.setName('Minimum folder depth')
+		.setDesc(
+			'How many folders below the vault root an agent must work before it owns the notes under it. With 2, agents at the vault root or in a top-level folder never match, while one in inputs/corpora does.',
+		)
+		.addSlider((slider) =>
+			slider
+				.setLimits(MIN_FOLLOW_DEPTH, MAX_FOLLOW_DEPTH, 1)
+				.setValue(clampFollowDepth(settings.followActiveNoteMinDepth))
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					settings.followActiveNoteMinDepth = clampFollowDepth(value);
+					await callbacks.save();
 				}),
 		);
 }

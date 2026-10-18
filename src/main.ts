@@ -59,12 +59,14 @@ import {
 	chooseNoteLeaf,
 	decideOpenTarget,
 	decidePlacement,
+	FocusHold,
 	type NoteLeafCandidate,
 } from './terminalPlacement';
 import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { registerCwdReveal } from './explorerReveal';
+import { registerNoteFollow } from './followNote';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
@@ -201,6 +203,11 @@ export default class HerdrPlugin extends Plugin {
 	 * activates no leaf.
 	 */
 	readonly paneViews = new PaneViewEvents();
+	/**
+	 * Terminal leaves opened without the keyboard (#78), which a control-mode
+	 * renderer asks before it focuses itself on attach.
+	 */
+	readonly terminalFocusHold = new FocusHold<WorkspaceLeaf>();
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
@@ -284,6 +291,8 @@ export default class HerdrPlugin extends Plugin {
 			registerOutlineSwap(this);
 			// The focused herdr tab's folder, selected in the file explorer (#116).
 			registerCwdReveal(this);
+			// Off unless the setting asks for it; reads it at every note (#78).
+			registerNoteFollow(this);
 			this.registerFileMenus();
 			this.refreshFolderHoverButton();
 			void this.connect();
@@ -406,8 +415,22 @@ export default class HerdrPlugin extends Plugin {
 	 * Without it every new agent was placed as if its cwd were unknown — a tab
 	 * filling the main area — while attaching to the same folder split beside the
 	 * note (issue #28).
+	 *
+	 * `focus: false` opens or reveals the terminal without activating it and
+	 * holds its renderer from taking the keyboard (issue #78), for a caller
+	 * that must leave the cursor where it is.
 	 */
-	async openTerminal(paneId: string, cwd?: string): Promise<void> {
+	async openTerminal(
+		paneId: string,
+		cwd?: string,
+		options: { focus?: boolean } = {},
+	): Promise<void> {
+		const focus = options.focus !== false;
+		// A plain open hands a held leaf its keyboard back: it was asked for.
+		const quiet = (leaf: WorkspaceLeaf): void => {
+			if (focus) this.terminalFocusHold.release(leaf);
+			else this.terminalFocusHold.hold(leaf);
+		};
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
 		// is opened on and pinned to (issue #54).
@@ -433,9 +456,10 @@ export default class HerdrPlugin extends Plugin {
 				open.find((candidate) => !candidate.isDeferred) ??
 				open.at(0);
 			if (reused) {
+				quiet(reused);
 				await reused.setViewState({
 					type: TERMINAL_VIEW_TYPE,
-					active: true,
+					active: focus,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
 					state: { paneId, mode: this.attachModeOf(reused), endpointId },
@@ -445,12 +469,14 @@ export default class HerdrPlugin extends Plugin {
 		}
 		if (!leaf) {
 			leaf = this.leafForNewTerminal(paneId, cwd);
+			quiet(leaf);
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
-				active: true,
+				active: focus,
 				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
 			});
 		}
+		quiet(leaf);
 		await workspace.revealLeaf(leaf);
 	}
 
