@@ -58,6 +58,7 @@ import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
+import { revealFolderFromMenu } from '../explorerReveal';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -516,6 +517,11 @@ export class AgentListView extends ItemView {
 			},
 			focusPane: (ref) => {
 				if (onCurrentEndpoint(ref)) void plugin.actions.focusPane(ref.paneId);
+			},
+			vaultPath: () => plugin.herdrVaultPath(),
+			revealFolder: async (folder) => {
+				const notice = await revealFolderFromMenu(this.app, folder);
+				if (notice) new Notice(notice);
 			},
 			renameAgent: async (ref, name) => {
 				if (!onCurrentEndpoint(ref)) return;

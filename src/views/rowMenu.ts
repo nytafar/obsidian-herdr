@@ -2,8 +2,10 @@
  * The agent row's context menu (issue #35): what it contains and what each
  * entry asks for.
  *
- * Three entries, in the order the hand reaches for them: pin or unpin the row
- * at the top of its group, rename the agent, close the pane. Pin is client-side
+ * Up to four entries, in the order the hand reaches for them: reveal the
+ * agent's folder in the file explorer (issue #79, only when its cwd is inside
+ * the vault), pin or unpin the row at the top of its group, rename the agent,
+ * close the pane. Pin is client-side
  * and lands in the settings (`pinnedPanes`, keyed by endpoint); rename is
  * `agent.rename` with a `pane.rename` fallback and close is `pane.close`, both
  * in `actions.ts`. Close kills whatever runs in the pane, so it is the one
@@ -17,7 +19,7 @@
  */
 
 /** What choosing an entry means. The view dispatches on this, nothing else. */
-export type RowMenuAction = 'pin' | 'unpin' | 'rename' | 'close';
+export type RowMenuAction = 'reveal' | 'pin' | 'unpin' | 'rename' | 'close';
 
 /** The slice of a row this menu reads. `RowModel` satisfies it. */
 export interface RowMenuRow {
@@ -30,6 +32,13 @@ export interface RowMenuRow {
 	 * makes a sensible starting value for a rename.
 	 */
 	name?: string;
+	/**
+	 * The pane's working folder as a vault-relative path (`''` for the vault
+	 * root), or null/absent when its cwd is outside the vault as herdr sees it.
+	 * Only a string offers "Reveal folder"; outside the vault the entry is left
+	 * out rather than drawn disabled (issue #79).
+	 */
+	folder?: string | null;
 }
 
 /** One entry of the context menu. */
@@ -47,13 +56,27 @@ export interface RowMenuItem {
 
 /** The entries for one row, in menu order. */
 export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
+	const reveal = typeof row.folder === 'string';
+	// Navigation first, set apart from the entries that change the row or pane.
+	const navigation: RowMenuItem[] = reveal
+		? [
+				{
+					action: 'reveal',
+					label: 'Reveal folder',
+					icon: 'folder-open',
+					warning: false,
+					separatorBefore: false,
+				},
+			]
+		: [];
 	return [
+		...navigation,
 		{
 			action: row.pinned ? 'unpin' : 'pin',
 			label: row.pinned ? 'Unpin from top of group' : 'Pin to top of group',
 			icon: row.pinned ? 'pin-off' : 'pin',
 			warning: false,
-			separatorBefore: false,
+			separatorBefore: reveal,
 		},
 		{
 			action: 'rename',
