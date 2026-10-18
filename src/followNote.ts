@@ -19,12 +19,18 @@
  * - A terminal that is already on screen is left where it is.
  * - The keyboard stays in the note. The terminal opens inactive and under a
  *   {@link FocusHold}, so its renderer does not take the focus when its bridge
- *   starts, and the note gets the active leaf back if the open moved it.
+ *   starts, and the note gets the active leaf back if the open moved it. A
+ *   note the terminal now covers (a tab placement) does not: the terminal
+ *   takes the active leaf instead, without being focused, so keys never go to
+ *   a note that is not on screen. Being the active leaf ends its hold, so a
+ *   control-mode renderer that attaches afterwards takes the keyboard as it
+ *   would in any tab the reader is in.
  */
 
 import { View, type TFile, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from './main';
 import type { Unsubscribe } from './herdr/scope';
+import { leafOnScreen } from './leafOnScreen';
 import { clampFollowDepth, isPanePinned } from './settings';
 import { chooseFollowPane, FocusRecency } from './terminalPlacement';
 import { stateMatchesPane, TERMINAL_VIEW_TYPE } from './views/terminalView';
@@ -112,12 +118,6 @@ export class NoteFollower<L> {
 	}
 }
 
-/** Obsidian's `isShown`, where it exists; a leaf without it counts as shown. */
-function leafShown(leaf: WorkspaceLeaf): boolean {
-	const el = leaf.view?.containerEl as (HTMLElement & { isShown?: () => boolean }) | undefined;
-	return typeof el?.isShown === 'function' ? el.isShown() : true;
-}
-
 /** The note a leaf's persisted state says it shows, when it is a markdown view. */
 function markdownFileOf(leaf: WorkspaceLeaf | null): string | null {
 	if (!leaf) return null;
@@ -179,16 +179,21 @@ export function registerNoteFollow(plugin: HerdrPlugin): void {
 		terminalPresence: (paneId) => {
 			const leaf = terminalLeaf(paneId);
 			if (!leaf) return 'none';
-			return !leaf.isDeferred && leafShown(leaf) ? 'shown' : 'hidden';
+			return leafOnScreen(workspace, leaf) ? 'shown' : 'hidden';
 		},
 		openTerminalQuietly: async (paneId, noteLeaf) => {
 			await plugin.openTerminal(paneId, undefined, { focus: false });
-			// A note the new terminal tab now covers is not handed the leaf back:
-			// that would bring it to the front and hide the terminal again.
 			const active = workspace.getActiveViewOfType(View)?.leaf ?? null;
-			if (active !== noteLeaf && leafShown(noteLeaf)) {
-				workspace.setActiveLeaf(noteLeaf, { focus: true });
+			if (leafOnScreen(workspace, noteLeaf)) {
+				if (active !== noteLeaf) workspace.setActiveLeaf(noteLeaf, { focus: true });
+				return;
 			}
+			// The terminal opened as a tab over the note ("Terminal placement:
+			// tab"). Handing the note the leaf back would bring it to the front
+			// and hide the terminal again; leaving it active would send keys to a
+			// note nobody sees. The terminal takes the active leaf, not the focus.
+			const terminal = terminalLeaf(paneId);
+			if (terminal && active !== terminal) workspace.setActiveLeaf(terminal, { focus: false });
 		},
 		focusPane: (paneId) => {
 			void plugin.actions.focusPane(paneId);

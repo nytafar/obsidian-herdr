@@ -66,6 +66,7 @@ import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { registerCwdReveal } from './explorerReveal';
+import { leafOnScreen } from './leafOnScreen';
 import { registerNoteFollow } from './followNote';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
@@ -450,11 +451,17 @@ export default class HerdrPlugin extends Plugin {
 			// view first, and the tab the user last used is the one they expect
 			// to change (seen live: the first leaf in layout order was a
 			// deferred, restored tab, and the switch landed nowhere useful).
+			//
+			// A quiet open (#78) never swaps a terminal that is on screen: the
+			// reader is looking at it — it may be the native panel they just
+			// clicked a link in — and did not ask for it to change. It reuses a
+			// hidden one, or places a new terminal as if none were open.
 			const active = workspace.getActiveViewOfType(TerminalView)?.leaf;
+			const candidates = focus ? open : open.filter((each) => !leafOnScreen(workspace, each));
 			const reused =
-				(active && open.includes(active) && !active.isDeferred ? active : undefined) ??
-				open.find((candidate) => !candidate.isDeferred) ??
-				open.at(0);
+				(active && candidates.includes(active) && !active.isDeferred ? active : undefined) ??
+				candidates.find((candidate) => !candidate.isDeferred) ??
+				candidates.at(0);
 			if (reused) {
 				quiet(reused);
 				await reused.setViewState({

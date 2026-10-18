@@ -1093,7 +1093,7 @@ export function buildAgentListSection(
 	new Setting(containerEl)
 		.setName('Follow active note')
 		.setDesc(
-			'When you focus a note, bring the agent working in its folder into view, the way clicking its row would: its terminal opens beside the note without taking the cursor, or its pane is focused in herdr. The deepest matching folder wins. Notes no agent works in leave everything as it is.',
+			'When you focus a note, bring the agent working in its folder into view, the way clicking its row would: its terminal opens where terminal placement and terminal tab put it, without taking the cursor from the note, or its pane is focused in herdr. The deepest matching folder wins. Notes no agent works in leave everything as it is.',
 		)
 		.addToggle((toggle) =>
 			toggle.setValue(settings.followActiveNote === true).onChange(async (value) => {

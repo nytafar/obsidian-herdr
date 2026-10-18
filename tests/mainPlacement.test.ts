@@ -38,19 +38,32 @@ const NEW_PANE = 'w2:pB';
 interface FakeLeaf {
 	name: string;
 	state: Record<string, unknown>;
+	/** What `containerEl.isShown()` answers: whether the tab is in front. */
+	shown: boolean;
+	isDeferred: boolean;
+	view: { containerEl: { isShown(): boolean } };
+	getRoot(): object;
 	getViewState(): { state: Record<string, unknown> };
 	setViewState(state: unknown): Promise<void>;
 }
 
+/** The main area every leaf here sits in. */
+const MAIN = { name: 'main' };
+
 function leaf(name: string, state: Record<string, unknown>): FakeLeaf {
-	return {
+	const made: FakeLeaf = {
 		name,
 		state,
+		shown: true,
+		isDeferred: false,
+		view: { containerEl: { isShown: () => made.shown } },
+		getRoot: () => MAIN,
 		getViewState: () => ({ state }),
 		setViewState: async (next: unknown) => {
 			Object.assign(state, next as Record<string, unknown>);
 		},
 	};
+	return made;
 }
 
 interface Harness {
@@ -86,6 +99,8 @@ function harness(options: {
 	});
 	const placed = leaf('placed', {});
 	const workspace = {
+		leftSplit: { collapsed: false },
+		rightSplit: { collapsed: false },
 		getActiveViewOfType: () => null,
 		getLeavesOfType: (type: string) => (type === 'herdr-terminal' ? [terminalLeaf] : []),
 		getActiveFile: () => ({ path: NOTE }),
@@ -202,6 +217,42 @@ describe('openTerminal without the keyboard (issue #78)', () => {
 		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(false);
 		await plugin.openTerminal('w2:pA');
 		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(true);
+	});
+
+	it('never swaps a terminal on screen under "reuse"; places a new one instead', async () => {
+		// The native panel the reader just clicked a link in is a terminal leaf,
+		// and following the note that link opened must not turn it into another
+		// agent.
+		const { plugin, calls, terminalLeaf, placed } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		// `setViewState` was never called on the terminal on screen.
+		expect(terminalLeaf.state.state).toBeUndefined();
+		expect(placed.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['split vertical of note before=false', 'reveal placed']);
+	});
+
+	it('still swaps a hidden terminal under "reuse" when opening quietly', async () => {
+		const { plugin, calls, terminalLeaf } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		terminalLeaf.shown = false;
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		expect(terminalLeaf.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['reveal terminal']);
+	});
+
+	it('swaps the terminal on screen under "reuse" on an ordinary open, as before', async () => {
+		const { plugin, calls, terminalLeaf } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		await plugin.openTerminal('w2:pB');
+		expect(terminalLeaf.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['reveal terminal']);
 	});
 
 	it('activates the placed terminal on an ordinary open', async () => {
