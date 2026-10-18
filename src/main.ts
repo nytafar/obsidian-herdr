@@ -64,6 +64,7 @@ import {
 import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
+import { registerCwdReveal } from './explorerReveal';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
@@ -281,6 +282,8 @@ export default class HerdrPlugin extends Plugin {
 			// The table of contents takes the outline's place while a native tab is
 			// in front (#119); nothing happens while the outline is not open.
 			registerOutlineSwap(this);
+			// The focused herdr tab's folder, selected in the file explorer (#116).
+			registerCwdReveal(this);
 			this.registerFileMenus();
 			this.refreshFolderHoverButton();
 			void this.connect();

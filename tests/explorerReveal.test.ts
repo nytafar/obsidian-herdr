@@ -9,8 +9,11 @@
 
 import { describe, expect, it } from 'vitest';
 import type { App } from 'obsidian';
+import type HerdrPlugin from '../src/main';
 import {
+	cwdRevealTarget,
 	folderRevealNotice,
+	registerCwdReveal,
 	revealingExplorer,
 	revealVaultFolder,
 	type FolderRevealOutcome,
@@ -150,5 +153,148 @@ describe('folderRevealNotice', () => {
 		);
 		expect(folderRevealNotice('no-explorer', 'efforts')).toMatch(/file explorer is not open/);
 		expect(folderRevealNotice('unsupported', 'efforts')).toMatch(/cannot reveal folders/);
+	});
+});
+
+describe('cwdRevealTarget', () => {
+	const VAULT = '/Users/lasse/Vaults/hvelv';
+	const base = { enabled: true, paneId: 'w4:p3', cwd: `${VAULT}/inputs/corpora`, vaultPath: VAULT };
+
+	it('is the pane folder inside the vault, the root as the empty path', () => {
+		expect(cwdRevealTarget(base)).toBe('inputs/corpora');
+		expect(cwdRevealTarget({ ...base, cwd: `${VAULT}/` })).toBe('');
+	});
+
+	it('follows the vault as herdr sees it under a remote profile', () => {
+		expect(
+			cwdRevealTarget({ ...base, cwd: '/home/lasse/hvelv/efforts', vaultPath: '/home/lasse/hvelv' }),
+		).toBe('efforts');
+	});
+
+	it.each<[string, Partial<Parameters<typeof cwdRevealTarget>[0]>]>([
+		['the setting is off', { enabled: false }],
+		['the leaf is no herdr tab', { paneId: null }],
+		['the connection does not hold the pane', { cwd: null }],
+		['the cwd is outside the vault', { cwd: '/Users/lasse/code/herdr' }],
+		['the cwd is a sibling of the vault', { cwd: `${VAULT}-old` }],
+		['the vault path is unknown', { vaultPath: '' }],
+	])('is null when %s', (_case, change) => {
+		expect(cwdRevealTarget({ ...base, ...change })).toBeNull();
+	});
+});
+
+describe('registerCwdReveal', () => {
+	const VAULT = '/Users/lasse/Vaults/hvelv';
+
+	interface FakeLeaf {
+		state: { type: string; state: Record<string, unknown> };
+		view: { containerEl: { ownerDocument: { activeElement: unknown } } };
+		getViewState(): { type: string; state: Record<string, unknown> };
+	}
+
+	function setup(options: { enabled?: boolean; stealActive?: boolean } = {}) {
+		const log: string[] = [];
+		const doc = { activeElement: null as unknown };
+		let handler: ((leaf: FakeLeaf | null) => void) | null = null;
+		let active: unknown = null;
+		const explorerLeaf = {
+			isDeferred: false,
+			getRoot: () => ({}),
+			view: {
+				containerEl: { contains: () => false, isShown: () => true },
+				revealInFolder: (folder: FakeFolder) => {
+					log.push(`reveal:${folder.path}`);
+					if (options.stealActive) active = explorerLeaf;
+				},
+			},
+		};
+		const leafOf = (type: string, state: Record<string, unknown>): FakeLeaf => {
+			const leaf: FakeLeaf = {
+				state: { type, state },
+				view: { containerEl: { ownerDocument: doc } },
+				getViewState: () => leaf.state,
+			};
+			return leaf;
+		};
+		const terminal = (paneId: string, endpointId = 'local'): FakeLeaf =>
+			leafOf('herdr-terminal', { paneId, mode: 'control', endpointId });
+		const cwds: Record<string, string> = {
+			'w4:p1': `${VAULT}/efforts/alpha`,
+			'w4:p2': `${VAULT}/inputs/corpora`,
+			'w4:p3': '/Users/lasse/code/herdr',
+		};
+		const workspace = {
+			leftSplit: { collapsed: false },
+			rightSplit: { collapsed: false },
+			on: (name: string, callback: (leaf: FakeLeaf | null) => void) => {
+				expect(name).toBe('active-leaf-change');
+				handler = callback;
+				return {};
+			},
+			getLeavesOfType: () => [explorerLeaf],
+			revealLeaf: () => Promise.resolve(),
+			getActiveViewOfType: () => ({ leaf: active }),
+			setActiveLeaf: (leaf: FakeLeaf) => {
+				log.push(`setActiveLeaf:${String(leaf.state.state.paneId)}`);
+				active = leaf;
+				// Obsidian fires the event from inside setActiveLeaf.
+				handler?.(leaf);
+			},
+		};
+		const plugin = {
+			app: {
+				workspace,
+				vault: {
+					getRoot: () => ({ path: '/' }),
+					getFolderByPath: (path: string) => ({ path }),
+				},
+			},
+			settings: { revealCwdInExplorer: options.enabled ?? true },
+			registerEvent: () => undefined,
+			endpointSession: (endpointId: string) =>
+				endpointId === 'local'
+					? {
+							scope: {
+								get: (paneId: string) => (cwds[paneId] ? { cwd: cwds[paneId] } : undefined),
+							},
+						}
+					: null,
+			herdrVaultPath: () => VAULT,
+		};
+		registerCwdReveal(plugin as unknown as HerdrPlugin);
+		const activate = async (leaf: FakeLeaf | null): Promise<void> => {
+			active = leaf;
+			handler?.(leaf);
+			for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+		};
+		return { log, activate, terminal, leafOf };
+	}
+
+	it('reveals the folder of each herdr tab as it comes to the front', async () => {
+		const { log, activate, terminal } = setup();
+		await activate(terminal('w4:p1'));
+		await activate(terminal('w4:p2'));
+		expect(log).toEqual(['reveal:efforts/alpha', 'reveal:inputs/corpora']);
+	});
+
+	it('does nothing for a note, a pane outside the vault, another herdr, or no leaf', async () => {
+		const { log, activate, terminal, leafOf } = setup();
+		await activate(leafOf('markdown', { file: 'efforts/alpha/a.md' }));
+		await activate(terminal('w4:p3'));
+		await activate(terminal('w4:p1', 'ssh:lasse@xl:/home/lasse/.config/herdr/herdr.sock'));
+		await activate(null);
+		expect(log).toEqual([]);
+	});
+
+	it('does nothing with the setting off', async () => {
+		const { log, activate, terminal } = setup({ enabled: false });
+		await activate(terminal('w4:p1'));
+		expect(log).toEqual([]);
+	});
+
+	it('hands the active leaf back when the explorer took it, without revealing twice', async () => {
+		const { log, activate, terminal } = setup({ stealActive: true });
+		await activate(terminal('w4:p1'));
+		expect(log).toEqual(['reveal:efforts/alpha', 'setActiveLeaf:w4:p1']);
 	});
 });

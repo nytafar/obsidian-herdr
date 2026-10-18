@@ -502,6 +502,7 @@ describe('native view section', () => {
 			'Native view',
 			'Tool groups',
 			'Trust new folders automatically',
+			'Reveal working folder in file explorer',
 		]);
 		expect(headings(el)).toEqual(['Native view']);
 		const dropdown = dropdownOf(el, 'Tool groups');
@@ -510,6 +511,20 @@ describe('native view section', () => {
 		expect(dropdown.value).toBe('highlight');
 		// Answering the trust prompt by itself is off until it is asked for (#99).
 		expect(toggleOf(el, 'Trust new folders automatically').value).toBe(false);
+		// Following the focused tab in the explorer is on until turned off (#116).
+		expect(toggleOf(el, 'Reveal working folder in file explorer').value).toBe(true);
+	});
+
+	it('saves the explorer reveal, which every tab switch reads afresh', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildNativeViewSection(el, settings, callbacks);
+
+		await toggleOf(el, 'Reveal working folder in file explorer').change(false);
+
+		expect(settings.revealCwdInExplorer).toBe(false);
+		expect(calls).toEqual(['save']);
 	});
 
 	it('saves the presentation and redraws the open native views', async () => {

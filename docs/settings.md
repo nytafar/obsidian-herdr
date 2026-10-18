@@ -61,6 +61,7 @@ counts are for.
 | Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for local panes only; a remote herdr shows terminals. |
 | Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
 | Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, so an agent started in a new folder begins without a trip to the terminal. Off by default. Nothing else is answered for you. |
+| Reveal working folder in file explorer | When a herdr tab comes to the front, native view or terminal, the file explorer selects and scrolls to the agent's working folder. On by default. Only for a folder inside the vault (the remote vault path under a remote profile), and only while the file explorer is on screen: a collapsed sidebar or a background explorer tab is left alone, and nothing is said. The agent row's right-click menu has **Reveal folder** for the same thing on demand, which does open the sidebar. |
 
 See [native-view.md](native-view.md).
 

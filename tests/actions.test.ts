@@ -50,6 +50,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalScrollbackMb: 10,
 		nativeToolGroups: 'highlight',
 		nativeAutoTrustFolders: false,
+		revealCwdInExplorer: true,
 		openTerminalAfterStart: true,
 		splitIntoFolderTab: true,
 		panesPerTab: 2,

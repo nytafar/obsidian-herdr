@@ -230,6 +230,13 @@ export interface HerdrSettings {
 	 * `native/waitingCard.ts`.
 	 */
 	nativeAutoTrustFolders: boolean;
+	/**
+	 * Whether a herdr tab coming to the front, terminal or native view, reveals
+	 * its pane's working folder in the file explorer (issue #116). On by
+	 * default; only for a cwd inside the vault, and only into an explorer that
+	 * is already on screen. See `explorerReveal.ts`.
+	 */
+	revealCwdInExplorer: boolean;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -419,6 +426,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
 	nativeAutoTrustFolders: false,
+	revealCwdInExplorer: true,
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -1258,11 +1266,13 @@ export function buildTerminalSection(
 }
 
 /**
- * The native view (issues #95, #99): how much of a turn's tool calls the view
- * folds away, and whether the waiting card answers the workspace trust prompt
- * by itself. The first changes nothing a view holds, only how it reads, so a
- * change redraws the open native views; the second is read per block, so an
- * open view picks it up at the next one.
+ * The native view (issues #95, #99, #116): how much of a turn's tool calls the
+ * view folds away, whether the waiting card answers the workspace trust prompt
+ * by itself, and whether a herdr tab coming to the front reveals its folder in
+ * the file explorer. The first changes nothing a view holds, only how it
+ * reads, so a change redraws the open native views; the second is read per
+ * block, so an open view picks it up at the next one; the third is read at
+ * every tab switch, so it only saves.
  */
 export function buildNativeViewSection(
 	containerEl: HTMLElement,
@@ -1301,6 +1311,18 @@ export function buildNativeViewSection(
 				// card is what a blocked pane shows until the block is over: without
 				// the redraw the switch would only reach the block after this one.
 				callbacks.refreshNativeViews();
+			}),
+		);
+
+	new Setting(containerEl)
+		.setName('Reveal working folder in file explorer')
+		.setDesc(
+			'When a herdr tab comes to the front, in the native view or as a terminal, select its agent\u2019s working folder in the file explorer. Only folders inside the vault, and only while the file explorer is on screen. On by default.',
+		)
+		.addToggle((toggle) =>
+			toggle.setValue(settings.revealCwdInExplorer !== false).onChange(async (value) => {
+				settings.revealCwdInExplorer = value;
+				await callbacks.save();
 			}),
 		);
 }
