@@ -69,6 +69,7 @@ import {
 	Scope,
 	setIcon,
 	setTooltip,
+	View,
 	type App,
 	type ViewStateResult,
 	type WorkspaceLeaf,
@@ -614,6 +615,13 @@ export class TerminalView extends ItemView {
 			onRendererError: (error) => {
 				new Notice(`Herdr: terminal renderer failed to start (${String(error)})`);
 			},
+			// A terminal the active note opened for the reader stays out of the
+			// keyboard until the reader comes to it (#78).
+			mayTakeFocus: () =>
+				this.plugin.terminalFocusHold.mayFocus(
+					this.leaf,
+					this.app.workspace.getActiveViewOfType(View)?.leaf ?? null,
+				),
 			onIdentityChanged: ({ switchedPane }) => {
 				// Another agent's name has nothing to do with this one's.
 				if (switchedPane) this.lastTitle = '';
@@ -702,6 +710,10 @@ export class TerminalView extends ItemView {
 			},
 			// Read per block, so the setting reaches an open view (#99).
 			autoTrustFolders: () => this.plugin.settings.nativeAutoTrustFolders === true,
+			// Links open beside this tab, never in it (#114), and resolve from
+			// the pane's folder when that is inside the vault.
+			panelLeaf: () => this.leaf,
+			cwd: () => this.paneCwd(),
 			// `/` offers the pane's commands and skills, `@` the vault's files
 			// (#98). The pane's own cwd decides the project scope and the form a
 			// mention takes; the vault path is the local one, because a native

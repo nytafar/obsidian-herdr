@@ -470,5 +470,16 @@ export function settingNamed(container: unknown, name: string): Setting {
 	return first;
 }
 
+/**
+ * Obsidian's own split of a link text into the file and the heading or block
+ * after its first `#` (#114). The real one does nothing more for a wikilink's
+ * target, which is all the plugin hands it.
+ */
+export function parseLinktext(linktext: string): { path: string; subpath: string } {
+	const at = linktext.indexOf('#');
+	if (at === -1) return { path: linktext, subpath: '' };
+	return { path: linktext.slice(0, at), subpath: linktext.slice(at) };
+}
+
 export function setIcon(): void {}
 export function setTooltip(): void {}

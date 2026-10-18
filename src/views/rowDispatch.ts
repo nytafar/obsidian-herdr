@@ -5,7 +5,8 @@
  * decision behind a click, a right-click or a key on a row lives here. Given
  * the event, this module finds the row, works out the effect — open or reveal
  * the pane's terminal, focus the pane in herdr, or open the row menu and then
- * pin, rename or close — and performs it through {@link RowDispatchHost}. The
+ * reveal the folder, pin, rename or close — and performs it through
+ * {@link RowDispatchHost}. The
  * host is the only thing that knows about Obsidian, the plugin or herdr, so
  * `tests/rowDispatch.test.ts` drives the whole surface without an `ItemView`.
  *
@@ -42,6 +43,7 @@ import {
 	type RowMenuRow,
 } from './rowMenu';
 import type { PaneState } from '../herdr/scope';
+import { vaultRelativeFolder } from '../paths';
 
 /** A pane on one herdr. Both halves travel together; the id alone aliases. */
 export interface PaneRef {
@@ -62,8 +64,11 @@ export interface RowTarget {
 	connection: unknown;
 }
 
-/** What the dispatcher needs of a pane: enough to name it and to rename it. */
-export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'>;
+/**
+ * What the dispatcher needs of a pane: enough to name it and to rename it, and
+ * its cwd for "Reveal folder" (issue #79). A pane without a cwd offers none.
+ */
+export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'> & Partial<Pick<PaneState, 'cwd'>>;
 
 /** The bit of a mouse event read here. Structural, so a test needs no DOM. */
 export interface RowPointerEvent {
@@ -103,6 +108,16 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	openTerminal(ref: PaneRef): void;
 	/** `pane.focus`, the one source of truth for "seen" (PRD M9). */
 	focusPane(ref: PaneRef): void;
+	/**
+	 * The vault as the machine herdr runs on sees it (`herdrVaultPath()`), which
+	 * a pane's cwd is compared against. Empty when unknown.
+	 */
+	vaultPath(): string;
+	/**
+	 * Shows a vault folder (`''` for the root) in the file explorer, opening its
+	 * sidebar if need be, and reports its own failures (issue #79).
+	 */
+	revealFolder(folder: string): Promise<void>;
 	/** `agent.rename`, with the pane-label fallback; reports its own failures. */
 	renameAgent(ref: PaneRef, name: string): Promise<void>;
 	/**
@@ -176,6 +191,7 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 			displayName: agentDisplayName(pane),
 			pinned: this.host.pinned(ref),
 			name: pane.name,
+			folder: pane.cwd ? vaultRelativeFolder(pane.cwd, this.host.vaultPath()) : null,
 		};
 		this.host.showRowMenu(event, rowMenuItems(row), (item) => {
 			void this.runMenuItem(item, row, target);
@@ -192,6 +208,12 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 	private async runMenuItem(item: RowMenuItem, row: RowMenuRow, target: RowTarget): Promise<void> {
 		const ref: PaneRef = { endpointId: target.endpointId, paneId: row.paneId };
 		switch (item.action) {
+			case 'reveal': {
+				// A vault-side effect: nothing goes to herdr, so there is no
+				// connection to revalidate.
+				if (typeof row.folder === 'string') await this.host.revealFolder(row.folder);
+				return;
+			}
 			case 'pin':
 			case 'unpin': {
 				await this.host.setPinned(ref, item.action === 'pin');

@@ -12,6 +12,13 @@ read those. Coding work keeps the terminal; it is one click away on every tab.
   through Obsidian's own Markdown renderer, so wikilinks resolve, callouts and
   embeds work, code blocks highlight, and your theme, fonts and readable line
   length apply. Clicking a wikilink opens the note.
+- **Links open beside the panel**, never in it: a wikilink in the prose or in
+  a prompt opens in the tab next to the herdr tab, the one already showing
+  that note if there is one, or a new split when nothing sits beside it.
+  Mod-click opens a new tab as it does in a note. An `obsidian://open` link to
+  this vault opens the same way inside the app; one for another vault, and
+  every web link, still leaves for the OS and the browser. Links resolve from
+  the pane's working directory when that is inside the vault.
 - **Your prompts** as plain text with wikilinks made clickable, so pasted
   snippets and `@` paths are not mangled.
 - **Tool calls collapsed into one line per run**, such as "Read 4 files, ran 2

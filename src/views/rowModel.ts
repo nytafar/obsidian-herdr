@@ -11,6 +11,10 @@
  * badge (#23) all landed here rather than in the render path, which is the point
  * of the split. The badge itself since moved one level down, to
  * `herdr/cacheBadge.ts`, because the scope needs the same answer.
+ *
+ * Where an agent is live (issue #76) is decided here too: the view hands over
+ * the open terminal tabs and the active one as plain data, so the emphasis
+ * tiers are tested without a workspace.
  */
 
 import { lastPathSegment, trimTrailingSlashes } from '../paths';
@@ -81,6 +85,17 @@ export interface RowModel {
 	pinned: boolean;
 	/** Short markers drawn before the name, in display order. The cache countdown today. */
 	badges: RowBadge[];
+	/** Whether a terminal tab shows this agent, and whether it is the active tab (issue #76). */
+	terminal: TerminalTier;
+	/**
+	 * How strongly the icon button stays visible without hover: it carries the
+	 * button's own surface, so the icon never means anything but its click.
+	 */
+	iconTier: LiveTier;
+	/** How strongly the row background is painted: it carries the body's surface. */
+	backgroundTier: LiveTier;
+	/** This agent's terminal is the active tab; the view sets `aria-current`. */
+	current: boolean;
 }
 
 /**
@@ -121,6 +136,17 @@ export interface RowModelOptions {
 	 * the pinned rows follow that same sort. Empty pins nothing.
 	 */
 	pinnedPaneIds?: readonly string[];
+	/**
+	 * The row-click setting (issue #21). It decides which surface the icon and
+	 * which the background carry (issue #76), since each follows its own click.
+	 */
+	rowClick?: RowClickAction;
+	/** The endpoint the panes belong to; a terminal elsewhere is another agent. */
+	endpointId?: string;
+	/** Every terminal tab open in the workspace, on whichever endpoint (issue #76). */
+	openTerminals?: readonly TerminalRef[];
+	/** The terminal in the active tab, or null when the active tab is not one. */
+	activeTerminal?: TerminalRef | null;
 }
 
 const DEFAULTS: Required<RowModelOptions> = {
@@ -128,6 +154,10 @@ const DEFAULTS: Required<RowModelOptions> = {
 	sort: 'priority',
 	homePath: '',
 	pinnedPaneIds: [],
+	rowClick: 'terminal',
+	endpointId: '',
+	openTerminals: [],
+	activeTerminal: null,
 };
 
 type GroupBy = Required<RowModelOptions>['groupBy'];
@@ -314,12 +344,100 @@ function badges(pane: PaneState): RowBadge[] {
 }
 
 /**
+ * A terminal tab as the workspace reports it: which pane, on which herdr. Both
+ * halves are the key, because `w4:p1` on the local herdr and `w4:p1` on a
+ * remote one are different agents (issue #54).
+ */
+export interface TerminalRef {
+	endpointId: string;
+	paneId: string;
+}
+
+/** Where a row's terminal stands: no tab, a tab somewhere, or the active tab. */
+export type TerminalTier = 'closed' | 'open' | 'active';
+
+/**
+ * One channel's emphasis (issue #76). `faint` exists for the terminal surface
+ * only, which has two strengths; herdr focus is either `full` or `none`.
+ */
+export type LiveTier = 'none' | 'faint' | 'full';
+
+function sameTerminal(a: TerminalRef, b: TerminalRef): boolean {
+	return a.paneId === b.paneId && a.endpointId === b.endpointId;
+}
+
+/**
+ * Whether `pane` has a terminal tab, matched on pane id *and* endpoint. The
+ * active tab counts as open even when it is missing from `open`, since a tab
+ * cannot be active without being there.
+ */
+export function terminalTier(
+	pane: TerminalRef,
+	open: readonly TerminalRef[],
+	active: TerminalRef | null,
+): TerminalTier {
+	if (active && sameTerminal(active, pane)) return 'active';
+	return open.some((ref) => sameTerminal(ref, pane)) ? 'open' : 'closed';
+}
+
+/** What a row's emphasis channels say. Rows built by {@link toRow} carry these. */
+export interface RowEmphasis {
+	iconTier: LiveTier;
+	backgroundTier: LiveTier;
+	current: boolean;
+}
+
+/** How live one surface is for a row, on the shared tier scale. */
+function surfaceTier(surface: RowClickAction, focused: boolean, terminal: TerminalTier): LiveTier {
+	if (surface === 'focus') return focused ? 'full' : 'none';
+	if (terminal === 'active') return 'full';
+	return terminal === 'open' ? 'faint' : 'none';
+}
+
+/**
+ * Splits the two live surfaces over the row's two channels (issue #76),
+ * following the split {@link rowActions} makes of the two clicks: the icon
+ * carries whatever the button does, the background whatever the body does.
+ *
+ * With the default setting the button focuses in herdr, so a persistent icon
+ * marks herdr's focused pane, and the background goes faint for an open
+ * terminal and full for the active one. Swapped, the icon carries the terminal
+ * — faint for open, full for active, so neither channel loses a distinction —
+ * and the background carries herdr focus, which has one strength.
+ *
+ * `current` is the active terminal whatever the setting: it is what
+ * `aria-current` says, so colour is never the only carrier.
+ */
+export function rowEmphasis(
+	focused: boolean,
+	terminal: TerminalTier,
+	rowClick: RowClickAction,
+): RowEmphasis {
+	const actions = rowActions(rowClick);
+	return {
+		iconTier: surfaceTier(actions.button, focused, terminal),
+		backgroundTier: surfaceTier(actions.body, focused, terminal),
+		current: terminal === 'active',
+	};
+}
+
+/** Where a row's agent is live, as {@link toRow} takes it. */
+export interface RowLive {
+	terminal: TerminalTier;
+	rowClick: RowClickAction;
+}
+
+const NOT_LIVE: RowLive = { terminal: 'closed', rowClick: 'terminal' };
+
+/**
  * Projects one pane onto the row it becomes.
  *
  * @param showPath false leaves `pathLabel` empty (issue #39). Grouping by folder
  *   puts that very path in the group header, and a row that repeats its own
  *   heading says nothing; every other grouping keeps the line.
  * @param pinned whether the row is pinned (issue #35); `buildRows` decides.
+ * @param live the row's terminal tier and the row-click setting (issue #76),
+ *   from which the emphasis channels follow.
  */
 export function toRow(
 	pane: PaneState,
@@ -327,6 +445,7 @@ export function toRow(
 	homePath = '',
 	showPath = true,
 	pinned = false,
+	live: RowLive = NOT_LIVE,
 ): RowModel {
 	const displayName = agentDisplayName(pane);
 	return {
@@ -341,6 +460,8 @@ export function toRow(
 		focused: pane.focused,
 		pinned,
 		badges: badges(pane),
+		terminal: live.terminal,
+		...rowEmphasis(pane.focused, live.terminal, live.rowClick),
 	};
 }
 
@@ -357,7 +478,16 @@ export function buildRows(
 	vaultPath: string,
 	options: RowModelOptions = {},
 ): RowGroup[] {
-	const { groupBy, sort, homePath, pinnedPaneIds } = { ...DEFAULTS, ...options };
+	const {
+		groupBy,
+		sort,
+		homePath,
+		pinnedPaneIds,
+		rowClick,
+		endpointId,
+		openTerminals,
+		activeTerminal,
+	} = { ...DEFAULTS, ...options };
 	const pinned = new Set(pinnedPaneIds);
 	const grouping = GROUPS[groupBy] ?? GROUPS.tab;
 	// Grouping by folder already names the folder above the rows (issue #39).
@@ -387,8 +517,16 @@ export function buildRows(
 			// nothing about how urgent the group is.
 			entry.urgency = urgency;
 		}
+		const terminal = terminalTier(
+			{ endpointId, paneId: pane.paneId },
+			openTerminals,
+			activeTerminal,
+		);
 		entry.group.rows.push(
-			toRow(pane, vaultPath, homePath, showPath, pinned.has(pane.paneId)),
+			toRow(pane, vaultPath, homePath, showPath, pinned.has(pane.paneId), {
+				terminal,
+				rowClick,
+			}),
 		);
 	}
 

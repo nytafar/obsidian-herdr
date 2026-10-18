@@ -83,6 +83,12 @@ export interface PaneState {
 	title: string;
 	label: string;
 	cwd: string;
+	/**
+	 * herdr's `foreground_cwd`, where the program in front works, when herdr
+	 * sent one (issue #116). Absent otherwise. Not compared by
+	 * {@link relevantDiff}: only the explorer reveal reads it, on a tab switch.
+	 */
+	foregroundCwd?: string;
 	focused: boolean;
 	/**
 	 * herdr's per-pane token map, kept whole and read only for the cache badge
@@ -220,6 +226,7 @@ export function toPaneState(pane: PaneInfo, name = ''): PaneState | null {
 		title: stripTitleSpinner(pane.terminal_title_stripped ?? pane.terminal_title ?? ''),
 		label: pane.label ?? '',
 		cwd: pane.cwd ?? pane.foreground_cwd ?? '',
+		...(typeof pane.foreground_cwd === 'string' ? { foregroundCwd: pane.foreground_cwd } : {}),
 		focused: pane.focused === true,
 		tokens: tokensOf(pane.tokens),
 		statusChangedSeq: 0,

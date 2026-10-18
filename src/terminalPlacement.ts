@@ -6,7 +6,8 @@
  * decides that is here and pure: `openTerminal` only turns the answer into a
  * `createLeafBySplit` or a `getLeaf('tab')` call. {@link decideOpenTarget} sits
  * one step earlier (issue #38): whether a leaf is placed at all, or an open
- * terminal is switched to this pane.
+ * terminal is switched to this pane. {@link chooseFollowPane} sits earlier
+ * still (issue #78): which agent's terminal a focused note asks for at all.
  *
  * The comparison is done on herdr's side of the world: `vaultPath` is whatever
  * `herdrVaultPath()` returns (the remote vault path under a remote profile), so
@@ -14,7 +15,7 @@
  */
 
 import { normalizePosixPath } from './actions';
-import { trimTrailingSlashes } from './paths';
+import { trimTrailingSlashes, vaultFolderDepth, vaultPathIsInside, vaultRelativeFolder } from './paths';
 import { isUnder } from './herdr/scope';
 import type { TerminalPlacement, TerminalTabMode } from './settings';
 
@@ -123,4 +124,130 @@ export function chooseNoteLeaf<T>(input: {
 	if (!path) return null;
 	if (input.mostRecent && input.mostRecent.file === path) return input.mostRecent.leaf;
 	return input.rootLeaves.find((candidate) => candidate.file === path)?.leaf ?? null;
+}
+
+/** What {@link chooseFollowPane} needs of an agent pane in the scoped workspace. */
+export interface FollowCandidate {
+	paneId: string;
+	/** `PaneState.cwd`, as herdr reports it. */
+	cwd: string;
+	/** Pinned to the top of its group in the agent list, on this endpoint. */
+	pinned: boolean;
+	/**
+	 * How recently herdr focused the pane, higher meaning more recent and 0
+	 * meaning not since the plugin connected ({@link FocusRecency}).
+	 */
+	focusRank: number;
+}
+
+/**
+ * The agent pane a focused note belongs to (issue #78), or null when none
+ * does.
+ *
+ * A pane owns a note when its cwd is a folder inside the vault, as herdr sees
+ * the vault, at least `minDepth` folders below the root, and the note lies in
+ * that folder. Depth is the guard against agents that would own everything:
+ * with the default 2, a cwd at the vault root or at `efforts/` never matches,
+ * while `inputs/corpora/silva-cacao/` does. The root itself never matches,
+ * whatever `minDepth` says.
+ *
+ * Several owners: the deepest cwd wins, being the most specific claim. Among
+ * equally deep ones, a pinned pane first, then the one herdr focused most
+ * recently, then herdr's own pane order, which is the order of `panes`.
+ */
+export function chooseFollowPane(input: {
+	/** Vault-relative path of the focused note. */
+	notePath: string;
+	/** Vault path as herdr sees it (`herdrVaultPath()`). */
+	vaultPath: string;
+	/** The `followActiveNoteMinDepth` setting. */
+	minDepth: number;
+	panes: readonly FollowCandidate[];
+}): string | null {
+	const minDepth = Math.max(1, input.minDepth);
+	let best: { pane: FollowCandidate; depth: number } | null = null;
+	for (const pane of input.panes) {
+		const folder = vaultRelativeFolder(pane.cwd, input.vaultPath);
+		if (folder === null) continue;
+		const depth = vaultFolderDepth(folder);
+		if (depth < minDepth || !vaultPathIsInside(input.notePath, folder)) continue;
+		if (!best || followsBefore({ pane, depth }, best)) best = { pane, depth };
+	}
+	return best?.pane.paneId ?? null;
+}
+
+/** Strict precedence; an exact tie keeps the earlier pane. */
+function followsBefore(
+	a: { pane: FollowCandidate; depth: number },
+	b: { pane: FollowCandidate; depth: number },
+): boolean {
+	if (a.depth !== b.depth) return a.depth > b.depth;
+	if (a.pane.pinned !== b.pane.pinned) return a.pane.pinned;
+	return a.pane.focusRank > b.pane.focusRank;
+}
+
+/**
+ * The order herdr focused panes in, as far as this plugin has seen it.
+ *
+ * herdr does not say when a pane was last focused: `pane.list` carries only
+ * whether it is focused now. So this counts the transitions the scope
+ * reports, a pane becoming focused getting the next number, and the pane
+ * focused right now always ranks first, including one that was focused
+ * before the plugin connected. A pane never seen focused ranks 0.
+ */
+export class FocusRecency {
+	private seq = 0;
+	private readonly ranks = new Map<string, number>();
+
+	/** A pane was added or changed; `wasFocused` is what it was before. */
+	observe(pane: { paneId: string; focused: boolean }, wasFocused: boolean): void {
+		if (pane.focused && !wasFocused) this.ranks.set(pane.paneId, ++this.seq);
+	}
+
+	forget(paneId: string): void {
+		this.ranks.delete(paneId);
+	}
+
+	/** A new connection: pane ids from the old one mean nothing any more. */
+	reset(): void {
+		this.ranks.clear();
+		this.seq = 0;
+	}
+
+	rank(pane: { paneId: string; focused: boolean }): number {
+		if (pane.focused) return Number.MAX_SAFE_INTEGER;
+		return this.ranks.get(pane.paneId) ?? 0;
+	}
+}
+
+/**
+ * Leaves a terminal was opened in without being asked for the keyboard
+ * (issue #78): following the active note opens the agent's terminal but must
+ * leave the cursor in the note. A control-mode terminal focuses its renderer
+ * whenever its bridge starts, which may be well after the open returned, so
+ * the open marks the leaf and the terminal asks here first.
+ *
+ * The hold lasts until the reader activates that leaf themselves, or opens it
+ * the ordinary way; from then on it behaves like any other terminal. Weakly
+ * held: a closed leaf is forgotten.
+ */
+export class FocusHold<T extends object> {
+	private readonly held = new WeakSet<T>();
+
+	hold(leaf: T): void {
+		this.held.add(leaf);
+	}
+
+	/** An open that did ask for the keyboard ends the hold at once. */
+	release(leaf: T): void {
+		this.held.delete(leaf);
+	}
+
+	/** Whether `leaf` may take the focus, given the leaf that is active now. */
+	mayFocus(leaf: T, active: T | null): boolean {
+		if (!this.held.has(leaf)) return true;
+		if (active !== leaf) return false;
+		this.held.delete(leaf);
+		return true;
+	}
 }

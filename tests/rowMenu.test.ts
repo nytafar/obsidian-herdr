@@ -42,7 +42,33 @@ describe('rowMenuItems', () => {
 	});
 
 	it('gives every entry an icon', () => {
-		for (const item of rowMenuItems(row())) expect(item.icon).not.toBe('');
+		for (const item of rowMenuItems(row({ folder: 'efforts' }))) expect(item.icon).not.toBe('');
+	});
+
+	it('leads with "Reveal folder" when the cwd is in the vault, the root included', () => {
+		for (const folder of ['inputs/corpora', '']) {
+			const items = rowMenuItems(row({ folder }));
+			expect(items.map((item) => item.action)).toEqual(['reveal', 'pin', 'rename', 'close']);
+			expect(items[0]).toEqual({
+				action: 'reveal',
+				label: 'Reveal folder',
+				icon: 'folder-open',
+				warning: false,
+				separatorBefore: false,
+			});
+			// Navigation sits apart from the entries that change the row.
+			expect(items.map((item) => item.separatorBefore)).toEqual([false, true, false, true]);
+		}
+	});
+
+	it('leaves "Reveal folder" out, not disabled, outside the vault', () => {
+		for (const folder of [null, undefined]) {
+			expect(rowMenuItems(row({ folder })).map((item) => item.action)).toEqual([
+				'pin',
+				'rename',
+				'close',
+			]);
+		}
 	});
 });
 

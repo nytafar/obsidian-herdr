@@ -77,15 +77,24 @@ from the terminal title, a prompt-cache countdown while one is running, and its
 folder. The header button sets sort (herdr's own priority order, or alphabetical)
 and grouping (herdr tab, working directory, or none). Clicking a row opens the
 agent's terminal; the button that appears on hover jumps to the pane in the herdr
-TUI. A setting swaps the two.
+TUI. A setting swaps the two. Right-click a row to reveal the agent's folder in
+the file explorer (when it works inside the vault), pin it to the top of its
+group, rename it or terminate it. **Follow active note**, off by default, brings
+the agent working in a note's folder into view whenever you focus that note.
 
 **The native view.** Clicking a Claude Code agent opens its session as
 Markdown: the prose reads like a note, each turn's tool calls collapse into one
 line, "Updated [[note]]" links to what the agent changed, and the prompt box
-under the transcript sends or queues your next prompt. When the agent stops to
-ask something, a card names the block and offers to open the terminal. The
-header button on the tab switches to the terminal and back; each tab remembers
-its choice. See [docs/native-view.md](docs/native-view.md).
+under the transcript sends or queues your next prompt. Links in it, wikilinks
+and `obsidian://` links to this vault, open beside the panel, never in it. When
+the agent stops to ask something, a card names the block and offers to open the
+terminal. The header button on the tab switches to the terminal and back; each
+tab remembers its choice. See [docs/native-view.md](docs/native-view.md).
+
+**The file explorer follows the focused herdr tab**: bringing a native view or
+terminal tab to the front selects the agent's folder in the explorer, when that
+folder is in the vault. On by default; **Reveal working folder in file
+explorer** in settings turns it off.
 
 **Terminals.** A terminal tab attaches to the agent's pane in one of two modes,
 switchable with the eye button:

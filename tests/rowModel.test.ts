@@ -276,6 +276,11 @@ describe('toRow', () => {
 			focused: true,
 			pinned: false,
 			badges: [],
+			// No terminal tab by default; herdr focus lands on the icon (issue #76).
+			terminal: 'closed',
+			iconTier: 'full',
+			backgroundTier: 'none',
+			current: false,
 		});
 	});
 

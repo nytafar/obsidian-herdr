@@ -16,7 +16,7 @@
  * - `getLeaf('tab')` opens the tab in the most recent leaf's own tab group.
  *
  * The plugin is built with `Object.create` rather than `new`: `openTerminal`
- * needs the workspace, the settings and the scope, and nothing else, while a
+ * needs the workspace, the settings, the scope and the focus hold, and nothing else, while a
  * real construction would start a connection coordinator.
  */
 
@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import HerdrPlugin from '../src/main';
 import { HerdrActions, type ActionHost } from '../src/actions';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
+import { FocusHold } from '../src/terminalPlacement';
 import { FileSystemAdapter } from './fixtures/obsidian';
 
 const VAULT = '/home/lasse/hvelv';
@@ -37,19 +38,32 @@ const NEW_PANE = 'w2:pB';
 interface FakeLeaf {
 	name: string;
 	state: Record<string, unknown>;
+	/** What `containerEl.isShown()` answers: whether the tab is in front. */
+	shown: boolean;
+	isDeferred: boolean;
+	view: { containerEl: { isShown(): boolean } };
+	getRoot(): object;
 	getViewState(): { state: Record<string, unknown> };
 	setViewState(state: unknown): Promise<void>;
 }
 
+/** The main area every leaf here sits in. */
+const MAIN = { name: 'main' };
+
 function leaf(name: string, state: Record<string, unknown>): FakeLeaf {
-	return {
+	const made: FakeLeaf = {
 		name,
 		state,
+		shown: true,
+		isDeferred: false,
+		view: { containerEl: { isShown: () => made.shown } },
+		getRoot: () => MAIN,
 		getViewState: () => ({ state }),
 		setViewState: async (next: unknown) => {
 			Object.assign(state, next as Record<string, unknown>);
 		},
 	};
+	return made;
 }
 
 interface Harness {
@@ -58,6 +72,8 @@ interface Harness {
 	calls: string[];
 	noteLeaf: FakeLeaf;
 	terminalLeaf: FakeLeaf;
+	/** The leaf a new terminal is placed in. */
+	placed: FakeLeaf;
 	/** Every JSON API method the plugin's action host sent, in order. */
 	requests: string[];
 }
@@ -83,6 +99,8 @@ function harness(options: {
 	});
 	const placed = leaf('placed', {});
 	const workspace = {
+		leftSplit: { collapsed: false },
+		rightSplit: { collapsed: false },
 		getActiveViewOfType: () => null,
 		getLeavesOfType: (type: string) => (type === 'herdr-terminal' ? [terminalLeaf] : []),
 		getActiveFile: () => ({ path: NOTE }),
@@ -109,6 +127,7 @@ function harness(options: {
 	const plugin = Object.create(HerdrPlugin.prototype) as Record<string, unknown>;
 	plugin.app = { workspace, vault: { adapter, getName: () => 'hvelv' } };
 	plugin.settings = { ...DEFAULT_SETTINGS, ...options.settings };
+	plugin.terminalFocusHold = new FocusHold<object>();
 	plugin.connection = {
 		current: {
 			endpoint: { id: 'local' },
@@ -133,7 +152,7 @@ function harness(options: {
 			},
 		},
 	};
-	return { plugin: plugin as unknown as HerdrPlugin, calls, noteLeaf, terminalLeaf, requests };
+	return { plugin: plugin as unknown as HerdrPlugin, calls, noteLeaf, terminalLeaf, placed, requests };
 }
 
 describe('openTerminal places a new terminal (issue #28)', () => {
@@ -180,6 +199,66 @@ describe('openTerminal places a new terminal (issue #28)', () => {
 		const { plugin, calls } = harness({ mostRecent: 'note' });
 		await plugin.openTerminal('w2:pA');
 		expect(calls).toEqual(['reveal terminal']);
+	});
+});
+
+describe('openTerminal without the keyboard (issue #78)', () => {
+	it('places the terminal as usual, inactive, and holds its renderer off the focus', async () => {
+		const { plugin, calls, placed, noteLeaf } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		expect(calls).toEqual(['split vertical of note before=false', 'reveal placed']);
+		expect(placed.state.active).toBe(false);
+		expect(plugin.terminalFocusHold.mayFocus(placed as never, noteLeaf as never)).toBe(false);
+	});
+
+	it('holds an existing terminal it only reveals, and a plain open releases it', async () => {
+		const { plugin, terminalLeaf, noteLeaf } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pA', undefined, { focus: false });
+		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(false);
+		await plugin.openTerminal('w2:pA');
+		expect(plugin.terminalFocusHold.mayFocus(terminalLeaf as never, noteLeaf as never)).toBe(true);
+	});
+
+	it('never swaps a terminal on screen under "reuse"; places a new one instead', async () => {
+		// The native panel the reader just clicked a link in is a terminal leaf,
+		// and following the note that link opened must not turn it into another
+		// agent.
+		const { plugin, calls, terminalLeaf, placed } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		// `setViewState` was never called on the terminal on screen.
+		expect(terminalLeaf.state.state).toBeUndefined();
+		expect(placed.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['split vertical of note before=false', 'reveal placed']);
+	});
+
+	it('still swaps a hidden terminal under "reuse" when opening quietly', async () => {
+		const { plugin, calls, terminalLeaf } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		terminalLeaf.shown = false;
+		await plugin.openTerminal('w2:pB', undefined, { focus: false });
+		expect(terminalLeaf.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['reveal terminal']);
+	});
+
+	it('swaps the terminal on screen under "reuse" on an ordinary open, as before', async () => {
+		const { plugin, calls, terminalLeaf } = harness({
+			mostRecent: 'note',
+			settings: { terminalTab: 'reuse' },
+		});
+		await plugin.openTerminal('w2:pB');
+		expect(terminalLeaf.state.state).toMatchObject({ paneId: 'w2:pB' });
+		expect(calls).toEqual(['reveal terminal']);
+	});
+
+	it('activates the placed terminal on an ordinary open', async () => {
+		const { plugin, placed } = harness({ mostRecent: 'note' });
+		await plugin.openTerminal('w2:pB');
+		expect(placed.state.active).toBe(true);
 	});
 });
 

@@ -44,7 +44,7 @@ import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { registerOutlineSwap } from './native/tocOutline';
-import { countStatuses } from './views/rowModel';
+import { countStatuses, type TerminalRef } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
 	PaneViewEvents,
@@ -59,11 +59,15 @@ import {
 	chooseNoteLeaf,
 	decideOpenTarget,
 	decidePlacement,
+	FocusHold,
 	type NoteLeafCandidate,
 } from './terminalPlacement';
 import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
+import { registerCwdReveal } from './explorerReveal';
+import { leafOnScreen } from './leafOnScreen';
+import { registerNoteFollow } from './followNote';
 
 /** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
 const AGENT_NAME_REFRESH_MS = 300;
@@ -200,6 +204,11 @@ export default class HerdrPlugin extends Plugin {
 	 * activates no leaf.
 	 */
 	readonly paneViews = new PaneViewEvents();
+	/**
+	 * Terminal leaves opened without the keyboard (#78), which a control-mode
+	 * renderer asks before it focuses itself on attach.
+	 */
+	readonly terminalFocusHold = new FocusHold<WorkspaceLeaf>();
 	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
 	actions!: HerdrActions;
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
@@ -281,6 +290,10 @@ export default class HerdrPlugin extends Plugin {
 			// The table of contents takes the outline's place while a native tab is
 			// in front (#119); nothing happens while the outline is not open.
 			registerOutlineSwap(this);
+			// The focused herdr tab's folder, selected in the file explorer (#116).
+			registerCwdReveal(this);
+			// Off unless the setting asks for it; reads it at every note (#78).
+			registerNoteFollow(this);
 			this.registerFileMenus();
 			this.refreshFolderHoverButton();
 			void this.connect();
@@ -403,8 +416,22 @@ export default class HerdrPlugin extends Plugin {
 	 * Without it every new agent was placed as if its cwd were unknown — a tab
 	 * filling the main area — while attaching to the same folder split beside the
 	 * note (issue #28).
+	 *
+	 * `focus: false` opens or reveals the terminal without activating it and
+	 * holds its renderer from taking the keyboard (issue #78), for a caller
+	 * that must leave the cursor where it is.
 	 */
-	async openTerminal(paneId: string, cwd?: string): Promise<void> {
+	async openTerminal(
+		paneId: string,
+		cwd?: string,
+		options: { focus?: boolean } = {},
+	): Promise<void> {
+		const focus = options.focus !== false;
+		// A plain open hands a held leaf its keyboard back: it was asked for.
+		const quiet = (leaf: WorkspaceLeaf): void => {
+			if (focus) this.terminalFocusHold.release(leaf);
+			else this.terminalFocusHold.hold(leaf);
+		};
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
 		// is opened on and pinned to (issue #54).
@@ -424,15 +451,22 @@ export default class HerdrPlugin extends Plugin {
 			// view first, and the tab the user last used is the one they expect
 			// to change (seen live: the first leaf in layout order was a
 			// deferred, restored tab, and the switch landed nowhere useful).
+			//
+			// A quiet open (#78) never swaps a terminal that is on screen: the
+			// reader is looking at it — it may be the native panel they just
+			// clicked a link in — and did not ask for it to change. It reuses a
+			// hidden one, or places a new terminal as if none were open.
 			const active = workspace.getActiveViewOfType(TerminalView)?.leaf;
+			const candidates = focus ? open : open.filter((each) => !leafOnScreen(workspace, each));
 			const reused =
-				(active && open.includes(active) && !active.isDeferred ? active : undefined) ??
-				open.find((candidate) => !candidate.isDeferred) ??
-				open.at(0);
+				(active && candidates.includes(active) && !active.isDeferred ? active : undefined) ??
+				candidates.find((candidate) => !candidate.isDeferred) ??
+				candidates.at(0);
 			if (reused) {
+				quiet(reused);
 				await reused.setViewState({
 					type: TERMINAL_VIEW_TYPE,
-					active: true,
+					active: focus,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
 					state: { paneId, mode: this.attachModeOf(reused), endpointId },
@@ -442,12 +476,14 @@ export default class HerdrPlugin extends Plugin {
 		}
 		if (!leaf) {
 			leaf = this.leafForNewTerminal(paneId, cwd);
+			quiet(leaf);
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
-				active: true,
+				active: focus,
 				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
 			});
 		}
+		quiet(leaf);
 		await workspace.revealLeaf(leaf);
 	}
 
@@ -513,6 +549,20 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	isTerminalOpen(paneId: string, endpointId: string): boolean {
 		return this.terminalLeaf(paneId, endpointId) !== null;
+	}
+
+	/**
+	 * The terminal in the active tab, or null when that tab is something else
+	 * (issue #76). "Active" is the most recent main-area or pop-out leaf, not
+	 * `activeLeaf`: clicking a row makes the sidebar active, and the tab the
+	 * user was just in must stay marked, as the file explorer keeps marking the
+	 * active file. The persisted state is read, as {@link terminalLeaf} does.
+	 */
+	activeTerminalPane(): TerminalRef | null {
+		const viewState = this.app.workspace.getMostRecentLeaf()?.getViewState();
+		if (viewState?.type !== TERMINAL_VIEW_TYPE) return null;
+		const state = parseTerminalState(viewState.state);
+		return state ? { paneId: state.paneId, endpointId: state.endpointId } : null;
 	}
 
 	/**
