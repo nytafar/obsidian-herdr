@@ -48,7 +48,7 @@ import { resolveFolderPath } from './actions';
 import { trimTrailingSlashes } from './paths';
 import { isUnder, type PaneState } from './herdr/scope';
 import { asElement } from './views/dom';
-import { FILE_EXPLORER_VIEW_TYPE } from './explorerReveal';
+import { FILE_EXPLORER_VIEW_TYPE } from './leafOnScreen';
 
 /** The one handle Obsidian gives us on a folder row (RESEARCH §4). */
 export const FOLDER_ROW_SELECTOR = '.nav-folder-title[data-path]';
