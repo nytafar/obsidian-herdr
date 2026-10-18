@@ -27,6 +27,7 @@ import {
 	type Workspace,
 	type WorkspaceLeaf,
 } from 'obsidian';
+import { leafOnScreen } from './leafOnScreen';
 
 /** One leaf the choice can land on, as {@link chooseLeafBeside} sees it. */
 export interface BesideSlot<T> {
@@ -120,6 +121,15 @@ export function leafBeside(
 	panel: WorkspaceLeaf,
 	file: string | null,
 ): WorkspaceLeaf {
+	return placeBeside(workspace, panel, file).leaf;
+}
+
+/** {@link leafBeside}, saying whether the leaf is a split made for this open. */
+function placeBeside(
+	workspace: Workspace,
+	panel: WorkspaceLeaf,
+	file: string | null,
+): { leaf: WorkspaceLeaf; created: boolean } {
 	const root = panel.getRoot();
 	const inSidebar = root === workspace.leftSplit || root === workspace.rightSplit;
 	const panelType = panel.getViewState().type;
@@ -133,10 +143,16 @@ export function leafBeside(
 		});
 	}
 
-	const fronts = new Map<unknown, WorkspaceLeaf | null>();
-	const frontOf = (leaf: WorkspaceLeaf): WorkspaceLeaf | null => {
-		if (!fronts.has(leaf.parent)) fronts.set(leaf.parent, workspace.getMostRecentLeaf(leaf.parent));
-		return fronts.get(leaf.parent) ?? null;
+	// The front tab of a group is the one on screen, as the other modules judge
+	// it. A group with no leaf on screen (a pop-out not drawn yet, say) falls
+	// back to the one Obsidian activated last.
+	const shown = new Set(leaves.filter((leaf) => leafOnScreen(workspace, leaf)));
+	const recent = new Map<unknown, WorkspaceLeaf | null>();
+	const frontOf = (leaf: WorkspaceLeaf): boolean => {
+		if (shown.has(leaf)) return true;
+		if (leaves.some((other) => other.parent === leaf.parent && shown.has(other))) return false;
+		if (!recent.has(leaf.parent)) recent.set(leaf.parent, workspace.getMostRecentLeaf(leaf.parent));
+		return recent.get(leaf.parent) === leaf;
 	};
 	const slots = leaves.map((leaf): BesideSlot<WorkspaceLeaf> => {
 		const state = leaf.getViewState();
@@ -146,7 +162,7 @@ export function leafBeside(
 			group: leaf.parent,
 			file: typeof shown === 'string' ? shown : null,
 			usable: !state.pinned && state.type !== panelType && navigable(leaf),
-			front: frontOf(leaf) === leaf,
+			front: frontOf(leaf),
 		};
 	});
 	if (!inSidebar && !slots.some((slot) => slot.leaf === panel)) {
@@ -154,10 +170,10 @@ export function leafBeside(
 	}
 
 	const choice = chooseLeafBeside({ panel, file, slots });
-	if (choice.kind === 'existing') return choice.leaf;
-	if (inSidebar) return workspace.getLeaf(false);
-	if (choice.kind === 'neighbour') return choice.leaf;
-	return workspace.createLeafBySplit(panel, 'vertical', false);
+	if (choice.kind === 'existing') return { leaf: choice.leaf, created: false };
+	if (inSidebar) return { leaf: workspace.getLeaf(false), created: false };
+	if (choice.kind === 'neighbour') return { leaf: choice.leaf, created: false };
+	return { leaf: workspace.createLeafBySplit(panel, 'vertical', false), created: true };
 }
 
 /**
@@ -185,6 +201,10 @@ function navigable(leaf: WorkspaceLeaf): boolean {
  * click. That stays Obsidian's to do: the chosen leaf is made active first,
  * and `openLinkText` without a new leaf opens into the active leaf when it can
  * be navigated, which a leaf chosen here always can.
+ *
+ * A split made for the open and still empty when the open fails is closed
+ * again, so a failed click leaves no blank pane behind. Only that one: a leaf
+ * that was there before is never detached.
  */
 export async function openLinkBeside(
 	app: App,
@@ -200,12 +220,17 @@ export async function openLinkBeside(
 	}
 	const { path, subpath } = parseLinktext(linktext);
 	const file = app.metadataCache.getFirstLinkpathDest(path, sourcePath);
-	const leaf = leafBeside(workspace, panel, file?.path ?? null);
-	if (!file) {
-		workspace.setActiveLeaf(leaf, { focus: true });
-		await workspace.openLinkText(linktext, sourcePath, false);
-		return;
+	const { leaf, created } = placeBeside(workspace, panel, file?.path ?? null);
+	try {
+		if (!file) {
+			workspace.setActiveLeaf(leaf, { focus: true });
+			await workspace.openLinkText(linktext, sourcePath, false);
+			return;
+		}
+		await leaf.openFile(file, { active: true, ...(subpath ? { eState: { subpath } } : {}) });
+	} catch (error) {
+		if (created && leaf.getViewState().type === 'empty') leaf.detach();
+		throw error;
 	}
-	await leaf.openFile(file, { active: true, ...(subpath ? { eState: { subpath } } : {}) });
 	await workspace.revealLeaf(leaf);
 }

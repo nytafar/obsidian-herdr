@@ -41,6 +41,34 @@ describe('obsidianUrlTarget', () => {
 		expect(obsidianUrlTarget('obsidian:///home/lasse/other/a.md', VAULT)).toBeNull();
 	});
 
+	it('never lets a path climb out of the vault', () => {
+		// An absolute path through `..`, raw or escaped.
+		expect(obsidianUrlTarget('obsidian://open?path=/home/lasse/hvelv/../x.md', VAULT)).toBeNull();
+		expect(
+			obsidianUrlTarget('obsidian://open?path=%2Fhome%2Flasse%2Fhvelv%2F..%2F.ssh%2Fid', VAULT),
+		).toBeNull();
+		expect(obsidianUrlTarget('obsidian:///home/lasse/hvelv/../other/a.md', VAULT)).toBeNull();
+		// A `..` that stays inside resolves to where it lands.
+		expect(obsidianUrlTarget('obsidian://open?path=/home/lasse/hvelv/a/../b.md', VAULT)).toBe(
+			'b.md',
+		);
+		// A vault-relative file with `..` anywhere is no file to open.
+		expect(obsidianUrlTarget('obsidian://open?vault=hvelv&file=../../x', VAULT)).toBeNull();
+		expect(obsidianUrlTarget('obsidian://open?file=a%2F..%2F..%2Fx', VAULT)).toBeNull();
+		expect(obsidianUrlTarget('obsidian://vault/hvelv/../x', VAULT)).toBeNull();
+		expect(obsidianUrlTarget('obsidian://vault/hvelv/a%2F..%2F..%2Fx', VAULT)).toBeNull();
+	});
+
+	it('normalises doubled slashes and dot segments', () => {
+		expect(obsidianUrlTarget('obsidian://open?path=/home/lasse/hvelv//sub/a.md', VAULT)).toBe(
+			'sub/a.md',
+		);
+		expect(obsidianUrlTarget('obsidian:///home/lasse//hvelv/./sub//a.md', VAULT)).toBe('sub/a.md');
+		expect(obsidianUrlTarget('obsidian://open?file=%2F%2Fsub%2F.%2Fa.md', VAULT)).toBe('sub/a.md');
+		// The vault itself is no file.
+		expect(obsidianUrlTarget('obsidian://open?path=/home/lasse/hvelv/', VAULT)).toBeNull();
+	});
+
 	it('reads the vault shorthand', () => {
 		expect(obsidianUrlTarget('obsidian://vault/hvelv/repos/My%20note', VAULT)).toBe(
 			'repos/My note',
@@ -106,5 +134,11 @@ describe('linkSourcePath', () => {
 		expect(linkSourcePath('/tmp', VAULT.path)).toBe('');
 		expect(linkSourcePath('', VAULT.path)).toBe('');
 		expect(linkSourcePath('/home/lasse/hvelv/a', '')).toBe('');
+	});
+
+	it('normalises the cwd first: no leading slash, no way out through `..`', () => {
+		expect(linkSourcePath('/home/lasse/hvelv//sub', VAULT.path)).toBe('sub/.herdr-session');
+		expect(linkSourcePath('/home/lasse/hvelv/../other', VAULT.path)).toBe('');
+		expect(linkSourcePath('/home/lasse/hvelv/a/../b', VAULT.path)).toBe('b/.herdr-session');
 	});
 });

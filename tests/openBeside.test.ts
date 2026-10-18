@@ -150,6 +150,29 @@ describe('leafBeside', () => {
 		expect(workspace.createLeafBySplit).toHaveBeenCalledWith(panel, 'vertical', false);
 	});
 
+	it('takes the tab that is on screen as the front of its group, over the most recent one', () => {
+		const workspace = new FakeWorkspace();
+		const panel = workspace.add('panel', {}, panelState());
+		const group = {};
+		const recent = workspace.add('recent', group, note('A.md'), { front: true });
+		const visible = workspace.add('visible', group, note('B.md'));
+		recent.shown = () => false;
+		visible.shown = () => true;
+
+		expect(leafBeside(asWorkspace(workspace), asLeaf(panel), 'Other.md')).toBe(visible);
+	});
+
+	it('falls back to the most recent tab of a group with nothing on screen', () => {
+		const workspace = new FakeWorkspace();
+		const panel = workspace.add('panel', {}, panelState());
+		const group = {};
+		workspace.add('first', group, note('A.md'));
+		const recent = workspace.add('recent', group, note('B.md'), { front: true });
+		for (const leaf of workspace.leaves) if (leaf.parent === group) leaf.shown = () => false;
+
+		expect(leafBeside(asWorkspace(workspace), asLeaf(panel), 'Other.md')).toBe(recent);
+	});
+
 	it('sends a sidebar panel’s link to the main area, reusing the file’s leaf when open', () => {
 		const workspace = new FakeWorkspace();
 		const panel = workspace.add('panel', {}, panelState(), { root: workspace.rightSplit });
@@ -202,6 +225,32 @@ describe('openLinkBeside', () => {
 
 		expect(workspace.setActiveLeaf).toHaveBeenCalledWith(noteLeaf, { focus: true });
 		expect(workspace.openLinkText).toHaveBeenCalledWith('New idea', '', false);
+	});
+
+	it('closes the split it made when the open fails, and rethrows', async () => {
+		const workspace = new FakeWorkspace();
+		const panel = workspace.add('panel', {}, panelState(), { front: true });
+		workspace.openLinkText.mockRejectedValueOnce(new Error('no create'));
+
+		await expect(
+			openLinkBeside(appWith(workspace, []), asLeaf(panel), 'New idea', '', false),
+		).rejects.toThrow('no create');
+
+		expect(workspace.splits).toHaveLength(1);
+		expect(workspace.splits[0]?.detached).toBe(true);
+		expect(panel.detached).toBe(false);
+	});
+
+	it('never closes a leaf that was there before, when the open fails', async () => {
+		const { workspace, panel, noteLeaf } = besideANote();
+		workspace.openLinkText.mockRejectedValueOnce(new Error('no create'));
+
+		await expect(
+			openLinkBeside(appWith(workspace, []), asLeaf(panel), 'New idea', '', false),
+		).rejects.toThrow('no create');
+
+		expect(noteLeaf.detached).toBe(false);
+		expect(panel.detached).toBe(false);
 	});
 
 	it('opens wherever Obsidian puts it when there is no panel to stay beside', async () => {

@@ -29,6 +29,7 @@ import {
 	type WorkspaceLeaf,
 } from 'obsidian';
 import { openLinkBeside } from '../openBeside';
+import { asElement } from '../views/dom';
 import { linkAction, linkSourcePath } from './links';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import { type PaneView } from './renderMode';
@@ -343,17 +344,6 @@ export function promptSegments(prompt: string): PromptSegment[] {
 	}
 	if (at < prompt.length) segments.push({ kind: 'text', text: prompt.slice(at) });
 	return segments;
-}
-
-/**
- * The anchor a click landed on or inside, or null (#114). Duck-typed rather
- * than an `instanceof` check, which a pop-out window's elements fail because
- * they belong to another window's globals.
- */
-function anchorOf(target: EventTarget | null): HTMLAnchorElement | null {
-	const element = target as Partial<Element> | null;
-	if (typeof element?.closest !== 'function') return null;
-	return element.closest('a');
 }
 
 /**
@@ -940,7 +930,9 @@ export class NativePaneSurface implements PaneSurface {
 	 * the event untouched, exactly as before.
 	 */
 	private onLinkClick(event: MouseEvent, newLeaf?: PaneType | boolean): void {
-		const anchor = anchorOf(event.target);
+		// The anchor the click landed on or inside (#114); `asElement` is
+		// duck-typed, so a pop-out window's elements pass too.
+		const anchor = asElement(event.target)?.closest('a');
 		if (!anchor) return;
 		const app = this.options.app;
 		const action = linkAction(

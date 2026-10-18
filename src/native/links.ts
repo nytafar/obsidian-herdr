@@ -17,7 +17,7 @@
  */
 
 import { webUrl } from './toolCalls';
-import { trimTrailingSlashes } from '../paths';
+import { vaultRelativeFolder } from '../paths';
 
 /** The vault a link is resolved against, as the running app knows it. */
 export interface VaultIdentity {
@@ -117,17 +117,30 @@ function queryParams(query: string): Map<string, string> {
 	return params;
 }
 
-/** A vault path without the leading slashes a url may carry, or null when empty. */
+/**
+ * A vault path in the form Obsidian keeps one: no leading, trailing or doubled
+ * slashes, no `.` segments. Null when it is empty, or when it has a `..`
+ * segment anywhere: a url's file is named from the vault root, and a `..`
+ * there either climbs out of the vault or means nothing a link should mean.
+ */
 function vaultFile(path: string): string | null {
-	const file = path.trim().replace(/^\/+/, '');
-	return file || null;
+	const segments = path
+		.trim()
+		.split('/')
+		.filter((segment) => segment !== '' && segment !== '.');
+	if (segments.includes('..')) return null;
+	return segments.join('/') || null;
 }
 
-/** An absolute path made vault-relative, or null when it is not inside the vault. */
+/**
+ * An absolute path made vault-relative, or null when it is not a file inside
+ * the vault. `vaultRelativeFolder` resolves `..` and doubled slashes before
+ * it compares whole segments, so `<vault>/../x` and `<vault>-old/x` are
+ * outside; the vault root itself is no file.
+ */
 function insideVault(path: string, vaultPath: string): string | null {
-	const root = trimTrailingSlashes(vaultPath);
-	if (!root || !path.startsWith(`${root}/`)) return null;
-	return vaultFile(path.slice(root.length + 1));
+	const relative = vaultRelativeFolder(path, vaultPath);
+	return relative ? relative : null;
 }
 
 /**
@@ -148,8 +161,6 @@ const SOURCE_NAME = '.herdr-session';
  * view is local only (ADR-0002).
  */
 export function linkSourcePath(cwd: string, vaultPath: string): string {
-	const root = trimTrailingSlashes(vaultPath);
-	const dir = trimTrailingSlashes(cwd.trim());
-	if (!root || !dir || dir === root || !dir.startsWith(`${root}/`)) return '';
-	return `${dir.slice(root.length + 1)}/${SOURCE_NAME}`;
+	const folder = vaultRelativeFolder(cwd, vaultPath);
+	return folder ? `${folder}/${SOURCE_NAME}` : '';
 }
