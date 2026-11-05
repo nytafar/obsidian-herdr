@@ -725,7 +725,7 @@ describe('native view section', () => {
 		const desc = settingNamed(el, 'Trust new folders automatically').desc;
 		expect(desc).toContain('No runtime reports it today, herdr and herdr-core included');
 		expect(desc).toContain('this does nothing');
-		expect(desc).toContain('\u201cTrust this folder\u201d button');
+		expect(desc).toContain('the trust button on the waiting card');
 	});
 
 	it('saves the presentation and redraws the open native views', async () => {
