@@ -342,8 +342,54 @@ describe('addSessionHook', () => {
 	});
 });
 
+describe('the rewrite of the settings file', () => {
+	const big = '{"env": {"BIG": 12345678901234567890}, "hooks": {}}';
+
+	it('refuses, in install and in remove, a number the rewrite could not keep exactly', () => {
+		for (const number of ['12345678901234567890', '9007199254740993', '1e400', '0.12345678901234567890123', '-1e-400']) {
+			const text = `{"env": {"N": ${number}}}`;
+			const result = addSessionHook(text, entry);
+			expect(result.ok, number).toBe(false);
+			if (!result.ok) expect(result.reason).toMatch(new RegExp(`left alone: .*${number.replace(/[.+-]/g, '\\$&')}.*env\\.N`));
+		}
+		const installed = edited(addSessionHook('{"env": {"N": 1}}', entry)).replace('"N": 1', '"N": 12345678901234567890');
+		const removal = removeSessionHook(installed);
+		expect(removal.ok).toBe(false);
+		if (!removal.ok) expect(removal.reason).toMatch(/12345678901234567890/);
+		expect(addSessionHook(big, entry).ok).toBe(false);
+	});
+
+	it('refuses a key that appears twice, which the rewrite would drop', () => {
+		const result = addSessionHook('{"model": "a", "env": {"X": "1", "X": "2"}}', entry);
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.reason).toMatch(/"X" appears twice in env/);
+		expect(addSessionHook('{"model": "a", "model": "b"}', entry).ok).toBe(false);
+	});
+
+	it('takes numbers it keeps exactly, whatever their spelling, and the same key in different objects', () => {
+		const text = '{"a": 1.0, "b": 1e2, "c": -0, "d": 0.1, "e": 9007199254740991, "f": 1.5E-7, "x": {"a": 1}, "l": [{"a": 1}, {"a": 2}]}';
+		const after = parsed(edited(addSessionHook(text, entry))) as unknown as Record<string, unknown>;
+		expect(after).toMatchObject({ a: 1, b: 100, d: 0.1, e: 9007199254740991, f: 1.5e-7, x: { a: 1 } });
+	});
+
+	it('rewrites the formatting, as Claude does, but keeps every value', () => {
+		const text = '{"env":{"2":"two","a":"x"},"permissions":{"allow":["Bash(ls:*)","Read"]},"hooks":{}}';
+		const after = edited(addSessionHook(text, entry));
+		expect(JSON.parse(after)).toEqual({ ...(JSON.parse(text) as object), hooks: { SessionStart: [entry] } });
+	});
+
+	it('keeps CRLF line endings', () => {
+		const text = realText().replace(/\n/g, '\r\n');
+		const after = edited(addSessionHook(text, entry));
+		expect(after.match(/\r\n/g)?.length).toBe(after.match(/\n/g)?.length);
+		expect(after.endsWith('\r\n')).toBe(true);
+		expect(removeSessionHook(after)).toEqual({ ok: true, text, changed: true });
+		expect(edited(addSessionHook('{\n  "a": 1\n}\n', entry))).not.toMatch(/\r/);
+	});
+});
+
 describe('removeSessionHook', () => {
-	it('gives back the file as it was before install, byte for byte', () => {
+	it('gives back a file in standard formatting as it was before install, byte for byte', () => {
 		for (const text of [realText(), realText('\t'), realText(4, false)]) {
 			const installed = edited(addSessionHook(text, entry));
 			expect(removeSessionHook(installed)).toEqual({ ok: true, text, changed: true });
@@ -356,6 +402,14 @@ describe('removeSessionHook', () => {
 		expect(after).toEqual(REAL_SETTINGS);
 		expect(installedSessionHookGroups(installed)).toEqual([entry]);
 		expect(installedSessionHookGroups(realText())).toEqual([]);
+	});
+
+	it('keeps the other hooks of a group it shares with ours', () => {
+		const mixed = structuredClone(REAL_SETTINGS);
+		const herdr = mixed.hooks.SessionStart[0] as { hooks: unknown[] };
+		herdr.hooks.push({ type: 'command', command: `sh ${SCRIPT_PATH}`, timeout: 10 });
+		const after = parsed(edited(removeSessionHook(JSON.stringify(mixed, null, 2))));
+		expect(after).toEqual(REAL_SETTINGS);
 	});
 
 	it('drops the list and the object it leaves empty, and only those', () => {
@@ -502,6 +556,33 @@ describe('the installer', () => {
 		if (!plan.ok) throw new Error(plan.reason);
 		files[settingsPath] = realText(4);
 		await expect(applyInstall(machine, plan)).rejects.toThrow(/changed since it was shown/);
+		expect(ops).toEqual([]);
+	});
+
+	it('refuses to remove when the settings changed after they were shown', async () => {
+		const { machine, files, ops } = memoryMachine({ [settingsPath]: realText() });
+		const install = planInstall(await inspectSessionHook(machine));
+		if (!install.ok) throw new Error(install.reason);
+		await applyInstall(machine, install);
+		ops.length = 0;
+		const plan = planRemove(await inspectSessionHook(machine));
+		if (!plan.ok) throw new Error(plan.reason);
+		files[settingsPath] = (files[settingsPath] ?? '').replace('"opus"', '"sonnet"');
+		await expect(applyRemove(machine, plan)).rejects.toThrow(/settings\.json changed since it was shown/);
+		expect(ops).toEqual([]);
+		expect(files[settingsPath]).toMatch(/"sonnet"/);
+	});
+
+	it('refuses to remove when the script changed after it was shown', async () => {
+		const { machine, files, ops } = memoryMachine({ [settingsPath]: realText() });
+		const install = planInstall(await inspectSessionHook(machine));
+		if (!install.ok) throw new Error(install.reason);
+		await applyInstall(machine, install);
+		ops.length = 0;
+		const plan = planRemove(await inspectSessionHook(machine));
+		if (!plan.ok) throw new Error(plan.reason);
+		files[SCRIPT_PATH] = `${files[SCRIPT_PATH] ?? ''}# edited by hand\n`;
+		await expect(applyRemove(machine, plan)).rejects.toThrow(/obsidian-herdr-session\.sh changed since it was shown/);
 		expect(ops).toEqual([]);
 	});
 

@@ -545,7 +545,8 @@ apply over hc), `label.ts` (the parser), `modal.ts` (the consent step).
   `obsidian-herdr.session={"v":1,"session":"3dd92716-…","pid":2467640,"transcript":"…/3dd92716-….jsonl"}`,
   with pid equal to `foreground.pid`. `hc send … /clear` rotated it to
   `f540889b-…` with the same pid. Remove left the settings byte-identical to
-  the pre-install copy and deleted the script.
+  the pre-install copy, which was already in standard formatting, and
+  deleted the script.
 - **The script** is POSIX `sh` plus `awk`: no python3 or jq. It reads the
   input with a small JSON reader, not regexes over the raw text: top-level
   string fields only, `\"` `\\` `\/` decoded, nested values skipped whole,
@@ -572,11 +573,22 @@ apply over hc), `label.ts` (the parser), `modal.ts` (the consent step).
     `OBSIDIAN_HERDR_HOOK_VERSION` marker.
   - Ours is any command hook whose command names `obsidian-herdr-session.sh`.
     Install replaces our group where it stands, or appends one, and never
-    joins another group. It is idempotent. It keeps the file's indentation
-    and final newline, creates a missing or blank file, and refuses text it
-    cannot parse, a non-object root, a non-object `hooks` or a non-list
-    `SessionStart`. Remove takes out only our hooks, plus a group,
+    joins another group. It is idempotent. It creates a missing or blank
+    file, and refuses text it cannot parse, a non-object root, a non-object
+    `hooks` or a non-list `SessionStart`. Remove takes out only our hooks,
+    other hooks in a group shared with ours included, plus a group,
     `SessionStart` list or `hooks` object that this leaves empty.
+  - Both rewrite the whole file with `JSON.parse` and `JSON.stringify`, as
+    Claude does: the file's indentation, final newline and line endings
+    (CRLF) stay, but inline arrays and objects come out expanded and
+    integer-like keys move first in their object. Only a file already in
+    that formatting comes back byte for byte after install and remove. A
+    rewrite that would change a value is refused with the reason, checked
+    over the original text (`rewriteIssue`): a number the double cannot
+    hold as written (`12345678901234567890` would become
+    `12345678901234567000`, `1e400` would become `null`), or a key that
+    appears twice in one object. Spellings of the same number (`1.0`,
+    `1e2`, `-0`) are not a change.
   - The modal shows the plan built from what it read. Applying reads both
     files again and refuses if either changed. Install writes the script
     before the entry, remove takes out the entry before the script.

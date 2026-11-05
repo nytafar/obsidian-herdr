@@ -8,10 +8,18 @@
  * - **Ours is recognised by the script's file name** in a command hook's
  *   command, wherever that script lives, so an entry pointing at a moved
  *   config dir is still ours to replace or remove.
- * - **Nothing else moves.** Every other key, event, group and hook keeps its
- *   value and its place; the file keeps its indentation and its final
- *   newline. Install replaces our group in place, or appends one; it never
- *   adds our hook to someone else's group (herdr's included).
+ * - **Nothing else changes value.** Every other key, event, group and hook
+ *   keeps its value, and groups keep their order. Install replaces our group
+ *   in place, or appends one; it never adds our hook to someone else's group
+ *   (herdr's included).
+ * - **The file is rewritten in standard formatting**, as Claude rewrites it
+ *   itself: `JSON.stringify` with the file's own indentation, final newline
+ *   and line endings (CRLF stays CRLF). Inline arrays and objects come out
+ *   expanded, and integer-like keys come first in their object.
+ * - **A rewrite that would change a value is refused** ({@link rewriteIssue}):
+ *   a number JavaScript cannot hold exactly (beyond the safe integers, more
+ *   digits than a double keeps, out of range), or a key that appears twice
+ *   in one object, of which `JSON.parse` keeps only the last.
  * - **Refuse, never repair.** Text that is not JSON, a root that is not an
  *   object, a `hooks` that is not an object or a `SessionStart` that is not
  *   an array is left alone with a reason. A missing or blank file is an
@@ -79,7 +87,125 @@ function indentOf(text: string | null): string {
 function serialize(root: JsonObject, original: string | null): string {
 	const text = JSON.stringify(root, null, indentOf(original));
 	const newline = original === null || original.trim() === '' || original.endsWith('\n');
-	return newline ? `${text}\n` : text;
+	const out = newline ? `${text}\n` : text;
+	// A string value never holds a raw newline once stringified, so every
+	// newline in the output is a line break and can take the file's ending.
+	const firstBreak = original?.indexOf('\n') ?? -1;
+	const crlf = firstBreak > 0 && original?.charAt(firstBreak - 1) === '\r';
+	return crlf ? out.replace(/\n/g, '\r\n') : out;
+}
+
+/** A JSON number token as digits without leading or trailing zeros, and a power of ten. */
+function decimalOf(token: string): { digits: string; exponent: number } {
+	const match = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
+	if (!match) return { digits: token, exponent: 0 };
+	const fraction = match[2] ?? '';
+	let digits = `${match[1] ?? ''}${fraction}`.replace(/^0+/, '');
+	if (digits === '') return { digits: '', exponent: 0 };
+	let exponent = Number(match[3] ?? '0') - fraction.length;
+	const trailing = digits.length - digits.replace(/0+$/, '').length;
+	digits = digits.slice(0, digits.length - trailing);
+	exponent += trailing;
+	return { digits, exponent };
+}
+
+/**
+ * Whether `JSON.stringify(JSON.parse(token))` is the same number as the
+ * token: `1.0` and `1e2` are, `12345678901234567890` and `1e400` are not.
+ * The sign of zero does not count.
+ */
+function keepsNumber(token: string): boolean {
+	const value = Number(token);
+	if (!Number.isFinite(value)) return false;
+	const read = decimalOf(token);
+	const written = decimalOf(String(Math.abs(value)));
+	if (read.digits !== written.digits || read.exponent !== written.exponent) return false;
+	return read.digits === '' || token.startsWith('-') === value < 0;
+}
+
+/**
+ * What a parse-and-stringify of `text` would change other than formatting,
+ * or null when nothing. `text` is valid JSON (`JSON.parse` took it).
+ */
+export function rewriteIssue(text: string): string | null {
+	let i = 0;
+	const number = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+	const ws = (): void => {
+		while (i < text.length && ' \t\r\n'.includes(text.charAt(i))) i++;
+	};
+	const string = (): string => {
+		const start = i;
+		i++;
+		while (i < text.length && text.charAt(i) !== '"') i += text.charAt(i) === '\\' ? 2 : 1;
+		i++;
+		return JSON.parse(text.slice(start, i)) as string;
+	};
+	const where = (path: string): string => (path === '' ? 'the top level' : path);
+	const value = (path: string): string | null => {
+		ws();
+		const c = text.charAt(i);
+		if (c === '{') {
+			i++;
+			const seen = new Set<string>();
+			ws();
+			if (text.charAt(i) === '}') {
+				i++;
+				return null;
+			}
+			for (;;) {
+				ws();
+				const key = string();
+				if (seen.has(key)) return `the key "${key}" appears twice in ${where(path)}, and only the last would be kept`;
+				seen.add(key);
+				ws();
+				i++; // the colon
+				const issue = value(path === '' ? key : `${path}.${key}`);
+				if (issue) return issue;
+				ws();
+				if (text.charAt(i++) !== ',') return null;
+			}
+		}
+		if (c === '[') {
+			i++;
+			ws();
+			if (text.charAt(i) === ']') {
+				i++;
+				return null;
+			}
+			for (let index = 0; ; index++) {
+				const issue = value(`${path}[${index}]`);
+				if (issue) return issue;
+				ws();
+				if (text.charAt(i++) !== ',') return null;
+			}
+		}
+		if (c === '"') {
+			string();
+			return null;
+		}
+		number.lastIndex = i;
+		const token = number.exec(text)?.[0];
+		if (token) {
+			i += token.length;
+			if (keepsNumber(token)) return null;
+			return `the number ${token} at ${where(path)} would be written as ${JSON.stringify(Number(token))}`;
+		}
+		i += c === 'f' ? 5 : 4; // false, true, null
+		return null;
+	};
+	return value('');
+}
+
+/** The rewritten text, unless the rewrite would change a value of the original. */
+function rewrite(root: JsonObject, original: string | null): SettingsEdit {
+	const issue = original === null || original.trim() === '' ? null : rewriteIssue(original);
+	if (issue) {
+		return {
+			ok: false,
+			reason: `The Claude settings were left alone: rewriting them would change a value, because ${issue}. Add or remove the entry by hand instead.`,
+		};
+	}
+	return { ok: true, text: serialize(root, original), changed: true };
 }
 
 function groupHooks(group: unknown): unknown[] | null {
@@ -149,7 +275,7 @@ export function addSessionHook(text: string | null, entry: ClaudeHookGroup): Set
 	const hooks = isObject(root.hooks) ? root.hooks : {};
 	hooks.SessionStart = next;
 	root.hooks = hooks;
-	return { ok: true, text: serialize(root, text), changed: true };
+	return rewrite(root, text);
 }
 
 /** Removes our entry and nothing else; an empty list or object it leaves goes too. */
@@ -166,7 +292,7 @@ export function removeSessionHook(text: string | null): SettingsEdit {
 	if (kept.length > 0) hooks.SessionStart = kept;
 	else delete hooks.SessionStart;
 	if (Object.keys(hooks).length === 0) delete root.hooks;
-	return { ok: true, text: serialize(root, text), changed: true };
+	return rewrite(root, text);
 }
 
 /** Our command hooks' groups as they stand in the file, for showing them. */

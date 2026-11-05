@@ -211,9 +211,14 @@ runtime's own connection: for an SSH runtime, on the remote host.
 Start Claude again after installing: Claude Code reads its hooks when a
 session starts up, and a Claude already running may not pick a new one up.
 
-It writes `hooks/obsidian-herdr-session.sh` and one entry in `settings.json`,
-and changes nothing else in that file. Herdr's own hook and every other hook
-stay as they are. **Remove** takes out that entry and deletes the script. A
+It writes `hooks/obsidian-herdr-session.sh` and one entry in `settings.json`.
+Every other setting in that file keeps its value: herdr's own hook and every
+other hook stay as they are. The file is rewritten in standard JSON
+formatting, as Claude itself writes it, so a hand-formatted file comes out
+reformatted (its indentation and line endings are kept). If the rewrite would
+change a value, the plugin refuses and says why: a number JavaScript cannot
+hold exactly, or a key that appears twice. Then add or remove the entry by
+hand. **Remove** takes out that entry and deletes the script. A
 settings file that is not valid JSON is refused, not repaired. If the file
 changes between the modal opening and the click, nothing is written.
 

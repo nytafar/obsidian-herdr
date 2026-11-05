@@ -27,8 +27,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   runtime's settings install, update or remove a Claude Code `SessionStart`
   hook on the runtime's machine, local or over SSH. It labels each hc
   terminal with its Claude session (`obsidian-herdr.session`). The modal shows
-  the exact script and settings entry first and changes nothing else in the
-  Claude settings.
+  the exact script and settings entry first. Every other Claude setting keeps
+  its value; the file is rewritten in standard JSON formatting, and a rewrite
+  that would change a value is refused.
 - **Native view on herdr-core**, on this machine and over SSH: a Claude in an
   hc terminal labelled by the session hook opens in the native view. The
   label counts only while its pid is the terminal's foreground process, so a

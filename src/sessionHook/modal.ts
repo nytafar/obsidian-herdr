@@ -108,7 +108,7 @@ export class SessionHookModal extends Modal {
 			contentEl.createEl('pre', { cls: 'herdr-hook-preview', text: install.script });
 			contentEl.createEl('p', {
 				text: install.settingsChanged
-					? `This entry under "hooks" → "SessionStart" in ${paths.settingsPath}${install.createsSettings ? ', a new file' : ''}. Nothing else in that file changes:`
+					? `This entry under "hooks" → "SessionStart" in ${paths.settingsPath}${install.createsSettings ? ', a new file' : ''}. The file is rewritten in standard JSON formatting, as Claude itself writes it, and every other setting keeps its value:`
 					: `This entry, already in ${paths.settingsPath}, which stays as it is:`,
 			});
 			contentEl.createEl('pre', { cls: 'herdr-hook-preview', text: JSON.stringify(install.entry, null, 2) });
@@ -122,7 +122,10 @@ export class SessionHookModal extends Modal {
 			const what: string[] = [];
 			if (remove.settingsChanged) what.push(`takes ${remove.entries.length === 1 ? 'this entry' : 'these entries'} out of ${paths.settingsPath}`);
 			if (remove.deletesScript) what.push(`deletes ${paths.scriptPath}`);
-			contentEl.createEl('p', { text: `Remove ${what.join(' and ')}. Nothing else changes.` });
+			const rewritten = remove.settingsChanged
+				? ' The settings file is rewritten in standard JSON formatting, and every other setting keeps its value.'
+				: '';
+			contentEl.createEl('p', { text: `Remove ${what.join(' and ')}.${rewritten}` });
 			if (remove.entries.length > 0) {
 				contentEl.createEl('pre', {
 					cls: 'herdr-hook-preview',
