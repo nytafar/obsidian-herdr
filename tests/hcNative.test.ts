@@ -18,6 +18,8 @@ import {
 	SESSION_HOOK_COMMAND_NAME,
 } from '../src/hc/sessionWatcher';
 import { HcTranscriptSource } from '../src/hc/transcriptSource';
+import { HcCommandCatalog } from '../src/hc/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../src/native/commandCatalog';
 import type { HcTerminal } from '../src/hc/model';
 import type { HcEvent } from '../src/hc/streams';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
@@ -521,6 +523,14 @@ describe('herdr-core’s native adapter and gate', () => {
 		// One per connection, so a model never reopens for a source that did not change.
 		expect(native.transcripts(remote, connection)).toBe(source);
 		expect(native.watcher(connection)).toBe(native.watcher(connection));
+		// The `/` list follows the same rule (#98): this machine's files for a
+		// local runtime, the remote's over its connection, the built-ins only
+		// without one, and never this machine's for a remote.
+		expect(native.commandCatalog?.(local, null)).toBeNull();
+		expect(native.commandCatalog?.(remote, null)).toBe(BUILTIN_CATALOG_SOURCE);
+		const catalog = native.commandCatalog?.(remote, connection);
+		expect(catalog).toBeInstanceOf(HcCommandCatalog);
+		expect(native.commandCatalog?.(remote, connection)).toBe(catalog);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).available).toBe(true);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
 		coordinator.dispose();

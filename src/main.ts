@@ -84,6 +84,7 @@ import { SessionModelRegistry } from './native/sessionModel';
 import type { SessionWatcher } from './native/sessionWatcher';
 import type { PromptClient } from './native/promptSender';
 import type { TranscriptSource } from './native/transcriptSource';
+import type { CommandCatalogSource } from './native/commandCatalog';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { HcClient } from './hc/client';
 import { hcHookMachine } from './sessionHook/installer';
@@ -300,6 +301,19 @@ export default class HerdrPlugin extends Plugin {
 		const native = nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint);
 		const current = this.connection.current;
 		return native?.transcripts(endpoint, current?.endpoint.id === endpointId ? current : null) ?? null;
+	}
+
+	/**
+	 * Where a native tab's `/` list is read (#98): its runtime's machine, by
+	 * the same connection rule as {@link nativeTranscripts}. Null is this
+	 * machine's files, which the tab's suggest walks itself, as it always has.
+	 */
+	nativeCommandCatalog(endpointId: string): CommandCatalogSource | null {
+		const endpoint = this.endpointFor(endpointId);
+		const native = endpoint ? nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint) : null;
+		if (!endpoint || !native?.commandCatalog) return null;
+		const current = this.connection.current;
+		return native.commandCatalog(endpoint, current?.endpoint.id === endpointId ? current : null);
 	}
 
 	/** What a native view's prompt and key senders go through: its own runtime's client. */

@@ -36,6 +36,7 @@ import type {
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
+import type { CommandCatalogSource } from '../native/commandCatalog';
 import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
 import type { TabLabels } from '../tabLabels';
@@ -145,6 +146,14 @@ export interface NativeSessionAdapter<
 	 * model reopens its tail whenever the source it is given changes.
 	 */
 	transcripts(endpoint: Endpoint, connection: Connection<C, S, T> | null): TranscriptSource | null;
+	/**
+	 * Where the prompt box's `/` list is read for this endpoint (#98): the
+	 * machine the agent runs on. Not given, or null, is this machine's files,
+	 * read synchronously; an `rpc` endpoint gives a source over `connection`
+	 * (the same rule as {@link transcripts}), or the built-ins without one,
+	 * never this machine's commands.
+	 */
+	commandCatalog?(endpoint: Endpoint, connection: Connection<C, S, T> | null): CommandCatalogSource | null;
 }
 
 /** What every use of a herdr-core runtime said before its kind landed. */

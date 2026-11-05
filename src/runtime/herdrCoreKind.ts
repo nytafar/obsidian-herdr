@@ -26,6 +26,9 @@
  *   `file.read` over the runtime's own connection on an SSH one
  *   (`hc/transcriptSource.ts`). One watcher and one source per connection,
  *   so a session model never reopens a tail for a source that did not change.
+ *   The prompt box's `/` list follows the same rule: this machine's files on
+ *   a local runtime, the remote's through one `machine.exec` on an SSH one
+ *   (`hc/commandCatalog.ts`).
  */
 
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
@@ -39,6 +42,8 @@ import { HcScope } from '../hc/scope';
 import { HcTabLabels } from '../hc/tabLabels';
 import { hcSessionWatcher } from '../hc/sessionWatcher';
 import { HcTranscriptSource } from '../hc/transcriptSource';
+import { HcCommandCatalog } from '../hc/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../native/commandCatalog';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
@@ -113,6 +118,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 	// Per connection, keyed by its scope, which lives exactly as long.
 	const watchers = new WeakMap<HcScope, SessionWatcher>();
 	const remoteTranscripts = new WeakMap<HcScope, HcTranscriptSource>();
+	const remoteCatalogs = new WeakMap<HcScope, HcCommandCatalog>();
 	const localArgv = (runtime: Readonly<RuntimeConfig>): string[] | null => {
 		// Spawned without a shell, so a `~` in the override is expanded here.
 		const override = runtime.binary.trim();
@@ -153,6 +159,24 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 					remoteTranscripts.set(scope, source);
 				}
 				return source;
+			},
+			// The `/` list of the machine the agent runs on: this one's files on
+			// a local runtime, one `machine.exec` over the connection on an SSH
+			// one, and only the built-ins while that connection is not there.
+			commandCatalog: (endpoint, connection) => {
+				if (endpoint.runtime.target !== 'ssh') return null;
+				if (!connection) return BUILTIN_CATALOG_SOURCE;
+				const scope = connection.scope;
+				let catalog = remoteCatalogs.get(scope);
+				if (!catalog) {
+					const client = connection.client;
+					catalog = new HcCommandCatalog(
+						{ request: (method, params) => client.request(method, params) },
+						{ timers: host.timers },
+					);
+					remoteCatalogs.set(scope, catalog);
+				}
+				return catalog;
 			},
 		},
 		connection: {
