@@ -4,15 +4,21 @@ Start with the status block at the top of **Settings → Herdr**; every problem
 below shows up there.
 
 **"Herdr binary not found", or terminals never start.** Obsidian was launched
-from the Dock and has no login `PATH`. Set **Herdr binary** to the absolute path
-from `which herdr`.
+from the Dock and has no login `PATH`. Set the local runtime's **Herdr binary**
+to the absolute path from `which herdr`.
 
 **"Server: not reachable".** herdr is not running, or listens on another socket.
-`herdr status server --json` prints the socket; copy it into **Socket path**.
+`herdr status server --json` prints the socket; copy it into the runtime's
+**Socket path**.
+
+**"Herdr-core runtimes are not available in this version of the plugin yet".**
+The active runtime is a herdr-core one, which this version can list but not
+connect. Switch to a herdr runtime with **Herdr: Switch runtime** or the list's
+toolbar.
 
 **"No herdr workspace matches this vault yet".** Neither the label nor the cwd
 rule matched. Label a herdr workspace like the vault folder, open a pane whose
-cwd is inside the vault, or pin **Workspace ID**.
+cwd is inside the vault, or pin the runtime's **Workspace ID**.
 
 **"Protocol mismatch".** The running herdr speaks a different protocol number
 than the plugin was generated against. A warning only: the plugin never refuses
@@ -44,6 +50,10 @@ when tabs close.
 
 **Session closed: terminal attach taken over.** Another client took control of
 the pane. The refresh button reconnects.
+
+**"The runtime … is no longer configured" in a terminal tab.** The tab was
+opened on a runtime that has since been removed. Close it, or open the agent
+again from the list.
 
 **Remote: the tunnel connects but nothing answers.** Almost always a wrong
 remote socket path. Verify with `ssh <host> <remote binary> status server --json`.

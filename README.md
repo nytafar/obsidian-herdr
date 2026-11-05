@@ -20,8 +20,9 @@ ones that belong to your vault into Obsidian:
   bar count.
 - **Start agents from folders**: a hover button and a context-menu entry on any
   folder in the file explorer start an agent there, in the right herdr tab.
-- **Remote herdr** over SSH: the same list, actions and terminals against herdr on
-  another machine, as long as that machine has a synced mirror of the vault.
+- **Runtimes**: switch between herdr on this machine and herdr on other machines
+  over SSH, the same list, actions and terminals on each, as long as a remote
+  machine has a synced mirror of the vault.
 
 Nothing here changes how herdr behaves for anyone using it outside Obsidian. All
 the workspace filtering happens on the plugin side.
@@ -40,7 +41,7 @@ attach to also shows up, whatever started it.
 - macOS or Linux.
 - **herdr 0.8.0 or newer, already running.** The plugin never starts, stops or
   updates a herdr server; it attaches to the one you have.
-- For the remote profile: `ssh` on this machine, key-based login that does not
+- For a runtime over SSH: `ssh` on this machine, key-based login that does not
   prompt, and a copy of the vault on the remote host kept in sync by whatever you
   already use (Obsidian Sync, Self-hosted LiveSync, Syncthing, git).
 
@@ -120,13 +121,13 @@ folder.
 and, while Obsidian is unfocused, a system notification. A pane whose terminal
 you have open never notifies. Focusing the pane in herdr is what marks it seen.
 
-## Settings, remote use, troubleshooting
+## Settings, runtimes, troubleshooting
 
 - [docs/native-view.md](docs/native-view.md), the native view: what it shows,
   the prompt box, the waiting card, and its limits.
 - [docs/settings.md](docs/settings.md), every setting on one line, with units.
-- [docs/remote.md](docs/remote.md), the SSH profile, the vault mirror it needs,
-  and its two caveats.
+- [docs/runtimes.md](docs/runtimes.md), adding and switching runtimes, herdr
+  over SSH with the vault mirror it needs and its two caveats, and herdr-core.
 - [docs/troubleshooting.md](docs/troubleshooting.md), the messages you may see
   and what they mean.
 - [docs/architecture.md](docs/architecture.md), how the plugin talks to herdr and
