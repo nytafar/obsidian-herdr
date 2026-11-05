@@ -37,11 +37,16 @@ export interface ActiveLeafFacts {
 	inMainArea: boolean;
 	/** The pane id when that leaf is a herdr terminal in native mode, else ''. */
 	nativePaneId: string;
+	/**
+	 * The runtime of that pane, else ''. The same pane id on two runtimes is
+	 * two panes and two session models (ADR-0006).
+	 */
+	nativeEndpointId: string;
 }
 
 /** What an active-leaf change does to the list. */
 export type TocTarget =
-	| { kind: 'follow'; paneId: string }
+	| { kind: 'follow'; endpointId: string; paneId: string }
 	| { kind: 'empty' }
 	| { kind: 'keep' };
 
@@ -55,7 +60,9 @@ export type TocTarget =
  */
 export function tocTarget(facts: ActiveLeafFacts | null): TocTarget {
 	if (!facts || !facts.inMainArea) return { kind: 'keep' };
-	return facts.nativePaneId ? { kind: 'follow', paneId: facts.nativePaneId } : { kind: 'empty' };
+	return facts.nativePaneId
+		? { kind: 'follow', endpointId: facts.nativeEndpointId, paneId: facts.nativePaneId }
+		: { kind: 'empty' };
 }
 
 export interface TocPanelOptions {
@@ -68,7 +75,12 @@ export interface TocPanelOptions {
 	 * when it is still open, else any leaf showing the pane. The leaf is passed
 	 * rather than held, and the view around the panel resolves it at the click.
 	 */
-	scrollToTurn(leaf: WorkspaceLeaf | null, paneId: string, turnId: string): void;
+	scrollToTurn(
+		leaf: WorkspaceLeaf | null,
+		endpointId: string,
+		paneId: string,
+		turnId: string,
+	): void;
 	/**
 	 * The same for one heading of a turn's prose (#118). The index is the
 	 * heading's place in that turn's `headings`, which is the order the reducer
@@ -77,6 +89,7 @@ export interface TocPanelOptions {
 	 */
 	scrollToHeading(
 		leaf: WorkspaceLeaf | null,
+		endpointId: string,
 		paneId: string,
 		turnId: string,
 		index: number,
@@ -92,6 +105,7 @@ export class TocPanel {
 	/** Listeners on the rows; replaced wholesale on every draw. */
 	private component = new Component();
 	private listEl: HTMLElement | null = null;
+	private endpointId = '';
 	private paneId = '';
 	/**
 	 * The leaf the list is about, or null while it is about none. A leaf, never
@@ -116,15 +130,17 @@ export class TocPanel {
 		const target = tocTarget(this.options.facts(leaf));
 		if (target.kind === 'keep') return;
 		const paneId = target.kind === 'follow' ? target.paneId : '';
+		const endpointId = target.kind === 'follow' ? target.endpointId : '';
 		// Which leaf the list is about, remembered before the early return: two
 		// tabs on one pane are the same session and different leaves, and a click
 		// must scroll the one the list is about (#100).
 		this.followedLeaf = paneId ? leaf : null;
-		if (paneId === this.paneId) return;
+		if (paneId === this.paneId && endpointId === this.endpointId) return;
 		this.release();
 		this.paneId = paneId;
+		this.endpointId = endpointId;
 		if (paneId) {
-			this.handle = this.options.models.acquire(paneId);
+			this.handle = this.options.models.acquire(endpointId, paneId);
 			this.unsubscribe = this.handle.model.on(() => this.render());
 		}
 		this.render();
@@ -149,6 +165,7 @@ export class TocPanel {
 	unmount(): void {
 		this.release();
 		this.paneId = '';
+		this.endpointId = '';
 		this.followedLeaf = null;
 		this.component.unload();
 		this.listEl = null;
@@ -234,10 +251,16 @@ export class TocPanel {
 	private activate(turnId: string, heading?: number): void {
 		if (!this.paneId) return;
 		if (heading === undefined) {
-			this.options.scrollToTurn(this.followedLeaf, this.paneId, turnId);
+			this.options.scrollToTurn(this.followedLeaf, this.endpointId, this.paneId, turnId);
 			return;
 		}
-		this.options.scrollToHeading(this.followedLeaf, this.paneId, turnId, heading);
+		this.options.scrollToHeading(
+			this.followedLeaf,
+			this.endpointId,
+			this.paneId,
+			turnId,
+			heading,
+		);
 	}
 }
 
@@ -258,6 +281,7 @@ export function leafFacts(app: App, leaf: WorkspaceLeaf | null): ActiveLeafFacts
 	return {
 		inMainArea: leaf.getRoot() === app.workspace.rootSplit,
 		nativePaneId: view instanceof TerminalView ? view.nativePaneId() : '',
+		nativeEndpointId: view instanceof TerminalView ? view.nativeEndpointId() : '',
 	};
 }
 
@@ -272,10 +296,12 @@ export class TocView extends ItemView {
 		this.panel = new TocPanel({
 			models: this.plugin.sessionModels,
 			facts: (candidate) => leafFacts(this.app, candidate),
-			scrollToTurn: (leaf, paneId, turnId) =>
-				this.scrollNative(leaf, paneId, (view) => view.scrollNativeToTurn(turnId)),
-			scrollToHeading: (leaf, paneId, turnId, index) =>
-				this.scrollNative(leaf, paneId, (view) => view.scrollNativeToHeading(turnId, index)),
+			scrollToTurn: (leaf, endpointId, paneId, turnId) =>
+				this.scrollNative(leaf, endpointId, paneId, (view) => view.scrollNativeToTurn(turnId)),
+			scrollToHeading: (leaf, endpointId, paneId, turnId, index) =>
+				this.scrollNative(leaf, endpointId, paneId, (view) =>
+					view.scrollNativeToHeading(turnId, index),
+				),
 		});
 	}
 
@@ -329,12 +355,18 @@ export class TocView extends ItemView {
 	 */
 	private scrollNative(
 		followed: WorkspaceLeaf | null,
+		endpointId: string,
 		paneId: string,
 		move: (view: TerminalView) => void,
 	): void {
 		const showing = this.app.workspace
 			.getLeavesOfType(TERMINAL_VIEW_TYPE)
-			.filter((leaf) => leaf.view instanceof TerminalView && leaf.view.nativePaneId() === paneId);
+			.filter(
+				(leaf) =>
+					leaf.view instanceof TerminalView &&
+					leaf.view.nativePaneId() === paneId &&
+					leaf.view.nativeEndpointId() === endpointId,
+			);
 		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
 		const view = leaf?.view;
 		if (view instanceof TerminalView) move(view);

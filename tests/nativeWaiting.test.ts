@@ -30,6 +30,7 @@ import {
 	type Turn,
 } from '../src/native/reducer';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -47,6 +48,8 @@ class FakeModel implements SessionModelView {
 	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	/** The pane's one claim on the block it is in, as the real model holds it. */
 	private blockClaim: string | null = null;

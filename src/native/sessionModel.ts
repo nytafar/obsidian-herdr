@@ -1,25 +1,32 @@
 /**
- * The session model (issues #93 and #94, ADR-0003).
+ * The session model (issues #93 and #94, ADR-0003, ADR-0006).
  *
  * The plugin-held, per-pane reduced state of a transcript (CONTEXT.md). One
- * model per pane, reference counted, so two native tabs on the same pane — and
- * later the table of contents — follow one file once and see the same turns.
+ * model per **runtime and pane**, reference counted, so two native tabs on the
+ * same pane — and the table of contents — follow one file once and see the
+ * same turns, while the same pane id on two runtimes is two models that never
+ * meet.
  *
  * What it knows and nobody else does: which file is the pane's *current*
- * transcript, and when that stops being true. The path is the pane's cwd and
- * herdr's `agent_session`, which appears after the first prompt and rotates on
- * `/clear`. Rotation has no event of its own, so the model reads the
- * `agent_session` field of `pane.updated` for its own pane, deduplicated by
- * value: the one recorded exception to reacting only to status transitions
- * (CLAUDE.md, ADR-0003). **Following is strict**: on a rotation the old session
- * is dropped whole and the new file is read from its beginning.
+ * transcript, and when that stops being true. Its inputs are kind-neutral: a
+ * {@link SessionWatcher} the runtime's kind supplies (session, transcript path,
+ * cwd, status and block kind) and a {@link TranscriptSource} for the runtime's
+ * transcripts. **Following is strict**: on a rotation the old session is
+ * dropped whole and the new file is read from its beginning.
+ *
+ * **Bound to its own runtime.** A model asks for the watcher of the runtime it
+ * belongs to, never for whatever is published: while another runtime is the
+ * connected one (one at a time, ADR-0004) it holds no watcher at all, keeps
+ * the content it has, reports {@link SessionModelView.connected} false and its
+ * status as `unknown`, which is also what disables the prompt box. It follows
+ * again when its own runtime comes back.
  *
  * Content comes from the transcript source, meaning from the reducer, and
- * status from herdr's `agent_status` transitions; none of those three knows a
- * pane exists.
+ * status from the watcher's transitions; none of those three knows a pane
+ * exists.
  *
  * No Obsidian here: the view layer subscribes, and `src/main.ts` holds the
- * registry and hands it a watcher over the connected herdr.
+ * registry and hands it each runtime's watcher and source through its kind.
  */
 
 import {
@@ -36,42 +43,10 @@ import {
 	type TranscriptSource,
 	type TranscriptStream,
 } from './transcriptSource';
-import type { HerdrEvent } from '../herdr/client';
-import type { PaneState } from '../herdr/scope';
-import type { AgentStatus, PaneInfo } from '../herdr/types.gen';
+import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
+import type { AgentStatus } from '../herdr/types.gen';
 
-/** What the model needs to know about a pane, and no more. */
-export interface PaneSnapshot {
-	paneId: string;
-	/** The pane's working directory: half of the transcript's path. */
-	cwd: string;
-	/** herdr's `agent_session` value, empty until the session exists. */
-	agentSession: string;
-	agentStatus: AgentStatus;
-}
-
-export type Unsubscribe = () => void;
-
-/**
- * The herdr the models read from. `src/main.ts` builds one over the published
- * connection's scope and client; a test fakes it with a plain object.
- */
-export interface SessionWatcher {
-	/** The pane as herdr last reported it, or null when it is not in scope. */
-	snapshot(paneId: string): PaneSnapshot | null;
-	/** Raw `pane_updated` pushes. Only `agent_session` is ever read from them. */
-	onEvent(handler: (event: HerdrEvent) => void): Unsubscribe;
-	/** Agent status transitions, one call per actual change. */
-	onStatus(handler: (paneId: string, status: AgentStatus) => void): Unsubscribe;
-	/**
-	 * A pane joining or leaving the scoped workspace. Everything is scoped to
-	 * one workspace (CLAUDE.md), so a pane that leaves it stops being this
-	 * vault's and the model following it drops what it holds; one that joins it
-	 * — as every pane does when a fresh connection primes its scope — is
-	 * followed from then on.
-	 */
-	onMembership(handler: (paneId: string) => void): Unsubscribe;
-}
+export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
 
 /** What a subscriber is told when a model's state moved. */
 export interface SessionChange {
@@ -92,14 +67,25 @@ export interface SessionModelView {
 	readonly path: string | null;
 	/**
 	 * Whether the transcript's lines have been delivered, which a known path
-	 * does **not** say: the model has the path the moment herdr names the agent
-	 * session, and the tail reads the file afterwards. Until then the state is
-	 * empty for want of reading, not because the session is empty, and anything
-	 * that would act on what the state does not hold must wait for this.
+	 * does **not** say: the model has the path the moment the runtime names the
+	 * agent session, and the tail reads the file afterwards. Until then the
+	 * state is empty for want of reading, not because the session is empty, and
+	 * anything that would act on what the state does not hold must wait for this.
 	 */
 	readonly loaded: boolean;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
+	/**
+	 * The kind of block the runtime reported, while `blocked`; null when it is
+	 * not blocked or the runtime does not say (herdr never does).
+	 */
+	readonly blockKind: BlockKind | null;
+	/**
+	 * Whether the model's own runtime is the connected one. False while another
+	 * runtime is active or none is: the content stays as it was, the status is
+	 * `unknown`, and the view says the runtime is not connected.
+	 */
+	readonly connected: boolean;
 	/**
 	 * Claims the block the pane is sitting in for whatever answers it without
 	 * being asked, and says whether this caller got it (#99).
@@ -125,130 +111,50 @@ export interface SessionHandleOf<T> {
 
 /** What a view asks for a model: the registry, narrowed to what it uses. */
 export interface SessionModels {
-	acquire(paneId: string): SessionHandleOf<SessionModelView>;
-}
-
-/** The part of a `WorkspaceScope` a watcher reads. Structural, so a test fakes it. */
-export interface WatchableScope {
-	get(paneId: string): PaneState | undefined;
-	paneInfo(paneId: string): PaneInfo | undefined;
-	on(
-		event: 'changed',
-		handler: (paneId: string, prev: PaneState, next: PaneState) => void,
-	): Unsubscribe;
-	on(event: 'added' | 'removed', handler: (pane: PaneState) => void): Unsubscribe;
-}
-
-/** The part of a `HerdrClient` a watcher reads: one event name. */
-export interface WatchableClient {
-	on(type: 'pane_updated', handler: (event: HerdrEvent) => void): Unsubscribe;
-}
-
-/** The scope and client of one endpoint session, which is what the plugin has. */
-export interface WatchableSession {
-	scope: WatchableScope;
-	client: WatchableClient;
-}
-
-/**
- * The `agent_session` a `pane_updated` carries for `paneId`, or undefined when
- * the event is not about that pane at all.
- *
- * The exception in one function: nothing else reads a raw pane update, and what
- * it reads is one field. An event for this pane with no `agent_session` is an
- * empty string — a pane whose agent is gone, or one that has not prompted yet —
- * which is a different answer from "not this pane".
- */
-export function agentSessionFromEvent(event: HerdrEvent, paneId: string): string | undefined {
-	if (event.event !== 'pane_updated') return undefined;
-	const pane = event.data.pane;
-	if (typeof pane !== 'object' || pane === null) return undefined;
-	const info = pane as { pane_id?: unknown; agent_session?: { value?: unknown } | null };
-	if (info.pane_id !== paneId) return undefined;
-	const value = info.agent_session?.value;
-	return typeof value === 'string' ? value : '';
-}
-
-/**
- * A watcher over a connected herdr.
- *
- * Three sources, because herdr says these three things in three places: the
- * scope's `PaneState` for cwd and status, the raw `PaneInfo` it keeps for
- * `agent_session` (nothing renders that field, so `PaneState` never carried
- * it), and the client's event stream for the rotation exception.
- */
-export function scopeWatcher(session: WatchableSession | null): SessionWatcher | null {
-	if (!session) return null;
-	const { scope, client } = session;
-	return {
-		snapshot(paneId: string): PaneSnapshot | null {
-			const pane = scope.get(paneId);
-			if (!pane) return null;
-			return {
-				paneId,
-				cwd: pane.cwd,
-				agentSession: scope.paneInfo(paneId)?.agent_session?.value ?? '',
-				agentStatus: pane.agentStatus,
-			};
-		},
-		onEvent(handler): Unsubscribe {
-			// The client hands an event to its exact-name handlers before its `'*'`
-			// ones, and the scope ingests on `'*'`: read synchronously, `snapshot`
-			// would still hold the session this very event replaces. A microtask
-			// runs once the whole dispatch is done.
-			let live = true;
-			const off = client.on('pane_updated', (event) =>
-				queueMicrotask(() => {
-					if (live) handler(event);
-				}),
-			);
-			return () => {
-				live = false;
-				off();
-			};
-		},
-		onStatus(handler): Unsubscribe {
-			return scope.on('changed', (paneId, prev, next) => {
-				// A transition, not every update: herdr emits about ten pane updates
-				// a second and the scope passes on every renderable difference.
-				if (prev.agentStatus !== next.agentStatus) handler(paneId, next.agentStatus);
-			});
-		},
-		onMembership(handler): Unsubscribe {
-			// `removed` is a pane that closed, left the scoped workspace or moved to
-			// another; `added` is one that arrived, including every pane a fresh
-			// connection's first prime finds after the models have already rebound
-			// to its still empty scope. Either way the model re-reads the pane.
-			const offAdded = scope.on('added', (pane) => handler(pane.paneId));
-			const offRemoved = scope.on('removed', (pane) => handler(pane.paneId));
-			return () => {
-				offAdded();
-				offRemoved();
-			};
-		},
-	};
+	/** The model of `paneId` on the runtime `endpointId` names. */
+	acquire(endpointId: string, paneId: string): SessionHandleOf<SessionModelView>;
 }
 
 export interface SessionModelOptions {
+	/** The runtime this pane lives on; the model never reads another's. */
+	endpointId: string;
 	paneId: string;
-	source: TranscriptSource;
-	/** The connected herdr, re-read on every use: it is replaced on reconnect. */
+	/**
+	 * This runtime's watcher, re-read on every bind, or null while the runtime
+	 * is not the connected one: watchers are replaced on every reconnect.
+	 */
 	watcher: () => SessionWatcher | null;
-	/** Home directory of the transcript's host. Defaults to this machine's. */
+	/** This runtime's transcript source, re-read on every bind, or null while unreadable. */
+	source: () => TranscriptSource | null;
+	/**
+	 * Home directory of the transcript's host, for a path derived from cwd and
+	 * session (a runtime that names the path needs none). Defaults to this
+	 * machine's.
+	 */
 	home?: string;
 }
 
 /** One pane's transcript, reduced, kept current. */
 export class SessionModel implements SessionModelView {
+	readonly endpointId: string;
 	readonly paneId: string;
 	private readonly options: SessionModelOptions;
 	private transcript: TranscriptState = emptyTranscript();
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	private currentPath: string | null = null;
 	private session = '';
+	/** The transcript path the runtime last reported, '' when it reports none. */
+	private reportedPath = '';
 	private status: AgentStatus = 'unknown';
+	private block: BlockKind | null = null;
+	/** The runtime's watcher while it is connected, else null. */
+	private watcher: SessionWatcher | null = null;
+	/** The runtime's transcript source as of the last bind. */
+	private source: TranscriptSource | null = null;
 	/** The tail of the file being shown, closed on rotation and on release. */
 	private stream: TranscriptStream | null = null;
+	/** The source {@link stream} came from, so a source that changed reopens it. */
+	private streamSource: TranscriptSource | null = null;
 	/** Whether the current tail has delivered anything; see {@link loaded}. */
 	private delivered = false;
 	/**
@@ -257,7 +163,7 @@ export class SessionModel implements SessionModelView {
 	 * point of it living here; see {@link SessionModelView.claimBlock}.
 	 */
 	private blockClaim: string | null = null;
-	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
+	/** Unsubscribes from the watcher currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
 	/**
 	 * Which file contents the model is on. Bumped by every `follow` that
@@ -270,26 +176,31 @@ export class SessionModel implements SessionModelView {
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
+		this.endpointId = options.endpointId;
 		this.paneId = options.paneId;
 	}
 
 	/**
-	 * Subscribes to herdr and starts following the pane's session. The registry
-	 * calls it once, when the first subscriber arrives.
+	 * Subscribes to the runtime and starts following the pane's session. The
+	 * registry calls it once, when the first subscriber arrives.
 	 */
 	start(): void {
-		this.bind();
-		this.follow();
+		this.rebind();
 	}
 
 	/**
-	 * Takes the herdr that is connected *now*. Endpoint sessions are replaced on
-	 * every reconnect and on an endpoint switch, so a model that kept the old
-	 * subscription would quietly stop following (#94).
+	 * Takes the watcher of this model's runtime as it is *now*: a new one after
+	 * a reconnect, none while another runtime is connected. A model that kept
+	 * the old subscription would quietly stop following (#94); one that took
+	 * the published runtime's would show another runtime's pane (ADR-0006).
 	 */
 	rebind(): void {
 		this.bind();
-		this.follow();
+		if (this.watcher) {
+			this.follow();
+			return;
+		}
+		this.disconnected();
 	}
 
 	/** The reduced transcript as it stands. Never mutated in place. */
@@ -311,21 +222,29 @@ export class SessionModel implements SessionModelView {
 		return this.delivered;
 	}
 
-	/** herdr's `agent_session` for the pane, empty when there is none yet. */
+	/** The runtime's agent session for the pane, empty when there is none yet. */
 	get agentSession(): string {
 		return this.session;
 	}
 
-	/** herdr's view of the agent: what the view shows between blocks. */
+	/** The runtime's view of the agent: what the view shows between blocks. */
 	get agentStatus(): AgentStatus {
 		return this.status;
+	}
+
+	get blockKind(): BlockKind | null {
+		return this.block;
+	}
+
+	get connected(): boolean {
+		return this.watcher !== null;
 	}
 
 	/**
 	 * The one automatic answer this block gets, for the first caller (#99).
 	 *
 	 * The block is the call that is dangling, which is what the claim stores:
-	 * Claude can move from one dialog to the next without herdr's status leaving
+	 * Claude can move from one dialog to the next without the status leaving
 	 * `blocked`, and a claim that only asked whether *some* claim was held would
 	 * have let the first swallow every one after it. Two tabs on one pane still
 	 * get one answer between them, which is the claim's job (ADR-0003), because
@@ -343,43 +262,67 @@ export class SessionModel implements SessionModelView {
 		return () => this.listeners.delete(listener);
 	}
 
-	/** Closes the tail and drops every subscriber, here and in herdr. */
+	/** Closes the tail and drops every subscriber, here and in the runtime. */
 	dispose(): void {
 		this.unbind();
-		this.stream?.close();
-		this.stream = null;
+		this.closeStream();
 		this.listeners.clear();
 	}
 
-	/** Subscribes to the herdr that is connected now, dropping any older one. */
+	/** Subscribes to this runtime's watcher as it is now, dropping any older one. */
 	private bind(): void {
 		this.unbind();
+		this.source = this.options.source();
 		const watcher = this.options.watcher();
+		this.watcher = watcher;
 		if (!watcher) return;
 		this.bound.push(
-			watcher.onEvent((event) => this.onPaneEvent(event)),
-			watcher.onStatus((paneId, status) => this.onStatusChanged(paneId, status)),
+			watcher.onSession((paneId, session, path) => this.onSession(paneId, session, path)),
+			watcher.onStatus((paneId, status, kind) => this.onStatusChanged(paneId, status, kind)),
 			watcher.onMembership((paneId) => this.onPaneMembership(paneId)),
 		);
 	}
 
 	private unbind(): void {
 		for (const off of this.bound.splice(0)) off();
+		this.watcher = null;
+	}
+
+	private closeStream(): void {
+		this.stream?.close();
+		this.stream = null;
+		this.streamSource = null;
 	}
 
 	/**
-	 * The rotation exception. The event's `agent_session` is compared with the
-	 * one being shown and nothing else happens when they match, which is most of
-	 * the time: herdr emits a pane update about ten times a second.
+	 * The runtime is not connected: another one is active, or none is. Nothing
+	 * is known about the pane now, so the status is `unknown` and no block is
+	 * held; what was read stays on screen, because it is still what the session
+	 * said. A tail whose source went with the connection is closed, and one
+	 * that is still readable (a local file) keeps following it.
 	 */
-	private onPaneEvent(event: HerdrEvent): void {
-		const session = agentSessionFromEvent(event, this.paneId);
-		if (session === undefined || session === this.session) return;
+	private disconnected(): void {
+		if (this.stream && this.streamSource !== this.source) this.closeStream();
+		this.status = 'unknown';
+		this.block = null;
+		this.blockClaim = null;
+		// Said every time, cheaply: the view's status line reads `connected`.
+		this.emit({ changedTurnIds: [], reset: false });
+	}
+
+	/**
+	 * The session the runtime reports for a pane. Compared with the one being
+	 * shown, and nothing else happens when they match, which is most of the
+	 * time: herdr emits a pane update about ten times a second.
+	 */
+	private onSession(paneId: string, session: string, path: string | undefined): void {
+		if (paneId !== this.paneId) return;
+		if (session === this.session && (path ?? '') === this.reportedPath) return;
 		this.follow();
 	}
 
 	/**
-	 * The pane joined or left the scoped workspace. Left, this model has nothing
+	 * The pane joined or left the runtime's scope. Left, this model has nothing
 	 * to follow: `follow` finds no pane, closes the tail, empties the state and
 	 * falls back to `unknown`, which is also what disables the prompt box (#94,
 	 * #97). Not a special path — a pane out of scope and a pane with no agent
@@ -391,9 +334,12 @@ export class SessionModel implements SessionModelView {
 		this.follow();
 	}
 
-	private onStatusChanged(paneId: string, status: AgentStatus): void {
-		if (paneId !== this.paneId || status === this.status) return;
+	private onStatusChanged(paneId: string, status: AgentStatus, kind?: BlockKind): void {
+		if (paneId !== this.paneId) return;
+		const block = status === 'blocked' ? (kind ?? null) : null;
+		if (status === this.status && block === this.block) return;
 		this.status = status;
+		this.block = block;
 		// The block is over, so the next one is a block of its own to answer.
 		if (status !== 'blocked') this.blockClaim = null;
 		// No turn changed; the view redraws what it shows between blocks.
@@ -402,39 +348,50 @@ export class SessionModel implements SessionModelView {
 
 	/**
 	 * Re-reads the pane's identity and follows whatever transcript it names now.
-	 * A path that has not changed is left alone, tail and state and all; a new
-	 * one starts from empty, because the session before it is simply gone.
+	 * A path that has not changed, on a tail from the same source, is left
+	 * alone, tail and state and all; a new one starts from empty, because the
+	 * session before it is simply gone.
 	 */
 	private follow(): void {
-		const pane = this.options.watcher()?.snapshot(this.paneId) ?? null;
+		const watcher = this.watcher;
+		if (!watcher) return;
+		const pane = watcher.snapshot(this.paneId);
 		const status = pane?.agentStatus ?? 'unknown';
-		const statusMoved = status !== this.status;
+		const block = status === 'blocked' ? (pane?.blockKind ?? null) : null;
+		const statusMoved = status !== this.status || block !== this.block;
 		this.session = pane?.agentSession ?? '';
+		this.reportedPath = pane?.transcriptPath ?? '';
 		this.status = status;
+		this.block = block;
 		if (status !== 'blocked') this.blockClaim = null;
-		const path = pane
-			? transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
+		const path = pane?.agentSession
+			? pane.transcriptPath ||
+				transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
 			: null;
-		if (path === this.currentPath && this.stream) {
+		const source = this.source;
+		// `streamSource` is set exactly while a tail is open, so this is "no
+		// session then and now", or "the same file on a tail from the same
+		// source" — including no tail at all while there is no source to read.
+		if (path === this.currentPath && (path === null || this.streamSource === source)) {
 			// The same session, so nothing to reload. A status read here rather
 			// than off a transition, as after a rebind, is still news to the view.
 			if (statusMoved) this.emit({ changedTurnIds: [], reset: false });
 			return;
 		}
-		this.stream?.close();
-		this.stream = null;
+		this.closeStream();
 		this.currentPath = path;
 		this.restart();
 		// Said now, not when the new file's first lines land: a tail delivers
 		// those asynchronously, and the session that is gone must not still be on
 		// screen in between.
 		this.emit({ changedTurnIds: [], reset: true });
-		if (!path) return;
+		if (!path || !source) return;
 		// The tail delivers the file as it stands before anything is appended, so
 		// there is no gap between reading the history and following it.
-		this.stream = this.options.source.open(path, (lines, restart) =>
-			this.onLines(lines, restart === true),
-		);
+		// A closed tail delivers nothing (`TranscriptStream`), so whatever this
+		// hears is the file being shown.
+		this.stream = source.open(path, (lines, restart) => this.onLines(lines, restart === true));
+		this.streamSource = source;
 	}
 
 	/** Empties everything read so far, for another file or the same one replaced. */
@@ -503,12 +460,15 @@ export class SessionModel implements SessionModelView {
 	/**
 	 * A subagent's report: the last thing it said in the file its notification
 	 * named, falling back to its transcript beside the session's own file, which
-	 * is where Claude Code also keeps it (`docs/architecture.md`).
+	 * is where Claude Code also keeps it (`docs/architecture.md`). Read through
+	 * the source the tail came from, which is the transcript's own host.
 	 */
 	private async subagentReport(notification: TaskNotification): Promise<string> {
+		const source = this.streamSource ?? this.source;
+		if (!source) return '';
 		for (const path of [notification.outputFile, this.subagentPath(notification.taskId)]) {
 			if (!path) continue;
-			const text = await this.options.source.read(path);
+			const text = await source.read(path);
 			if (!text) continue;
 			const report = lastAssistantText(text.split('\n'));
 			if (report) return report;
@@ -532,46 +492,61 @@ export class SessionModel implements SessionModelView {
 export type SessionHandle = SessionHandleOf<SessionModel>;
 
 export interface SessionModelRegistryOptions {
-	source: TranscriptSource;
-	watcher: () => SessionWatcher | null;
+	/**
+	 * The watcher of the runtime `endpointId` names, or null while that runtime
+	 * is not the connected one. Never the published runtime's on behalf of
+	 * another: that is how one pane id on two runtimes would alias.
+	 */
+	watcher(endpointId: string): SessionWatcher | null;
+	/** Where that runtime's transcripts are read, or null while they cannot be. */
+	source(endpointId: string): TranscriptSource | null;
 	home?: string;
 }
 
+/** The registry key of a pane on a runtime; a newline is in neither id. */
+function modelKey(endpointId: string, paneId: string): string {
+	return `${endpointId}\n${paneId}`;
+}
+
 /**
- * The plugin's session models, one per pane while anything is watching it.
+ * The plugin's session models, one per runtime and pane while anything is
+ * watching it.
  *
  * Reference counted rather than cached: a model that nobody watches is a file
  * being tailed and a subscription nobody reads, and this is also what makes
  * "two tabs on one pane" a single tail (ADR-0003). A hidden tab keeps its hold,
  * so it catches up the moment it is revealed.
  */
-export class SessionModelRegistry {
+export class SessionModelRegistry implements SessionModels {
 	private readonly models = new Map<string, { model: SessionModel; holders: number }>();
 
 	constructor(private readonly options: SessionModelRegistryOptions) {}
 
-	/** Whether a model for `paneId` is currently held. */
-	has(paneId: string): boolean {
-		return this.models.has(paneId);
+	/** Whether a model for `paneId` on `endpointId` is currently held. */
+	has(endpointId: string, paneId: string): boolean {
+		return this.models.has(modelKey(endpointId, paneId));
 	}
 
 	/**
-	 * The model for a pane, built and started on the first hold. The caller must
-	 * release exactly once; a released handle can be released again harmlessly.
+	 * The model for a pane on a runtime, built and started on the first hold.
+	 * The caller must release exactly once; a released handle can be released
+	 * again harmlessly.
 	 */
-	acquire(paneId: string): SessionHandle {
-		let entry = this.models.get(paneId);
+	acquire(endpointId: string, paneId: string): SessionHandle {
+		const key = modelKey(endpointId, paneId);
+		let entry = this.models.get(key);
 		if (!entry) {
 			entry = {
 				model: new SessionModel({
+					endpointId,
 					paneId,
-					source: this.options.source,
-					watcher: this.options.watcher,
+					watcher: () => this.options.watcher(endpointId),
+					source: () => this.options.source(endpointId),
 					home: this.options.home,
 				}),
 				holders: 0,
 			};
-			this.models.set(paneId, entry);
+			this.models.set(key, entry);
 			// The first hold pays for the tail; the second one just subscribes.
 			entry.model.start();
 		}
@@ -585,13 +560,17 @@ export class SessionModelRegistry {
 				live = false;
 				held.holders--;
 				if (held.holders > 0) return;
-				this.models.delete(paneId);
+				this.models.delete(key);
 				held.model.dispose();
 			},
 		};
 	}
 
-	/** Every model takes the herdr that is connected now (`onScopeReplaced`). */
+	/**
+	 * Every model takes its own runtime's watcher as it is now
+	 * (`onScopeReplaced`): a fresh one for the runtime that just connected,
+	 * none for every other.
+	 */
 	rebind(): void {
 		for (const entry of this.models.values()) entry.model.rebind();
 	}

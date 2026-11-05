@@ -83,7 +83,6 @@ import {
 	type TerminalTitleSource,
 } from '../settings';
 import {
-	isRemoteEndpoint,
 	LOCAL_ENDPOINT_ID,
 	type ConnectionClient,
 	type ConnectionScope,
@@ -677,13 +676,14 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * The pane's working directory as herdr last reported it, or the vault's
-	 * when it has none: what the prompt box's `/` and `@` are relative to (#98).
+	 * The pane's working directory as its runtime's session watcher last
+	 * reported it, or empty when it has none: what the prompt box's `/` and `@`
+	 * are relative to (#98).
 	 */
 	private paneCwd(): string {
-		const paneId = this.terminal.identity.paneId;
-		const scope = this.plugin.nativeSession(this.terminal.identity.endpointId)?.scope;
-		return (paneId ? scope?.get(paneId)?.cwd : '') ?? '';
+		const { paneId, endpointId } = this.terminal.identity;
+		if (!paneId) return '';
+		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId)?.cwd ?? '';
 	}
 
 	/**
@@ -695,7 +695,7 @@ export class TerminalView extends ItemView {
 	private where(): PaneWhere {
 		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
 		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
-		return nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), isRemoteEndpoint(endpoint));
+		return nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), endpoint);
 	}
 
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
@@ -707,8 +707,7 @@ export class TerminalView extends ItemView {
 	/** The adapter for a kind: the tab's own lifecycle, or a fresh native view. */
 	private createSurface(kind: PaneSurfaceKind): PaneSurface {
 		if (kind === 'terminal') return this.terminal;
-		const nativeClient = () =>
-			this.plugin.nativeSession(this.terminal.identity.endpointId)?.client ?? null;
+		const nativeClient = () => this.plugin.nativeClient(this.terminal.identity.endpointId);
 		return new NativePaneSurface({
 			// The view's own app, per the Obsidian guidelines, for the Markdown it
 			// renders and the links it opens (#93).
@@ -719,10 +718,9 @@ export class TerminalView extends ItemView {
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
 			// Prompts go through the tab's own runtime, its kind's sender over its
-			// session, and only while that runtime is the connected one and can
-			// show a native view at all: native mode is local-only until the SSH
-			// adapters land (ADR-0002), and `--wait` is never asked for (#97,
-			// ADR-0003).
+			// own client, and only while that runtime is the connected one and can
+			// show a native view at all (ADR-0002, ADR-0006); `--wait` is never
+			// asked for (#97, ADR-0003).
 			sender: {
 				send: (paneId, text) => this.kind().promptSender(nativeClient).send(paneId, text),
 			},
@@ -788,6 +786,11 @@ export class TerminalView extends ItemView {
 	 */
 	nativePaneId(): string {
 		return this.surfaces.current instanceof NativePaneSurface ? this.paneId : '';
+	}
+
+	/** The runtime of {@link nativePaneId}'s pane, or '' when that is ''. */
+	nativeEndpointId(): string {
+		return this.nativePaneId() ? this.terminal.identity.endpointId : '';
 	}
 
 	/** Brings a turn into view, for a click in the table of contents (#100). */

@@ -116,6 +116,8 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 		terminalUnavailable: null,
 		capabilities: HERDR_CORE_CAPABILITIES,
 		nativeUnavailable: NATIVE_NO_SESSION_REASON,
+		// The session hook and its label watcher come with ADR-0006's next step.
+		native: null,
 		connection: {
 			discover: async (endpoint) => {
 				const runtime = endpoint.runtime;

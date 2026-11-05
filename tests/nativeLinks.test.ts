@@ -14,6 +14,7 @@ import { NativePaneSurface } from '../src/native/surface';
 import { HOVER_LINK_SOURCE } from '../src/native/noteLinks';
 import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -28,6 +29,8 @@ class FakeModel implements SessionModelView {
 	loaded = true;
 	agentSession = 's1';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);

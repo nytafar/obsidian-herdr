@@ -9,6 +9,11 @@
  * and asks the one of the runtime in question; nothing outside an adapter
  * decides by kind or by target.
  *
+ * The native view's inputs come through the same seam: a kind with a native
+ * view supplies a {@link NativeSessionAdapter} — a session watcher per live
+ * connection and a transcript source per target — and the session models
+ * never learn which kind they read (ADR-0006).
+ *
  * The herdr kind is `herdrKind.ts`, today's code behind this interface. The
  * herdr-core kind is `herdrCoreKind.ts`: its agent list, actions, senders and
  * terminal tabs run over `hc connect`. {@link unavailableKind} remains for a
@@ -29,6 +34,8 @@ import type {
 	Endpoint,
 } from '../connection';
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
+import type { SessionWatcher } from '../native/sessionWatcher';
+import type { TranscriptSource } from '../native/transcriptSource';
 import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
 import type { TabLabels } from '../tabLabels';
@@ -57,9 +64,9 @@ export interface RuntimeCapabilities {
 	 */
 	sharedPins: boolean;
 	/**
-	 * The native view, which follows the agent session the kind reports. Only
-	 * on a `local` target even then: the transcript is a file on the pane's
-	 * own host (ADR-0002).
+	 * The native view, which follows the agent session the kind reports. A
+	 * kind that has it supplies {@link RuntimeKindAdapter.native}, which also
+	 * says on which targets its transcripts can be read (ADR-0002, ADR-0006).
 	 */
 	nativeView: boolean;
 }
@@ -89,6 +96,53 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 
 /** Why the native view is not offered for a kind without agent sessions. */
 export const NATIVE_NO_SESSION_REASON = 'no agent session on herdr-core';
+
+/**
+ * Why the native view is not offered for a runtime whose kind has one but
+ * cannot reach its transcripts from here, on a target that is not remote.
+ * The remote case has its own reason (`NATIVE_REMOTE_REASON`).
+ */
+export const NATIVE_NO_TRANSCRIPT_REASON = 'transcripts not readable here';
+
+/**
+ * How a runtime's transcripts are reached: `local`, files on this machine; or
+ * `rpc`, over the runtime's own connection (herdr-core's `file.read`,
+ * ADR-0006).
+ */
+export type TranscriptAccess = 'local' | 'rpc';
+
+/**
+ * What the native view reads of a runtime kind (ADR-0003, ADR-0006). The
+ * session models ask for it per runtime, and never for another runtime's on
+ * its behalf.
+ */
+export interface NativeSessionAdapter<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
+	/**
+	 * How this endpoint's transcripts are reached, or null when they cannot be
+	 * from this machine, which rules the native view out on that endpoint
+	 * whatever the capability says (herdr over SSH).
+	 */
+	transcriptAccess(endpoint: Endpoint): TranscriptAccess | null;
+	/**
+	 * The session watcher over one live connection of this kind, or null when
+	 * this connection cannot back one. Called again for every new connection;
+	 * the plugin keeps one per connection.
+	 */
+	watcher(connection: Connection<C, S, T>): SessionWatcher | null;
+	/**
+	 * Where this endpoint's transcripts are read, or null while they cannot be.
+	 * `connection` is the published connection when it is this endpoint's,
+	 * else null: a `local` source needs none and stays readable while another
+	 * runtime is active, an `rpc` one has nothing to read through without it.
+	 * Return the same object for as long as it stays usable, since a session
+	 * model reopens its tail whenever the source it is given changes.
+	 */
+	transcripts(endpoint: Endpoint, connection: Connection<C, S, T> | null): TranscriptSource | null;
+}
 
 /** What every use of a herdr-core runtime said before its kind landed. */
 export const HERDR_CORE_UNAVAILABLE =
@@ -148,6 +202,11 @@ export interface RuntimeKindAdapter<
 	 * null when only the target decides.
 	 */
 	readonly nativeUnavailable: string | null;
+	/**
+	 * The native view's watcher and transcript source; null for a kind with no
+	 * native view (`capabilities.nativeView` false).
+	 */
+	readonly native: NativeSessionAdapter<C, S, T> | null;
 	/** Transport, client and scope for one connection attempt; null while unavailable. */
 	readonly connection: ConnectionDriver<C, S, T> | null;
 	/**
@@ -195,6 +254,7 @@ export function unavailableKind(
 		terminalUnavailable: reason,
 		capabilities,
 		nativeUnavailable,
+		native: null,
 		connection: null,
 		terminalCommand: () => {
 			throw refuse();
@@ -229,15 +289,37 @@ export function unavailableKind(
 }
 
 /**
+ * The native adapter that can back a native view of a pane on this endpoint,
+ * or null when none can: the kind has no native view, or its transcripts are
+ * out of reach on this target.
+ */
+export function nativeAdapterFor(
+	adapter: Pick<RuntimeKindAdapter, 'capabilities' | 'native'>,
+	endpoint: Endpoint,
+): NativeSessionAdapter | null {
+	const native = adapter.native;
+	if (!adapter.capabilities.nativeView || !native) return null;
+	return native.transcriptAccess(endpoint) === null ? null : native;
+}
+
+/**
  * Why a pane on this runtime cannot be shown in the native view, or null when
  * it can: the kind's own reason first, then the target's (ADR-0002).
+ *
+ * Gated on the capability and on transcript access, not on the target as
+ * such: a remote runtime whose kind reads its transcripts over the
+ * connection (`rpc`) is offered the view. `remote` is true only for a pane on
+ * another machine whose transcripts cannot be reached, which is what herdr
+ * over SSH still is.
  */
 export function nativeViewBlock(
-	adapter: Pick<RuntimeKindAdapter, 'capabilities' | 'nativeUnavailable'>,
-	remote: boolean,
+	adapter: Pick<RuntimeKindAdapter, 'capabilities' | 'nativeUnavailable' | 'native'>,
+	endpoint: Endpoint,
 ): { remote: boolean; kindReason: string | null } {
-	if (!adapter.capabilities.nativeView) {
-		return { remote, kindReason: adapter.nativeUnavailable ?? NATIVE_NO_SESSION_REASON };
+	if (!adapter.capabilities.nativeView || !adapter.native) {
+		return { remote: false, kindReason: adapter.nativeUnavailable ?? NATIVE_NO_SESSION_REASON };
 	}
-	return { remote, kindReason: null };
+	if (nativeAdapterFor(adapter, endpoint)) return { remote: false, kindReason: null };
+	if (endpoint.runtime.target === 'ssh') return { remote: true, kindReason: null };
+	return { remote: false, kindReason: NATIVE_NO_TRANSCRIPT_REASON };
 }

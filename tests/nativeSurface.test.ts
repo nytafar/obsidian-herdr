@@ -19,6 +19,7 @@ import {
 } from '../src/native/reducer';
 import type { ToolGroupPresentation } from '../src/native/toolCalls';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -26,6 +27,7 @@ import type {
 } from '../src/native/sessionModel';
 import type { AgentStatus } from '../src/herdr/types.gen';
 import type { App } from 'obsidian';
+import type { StatusLine } from '../src/views/paneTerminal';
 
 /** A session model a test drives by hand. */
 class FakeModel implements SessionModelView {
@@ -35,6 +37,8 @@ class FakeModel implements SessionModelView {
 	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 
 	on(listener: (change: SessionChange) => void): () => void {
@@ -57,9 +61,12 @@ class FakeModel implements SessionModelView {
 
 class FakeModels implements SessionModels {
 	readonly acquired: string[] = [];
+	/** The runtime each acquire named, in the same order as {@link acquired}. */
+	readonly endpoints: string[] = [];
 	released = 0;
 	constructor(readonly model: FakeModel) {}
-	acquire(paneId: string): SessionHandleOf<SessionModelView> {
+	acquire(endpointId: string, paneId: string): SessionHandleOf<SessionModelView> {
+		this.endpoints.push(endpointId);
 		this.acquired.push(paneId);
 		return {
 			model: this.model,
@@ -114,7 +121,11 @@ class FakeVault {
 
 function surfaceOn(
 	model: FakeModel,
-	options: { presentation?: ToolGroupPresentation; vaultPath?: string } = {},
+	options: {
+		presentation?: ToolGroupPresentation;
+		vaultPath?: string;
+		onStatus?: (line: StatusLine) => void;
+	} = {},
 ): {
 	surface: NativePaneSurface;
 	models: FakeModels;
@@ -131,7 +142,7 @@ function surfaceOn(
 	const surface = new NativePaneSurface({
 		app,
 		identity: { paneId: 'w4:p1', mode: 'control', endpointId: 'local' },
-		onStatus: () => {},
+		onStatus: options.onStatus ?? (() => {}),
 		models,
 		// What a send does is `tests/promptBox.test.ts`; nothing here sends.
 		sender: { send: async () => {} },
@@ -830,6 +841,54 @@ describe('NativePaneSurface: keeping up', () => {
 		// The pane does have a session — a new one — so the empty line says that
 		// rather than "no session yet".
 		expect(el.find('herdr-native-empty').textContent).toBe('No turns in this session yet.');
+	});
+});
+
+describe('NativePaneSurface: one runtime’s pane, never another’s (ADR-0006)', () => {
+	it('takes another model for the same pane id on another runtime', async () => {
+		// After a runtime switch, `w4:p1` on xl is a different pane from `w4:p1`
+		// here; a surface that compared pane ids alone would keep this one's.
+		const model = new FakeModel();
+		const { surface, host, models } = surfaceOn(model);
+		await surface.attach(host);
+
+		await surface.setIdentity({ paneId: 'w4:p1', mode: 'control', endpointId: 'xl' });
+
+		expect(models.acquired).toEqual(['w4:p1', 'w4:p1']);
+		expect(models.endpoints).toEqual(['local', 'xl']);
+		expect(models.released).toBe(1);
+	});
+
+	it('keeps its model across a mode change on the same runtime', async () => {
+		const model = new FakeModel();
+		const { surface, host, models } = surfaceOn(model);
+		await surface.attach(host);
+
+		await surface.setIdentity({ paneId: 'w4:p1', mode: 'observe', endpointId: 'local' });
+
+		expect(models.endpoints).toEqual(['local']);
+		expect(models.released).toBe(0);
+	});
+
+	it('keeps what it shows and says so while its runtime is not connected', async () => {
+		const model = new FakeModel();
+		const lines: StatusLine[] = [];
+		const { surface, el, host } = surfaceOn(model, { onStatus: (line) => lines.push(line) });
+		await surface.attach(host);
+		model.agentSession = 'session-1';
+		model.push([turn('u1', 'First')], { changedTurnIds: ['u1'], reset: false });
+		expect(lines.at(-1)).toMatchObject({ text: 'Native view of w4:p1.', warning: false });
+
+		// Another runtime became the active one (one at a time, ADR-0004).
+		model.connected = false;
+		model.agentStatus = 'unknown';
+		model.push(model.state.turns, { changedTurnIds: [], reset: false });
+
+		expect(lines.at(-1)).toMatchObject({
+			text: 'Native view of w4:p1. Its runtime is not connected.',
+			warning: true,
+		});
+		expect(el.findAll('herdr-native-turn')).toHaveLength(1);
 	});
 });
 
