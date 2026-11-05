@@ -185,6 +185,13 @@ export class TerminalSession {
 	private lastRows: number;
 	/** The argv prefix: the given one, or what `resolveCommand` found. */
 	private command: string[];
+	/** Waiting on `resolveCommand`: no child yet, but one is coming. */
+	private resolving = false;
+	/**
+	 * The latest resize asked for while resolving, cell metrics included,
+	 * sent once the child exists. Its grid is also what the child spawns at.
+	 */
+	private pendingResize: Record<string, unknown> | null = null;
 
 	constructor(options: TerminalSessionOptions) {
 		this.options = options;
@@ -213,7 +220,13 @@ export class TerminalSession {
 	}
 
 	get argv(): string[] {
-		return buildArgv({ ...this.options, command: this.command });
+		// The grid asked for last, so a resize before the spawn is not lost.
+		return buildArgv({
+			...this.options,
+			command: this.command,
+			cols: this.lastCols,
+			rows: this.lastRows,
+		});
 	}
 
 	on<K extends keyof TerminalSessionEventMap>(event: K, listener: Listener<K>): this {
@@ -240,13 +253,20 @@ export class TerminalSession {
 		this.started = true;
 		const resolve = this.options.resolveCommand;
 		if (this.command.length === 0 && resolve) {
+			this.resolving = true;
 			resolve().then(
 				(command) => {
+					this.resolving = false;
 					if (this.disposed) return;
 					this.command = command;
 					this.spawnChild();
+					const resize = this.pendingResize;
+					this.pendingResize = null;
+					if (resize) this.send(resize);
 				},
 				(err: unknown) => {
+					this.resolving = false;
+					this.pendingResize = null;
 					if (this.disposed) return;
 					this.exited = true;
 					this.emit('error', asError(err));
@@ -317,6 +337,19 @@ export class TerminalSession {
 		const message: Record<string, unknown> = { type: 'terminal.resize', cols: c, rows: r };
 		if (cellWidthPx !== undefined) message.cell_width_px = Math.max(0, Math.trunc(cellWidthPx));
 		if (cellHeightPx !== undefined) message.cell_height_px = Math.max(0, Math.trunc(cellHeightPx));
+		// No child yet because its binary is still being found: kept, and sent
+		// as soon as it is spawned, exactly as a direct spawn would have had it.
+		if (this.resolving && !this.disposed && this.options.mode === 'control') {
+			// A later grid without cell metrics keeps the ones already asked for,
+			// which a direct spawn would have delivered with the earlier resize.
+			const earlier = this.pendingResize;
+			this.pendingResize = {
+				...(earlier?.cell_width_px !== undefined ? { cell_width_px: earlier.cell_width_px } : {}),
+				...(earlier?.cell_height_px !== undefined ? { cell_height_px: earlier.cell_height_px } : {}),
+				...message,
+			};
+			return true;
+		}
 		return this.send(message);
 	}
 

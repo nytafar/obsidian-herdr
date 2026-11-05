@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
 	buildArgv,
 	LineSplitter,
@@ -146,6 +149,73 @@ describe('TerminalSession with a command still to be found', () => {
 		await waitFor(() => rec.frames.length >= 1);
 		expect(session.argv.slice(0, 2)).toEqual(COMMAND);
 		await session.dispose();
+	});
+
+	it('spawns at the latest grid and delivers the latest resize, cell metrics and all', async () => {
+		// What the child reads on stdin, for a direct spawn and a deferred one.
+		const record = async (deferred: boolean): Promise<{ stdin: unknown[]; argv: string[] }> => {
+			const dir = mkdtempSync(join(tmpdir(), 'oh-bridge-'));
+			const out = join(dir, 'stdin.log');
+			const prefix = ['sh', '-c', `cat > '${out}'`, 'sh'];
+			const session = new TerminalSession({
+				command: deferred ? [] : prefix,
+				resolveCommand: deferred
+					? () => new Promise((resolve) => setTimeout(() => resolve(prefix), 50))
+					: undefined,
+				target: 'w4:p1',
+				mode: 'control',
+				cols: 80,
+				rows: 24,
+				releaseGraceMs: 2000,
+				killGraceMs: 2000,
+			});
+			session.start();
+			// PaneTerminal: the fitted grid with cell metrics right after start,
+			// then a window resize while the binary may still be looked up.
+			expect(session.resize(100, 30, 9, 18)).toBe(true);
+			expect(session.resize(110, 35)).toBe(true);
+			expect(session.resize(120, 40, 9, 18)).toBe(true);
+			await waitFor(() => session.pid !== undefined);
+			const argv = session.argv;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			await session.dispose();
+			const stdin = readFileSync(out, 'utf8')
+				.split('\n')
+				.filter((line) => line.length > 0)
+				.map((line) => JSON.parse(line) as unknown);
+			rmSync(dir, { recursive: true, force: true });
+			return { stdin, argv };
+		};
+		const direct = await record(false);
+		const deferred = await record(true);
+		const latest = { type: 'terminal.resize', cols: 120, rows: 40, cell_width_px: 9, cell_height_px: 18 };
+		expect(direct.stdin).toContainEqual(latest);
+		expect(deferred.stdin).toContainEqual(latest);
+		// The child starts at the grid asked for last, not the constructor's.
+		expect(deferred.argv.slice(-4)).toEqual(['--cols', '120', '--rows', '40']);
+		expect(deferred.stdin.at(-1)).toEqual({ type: 'terminal.release' });
+	});
+
+	it('keeps the cell metrics of an earlier resize when a later one has none', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'oh-bridge-'));
+		const out = join(dir, 'stdin.log');
+		const session = new TerminalSession({
+			command: [],
+			resolveCommand: () => Promise.resolve(['sh', '-c', `cat > '${out}'`, 'sh']),
+			target: 'w4:p1',
+			mode: 'control',
+			cols: 80,
+			rows: 24,
+		});
+		session.start();
+		session.resize(100, 30, 9, 18);
+		session.resize(120, 40);
+		await waitFor(() => session.pid !== undefined);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		await session.dispose();
+		const first = JSON.parse(readFileSync(out, 'utf8').split('\n')[0] ?? '') as unknown;
+		rmSync(dir, { recursive: true, force: true });
+		expect(first).toEqual({ type: 'terminal.resize', cols: 120, rows: 40, cell_width_px: 9, cell_height_px: 18 });
 	});
 
 	it('reports a failed lookup as an error and an exit', async () => {
