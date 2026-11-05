@@ -621,7 +621,7 @@ export class TerminalView extends ItemView {
 			// other herdr still means the binary was found (issue #54).
 			// A kind this build cannot run is not waiting for anything: the tab
 			// shows why at once instead of "waiting for herdr" (ADR-0004).
-			// Nor is a kind whose terminal tab is not built yet (herdr-core, ADR-0005).
+			// Nor is a kind whose terminal tab cannot start at all.
 			connected: () =>
 				this.plugin.client !== null ||
 				this.kind().unavailable !== null ||
@@ -919,6 +919,12 @@ export class TerminalView extends ItemView {
 		this.registerDomEvent(this.hostEl, 'compositionend', () =>
 			this.terminal.setComposing(false),
 		);
+		// herdr-app's "looking" (docs/labels.md): the window in the foreground
+		// and the terminal on screen. Every window this leaf may live in is
+		// heard, since a leaf can move into a popout.
+		this.bindWindow(window);
+		this.bindWindow(this.containerEl.win);
+		this.registerEvent(this.app.workspace.on('window-open', (_workspaceWindow, win) => this.bindWindow(win)));
 		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {
@@ -977,6 +983,7 @@ export class TerminalView extends ItemView {
 		if (!host) return;
 		const before = this.surfaces.kind;
 		await this.surfaces.show(surfaceKindFor(this.view()), host);
+		this.updateLooking();
 		// A swap inside one leaf activates no leaf, so anything following the
 		// active native view has to be told (#100).
 		if (this.surfaces.kind !== before) this.plugin.paneViews.changed(this.leaf);
@@ -1093,6 +1100,7 @@ export class TerminalView extends ItemView {
 	private checkVisibility(): void {
 		const tracker = this.visibility;
 		if (!tracker) return;
+		this.updateLooking();
 		const visible = this.hostVisible();
 		if (visible === null) return;
 		if (tracker.update(visible) === 'revealed') {
@@ -1122,6 +1130,36 @@ export class TerminalView extends ItemView {
 		this.detached('suspend', async () => {
 			await this.surfaces.current?.setVisible(false);
 		});
+	}
+
+	/** Windows whose focus and visibility this view already listens to. */
+	private readonly boundWindows = new WeakSet<Window>();
+
+	/** Re-decides "looking" whenever a window gains or loses the foreground. */
+	private bindWindow(win: Window): void {
+		if (this.boundWindows.has(win)) return;
+		this.boundWindows.add(win);
+		this.registerDomEvent(win, 'focus', () => this.updateLooking());
+		this.registerDomEvent(win, 'blur', () => this.updateLooking());
+		this.registerDomEvent(win.document, 'visibilitychange', () => this.updateLooking());
+	}
+
+	/**
+	 * Whether a person is really in front of this terminal: its window has the
+	 * focus and is not hidden, the terminal is the surface shown, and its host
+	 * has a box. herdr-core shares it as `herdr.seen`; a screen left on in a
+	 * window nobody has in front must not clear everyone's "done".
+	 */
+	private updateLooking(): void {
+		const win = this.containerEl.win;
+		this.bindWindow(win);
+		const doc = win.document;
+		const looking =
+			this.surfaces.current === (this.terminal as PaneSurface) &&
+			this.hostVisible() === true &&
+			doc.visibilityState === 'visible' &&
+			doc.hasFocus();
+		this.terminal.setLooking(looking);
 	}
 
 	/** Whether the host element has a box at all; null when there is no host. */

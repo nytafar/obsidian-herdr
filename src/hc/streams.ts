@@ -10,9 +10,9 @@
  * - **Attach** (`terminal.attach`): raw VT bytes on DATA, a CLOSE with the
  *   exit reason, and RESIZE to an observer that asked for notifications.
  *   Input is DATA, or AUTOMATIC_INPUT when both the core's `hello` and the
- *   attach reply advertise it; resizes are RESIZE frames. The terminal-tab
- *   half of ADR-0005 builds on {@link attachTerminal}: one connection per tab,
- *   one attach on it.
+ *   attach reply advertise it; resizes are RESIZE frames; display facts are
+ *   FACTS. The terminal tab (`./terminalSession.ts`) builds on
+ *   {@link attachTerminal}: one connection per tab, one attach on it.
  */
 
 import { LineSplitter } from '../herdr/lineSplitter';
@@ -178,6 +178,16 @@ export interface AttachOptions {
 	resizeNotifications?: boolean;
 	/** Reattaching after a drop: does not take size ownership. */
 	resumed?: boolean;
+	/** Display facts (cell size in pixels, colours) for pixel and colour queries. */
+	display?: HcDisplay;
+}
+
+/** The core's `Display`: colours as `#rrggbb`, the cell as `[width, height]` pixels. */
+export interface HcDisplay {
+	fg?: string;
+	bg?: string;
+	cursor?: string;
+	cell?: [number, number];
 }
 
 export interface AttachHandlers {
@@ -203,6 +213,8 @@ export interface HcAttachStream {
 	reply(bytes: Uint8Array | string): void;
 	resize(cols: number, rows: number): void;
 	focus(gained: boolean): void;
+	/** Display facts (FACTS), merged per field by the core. */
+	facts(display: HcDisplay): void;
 	/** Returns credit for bytes consumed (rendered). */
 	credit(bytes: number): void;
 	/** Sends CLOSE and stops delivering. */
@@ -227,6 +239,7 @@ export async function attachTerminal(
 	if (options.observe) params.observe = true;
 	if (options.resizeNotifications) params.resize_notifications = true;
 	if (options.resumed) params.resumed = true;
+	if (options.display) params.display = options.display;
 	const result = await connection.request<Record<string, unknown>>('terminal.attach', params);
 	const channel = result?.channel;
 	if (typeof channel !== 'number') throw new Error('herdr-core answered terminal.attach without a channel');
@@ -264,6 +277,7 @@ export async function attachTerminal(
 		reply: (bytes) => send(automaticInput ? FrameKind.AutomaticInput : FrameKind.Data, bytes),
 		resize: (cols, rows) => send(FrameKind.Resize, encodeResize(0, cols, rows).subarray(9)),
 		focus: (gained) => send(FrameKind.Focus, Buffer.from([gained ? 1 : 0])),
+		facts: (display) => send(FrameKind.Facts, JSON.stringify(display)),
 		credit: (bytes) => {
 			if (bytes > 0) send(FrameKind.Credit, encodeCreditPayload(bytes));
 		},

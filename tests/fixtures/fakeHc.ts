@@ -69,17 +69,34 @@ export class FakeCore {
 		onExit: (handler) => this.exits.push(handler),
 	};
 
-	/** Raw bytes to the client, optionally cut into chunks of `chunk` bytes. */
+	/**
+	 * Raw bytes to the client, optionally cut into chunks of `chunk` bytes. A
+	 * write the client provokes while it is still reading (a reply to a call
+	 * made from inside an event handler) is queued behind the chunk being
+	 * read, as a real pipe would deliver it.
+	 */
 	write(bytes: Buffer, chunk = 0): void {
-		if (chunk <= 0) {
-			for (const handler of this.stdout) handler(bytes);
-			return;
+		const pieces: Buffer[] = [];
+		if (chunk <= 0) pieces.push(bytes);
+		else {
+			for (let offset = 0; offset < bytes.length; offset += chunk) {
+				pieces.push(Buffer.from(bytes.subarray(offset, offset + chunk)));
+			}
 		}
-		for (let offset = 0; offset < bytes.length; offset += chunk) {
-			const piece = Buffer.from(bytes.subarray(offset, offset + chunk));
-			for (const handler of this.stdout) handler(piece);
+		this.outbox.push(...pieces);
+		if (this.delivering) return;
+		this.delivering = true;
+		try {
+			for (let piece = this.outbox.shift(); piece; piece = this.outbox.shift()) {
+				for (const handler of this.stdout) handler(piece);
+			}
+		} finally {
+			this.delivering = false;
 		}
 	}
+
+	private readonly outbox: Buffer[] = [];
+	private delivering = false;
 
 	frame(channel: number, kind: number, payload?: Buffer | string): Buffer {
 		return encodeFrame(channel, kind, payload);

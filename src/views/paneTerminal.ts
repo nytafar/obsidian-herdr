@@ -588,6 +588,26 @@ export interface PaneSession {
 	resize(cols: number, rows: number, cellWidthPx?: number, cellHeightPx?: number): boolean;
 	scroll(direction: ScrollDirection, lines: number, options?: ScrollOptions): boolean;
 	dispose(): Promise<void>;
+	/**
+	 * Emulator replies (DA, DSR, …), as opposed to typing. herdr-core sends
+	 * them as AUTOMATIC_INPUT, which does not count as a person's activity;
+	 * a session without it takes them through {@link input}, as herdr does.
+	 */
+	reply?(data: string | Uint8Array): boolean;
+	/**
+	 * Bytes from `frame` events now written into the renderer, or dropped by a
+	 * full repaint: a session with flow control (herdr-core's credit) hands
+	 * that much back, so a renderer that falls behind slows the stream.
+	 */
+	consumed?(bytes: number): void;
+	/**
+	 * Asks for a fresh full paint, for a renderer rebuilt under the live
+	 * session. herdr-core's stream is the program's raw bytes, so a new
+	 * terminal cannot be brought up to date from replayed text alone.
+	 */
+	repaint?(): void;
+	/** Whether a person is in front of this terminal now (herdr-core's `herdr.seen`). */
+	setLooking?(looking: boolean): void;
 }
 
 /**
@@ -721,6 +741,14 @@ export class PaneTerminal {
 	private flushHandle = 0;
 	private perf: PerfCounter | null = null;
 	private readonly scheduleFit: Debounced;
+	/**
+	 * The shared terminal's grid while it is not this tab's own: an observed
+	 * herdr-core terminal, or one another viewer resized last. The renderer
+	 * draws at it, since the stream is laid out for it. Null otherwise.
+	 */
+	private sharedGrid: { cols: number; rows: number } | null = null;
+	/** Whether a person is in front of this terminal, as the view last said. */
+	private looking = false;
 
 	constructor(options: PaneTerminalOptions) {
 		this.paneIdentity = { ...options.identity };
@@ -889,6 +917,17 @@ export class PaneTerminal {
 	/** Obsidian's keymap asking what to do with a keydown (#47). */
 	routeHostKey(event: KeyboardEvent): HostKeyDecision {
 		return this.input.routeHostKey(event);
+	}
+
+	/**
+	 * Whether a person is really in front of this terminal: its window in the
+	 * foreground and the terminal drawn on screen. The view decides; the
+	 * session shares it where its kind can (herdr-core's `herdr.seen`).
+	 */
+	setLooking(looking: boolean): void {
+		if (this.looking === looking) return;
+		this.looking = looking;
+		this.session?.setLooking?.(looking);
 	}
 
 	/**
@@ -1079,6 +1118,7 @@ export class PaneTerminal {
 		// Bytes from the previous session must never land in the new one's grid.
 		this.cancelFlush();
 		this.frames.clear();
+		this.sharedGrid = null;
 		this.perf = this.host.perfEnabled()
 			? new PerfCounter(`${paneId} ${mode}`, (line) => console.debug(line))
 			: null;
@@ -1151,7 +1191,11 @@ export class PaneTerminal {
 			// sets; seq 1 means a fresh bridge, so it starts from the defaults.
 			this.input.observeFrame(bytes, meta.seq);
 			this.perf?.frame(bytes.length);
+			// A full repaint drops what was buffered before it; those bytes are
+			// consumed as far as flow control goes.
+			const dropped = meta.full ? this.frames.pending : 0;
 			this.frames.push(bytes, meta.full);
+			if (dropped > 0) session.consumed?.(dropped);
 			// Flushed into `this.renderer`, not the one captured above: a theme
 			// rebuild (#53) swaps the renderer under a live session, and bytes must
 			// land in the terminal that is on screen now.
@@ -1176,8 +1220,19 @@ export class PaneTerminal {
 			this.exited = true;
 			this.host.onStatus(this.status());
 		});
+		session.on('grid', (gridCols: number, gridRows: number) => {
+			if (this.session !== session) return;
+			this.followGrid(session, gridCols, gridRows);
+		});
+		session.on('reopened', () => {
+			if (this.session !== session) return;
+			this.closedReason = null;
+			this.exited = false;
+			this.host.onStatus(this.status());
+		});
 
 		session.start();
+		session.setLooking?.(this.looking);
 		if (attach.mode === 'control') {
 			// The spawn argv already carries the grid; this adds the cell metrics
 			// herdr uses for pixel-aware programs.
@@ -1231,6 +1286,9 @@ export class PaneTerminal {
 		if (!next) return;
 		// Same grid as before, so this normally sends herdr nothing at all.
 		this.applyFit();
+		// A raw-byte stream (herdr-core) brings the new terminal up to date with
+		// a fresh paint; herdr's next frame does that by itself.
+		this.session?.repaint?.();
 	}
 
 	/**
@@ -1255,6 +1313,8 @@ export class PaneTerminal {
 				// here would eat the snapshot the next mount is there to restore.
 				if (this.renderer !== mounting) return;
 				mounting.onData((data) => this.onData(data));
+				// Replies the emulator itself makes, where the engine can tell.
+				mounting.onReply?.((data) => this.onReply(data));
 				this.replaySnapshot(mounting);
 				// The history is in; whatever the pane said while this was mounting
 				// goes in after it, in arrival order.
@@ -1329,6 +1389,7 @@ export class PaneTerminal {
 		const batch = this.frames.take();
 		if (!batch) return;
 		renderer.write(batch);
+		this.session?.consumed?.(batch.length);
 		this.perf?.repaint();
 	}
 
@@ -1343,6 +1404,31 @@ export class PaneTerminal {
 		const session = this.session;
 		if (!session || session.mode !== 'control') return;
 		session.input(data);
+	}
+
+	/** Emulator replies: the session's own route when it has one, else as input. */
+	private onReply(data: string): void {
+		const session = this.session;
+		if (!session || session.mode !== 'control') return;
+		if (session.reply) session.reply(data);
+		else session.input(data);
+	}
+
+	/**
+	 * The shared terminal's grid moved away from this tab's own, or came back
+	 * to it (herdr-core). An observer, or a controller someone else took the
+	 * size from, draws at the shared grid, since the bytes are laid out for
+	 * it; a controller that has its size back fits its container again.
+	 */
+	private followGrid(session: PaneSession, cols: number, rows: number): void {
+		const own = session.size;
+		if (session.mode === 'control' && own.cols === cols && own.rows === rows) {
+			this.sharedGrid = null;
+			this.applyFit();
+			return;
+		}
+		this.sharedGrid = { cols, rows };
+		this.renderer?.resize(cols, rows);
 	}
 
 	/**
@@ -1455,9 +1541,18 @@ export class PaneTerminal {
 		// #65: pixel deltas divide by the measured cell height, as ghostty does.
 		this.wheel.setPixelsPerLine(fit.cellHeightPx);
 		const session = this.session;
-		if (!session || session.mode !== 'control') return;
+		const shared = this.sharedGrid;
+		if (!session || session.mode !== 'control') {
+			// An observer never resizes the terminal; it draws at its grid.
+			if (shared) renderer.resize(shared.cols, shared.rows);
+			return;
+		}
 		const current = session.size;
-		if (current.cols === fit.cols && current.rows === fit.rows) return;
+		if (current.cols === fit.cols && current.rows === fit.rows) {
+			// Someone else's grid holds until this tab types or resizes.
+			if (shared) renderer.resize(shared.cols, shared.rows);
+			return;
+		}
 		session.resize(fit.cols, fit.rows, fit.cellWidthPx, fit.cellHeightPx);
 	}
 

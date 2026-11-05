@@ -109,14 +109,27 @@ class FakeRenderer implements TerminalRenderer {
 		this.writes.push(new TextDecoder().decode(bytes));
 	}
 
-	resize(): void {}
+	/** Grids forced with `resize` (a herdr-core shared grid), in order. */
+	readonly gridResizes: number[][] = [];
+	dataListener: ((data: string) => void) | null = null;
+	replyListener: ((data: string) => void) | null = null;
+
+	resize(cols: number, rows: number): void {
+		this.gridResizes.push([cols, rows]);
+	}
 
 	fit(): FitResult {
 		return this.fitResult;
 	}
 
-	onData(): Unsubscribe {
+	onData(cb: (data: string) => void): Unsubscribe {
 		this.dataCallbacks++;
+		this.dataListener = cb;
+		return () => {};
+	}
+
+	onReply(cb: (data: string) => void): Unsubscribe {
+		this.replyListener = cb;
 		return () => {};
 	}
 
@@ -238,6 +251,31 @@ class FakeSession implements PaneSession {
 	}
 }
 
+/** A session with herdr-core's extras: replies, credit, repaint, looking. */
+class HcLikeSession extends FakeSession {
+	readonly replies: string[] = [];
+	readonly consumedBytes: number[] = [];
+	repaints = 0;
+	readonly looking: boolean[] = [];
+
+	reply(data: string | Uint8Array): boolean {
+		this.replies.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+		return true;
+	}
+
+	consumed(bytes: number): void {
+		this.consumedBytes.push(bytes);
+	}
+
+	repaint(): void {
+		this.repaints++;
+	}
+
+	setLooking(looking: boolean): void {
+		this.looking.push(looking);
+	}
+}
+
 class FakeScheduler implements PaneTerminalScheduler {
 	private nextHandle = 1;
 	readonly frames = new Map<number, () => void>();
@@ -287,6 +325,8 @@ interface HarnessOptions {
 	identity?: Partial<PaneIdentity>;
 	/** Renderers created from this point on hold their mount open. */
 	deferMounts?: boolean;
+	/** Sessions are {@link HcLikeSession}s. */
+	hcLike?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -336,7 +376,7 @@ function harness(options: HarnessOptions = {}) {
 		host,
 		scheduler,
 		createSession: (sessionOptions) => {
-			const session = new FakeSession(sessionOptions);
+			const session = options.hcLike ? new HcLikeSession(sessionOptions) : new FakeSession(sessionOptions);
 			sessions.push(session);
 			return session;
 		},
@@ -368,6 +408,11 @@ function harness(options: HarnessOptions = {}) {
 		session: (index = 0): FakeSession => {
 			const session = sessions[index];
 			if (!session) throw new Error(`no session ${index}`);
+			return session;
+		},
+		hcSession: (index = 0): HcLikeSession => {
+			const session = sessions[index];
+			if (!(session instanceof HcLikeSession)) throw new Error(`no hc session ${index}`);
 			return session;
 		},
 		lastStatus: (): StatusLine => {
@@ -1164,5 +1209,99 @@ describe('PaneTerminal lifecycle races (PR #89 review)', () => {
 		await settle();
 
 		expect(h.renderer(1).writes).toEqual(['old scrollback\r\n', 'live output']);
+	});
+});
+
+describe('PaneTerminal on a raw-byte session (herdr-core)', () => {
+	it('returns credit for bytes written, and for bytes a full repaint dropped', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		const session = h.hcSession();
+		session.emit('frame', ...frame('abc', 1));
+		session.emit('frame', ...frame('\x18paint', 2, true));
+		expect(session.consumedBytes).toEqual([3]);
+		h.scheduler.runFrames();
+		expect(h.renderer().writes.at(-1)).toBe('\x18paint');
+		expect(session.consumedBytes).toEqual([3, 6]);
+	});
+
+	it('sends emulator replies through reply, typing through input, and neither from an observer', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.renderer().dataListener?.('ls');
+		h.renderer().replyListener?.('\x1b[?1;2c');
+		expect(h.hcSession().inputs).toEqual(['ls']);
+		expect(h.hcSession().replies).toEqual(['\x1b[?1;2c']);
+
+		const o = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await o.terminal.attach(o.hostEl);
+		o.renderer().dataListener?.('ls');
+		o.renderer().replyListener?.('\x1b[0n');
+		expect(o.hcSession().inputs).toEqual([]);
+		expect(o.hcSession().replies).toEqual([]);
+	});
+
+	it('a session without reply gets replies as input, as herdr always did', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.renderer().replyListener?.('\x1b[0n');
+		expect(h.session().inputs).toEqual(['\x1b[0n']);
+	});
+
+	it('an observer draws at the shared grid and never resizes it', async () => {
+		const h = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await h.terminal.attach(h.hostEl);
+		h.hcSession().emit('grid', 120, 30);
+		expect(h.renderer().gridResizes).toEqual([[120, 30]]);
+		// A container resize fits, then goes back to the shared grid.
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(h.renderer().gridResizes).toEqual([[120, 30], [120, 30]]);
+		expect(h.hcSession().resizes).toEqual([]);
+	});
+
+	it('a controller follows another viewer\'s grid until it has the size back', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		const session = h.hcSession();
+		const sent = session.resizes.length;
+		session.emit('grid', 200, 50);
+		expect(h.renderer().gridResizes).toEqual([[200, 50]]);
+		// Its own grid again (100x40, the fit): back to fitting, nothing sent.
+		session.emit('grid', 100, 40);
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(h.renderer().gridResizes).toEqual([[200, 50]]);
+		expect(session.resizes.length).toBe(sent);
+	});
+
+	it('clears a close when the session attached again by itself', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.hcSession().emit('closed', 'herdr-core connection lost: gone; trying again');
+		expect(h.lastStatus().warning).toBe(true);
+		h.hcSession().emit('reopened');
+		expect(h.lastStatus()).toMatchObject({ text: 'Controlling this pane on local.', warning: false });
+	});
+
+	it('tells every session whether a person is looking, including the next one', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		expect(h.hcSession().looking).toEqual([false]);
+		h.terminal.setLooking(true);
+		h.terminal.setLooking(true);
+		expect(h.hcSession().looking).toEqual([false, true]);
+		await h.terminal.reconnect();
+		expect(h.hcSession(1).looking).toEqual([true]);
+	});
+
+	it('asks for a fresh paint when the renderer is rebuilt under the live session', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		await h.terminal.apply('theme');
+		await settle();
+		expect(h.renderers).toHaveLength(2);
+		expect(h.sessions).toHaveLength(1);
+		expect(h.hcSession().repaints).toBe(1);
 	});
 });

@@ -10,10 +10,9 @@
  * decides by kind or by target.
  *
  * The herdr kind is `herdrKind.ts`, today's code behind this interface. The
- * herdr-core kind is `herdrCoreKind.ts`: its agent list, actions and senders
- * run over `hc connect`; its terminal tab is not built yet and says so
- * ({@link HERDR_CORE_TERMINAL_UNAVAILABLE}). {@link unavailableKind} remains
- * for a kind a build lists but cannot run at all.
+ * herdr-core kind is `herdrCoreKind.ts`: its agent list, actions, senders and
+ * terminal tabs run over `hc connect`. {@link unavailableKind} remains for a
+ * kind a build lists but cannot run at all.
  *
  * Features one kind lacks are capabilities, not errors (ADR-0004): the UI
  * reads {@link RuntimeCapabilities} and leaves out what a kind cannot do.
@@ -95,10 +94,6 @@ export const NATIVE_NO_SESSION_REASON = 'no agent session on herdr-core';
 export const HERDR_CORE_UNAVAILABLE =
 	'herdr-core runtimes are not available in this version of the plugin yet';
 
-/** What a terminal tab on a herdr-core pane says until the attach tab lands (ADR-0005). */
-export const HERDR_CORE_TERMINAL_UNAVAILABLE =
-	'terminal tabs for herdr-core agents are not available in this version of the plugin yet';
-
 /** One line of the settings tab's connection status. */
 export interface StatusLine {
 	text: string;
@@ -144,7 +139,7 @@ export interface RuntimeKindAdapter<
 	/**
 	 * Why a terminal tab on this kind cannot start, whatever the connection
 	 * does, or null when it can. The tab shows it at once instead of waiting
-	 * for a connection (herdr-core until its attach tab lands, ADR-0005).
+	 * for a connection (a kind this build cannot run).
 	 */
 	readonly terminalUnavailable: string | null;
 	readonly capabilities: Readonly<RuntimeCapabilities>;

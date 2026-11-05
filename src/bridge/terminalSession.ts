@@ -95,6 +95,21 @@ export interface TerminalSessionEventMap {
 	stderr: [line: string];
 	/** The child is gone. Always the last event. */
 	exit: [code: number | null, signal: NodeJS.Signals | null];
+	/**
+	 * The shared terminal's grid, when it is not the size this session asked
+	 * for (another viewer owns it, or this one only observes), and again with
+	 * this session's own size once it has the grid back. herdr's bridge never
+	 * emits it: herdr renders every frame at the size the viewer asked for.
+	 * herdr-core streams the program's raw bytes at the terminal's one grid, so
+	 * the renderer has to follow it (ADR-0005).
+	 */
+	grid: [cols: number, rows: number];
+	/**
+	 * The session attached again on its own after a `closed` (a restarted
+	 * terminal, a redialled connection): what that close said no longer holds.
+	 * Never emitted by herdr's bridge, whose process ends with its session.
+	 */
+	reopened: [];
 }
 
 type Listener<K extends keyof TerminalSessionEventMap> = (

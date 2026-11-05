@@ -11,7 +11,7 @@ import { HcActions, agentLaunchLine, hcKeyName, hcKeySender, hcPromptSender, hcT
 import { HcScope } from '../src/hc/scope';
 import { ConnectionCoordinator, endpointOf } from '../src/connection';
 import { createHerdrCoreKind, hcStatusLines, loadSpaces } from '../src/runtime/herdrCoreKind';
-import { HERDR_CORE_CAPABILITIES, HERDR_CORE_TERMINAL_UNAVAILABLE } from '../src/runtime/kind';
+import { HERDR_CORE_CAPABILITIES } from '../src/runtime/kind';
 import { newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import type { ActionHost } from '../src/actions';
@@ -255,7 +255,7 @@ describe('the herdr-core kind', () => {
 		coordinator.dispose();
 	});
 
-	it('needs the hc binary locally, a host over ssh, and says why a terminal tab is not there', () => {
+	it('needs the hc binary locally and a host over ssh, and builds the terminal tab argv', () => {
 		const { spawn } = fakeSpawner();
 		const kind = createHerdrCoreKind(kindHost(spawn, manualTimers().timers));
 		const driver = kind.connection;
@@ -264,9 +264,36 @@ describe('the herdr-core kind', () => {
 		expect(driver.discoveryIssue(endpointOf(LOCAL_HC), missing)).toBe('hc was not found in …');
 		expect(driver.discoveryIssue(endpointOf(ASHER), missing)).toBeNull();
 		expect(driver.discoveryIssue(endpointOf({ ...ASHER, host: '' }), missing)).toBe('the runtime has no SSH host');
-		expect(() => kind.terminalCommand(endpointOf(LOCAL_HC))).toThrow(HERDR_CORE_TERMINAL_UNAVAILABLE);
+		expect(kind.terminalUnavailable).toBeNull();
+		// Not discovered yet: the tab's session searches for it on start.
+		expect(kind.terminalCommand(endpointOf(LOCAL_HC))).toEqual([]);
+		expect(kind.terminalCommand(endpointOf({ ...LOCAL_HC, binary: '/opt/hc' }))).toEqual(['/opt/hc', 'connect']);
+		const ssh = kind.terminalCommand(endpointOf(ASHER));
+		expect(ssh.slice(0, 2)).toEqual(['ssh', '-T']);
+		expect(ssh.at(-1)).toContain('connect');
+		expect(() => kind.terminalCommand(endpointOf({ ...ASHER, host: '' }))).toThrow('the runtime has no SSH host');
 		expect(kind.capabilities).toEqual(HERDR_CORE_CAPABILITIES);
 		expect(kind.unavailable).toBeNull();
+	});
+
+	it('opens a terminal tab as its own hc connect child, attached to the pane', async () => {
+		const { spawn, cores } = fakeSpawner();
+		const kind = createHerdrCoreKind(kindHost(spawn, manualTimers().timers));
+		const endpoint = endpointOf({ ...LOCAL_HC, binary: '/opt/hc' });
+		const session = kind.createTerminalSession(
+			{ command: kind.terminalCommand(endpoint), target: 't7', mode: 'observe', cols: 80, rows: 24 },
+			endpoint,
+		);
+		expect(session.mode).toBe('observe');
+		session.start();
+		await settle();
+		expect(cores[0]?.argv).toEqual(['/opt/hc', 'connect']);
+		expect(cores[0]?.calls.find((call) => call.method === 'terminal.attach')?.params).toMatchObject({
+			terminal: 't7',
+			observe: true,
+			resize_notifications: true,
+		});
+		await session.dispose();
 	});
 
 	it('treats a missing herdr-app document as no spaces, not an error', async () => {

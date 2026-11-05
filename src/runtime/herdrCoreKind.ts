@@ -14,8 +14,11 @@
  * - **Prime.** Reads the `herdr-app` document's spaces on every `connected`
  *   edge and again on its `doc` event. The terminals themselves come with
  *   the subscription, not with the prime.
- * - **Terminal tabs** are the next batch: a tab says so rather than starting
- *   anything ({@link HERDR_CORE_TERMINAL_UNAVAILABLE}).
+ * - **Terminal tabs.** One `hc connect` child per tab (`ssh -T` on an `ssh`
+ *   target), one `terminal.attach` on it (`hc/terminalSession.ts`). A local
+ *   runtime's binary is the one its last discovery found, or is searched for
+ *   when the tab starts, so a tab pinned to an hc runtime that is not the
+ *   active one still opens.
  */
 
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
@@ -23,13 +26,13 @@ import { resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
 import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
+import { HcTerminalSession } from '../hc/terminalSession';
 import { parseSpaces } from '../hc/model';
 import { HcScope } from '../hc/scope';
 import { HcTabLabels } from '../hc/tabLabels';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
 import {
 	HERDR_CORE_CAPABILITIES,
-	HERDR_CORE_TERMINAL_UNAVAILABLE,
 	NATIVE_NO_SESSION_REASON,
 	type RuntimeKindAdapter,
 	type StatusLine,
@@ -93,11 +96,21 @@ export function transportText(runtime: Readonly<RuntimeConfig>, argv: readonly s
 	return argv.join(' ');
 }
 
+/** What a local runtime says when no `hc` can be found. */
+const HC_NOT_FOUND =
+	'hc was not found in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or the login shell PATH';
+
 export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
+	/** The local `hc` each runtime's last discovery found, by runtime id. */
+	const discovered = new Map<string, string>();
+	const localArgv = (runtime: Readonly<RuntimeConfig>): string[] | null => {
+		const path = runtime.binary.trim() || discovered.get(runtime.id) || '';
+		return path ? [path, 'connect'] : null;
+	};
 	return {
 		kind: 'herdr-core',
 		unavailable: null,
-		terminalUnavailable: HERDR_CORE_TERMINAL_UNAVAILABLE,
+		terminalUnavailable: null,
 		capabilities: HERDR_CORE_CAPABILITIES,
 		nativeUnavailable: NATIVE_NO_SESSION_REASON,
 		connection: {
@@ -110,12 +123,13 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 					extraPath: host.extraPath(),
 					binaryName: 'hc',
 				});
-				if (binary) return discovery(binary, null);
+				if (binary) {
+					discovered.set(runtime.id, binary.path);
+					return discovery(binary, null);
+				}
 				return discovery(
 					null,
-					runtime.binary.trim()
-						? `hc is not executable at ${runtime.binary.trim()}`
-						: 'hc was not found in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or the login shell PATH',
+					runtime.binary.trim() ? `hc is not executable at ${runtime.binary.trim()}` : HC_NOT_FOUND,
 				);
 			},
 			discoveryIssue: (endpoint, found) => {
@@ -162,11 +176,39 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 				client.subscribe();
 			},
 		},
-		terminalCommand: () => {
-			throw new Error(HERDR_CORE_TERMINAL_UNAVAILABLE);
+		// `ssh -T <host> sh -c '… connect'`, or `[<hc>, 'connect']`; empty when
+		// the local binary is still to be found, which the session does itself.
+		terminalCommand: (endpoint) => {
+			const runtime = endpoint.runtime;
+			if (runtime.target === 'ssh') return sshConnectArgv(runtime.host, runtime.binary);
+			return localArgv(runtime) ?? [];
 		},
-		createTerminalSession: () => {
-			throw new Error(HERDR_CORE_TERMINAL_UNAVAILABLE);
+		createTerminalSession: (options, endpoint) => {
+			const runtime = endpoint.runtime;
+			const argv =
+				options.command.length > 0
+					? options.command
+					: async (): Promise<string[]> => {
+							const known = localArgv(runtime);
+							if (known) return known;
+							const binary = await resolveHerdrBinary({
+								override: runtime.binary,
+								extraPath: host.extraPath(),
+								binaryName: 'hc',
+							});
+							if (!binary) throw new Error(HC_NOT_FOUND);
+							discovered.set(runtime.id, binary.path);
+							return [binary.path, 'connect'];
+						};
+			return new HcTerminalSession({
+				argv,
+				target: options.target,
+				mode: options.mode,
+				cols: options.cols,
+				rows: options.rows,
+				env: options.env,
+				spawn: host.spawn,
+			});
 		},
 		createActions: (actionHost) =>
 			new HcActions(actionHost, () => {

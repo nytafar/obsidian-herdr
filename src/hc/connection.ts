@@ -4,7 +4,8 @@
  *
  * This is the piece both halves of the herdr-core kind reuse: the runtime's
  * client (`./client.ts`) holds one for JSON-RPC and the event stream, and a
- * terminal tab will hold one of its own for a single `terminal.attach`.
+ * terminal tab holds one of its own for a single `terminal.attach`
+ * (`./terminalSession.ts`).
  *
  * - **Handshake.** `hello {generation: 1, framed: true}` as a plain line; its
  *   reply is the last plain line, and the decoder switches to frames inside
