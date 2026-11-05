@@ -16,13 +16,14 @@
  *   the subscription, not with the prime.
  * - **Terminal tabs.** One `hc connect` child per tab (`ssh -T` on an `ssh`
  *   target), one `terminal.attach` on it (`hc/terminalSession.ts`). A local
- *   runtime's binary is the one its last discovery found, or is searched for
- *   when the tab starts, so a tab pinned to an hc runtime that is not the
- *   active one still opens.
+ *   runtime's binary is its override (`~` expanded), else the one its last
+ *   discovery by this kind found, else it is searched for when the tab
+ *   starts, so a tab pinned to an hc runtime still opens while a runtime of
+ *   either kind is active.
  */
 
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
-import { resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
+import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
 import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
@@ -104,7 +105,9 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 	/** The local `hc` each runtime's last discovery found, by runtime id. */
 	const discovered = new Map<string, string>();
 	const localArgv = (runtime: Readonly<RuntimeConfig>): string[] | null => {
-		const path = runtime.binary.trim() || discovered.get(runtime.id) || '';
+		// Spawned without a shell, so a `~` in the override is expanded here.
+		const override = runtime.binary.trim();
+		const path = override ? expandHome(override) : discovered.get(runtime.id) || '';
 		return path ? [path, 'connect'] : null;
 	};
 	return {
@@ -124,7 +127,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 					binaryName: 'hc',
 				});
 				if (binary) {
-					discovered.set(runtime.id, binary.path);
+					if (binary.source !== 'setting') discovered.set(runtime.id, binary.path);
 					return discovery(binary, null);
 				}
 				return discovery(
@@ -197,7 +200,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 								binaryName: 'hc',
 							});
 							if (!binary) throw new Error(HC_NOT_FOUND);
-							discovered.set(runtime.id, binary.path);
+							if (binary.source !== 'setting') discovered.set(runtime.id, binary.path);
 							return [binary.path, 'connect'];
 						};
 			return new HcTerminalSession({

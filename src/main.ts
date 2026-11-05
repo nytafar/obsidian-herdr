@@ -140,7 +140,6 @@ export default class HerdrPlugin extends Plugin {
 		herdr: createHerdrKind({
 			extraPath: () => this.settings.extraPath,
 			vaultPath: () => this.vaultPath(),
-			discoveredBinary: () => this.connection.discovery?.binary?.path ?? '',
 			onProtocolMismatch: (mismatch) => {
 				this.mismatch = mismatch;
 			},

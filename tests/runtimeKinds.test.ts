@@ -7,10 +7,13 @@
  * herdr (an `SshTunnel` does nothing until `start()`).
  */
 
+import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import HerdrPlugin from '../src/main';
 import { endpointOf } from '../src/connection';
-import type { DiscoveryResult } from '../src/herdr/binary';
+import type { DiscoveryDeps, DiscoveryResult } from '../src/herdr/binary';
+import type { TerminalSession } from '../src/bridge/terminalSession';
+import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
 import { SshTunnel } from '../src/herdr/ssh';
 import { WorkspaceScope } from '../src/herdr/scope';
 import { createHerdrKind, type HerdrKindHost } from '../src/runtime/herdrKind';
@@ -27,11 +30,24 @@ import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import { paneViewAvailability } from '../src/native/surface';
 import type { ActionHost } from '../src/actions';
 
+const HOME = '/home/test';
+
+/** A machine where only these paths are executable and nothing answers. */
+function machine(executables: string[]): DiscoveryDeps {
+	const set = new Set(executables);
+	return {
+		isExecutable: (path) => set.has(path),
+		run: () => Promise.resolve({ stdout: '', stderr: 'no server', code: 1 }),
+		env: {},
+		home: HOME,
+	};
+}
+
 function host(overrides: Partial<HerdrKindHost> = {}): HerdrKindHost {
 	return {
 		extraPath: () => '',
 		vaultPath: () => '/Users/lasse/Vaults/hvelv',
-		discoveredBinary: () => '/usr/bin/herdr',
+		discoveryDeps: machine(['/usr/local/bin/herdr']),
 		onProtocolMismatch: () => undefined,
 		onUnsupportedMethod: () => undefined,
 		isPublished: () => true,
@@ -92,20 +108,66 @@ describe('the herdr kind (ADR-0004)', () => {
 		);
 	});
 
-	it('builds terminal argv from the pinned runtime', () => {
-		expect(kind.terminalCommand(local)).toEqual(['/usr/bin/herdr']);
+	it('builds terminal argv from the pinned runtime', async () => {
+		const fresh = createHerdrKind(host());
+		// Nothing discovered yet: the session finds the binary itself.
+		expect(fresh.terminalCommand(local)).toEqual([]);
+		await fresh.connection?.discover(local);
+		expect(fresh.terminalCommand(local)).toEqual(['/usr/local/bin/herdr']);
 		// A local runtime naming its own binary uses it over the discovered one.
-		expect(kind.terminalCommand(endpointOf({ ...defaultLocalRuntime(), binary: '/opt/herdr' }))).toEqual([
+		expect(fresh.terminalCommand(endpointOf({ ...defaultLocalRuntime(), binary: '/opt/herdr' }))).toEqual([
 			'/opt/herdr',
 		]);
-		expect(kind.terminalCommand(xl)).toEqual([
+		expect(fresh.terminalCommand(xl)).toEqual([
 			'ssh',
 			'-T',
 			'lasse@xl',
 			'/home/lasse/.local/bin/herdr',
 		]);
-		const undiscovered = createHerdrKind(host({ discoveredBinary: () => '' }));
-		expect(() => undiscovered.terminalCommand(local)).toThrow('the herdr binary path is empty');
+	});
+
+	it('expands a `~` override for a local spawn, and leaves it to the remote shell over SSH', () => {
+		const tilde = endpointOf({ ...defaultLocalRuntime(), binary: '~/.local/bin/herdr' });
+		expect(kind.terminalCommand(tilde)).toEqual([`${HOME}/.local/bin/herdr`]);
+		expect(kind.terminalCommand(endpointOf({ ...XL, binary: '~/.local/bin/herdr' }))).toEqual([
+			'ssh',
+			'-T',
+			'lasse@xl',
+			'~/.local/bin/herdr',
+		]);
+	});
+
+	it('finds the local binary for a tab itself, whichever runtime is active', async () => {
+		// The plugin is connected to some other runtime (an SSH hc one, say):
+		// this kind has discovered nothing, and asks nobody else.
+		const fresh = createHerdrKind(host());
+		const session = fresh.createTerminalSession(
+			{ command: fresh.terminalCommand(local), target: 'w1:p1', mode: 'observe', cols: 80, rows: 24 },
+			local,
+		) as TerminalSession;
+		const exited = new Promise<void>((resolve) => session.on('exit', () => resolve()));
+		session.on('error', () => undefined);
+		session.start();
+		await exited;
+		expect(session.argv[0]).toBe('/usr/local/bin/herdr');
+		// Found once, kept for the next tab.
+		expect(fresh.terminalCommand(local)).toEqual(['/usr/local/bin/herdr']);
+		await session.dispose();
+	});
+
+	it('says why when no local binary can be found', async () => {
+		const none = createHerdrKind(host({ discoveryDeps: machine([]) }));
+		const session = none.createTerminalSession(
+			{ command: [], target: 'w1:p1', mode: 'observe', cols: 80, rows: 24 },
+			local,
+		);
+		const errors: Error[] = [];
+		const exited = new Promise<void>((resolve) => session.on('exit', () => resolve()));
+		session.on('error', (error) => errors.push(error));
+		session.start();
+		await exited;
+		expect(errors[0]?.message).toMatch(/herdr was not found/);
+		await session.dispose();
 	});
 
 	it('allows the native view on a local runtime only', () => {
@@ -113,6 +175,33 @@ describe('the herdr kind (ADR-0004)', () => {
 		expect(paneViewAvailability('native', nativeViewBlock(kind, true)).reason).toBe(
 			'local panes only',
 		);
+	});
+});
+
+describe('the herdr-core kind’s terminal argv', () => {
+	const core = createHerdrCoreKind({
+		extraPath: () => '',
+		spawnEnv: () => ({}),
+		vaultPath: () => '/v',
+		vaultName: () => 'v',
+		onMismatch: () => undefined,
+		currentScope: () => null,
+	});
+
+	it('expands a `~` override for a local spawn, and leaves it to the remote shell over SSH', () => {
+		const tilde = endpointOf({ ...newRuntime('herdr-core', 'local', []), binary: '~/.local/bin/hc' });
+		expect(core.terminalCommand(tilde)).toEqual([`${homedir()}/.local/bin/hc`, 'connect']);
+		const remote = core.terminalCommand(
+			endpointOf({ ...newRuntime('herdr-core', 'ssh', []), host: 'asher', binary: '~/.local/bin/hc' }),
+		);
+		expect(remote.slice(0, 2)).toEqual(['ssh', '-T']);
+		expect(remote).toContain('asher');
+		// The remote shell expands it (as $HOME), not this machine.
+		expect(remote.join(' ')).toContain('"$HOME"/.local/bin/hc');
+	});
+
+	it('leaves an undiscovered local binary to the session, whichever runtime is active', () => {
+		expect(core.terminalCommand(endpointOf(newRuntime('herdr-core', 'local', [])))).toEqual([]);
 	});
 });
 

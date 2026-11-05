@@ -6,14 +6,17 @@
  * one remote" before the registry, moved behind the seam and reading the
  * runtime snapshot of the attempt instead of the live settings:
  *
- * - **Connection.** The local binary is discovered for every attempt (a
- *   terminal pinned to a local runtime needs it while an SSH one is active).
- *   On `local` the client opens the discovered socket; on `ssh` it opens the
- *   local end of an `ssh -N -L` forward to the runtime's socket (PRD S5).
+ * - **Connection.** On `local` the client opens the discovered socket; on
+ *   `ssh` it opens the local end of an `ssh -N -L` forward to the runtime's
+ *   socket (PRD S5).
  * - **Scope.** `WorkspaceScope`, one workspace, chosen by the runtime's
  *   workspace override, then the vault name, then cwd (`herdr/scope.ts`).
  * - **Terminal tabs.** `herdr terminal session` over child-process pipes,
- *   spawned through `ssh -T` on an `ssh` target (PRD S17).
+ *   spawned through `ssh -T` on an `ssh` target (PRD S17). A local runtime's
+ *   binary is its override, `~` expanded (spawn has no shell), else what this
+ *   kind's own last discovery of that runtime found, else it is discovered
+ *   when the tab starts. Never the active connection's discovery: that may be
+ *   another kind's binary, or none (an SSH herdr-core runtime).
  * - **Actions and prompts.** herdr's JSON API methods (`actions.ts`,
  *   `native/promptSender.ts`).
  */
@@ -21,7 +24,9 @@
 import { TerminalSession } from '../bridge/terminalSession';
 import type { Endpoint } from '../connection';
 import { HerdrActions } from '../actions';
-import { discoverHerdr } from '../herdr/binary';
+import { homedir } from 'node:os';
+import type { RuntimeConfig } from '../runtimes';
+import { defaultDeps, discoverHerdr, expandHome, type DiscoveryDeps } from '../herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from '../herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from '../herdr/scope';
 import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
@@ -36,8 +41,8 @@ export interface HerdrKindHost {
 	extraPath(): string;
 	/** This vault's absolute path on this machine. */
 	vaultPath(): string;
-	/** The local herdr binary the latest discovery found, or empty. */
-	discoveredBinary(): string;
+	/** Injected in tests; the real filesystem, PATH and processes otherwise. */
+	discoveryDeps?: DiscoveryDeps;
 	onProtocolMismatch(mismatch: ProtocolMismatch): void;
 	onUnsupportedMethod(method: string): void;
 	/**
@@ -52,6 +57,32 @@ export interface HerdrKindHost {
 export type HerdrKind = RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel>;
 
 export function createHerdrKind(host: HerdrKindHost): HerdrKind {
+	const deps = (): DiscoveryDeps => host.discoveryDeps ?? defaultDeps();
+	const home = (): string => host.discoveryDeps?.home ?? homedir();
+	/**
+	 * The binary each local runtime's last discovery found, by runtime id;
+	 * only searches, since an override is read from the runtime itself.
+	 */
+	const discovered = new Map<string, string>();
+	const discoverLocal = (runtime: Readonly<RuntimeConfig>) =>
+		discoverHerdr(
+			{
+				override: runtime.binary,
+				extraPath: host.extraPath(),
+				socketOverride: runtime.socketPath,
+			},
+			deps(),
+		).then((found) => {
+			if (found.binary && found.binary.source !== 'setting') {
+				discovered.set(runtime.id, found.binary.path);
+			}
+			return found;
+		});
+	/** A local runtime's binary as spawn needs it, or empty until discovered. */
+	const localBinary = (runtime: Readonly<RuntimeConfig>): string => {
+		const override = runtime.binary.trim();
+		return override ? expandHome(override, home()) : (discovered.get(runtime.id) ?? '');
+	};
 	return {
 		kind: 'herdr',
 		unavailable: null,
@@ -61,14 +92,10 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		connection: {
 			discover: (endpoint) => {
 				const runtime = endpoint.runtime;
-				const local = runtime.target === 'local';
-				return discoverHerdr({
-					// An SSH runtime's binary lives on the remote host; the local one
-					// is only searched for, for terminals pinned to a local runtime.
-					override: local ? runtime.binary : '',
-					extraPath: host.extraPath(),
-					socketOverride: local ? runtime.socketPath : undefined,
-				});
+				if (runtime.target === 'local') return discoverLocal(runtime);
+				// An SSH runtime's binary lives on the remote host; the local one
+				// is only searched for, for the settings status.
+				return discoverHerdr({ override: '', extraPath: host.extraPath() }, deps());
 			},
 			// An SSH runtime only needs `ssh` here, so a missing local binary only
 			// stops the local path.
@@ -116,13 +143,30 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		},
 		terminalCommand: (endpoint: Endpoint) => {
 			const runtime = endpoint.runtime;
-			// Local: `[<herdr>]`, the runtime's own binary when it names one, else
-			// the discovered one. SSH: `['ssh','-T',host,<remote herdr>]` —
-			// terminals never go through the forwarded API socket (PRD S17).
-			const local = runtime.target === 'local' ? runtime.binary || host.discoveredBinary() : '';
-			return terminalArgvPrefix(runtime, local);
+			// SSH: `['ssh','-T',host,<remote herdr>]`, the remote shell expanding
+			// a `~` — terminals never go through the forwarded API socket (PRD
+			// S17). Local: `[<herdr>]`, or empty while the binary is still to be
+			// found, which the session then does itself.
+			if (runtime.target === 'ssh') return terminalArgvPrefix(runtime, '');
+			const local = localBinary(runtime);
+			return local ? terminalArgvPrefix(runtime, local) : [];
 		},
-		createTerminalSession: (options) => new TerminalSession(options),
+		createTerminalSession: (options, endpoint) => {
+			const runtime = endpoint.runtime;
+			if (options.command.length > 0 || runtime.target !== 'local') {
+				return new TerminalSession(options);
+			}
+			return new TerminalSession({
+				...options,
+				resolveCommand: async () => {
+					const known = localBinary(runtime);
+					if (known) return [known];
+					const found = await discoverLocal(runtime);
+					if (!found.binary) throw new Error(found.error ?? 'herdr binary not found');
+					return [found.binary.path];
+				},
+			});
+		},
 		createActions: (actionHost) => new HerdrActions(actionHost),
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),

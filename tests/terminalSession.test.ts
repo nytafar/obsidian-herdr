@@ -140,6 +140,37 @@ describe('LineSplitter', () => {
 	});
 });
 
+describe('TerminalSession with a command still to be found', () => {
+	it('spawns what resolveCommand finds', async () => {
+		const { session, rec } = makeSession({ command: [], resolveCommand: () => Promise.resolve(COMMAND) });
+		await waitFor(() => rec.frames.length >= 1);
+		expect(session.argv.slice(0, 2)).toEqual(COMMAND);
+		await session.dispose();
+	});
+
+	it('reports a failed lookup as an error and an exit', async () => {
+		const { session, rec } = makeSession({
+			command: [],
+			resolveCommand: () => Promise.reject(new Error('herdr was not found')),
+		});
+		expect(await rec.exit).toEqual({ code: null, signal: null });
+		expect(rec.errors.map((error) => error.message)).toEqual(['herdr was not found']);
+		await session.dispose();
+	});
+
+	it('spawns nothing when disposed before the lookup ends', async () => {
+		let finish: (command: string[]) => void = () => undefined;
+		const { session } = makeSession({
+			command: [],
+			resolveCommand: () => new Promise<string[]>((resolve) => (finish = resolve)),
+		});
+		await session.dispose();
+		finish(COMMAND);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(session.pid).toBeUndefined();
+	});
+});
+
 describe('TerminalSession against the fake herdr', () => {
 	it('emits the initial full frame with decoded bytes and argv-derived size', async () => {
 		const { session, rec } = makeSession();

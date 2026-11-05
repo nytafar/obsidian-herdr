@@ -54,7 +54,9 @@ The runtime a fresh install starts with, named **Local**.
   `herdr status server --json` and prefers its answer.
 - **Herdr binary**: empty means auto-discovery in `/opt/homebrew/bin`,
   `/usr/local/bin`, `~/.local/bin`, the extra PATH entries, then your login
-  shell's PATH. Set it when Obsidian was launched from the Dock.
+  shell's PATH. Set it when Obsidian was launched from the Dock. A leading
+  `~` is expanded. Terminal tabs on this runtime find the binary the same way
+  even while another runtime is active.
 - **Workspace ID**: pins the herdr workspace. Empty means the workspace labelled
   like the vault folder, then the one with the most panes inside the vault.
 

@@ -41,6 +41,12 @@ export interface TerminalSessionOptions {
 	 * `terminal session <mode> <target> …` itself.
 	 */
 	command: string[];
+	/**
+	 * How to find the argv prefix when {@link command} is empty: a local
+	 * runtime whose binary no discovery has found yet. Awaited by `start()`;
+	 * a rejection is reported as `error`, then `exit`, like a failed spawn.
+	 */
+	resolveCommand?: () => Promise<string[]>;
 	/** Pane id (`w4:p1`) or unique agent name. */
 	target: string;
 	mode: TerminalSessionMode;
@@ -171,9 +177,12 @@ export class TerminalSession {
 	private releasing: Promise<void> | null = null;
 	private lastCols: number;
 	private lastRows: number;
+	/** The argv prefix: the given one, or what `resolveCommand` found. */
+	private command: string[];
 
 	constructor(options: TerminalSessionOptions) {
 		this.options = options;
+		this.command = options.command;
 		this.lastCols = clampDimension(options.cols);
 		this.lastRows = clampDimension(options.rows);
 	}
@@ -198,7 +207,7 @@ export class TerminalSession {
 	}
 
 	get argv(): string[] {
-		return buildArgv(this.options);
+		return buildArgv({ ...this.options, command: this.command });
 	}
 
 	on<K extends keyof TerminalSessionEventMap>(event: K, listener: Listener<K>): this {
@@ -216,10 +225,35 @@ export class TerminalSession {
 		return this;
 	}
 
-	/** Spawns the child. Safe to call once; later calls are ignored. */
+	/**
+	 * Spawns the child, once the argv prefix is known. Safe to call once;
+	 * later calls are ignored.
+	 */
 	start(): this {
 		if (this.started || this.disposed) return this;
 		this.started = true;
+		const resolve = this.options.resolveCommand;
+		if (this.command.length === 0 && resolve) {
+			resolve().then(
+				(command) => {
+					if (this.disposed) return;
+					this.command = command;
+					this.spawnChild();
+				},
+				(err: unknown) => {
+					if (this.disposed) return;
+					this.exited = true;
+					this.emit('error', asError(err));
+					this.emit('exit', null, null);
+				},
+			);
+			return this;
+		}
+		this.spawnChild();
+		return this;
+	}
+
+	private spawnChild(): void {
 		let child: ChildProcessWithoutNullStreams;
 		try {
 			const [file, ...rest] = this.argv;
@@ -234,7 +268,7 @@ export class TerminalSession {
 			this.exited = true;
 			this.emit('error', asError(err));
 			this.emit('exit', null, null);
-			return this;
+			return;
 		}
 		this.child = child;
 
@@ -253,7 +287,6 @@ export class TerminalSession {
 			if (trailingErr) this.emit('stderr', trailingErr);
 			this.emit('exit', code, signal);
 		});
-		return this;
 	}
 
 	/** Sends text (or raw bytes) as `terminal.input`. No-op outside control mode. */

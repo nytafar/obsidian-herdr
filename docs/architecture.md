@@ -225,6 +225,15 @@ capabilities the UI reads to leave out what a kind cannot do. The herdr kind
 (`src/runtime/herdrKind.ts`) is the two seams above; the herdr-core kind
 (`src/runtime/herdrCoreKind.ts`) is the next section.
 
+A terminal tab is spawned from its pinned runtime, not from whatever is
+active, so each kind finds its own local binary: the runtime's override with
+a leading `~` expanded (the bridge spawns without a shell), else what that
+kind's own last discovery of that runtime found, else a discovery run when
+the tab starts (`resolveCommand` on the herdr bridge, an argv thunk on the hc
+session). The active connection's discovery is never borrowed: it may be the
+other kind's binary, or none at all for an SSH runtime. Over SSH the binary is
+passed as typed, and the remote shell expands a `~`.
+
 What the coordinator, the sessions and the views hold is the shared slice:
 `ConnectionClient` (ping, request, the `connected`/`disconnected` edges,
 dispose) and `ConnectionScope` (the rows, `get`, `list`, the four scope
@@ -310,9 +319,10 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   `terminal.attach {terminal, cols, rows, history: 2000}` on it, plus
   `observe: true, resize_notifications: true` in observe mode, and one
   `events.subscribe {terminal: <address>}` on the same connection for the
-  record (turn, labels, size, restarts). A local runtime's tab uses the
-  binary its last discovery found, else searches for `hc` when it starts, so
-  a tab pinned to an hc runtime that is not the active one still opens. The
+  record (turn, labels, size, restarts). A local runtime's tab uses its
+  override (`~` expanded), else the binary its last discovery found, else
+  searches for `hc` when it starts, so a tab pinned to an hc runtime opens
+  whichever runtime is active. The
   native view stays off for hc panes (ADR-0005, `nativeUnavailable`).
   Measured against `hc` 0.1.18 on 2026-11-05 with throwaway `oh-test-*`
   terminals running `sh`, driving the session class from a script, and
