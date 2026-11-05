@@ -6,7 +6,9 @@
  * popover the app already draws for text fields. Two triggers:
  *
  * - **`/` at the very start of the prompt** offers the command catalog
- *   (`./commandCatalog.ts`), because that is where Claude Code reads a command
+ *   (`./commandCatalog.ts`) of the pane's own machine, read here for a local
+ *   runtime and over the connection for a remote herdr-core one
+ *   (`../hc/commandCatalog.ts`), because that is where Claude Code reads a command
  *   from: a leading `/command` is executed, a slash anywhere else is text
  *   (`docs/architecture.md`, "Agent prompts and session identity").
  * - **`@` at a word boundary** offers vault files, and what goes into the
@@ -32,15 +34,13 @@
 
 import { AbstractInputSuggest, type App, type TFile } from 'obsidian';
 import {
-	loadCommandCatalog,
+	LocalCommandCatalog,
 	matchCommands,
 	scopeLabel,
 	type CatalogEntry,
+	type CommandCatalogSource,
 } from './commandCatalog';
 import { mentionFor, vaultFileAbsolutePath } from './promptMentions';
-
-/** How long a loaded catalog is reused before the tree is read again. */
-const CATALOG_TTL_MS = 5000;
 
 /** How many files a `@` offers at once. */
 const FILE_LIMIT = 50;
@@ -94,14 +94,18 @@ export function withSuggestion(
 
 export interface PromptSuggestOptions {
 	app: App;
-	/** The pane's working directory, on the pane's machine: the mention form. */
+	/**
+	 * The pane's working directory, on the pane's machine: the mention form,
+	 * and where the `/` catalog's project scope starts.
+	 */
 	cwd: () => string;
 	/**
-	 * The same directory as this machine sees it, for the project scope of the
-	 * `/` catalog, which is read here. Defaults to {@link cwd}; differs for a
-	 * pane on an SSH runtime working inside the remote copy of the vault.
+	 * Where the `/` catalog is read, asked on every `/`: the pane's machine,
+	 * which for a herdr-core runtime over SSH is another one and answers
+	 * asynchronously. Not given, or null, is this machine's files, walked by
+	 * this suggest and kept for the TTL.
 	 */
-	catalogCwd?: () => string;
+	catalog?: () => CommandCatalogSource | null;
 	/**
 	 * The vault's base path on the pane's machine (an SSH runtime's remote
 	 * vault path), or '' when it has none: where a mentioned file is opened.
@@ -113,8 +117,8 @@ export interface PromptSuggestOptions {
 export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private readonly textEl: HTMLTextAreaElement;
 	private readonly options: PromptSuggestOptions;
-	/** The catalog as last read, with the cwd and the moment it was read for. */
-	private cached: { cwd: string; at: number; entries: CatalogEntry[] } | null = null;
+	/** This machine's catalog, for a suggest that was given no source. */
+	private localCatalog: LocalCommandCatalog | null = null;
 	/** The trigger the offered suggestions were built for. */
 	private trigger: PromptTrigger | null = null;
 	/** Whether the popover is showing; see {@link PromptSuggest.isOpen}. */
@@ -157,16 +161,21 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		this.textEl.value = value;
 	}
 
-	protected getSuggestions(): PromptSuggestion[] {
+	/**
+	 * Synchronous for vault files and a catalog already known; a promise while
+	 * a remote catalog is read, which Obsidian's input suggest takes as well
+	 * (`getSuggestions(query): T[] | Promise<T[]>`, since 1.5.7).
+	 */
+	protected getSuggestions(): PromptSuggestion[] | Promise<PromptSuggestion[]> {
 		const cursor = this.textEl.selectionStart ?? this.textEl.value.length;
 		const trigger = activeTrigger(this.textEl.value, cursor);
 		this.trigger = trigger;
 		if (!trigger) return [];
 		if (trigger.kind === 'command') {
-			return matchCommands(this.catalog(), trigger.query).map((entry) => ({
-				kind: 'command' as const,
-				entry,
-			}));
+			const offer = (entries: CatalogEntry[]): PromptSuggestion[] =>
+				matchCommands(entries, trigger.query).map((entry) => ({ kind: 'command' as const, entry }));
+			const entries = this.catalogSource().catalog(this.options.cwd());
+			return Array.isArray(entries) ? offer(entries) : entries.then(offer);
 		}
 		return this.files(trigger.query).map((file) => ({ kind: 'file' as const, file }));
 	}
@@ -215,15 +224,12 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		return mentionFor({ path, cwd: this.options.cwd() });
 	}
 
-	/** The catalog for this pane's cwd, re-read when it is stale or the cwd moved. */
-	private catalog(): CatalogEntry[] {
-		const cwd = (this.options.catalogCwd ?? this.options.cwd)();
-		const now = Date.now();
-		const cached = this.cached;
-		if (cached && cached.cwd === cwd && now - cached.at < CATALOG_TTL_MS) return cached.entries;
-		const entries = loadCommandCatalog({ cwd });
-		this.cached = { cwd, at: now, entries };
-		return entries;
+	/** The pane's machine's catalog, or this machine's when none was given. */
+	private catalogSource(): CommandCatalogSource {
+		const given = this.options.catalog?.();
+		if (given) return given;
+		this.localCatalog ??= new LocalCommandCatalog();
+		return this.localCatalog;
 	}
 
 	/** Vault files whose path contains the query, shortest path first. */

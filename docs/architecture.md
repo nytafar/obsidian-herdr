@@ -644,8 +644,24 @@ session model never reopens a tail for a source that did not change.
 - **Senders** are the kind's `terminal.send` / `terminal.keys` over the tab's
   own runtime's client (`plugin.nativeClient`), as before.
 - **On SSH**, `@` mentions use the runtime's remote vault path (the agent opens
-  the file on its machine), and the `/` catalog and relative links map a
-  remote cwd inside the remote vault onto this vault.
+  the file on its machine), and relative links map a remote cwd inside the
+  remote vault onto this vault.
+- **The `/` catalog** is the machine the agent runs on (`native.commandCatalog`,
+  `src/hc/commandCatalog.ts`): this machine's files on a local runtime, read
+  synchronously as on herdr; over SSH, one `machine.exec {argv: ["sh", "-c",
+  <script>, "sh", <cwd>], timeout: 30}` on the runtime's connection. hc has no
+  list method, so the script walks the three scopes itself (the cwd up to the
+  `.git`, `$CLAUDE_CONFIG_DIR` or `$HOME/.claude`, and every `installPath` in
+  its `plugins/installed_plugins.json`) and prints a snapshot: NUL-terminated
+  fields, which no path contains, and each Markdown file cut to its
+  frontmatter by `awk`. The plugin serves the snapshot as a `CatalogFs` and
+  runs the same walk over it as over local files. The script needs `sh`,
+  `awk` and `tr`; `realpath` or `readlink -f` only for a symlinked file. The
+  catalog is cached per connection and cwd for 5 s, one read in flight per
+  cwd; a read that has not answered in 3 s offers what the cwd had before or
+  the built-ins, and a failed or cut-short one offers the built-ins for the
+  TTL. Without the runtime's connection, the built-ins: never this machine's
+  commands.
 
 Measured 2026-11-06 against `hc` 0.1.18 and Claude Code 2.1.318, with the
 plugin's own modules driven from a script outside the repo, a throwaway
@@ -678,6 +694,23 @@ plugin's own modules driven from a script outside the repo, a throwaway
   live turn through the status and turn kicks. On a scratch file: a partial
   last line held and then delivered, an idle read past the end delivering
   nothing, truncation and a rename-replace both restarting.
+
+Measured 2026-11-06, the `/` catalog's `machine.exec` over a real `HcClient`
+with the remote path forced (read-only, from a script outside the repo):
+
+- Over the local core (bash as `sh`, gawk), the catalog equalled the local walk
+  of the same home entry for entry, paths included, from five cwds (a
+  worktree, the vault with 19 project entries, `~`, `/`, a repository with
+  project skills); 42 of the user skills are symlinked directories. One
+  round trip took 77–102 ms.
+- Through federation, `on: "asher"` (hc 0.1.17, dash as `sh`, gawk), the
+  script exited 0 with nothing on stderr: 87 entries beyond the built-ins
+  (37 user, 50 plugin; from `/root` the same 37 are project, since
+  `/root/.claude` is both), 68–91 KB of snapshot, in 183–305 ms.
+- `tests/hcCommandCatalog.test.ts` runs the script with `sh` over a temp tree
+  with spaces, quotes and a newline in names, a dangling link, a link cycle,
+  CRLF, NUL and unclosed frontmatter, and a plugin path with `"` in it, and
+  checks it against the local walk.
 - asher (0.1.17, read only, through the local core's federation with `on`):
   an 11 MB, 951-line transcript paged to the same 951 lines; with a large
   limit hc's 8 MB cap ended the first page at line 609 and the second

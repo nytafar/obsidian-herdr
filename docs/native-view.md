@@ -49,7 +49,9 @@ agent, and while the agent is blocked on a question the card handles.
 
 Typing `/` completes slash commands and skills from the user, project and
 plugin scopes, with their descriptions; project scope wins, and discovery stops
-at the repository or worktree root. Typing `@` completes vault files and sends
+at the repository or worktree root. They are the commands of the machine the
+agent runs on: on an SSH herdr-core runtime, the remote's, from its home (or
+`CLAUDE_CONFIG_DIR`), its plugins and the pane's remote folder. Typing `@` completes vault files and sends
 the mention the way Claude expects: relative to the pane's working directory
 when the file is inside it, absolute otherwise.
 
@@ -139,7 +141,10 @@ hands the terminal to another program, such as an editor.
 On an SSH runtime, `@` mentions name the file in the remote vault, and the
 transcript is read with hc's `file.read` when the agent's status changes and
 every 2 s while it works, so new content can take a moment longer than
-locally.
+locally. The `/` list is read from the remote machine in one call over the
+runtime's connection and kept for a few seconds. A remote that
+does not answer within 3 seconds, or cannot be read, offers only Claude's
+built-in commands until it does; it never offers this machine's commands.
 
 ## Switching runtimes
 
@@ -155,8 +160,9 @@ picks up again when its runtime is active once more.
   setting says so. herdr-core reads its transcripts over its connection, so
   its SSH runtimes have the view.
 - **herdr-core over SSH:** a transcript over 64 MB cannot be read (hc's
-  `file.read` limit), and a single transcript line over 8 MB is skipped. On
-  SSH the `/` list comes from this machine's commands and the vault's own.
+  `file.read` limit), and a single transcript line over 8 MB is skipped. The
+  remote needs `sh`, `awk` and `tr` for its `/` list, as the session hook
+  does.
 - **A prompt to a herdr-core terminal less than 10 seconds old** may be
   refused while its screen is still settling; send it again.
 - **Claude Code only** for now. Other agent kinds show a terminal. The

@@ -40,7 +40,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   truncated, and read when the agent's status changes and every 2 s while it
   works. A terminal without the label stays a terminal and its view switch
   names the install command. `@` mentions on an SSH runtime name the remote
-  vault's file.
+  vault's file, and its `/` list offers the remote machine's commands and
+  skills (user, plugin and the pane's project), read over the runtime's
+  connection; while they cannot be read it offers only the built-ins.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

@@ -28,11 +28,40 @@
  * under the scope root with `:` — `commands/ns/deep.md` is `/ns:deep` — and a
  * skill's name is its directory's. The description and the argument hint come
  * from the file's frontmatter.
+ *
+ * **One walk, two filesystems.** Everything above runs over a
+ * {@link CatalogFs}: this machine's files for a local runtime, and for a
+ * herdr-core runtime over SSH a snapshot of the remote machine's tree, read
+ * in one `machine.exec` (`../hc/commandCatalog.ts`). The names, namespaces,
+ * precedence and frontmatter rules are this module's either way.
  */
 
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, sep } from 'node:path';
+import * as nodePath from 'node:path';
 import { homedir } from 'node:os';
+
+/**
+ * The filesystem a catalog is read from. Every method is forgiving: a
+ * directory that is not there, a dangling symlink and a file that cannot be
+ * read are all "nothing here", never a throw.
+ */
+export interface CatalogFs {
+	/** The path rules of that filesystem's machine. */
+	readonly path: Pick<typeof nodePath.posix, 'join' | 'dirname' | 'sep'>;
+	/** The names in a directory, unsorted; empty when it cannot be listed. */
+	readdir(dir: string): string[];
+	/** True for anything at `path`, symlinks followed. */
+	exists(path: string): boolean;
+	/** True for a directory, and for a symlink that points at one. */
+	isDirectory(path: string): boolean;
+	/** The path with every symlink resolved, or null when it does not resolve. */
+	realpath(path: string): string | null;
+	/** The file's text, or null when it cannot be read. */
+	readFile(path: string): string | null;
+}
+
+/** How long a loaded catalog is reused before the tree is read again. */
+export const CATALOG_TTL_MS = 5000;
 
 /** Where an entry came from; also its precedence, highest first. */
 export type CommandScope = 'project' | 'user' | 'plugin' | 'builtin';
@@ -101,8 +130,15 @@ export const BUILTIN_COMMANDS: CatalogEntry[] = [
 export interface CommandCatalogOptions {
 	/** Home directory of the transcript's host. Defaults to this machine's. */
 	home?: string;
+	/**
+	 * Claude's config directory, the user scope and the plugins file's home:
+	 * `<home>/.claude` when not given, '' for none at all.
+	 */
+	configDir?: string;
 	/** The pane's working directory: where the project scope starts. */
 	cwd: string;
+	/** Where it is all read; this machine's files when not given. */
+	fs?: CatalogFs;
 }
 
 /**
@@ -115,7 +151,8 @@ export interface CommandCatalogOptions {
  * a repository root like any other. A walk that went past it would offer the
  * commands of whatever directory the worktrees happen to sit in (#98).
  */
-export function projectCommandRoots(cwd: string): string[] {
+export function projectCommandRoots(cwd: string, fs: CatalogFs = localCatalogFs): string[] {
+	const { join, dirname } = fs.path;
 	const roots: string[] = [];
 	// No cwd, as before herdr has reported the pane, is no project: a walk from
 	// '' would read relative paths out of the plugin process's own directory.
@@ -123,7 +160,7 @@ export function projectCommandRoots(cwd: string): string[] {
 	let dir = cwd;
 	for (let level = 0; level < MAX_PROJECT_LEVELS; level++) {
 		roots.push(join(dir, '.claude'));
-		if (exists(join(dir, '.git'))) break;
+		if (fs.exists(join(dir, '.git'))) break;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -138,8 +175,13 @@ export function projectCommandRoots(cwd: string): string[] {
  * must not stop a prompt being typed.
  */
 export function pluginInstallPaths(home: string): string[] {
-	const file = join(home, '.claude', 'plugins', 'installed_plugins.json');
-	const raw = readFileOrNull(file);
+	return pluginInstallPathsIn(localCatalogFs.path.join(home, '.claude'), localCatalogFs);
+}
+
+/** {@link pluginInstallPaths} for a config directory on a filesystem. */
+export function pluginInstallPathsIn(configDir: string, fs: CatalogFs): string[] {
+	const file = fs.path.join(configDir, 'plugins', 'installed_plugins.json');
+	const raw = fs.readFile(file);
 	if (raw === null) return [];
 	let parsed: unknown;
 	try {
@@ -164,13 +206,25 @@ export function pluginInstallPaths(home: string): string[] {
  * read strongest first and a name already taken is left alone.
  */
 export function loadCommandCatalog(options: CommandCatalogOptions): CatalogEntry[] {
-	const home = options.home ?? homedir();
+	const fs = options.fs ?? localCatalogFs;
+	const configDir = options.configDir ?? fs.path.join(options.home ?? homedir(), '.claude');
 	const found: CatalogEntry[] = [];
-	for (const root of projectCommandRoots(options.cwd)) found.push(...entriesUnder(root, 'project'));
-	found.push(...entriesUnder(join(home, '.claude'), 'user'));
-	for (const path of pluginInstallPaths(home)) found.push(...entriesUnder(path, 'plugin'));
+	for (const root of projectCommandRoots(options.cwd, fs)) found.push(...entriesUnder(root, 'project', fs));
+	if (configDir !== '') {
+		found.push(...entriesUnder(configDir, 'user', fs));
+		for (const path of pluginInstallPathsIn(configDir, fs)) found.push(...entriesUnder(path, 'plugin', fs));
+	}
 	found.push(...BUILTIN_COMMANDS);
+	return byPrecedence(found);
+}
 
+/** The built-ins alone, in catalog order: what a remote that cannot be read offers. */
+export function builtinCatalog(): CatalogEntry[] {
+	return byPrecedence([...BUILTIN_COMMANDS]);
+}
+
+/** One entry per name, the strongest scope's, in name order. */
+function byPrecedence(found: CatalogEntry[]): CatalogEntry[] {
 	const byName = new Map<string, CatalogEntry>();
 	for (const scope of SCOPE_ORDER) {
 		for (const entry of found) {
@@ -203,43 +257,44 @@ export function matchCommands(entries: CatalogEntry[], query: string): CatalogEn
 // -- Reading one scope ------------------------------------------------------
 
 /** The commands and skills under one scope root (`<somewhere>/.claude` or a plugin). */
-function entriesUnder(root: string, scope: CommandScope): CatalogEntry[] {
+function entriesUnder(root: string, scope: CommandScope, fs: CatalogFs): CatalogEntry[] {
 	return [
-		...commandsUnder(join(root, 'commands'), scope),
-		...skillsUnder(join(root, 'skills'), scope),
+		...commandsUnder(fs.path.join(root, 'commands'), scope, fs),
+		...skillsUnder(fs.path.join(root, 'skills'), scope, fs),
 	];
 }
 
 /** Every `*.md` under a commands directory, folders becoming namespaces. */
-function commandsUnder(dir: string, scope: CommandScope): CatalogEntry[] {
+function commandsUnder(dir: string, scope: CommandScope, fs: CatalogFs): CatalogEntry[] {
 	const entries: CatalogEntry[] = [];
-	for (const file of markdownFilesUnder(dir, MAX_DEPTH, new Set())) {
-		const name = file.relative.slice(0, -'.md'.length).split(sep).join(':');
-		entries.push(entryFor(name, scope, 'command', file.path));
+	for (const file of markdownFilesUnder(fs, dir, MAX_DEPTH, new Set())) {
+		const name = file.relative.slice(0, -'.md'.length).split(fs.path.sep).join(':');
+		entries.push(entryFor(fs, name, scope, 'command', file.path));
 	}
 	return entries;
 }
 
 /** Every `<skill>/SKILL.md` under a skills directory, links followed. */
-function skillsUnder(dir: string, scope: CommandScope): CatalogEntry[] {
+function skillsUnder(dir: string, scope: CommandScope, fs: CatalogFs): CatalogEntry[] {
 	const entries: CatalogEntry[] = [];
-	for (const child of childNames(dir)) {
-		const skillFile = join(dir, child, 'SKILL.md');
-		const real = realPathOrNull(skillFile);
+	for (const child of childNames(fs, dir)) {
+		const skillFile = fs.path.join(dir, child, 'SKILL.md');
+		const real = fs.realpath(skillFile);
 		if (real === null) continue;
-		entries.push(entryFor(child, scope, 'skill', real));
+		entries.push(entryFor(fs, child, scope, 'skill', real));
 	}
 	return entries;
 }
 
 /** One entry, with whatever its frontmatter says. */
 function entryFor(
+	fs: CatalogFs,
 	name: string,
 	scope: CommandScope,
 	kind: 'command' | 'skill',
 	path: string,
 ): CatalogEntry {
-	const front = frontmatter(readFileOrNull(path) ?? '');
+	const front = frontmatter(fs.readFile(path) ?? '');
 	return {
 		name,
 		scope,
@@ -256,25 +311,27 @@ function entryFor(
  * that points back up is walked once and not forever.
  */
 function markdownFilesUnder(
+	fs: CatalogFs,
 	dir: string,
 	depth: number,
 	visited: Set<string>,
 	prefix = '',
 ): { relative: string; path: string }[] {
 	if (depth <= 0) return [];
-	const real = realPathOrNull(dir);
+	const { join } = fs.path;
+	const real = fs.realpath(dir);
 	if (real === null || visited.has(real)) return [];
 	visited.add(real);
 	const found: { relative: string; path: string }[] = [];
-	for (const child of childNames(dir)) {
+	for (const child of childNames(fs, dir)) {
 		const path = join(dir, child);
 		const relative = prefix === '' ? child : join(prefix, child);
-		if (isDirectory(path)) {
-			found.push(...markdownFilesUnder(path, depth - 1, visited, relative));
+		if (fs.isDirectory(path)) {
+			found.push(...markdownFilesUnder(fs, path, depth - 1, visited, relative));
 			continue;
 		}
 		if (!child.endsWith('.md')) continue;
-		const realFile = realPathOrNull(path);
+		const realFile = fs.realpath(path);
 		if (realFile !== null) found.push({ relative, path: realFile });
 	}
 	return found;
@@ -307,48 +364,79 @@ function unquote(value: string): string {
 // A directory that is not there, a dangling symlink and a file that cannot be
 // read are all "nothing here". The catalog is read while someone is typing.
 
-function childNames(dir: string): string[] {
-	try {
-		return readdirSync(dir).sort();
-	} catch {
-		return [];
+/** A directory's names in a stable order, whatever the filesystem returns. */
+function childNames(fs: CatalogFs, dir: string): string[] {
+	return fs.readdir(dir).sort();
+}
+
+/** This machine's files, with this machine's path rules. */
+export const localCatalogFs: CatalogFs = {
+	path: nodePath,
+	readdir: (dir) => {
+		try {
+			return readdirSync(dir);
+		} catch {
+			return [];
+		}
+	},
+	exists: (path) => {
+		try {
+			statSync(path);
+			return true;
+		} catch {
+			return false;
+		}
+	},
+	isDirectory: (path) => {
+		try {
+			return statSync(path).isDirectory();
+		} catch {
+			return false;
+		}
+	},
+	realpath: (path) => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return null;
+		}
+	},
+	readFile: (path) => {
+		try {
+			return readFileSync(path, 'utf8');
+		} catch {
+			return null;
+		}
+	},
+};
+
+/** Where a `/` list comes from for one runtime: this machine, or another. */
+export interface CommandCatalogSource {
+	/**
+	 * The catalog for a pane's cwd on that runtime's machine: at once when it
+	 * is known, else a promise that settles on what could be read in time.
+	 */
+	catalog(cwd: string): CatalogEntry[] | Promise<CatalogEntry[]>;
+}
+
+/** This machine's catalog: the synchronous walk, reused for {@link CATALOG_TTL_MS} per cwd. */
+export class LocalCommandCatalog implements CommandCatalogSource {
+	private cached: { cwd: string; at: number; entries: CatalogEntry[] } | null = null;
+
+	constructor(private readonly now: () => number = Date.now) {}
+
+	catalog(cwd: string): CatalogEntry[] {
+		const now = this.now();
+		const cached = this.cached;
+		if (cached && cached.cwd === cwd && now - cached.at < CATALOG_TTL_MS) return cached.entries;
+		const entries = loadCommandCatalog({ cwd });
+		this.cached = { cwd, at: now, entries };
+		return entries;
 	}
 }
 
-/** True for anything on disk at `path`, whatever kind of thing it is. */
-function exists(path: string): boolean {
-	try {
-		statSync(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** True for a directory, and for a symlink that points at one. */
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
-function realPathOrNull(path: string): string | null {
-	try {
-		return realpathSync(path);
-	} catch {
-		return null;
-	}
-}
-
-function readFileOrNull(path: string): string | null {
-	try {
-		return readFileSync(path, 'utf8');
-	} catch {
-		return null;
-	}
-}
+/** The built-ins only: a remote runtime that cannot be read right now. */
+export const BUILTIN_CATALOG_SOURCE: CommandCatalogSource = { catalog: () => builtinCatalog() };
 
 /** The name a scope root would be shown under. Exported for the suggest (#98). */
 export function scopeLabel(scope: CommandScope): string {

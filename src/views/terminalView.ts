@@ -714,9 +714,10 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
-	 * The pane's cwd on this machine, for what is looked up here: the `/`
-	 * catalog and relative links. A pane on an SSH runtime working inside the
-	 * remote vault maps onto this vault; anywhere else it stays as reported.
+	 * The pane's cwd on this machine, for what is looked up here: relative
+	 * links. A pane on an SSH runtime working inside the remote vault maps
+	 * onto this vault; anywhere else it stays as reported. The `/` catalog
+	 * is the pane's own machine's instead (`nativeCommandCatalog`).
 	 */
 	private paneCwdHere(): string {
 		const cwd = this.paneCwd();
@@ -782,7 +783,9 @@ export class TerminalView extends ItemView {
 				const suggest = new PromptSuggest(inputEl, {
 					app: this.app,
 					cwd: () => this.paneCwd(),
-					catalogCwd: () => this.paneCwdHere(),
+					// The commands of the machine the agent runs on: over the
+					// runtime's connection for herdr-core over SSH (ADR-0006).
+					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
 					// The agent opens a mention on its own machine: on an SSH
 					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {

@@ -3,6 +3,7 @@
  * parsed like the core parses it (a plain `hello` line, then frames) and whose
  * stdout the test writes, in whatever chunks it likes.
  */
+import { spawnSync } from 'node:child_process';
 import { encodeFrame, FrameDecoder, FrameKind, type Frame } from '../../src/hc/frames';
 import type { HcProcess, HcSpawn, HcTimers } from '../../src/hc/connection';
 
@@ -290,4 +291,31 @@ export function fileLines(
 		throw new RpcError('invalid_params', `line ${first} is over the cap`, -32602);
 	}
 	return { text: out, first, last: first + given - 1, lines: total };
+}
+
+/**
+ * hc's `machine.exec` with `argv`, run for real on this machine with `env`
+ * on top of the test's own environment, answered as hc answers (0.1.18):
+ * `{code, signal, stdout, stderr, truncated, timed_out, ms}`, the output in
+ * base64 and cut at hc's 8 MB. What a remote runs, run here instead.
+ */
+export function machineExec(env: Record<string, string | undefined> = {}): Handler {
+	return (params) => {
+		const argv = params.argv as string[];
+		const run = spawnSync(argv[0] as string, argv.slice(1), {
+			env: { ...process.env, ...env },
+			maxBuffer: 64 << 20,
+		});
+		const stdout = run.stdout ?? Buffer.alloc(0);
+		const max = 8 << 20;
+		return {
+			code: run.status,
+			signal: run.signal,
+			stdout: stdout.subarray(0, max).toString('base64'),
+			stderr: (run.stderr ?? Buffer.alloc(0)).subarray(0, 1 << 20).toString('base64'),
+			truncated: stdout.length > max,
+			timed_out: false,
+			ms: 1,
+		};
+	};
 }
