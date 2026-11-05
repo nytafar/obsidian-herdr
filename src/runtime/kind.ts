@@ -10,9 +10,10 @@
  * decides by kind or by target.
  *
  * The herdr kind is `herdrKind.ts`, today's code behind this interface. The
- * herdr-core kind is {@link unavailableKind} until its client, scope and
- * terminal tab land: it can be added, edited and selected, and every attempt
- * to use it says it is not available yet rather than half-connecting.
+ * herdr-core kind is `herdrCoreKind.ts`: its agent list, actions and senders
+ * run over `hc connect`; its terminal tab is not built yet and says so
+ * ({@link HERDR_CORE_TERMINAL_UNAVAILABLE}). {@link unavailableKind} remains
+ * for a kind a build lists but cannot run at all.
  *
  * Features one kind lacks are capabilities, not errors (ADR-0004): the UI
  * reads {@link RuntimeCapabilities} and leaves out what a kind cannot do.

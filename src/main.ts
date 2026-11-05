@@ -49,16 +49,9 @@ import {
 	type RuntimeConfig,
 	type RuntimeKind,
 } from './runtimes';
-import {
-	HERDR_CORE_CAPABILITIES,
-	HERDR_CORE_UNAVAILABLE,
-	NATIVE_NO_SESSION_REASON,
-	unavailableKind,
-	type RuntimeActions,
-	type RuntimeCapabilities,
-	type RuntimeKindAdapter,
-} from './runtime/kind';
+import type { RuntimeActions, RuntimeCapabilities, RuntimeKindAdapter } from './runtime/kind';
 import { createHerdrKind } from './runtime/herdrKind';
+import { createHerdrCoreKind } from './runtime/herdrCoreKind';
 import { RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
@@ -75,7 +68,7 @@ import {
 	stateMatchesPane,
 	switchRenderModeCommand,
 } from './views/terminalView';
-import type { TerminalSetting } from './views/paneTerminal';
+import { spawnEnv, type TerminalSetting } from './views/paneTerminal';
 import {
 	chooseNoteLeaf,
 	decideOpenTarget,
@@ -141,7 +134,7 @@ export default class HerdrPlugin extends Plugin {
 	/**
 	 * One adapter per runtime kind (ADR-0004): everything that differs by kind
 	 * is asked of the adapter of the runtime in question, never decided here.
-	 * herdr-core is listed but unavailable until its client lands (ADR-0005).
+	 * herdr-core runs over `hc connect` (ADR-0005).
 	 */
 	private readonly kinds: Record<RuntimeKind, RuntimeKindAdapter> = {
 		herdr: createHerdrKind({
@@ -158,12 +151,20 @@ export default class HerdrPlugin extends Plugin {
 			// connection's client, and only while that connection is published.
 			isPublished: (scope) => this.connection.current?.scope === scope,
 		}),
-		'herdr-core': unavailableKind(
-			'herdr-core',
-			HERDR_CORE_UNAVAILABLE,
-			HERDR_CORE_CAPABILITIES,
-			NATIVE_NO_SESSION_REASON,
-		),
+		'herdr-core': createHerdrCoreKind({
+			extraPath: () => this.settings.extraPath,
+			spawnEnv: () => spawnEnv(process.env, this.settings.extraPath),
+			vaultPath: () => this.vaultPath(),
+			vaultName: () => this.app.vault.getName(),
+			// Warn, never refuse (ADR-0005): once per connection, and in the
+			// settings status for as long as it lasts.
+			onMismatch: (mismatch, runtime) => {
+				new Notice(
+					`Herdr: ${runtimeDisplayName(runtime)} speaks herdr-core generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Connecting anyway.`,
+				);
+			},
+			currentScope: () => this.connection.current?.scope ?? null,
+		}),
 	};
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();

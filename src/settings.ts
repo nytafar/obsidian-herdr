@@ -917,7 +917,7 @@ function buildRuntimeForm(
 			herdr ? 'Remote herdr binary' : 'Remote hc binary',
 			herdr
 				? 'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.'
-				: 'Path to hc on the remote host. Leave empty for hc on the non-interactive SSH PATH; a full path is safest.',
+				: 'Path to hc on the remote host. Leave empty to use hc or herdr-core from the non-interactive SSH PATH, then ~/.local/bin.',
 			herdr ? DEFAULT_REMOTE_HERDR_BINARY : 'hc',
 			() => runtime.binary,
 			(value) => {
@@ -949,7 +949,7 @@ function buildRuntimeForm(
 			herdr ? 'Herdr binary' : 'Hc binary',
 			herdr
 				? 'Absolute path to the herdr executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH. Set it if Obsidian was launched from the Dock and cannot find herdr.'
-				: 'Absolute path to the hc executable. Leave empty to use hc from the PATH.',
+				: 'Absolute path to the hc executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH.',
 			herdr ? 'Auto-discover' : 'hc',
 			() => runtime.binary,
 			(value) => {
@@ -961,7 +961,7 @@ function buildRuntimeForm(
 		herdr ? 'Workspace ID' : 'Space',
 		herdr
 			? 'Pin this runtime to one herdr workspace. Leave empty to match the workspace labelled like the vault folder, then the one whose panes run inside the vault. Ids are opaque and change between servers.'
-			: 'Pin this runtime to one herdr-app space. Leave empty to match the space named like the vault folder, then the terminals running inside the vault.',
+			: 'Pin this runtime to one herdr-app space, by name or id. Leave empty to match the space named like the vault folder, then the terminals running inside the vault.',
 		'Auto-detect',
 		() => runtime.workspace,
 		(value) => {

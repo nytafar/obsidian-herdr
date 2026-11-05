@@ -1,0 +1,229 @@
+/**
+ * The herdr-core kind (ADR-0005): the headless `hc` runtime, on this machine
+ * or over SSH, behind the {@link RuntimeKindAdapter} seam.
+ *
+ * - **Connection.** A child process on both targets: `hc connect` locally
+ *   (the binary is searched for like herdr's, by the name `hc`), and
+ *   `ssh -T <host> sh -c '… connect'` remotely. There is no tunnel and no
+ *   socket path: `hc connect` follows the core's own socket rules and starts
+ *   the core if none runs. The client (`hc/client.ts`) speaks framed mode,
+ *   subscribes to events and redials on its own.
+ * - **Scope.** `HcScope`: the `herdr-app` document's space named by the
+ *   override or like the vault, else terminals whose cwd is under the vault
+ *   root; federated `machine/tN` terminals are left out (ADR-0004).
+ * - **Prime.** Reads the `herdr-app` document's spaces on every `connected`
+ *   edge and again on its `doc` event. The terminals themselves come with
+ *   the subscription, not with the prime.
+ * - **Terminal tabs** are the next batch: a tab says so rather than starting
+ *   anything ({@link HERDR_CORE_TERMINAL_UNAVAILABLE}).
+ */
+
+import type { ConnectionScope, ConnectionTunnel } from '../connection';
+import { resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
+import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
+import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
+import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
+import { parseSpaces } from '../hc/model';
+import { HcScope } from '../hc/scope';
+import { HcTabLabels } from '../hc/tabLabels';
+import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
+import {
+	HERDR_CORE_CAPABILITIES,
+	HERDR_CORE_TERMINAL_UNAVAILABLE,
+	NATIVE_NO_SESSION_REASON,
+	type RuntimeKindAdapter,
+	type StatusLine,
+} from './kind';
+
+/** The document herdr-app keeps its spaces in. */
+export const HERDR_APP_DOC = 'herdr-app';
+
+export interface HerdrCoreKindHost {
+	/** Colon-separated PATH additions from the settings, read per attempt. */
+	extraPath(): string;
+	/** The environment `hc` or `ssh` is spawned with (PATH widened). */
+	spawnEnv(): NodeJS.ProcessEnv;
+	/** This vault's absolute path on this machine. */
+	vaultPath(): string;
+	/** The vault folder's name, compared against space names. */
+	vaultName(): string;
+	/** The core speaks another generation: warn, never refuse (ADR-0005). */
+	onMismatch(mismatch: HcMismatch, runtime: Readonly<RuntimeConfig>): void;
+	/** The published connection's scope, for the space a started agent joins. */
+	currentScope(): ConnectionScope | null;
+	/** Injected in tests; the real child process otherwise. */
+	spawn?: HcSpawn;
+	timers?: HcTimers;
+}
+
+export type HerdrCoreKind = RuntimeKindAdapter<HcClient, HcScope, ConnectionTunnel>;
+
+/** What `discover` reports for a target; herdr's status fields stay empty. */
+function discovery(binary: DiscoveryResult['binary'], error: string | null): DiscoveryResult {
+	return { binary, status: null, identity: null, socketPath: '', error };
+}
+
+/**
+ * Reads the `herdr-app` spaces into the scope. A core without the document,
+ * or too old for `doc.get`, has no spaces, which leaves the cwd rule; only a
+ * lost connection is an error.
+ */
+export async function loadSpaces(
+	client: Pick<HcClient, 'request'>,
+	scope: Pick<HcScope, 'setSpaces'>,
+	retired: () => boolean,
+): Promise<void> {
+	let value: unknown = null;
+	try {
+		const doc = await client.request<{ value?: unknown } | null>('doc.get', { name: HERDR_APP_DOC });
+		value = doc?.value ?? null;
+	} catch (error) {
+		if (!(error instanceof HcError)) throw error;
+	}
+	if (retired()) return;
+	scope.setSpaces(parseSpaces(value));
+}
+
+/** The transport line as the settings tab shows it. */
+export function transportText(runtime: Readonly<RuntimeConfig>, argv: readonly string[]): string {
+	if (runtime.target === 'ssh') {
+		const binary = runtime.binary.trim() || 'hc';
+		return `ssh -T ${runtime.host} ${binary} connect`;
+	}
+	return argv.join(' ');
+}
+
+export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
+	return {
+		kind: 'herdr-core',
+		unavailable: null,
+		terminalUnavailable: HERDR_CORE_TERMINAL_UNAVAILABLE,
+		capabilities: HERDR_CORE_CAPABILITIES,
+		nativeUnavailable: NATIVE_NO_SESSION_REASON,
+		connection: {
+			discover: async (endpoint) => {
+				const runtime = endpoint.runtime;
+				// The remote binary is the remote's business; only ssh runs here.
+				if (runtime.target === 'ssh') return discovery(null, null);
+				const binary = await resolveHerdrBinary({
+					override: runtime.binary,
+					extraPath: host.extraPath(),
+					binaryName: 'hc',
+				});
+				if (binary) return discovery(binary, null);
+				return discovery(
+					null,
+					runtime.binary.trim()
+						? `hc is not executable at ${runtime.binary.trim()}`
+						: 'hc was not found in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or the login shell PATH',
+				);
+			},
+			discoveryIssue: (endpoint, found) => {
+				const runtime = endpoint.runtime;
+				if (runtime.target === 'ssh') {
+					return runtime.host.length === 0 ? 'the runtime has no SSH host' : null;
+				}
+				return found.binary ? null : (found.error ?? 'hc binary not found');
+			},
+			createTunnel: () => null,
+			createClient: (_socketPath, endpoint, found) => {
+				const runtime = endpoint.runtime;
+				const argv =
+					runtime.target === 'ssh'
+						? sshConnectArgv(runtime.host, runtime.binary)
+						: [found.binary?.path ?? 'hc', 'connect'];
+				return new HcClient({
+					argv,
+					env: host.spawnEnv(),
+					spawn: host.spawn,
+					timers: host.timers,
+					onMismatch: (mismatch) => host.onMismatch(mismatch, runtime),
+				});
+			},
+			createScope: (endpoint, client) => {
+				const runtime = endpoint.runtime;
+				const scope = new HcScope({
+					space: runtime.workspace,
+					vaultPath: host.vaultPath(),
+					vaultName: host.vaultName(),
+					remoteVaultPath: runtime.target === 'ssh' ? runtime.remoteVaultPath : undefined,
+				});
+				// herdr-app wrote its document: spaces or tab names may have moved.
+				// A failure here is a dropped connection, which redials and primes.
+				scope.onDocChanged(() => {
+					void loadSpaces(client, scope, () => client.state === 'disposed').catch(() => undefined);
+				});
+				return scope;
+			},
+			prime: (client, scope, retired) => loadSpaces(client, scope, retired),
+			start: (client, scope) => {
+				client.on('snapshot', (seq, terminals) => scope.reset(seq, terminals));
+				client.on('event', (event) => scope.ingest(event));
+				client.subscribe();
+			},
+		},
+		terminalCommand: () => {
+			throw new Error(HERDR_CORE_TERMINAL_UNAVAILABLE);
+		},
+		createTerminalSession: () => {
+			throw new Error(HERDR_CORE_TERMINAL_UNAVAILABLE);
+		},
+		createActions: (actionHost) =>
+			new HcActions(actionHost, () => {
+				const scope = host.currentScope();
+				return scope instanceof HcScope ? scope : null;
+			}),
+		promptSender: (client) => hcPromptSender(client),
+		keySender: (client) => hcKeySender(client),
+		createTabLabels: (connection) => new HcTabLabels(connection.scope),
+		statusLines: (connection) => (connection ? hcStatusLines(connection) : null),
+	};
+}
+
+/** The settings tab's status for a herdr-core connection. */
+export function hcStatusLines(connection: {
+	endpoint: { runtime: Readonly<RuntimeConfig> };
+	client: Pick<HcClient, 'argv' | 'state' | 'hello' | 'mismatch' | 'lastError'>;
+	scope: Pick<HcScope, 'workspaceId' | 'workspaceLabel' | 'method' | 'size' | 'spacesLoaded'>;
+}): StatusLine[] {
+	const { client, scope } = connection;
+	const runtime = connection.endpoint.runtime;
+	const lines: StatusLine[] = [{ text: `Transport: ${transportText(runtime, client.argv)}` }];
+	const hello = client.hello;
+	if (client.state === 'connected' && hello) {
+		const core = hello.core?.name ? `${hello.core.name}, ` : '';
+		lines.push({
+			text: `Core: ${core}version ${hello.version || 'unknown'}, generation ${hello.generation ?? 'unknown'}`,
+		});
+	} else if (client.state === 'reconnecting') {
+		lines.push({
+			text: `Reconnecting to herdr-core${client.lastError ? `: ${client.lastError.message}` : ''}`,
+			warning: true,
+		});
+	} else {
+		lines.push({ text: 'Connecting to herdr-core…' });
+	}
+	const mismatch = client.mismatch;
+	if (mismatch) {
+		lines.push({
+			text: `Generation mismatch: herdr-core ${mismatch.version || ''} speaks generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Everything still works unless a method is missing.`,
+			warning: true,
+		});
+	}
+	if (runtime.target === 'ssh') {
+		const issue = remoteVaultPathIssue(runtime);
+		if (issue) lines.push({ text: `Folder actions are off: ${issue}.`, warning: true });
+	}
+	if (!scope.spacesLoaded) {
+		lines.push({ text: 'Scope: reading the herdr-app spaces…' });
+	} else if (scope.method === 'cwd') {
+		lines.push({ text: `Scope: ${scope.workspaceLabel ?? scope.workspaceId ?? ''} (no space matched), ${scope.size} agents` });
+	} else if (scope.workspaceId) {
+		lines.push({
+			text: `Space: ${scope.workspaceLabel ?? scope.workspaceId} (${scope.workspaceId}, matched by ${scope.method}), ${scope.size} agents`,
+		});
+	} else {
+		lines.push({ text: 'Scope: nothing matches this vault yet.', warning: true });
+	}
+	return lines;
+}
