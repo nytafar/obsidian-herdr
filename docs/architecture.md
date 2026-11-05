@@ -225,8 +225,9 @@ Everything that differs by kind sits behind `RuntimeKindAdapter`
 (`src/runtime/kind.ts`): the connection driver the coordinator runs (discovery,
 transport, client, scope, and how the scope is primed and fed), the terminal
 tab's argv and bridge, the folder and row actions, the native view's prompt and
-key senders, the tab-label source, the settings status lines, and the
-capabilities the UI reads to leave out what a kind cannot do. The herdr kind
+key senders and its session inputs (`native`, below), the tab-label source,
+the settings status lines, and the capabilities the UI reads to leave out what
+a kind cannot do. The herdr kind
 (`src/runtime/herdrKind.ts`) is the two seams above; the herdr-core kind
 (`src/runtime/herdrCoreKind.ts`) is the next section.
 
@@ -245,10 +246,58 @@ dispose) and `ConnectionScope` (the rows, `get`, `list`, the four scope
 events, `forget`, `refresh`, the taken names), both in `src/connection.ts`.
 What only herdr has stays behind its driver: `session.snapshot` priming and the
 coalesced `agent.list` refresh live in `src/herdr/connect.ts`, the `pane.list`
-lookup is the herdr scope's own, and the native view narrows its session to
-`HerdrClient` and `WorkspaceScope` because only herdr reports agent sessions.
-Pins follow `capabilities.sharedPins`: herdr's stay in the plugin's
+lookup is the herdr scope's own, and so is herdr's session watcher (next
+paragraph). Pins follow `capabilities.sharedPins`: herdr's stay in the plugin's
 `pinnedPanes`, herdr-core's are the runtime's own `herdr.pinned` label.
+
+The native view's inputs are kind-neutral (ADR-0006). A kind with a native
+view sets `capabilities.nativeView` and supplies `RuntimeKindAdapter.native`, a
+`NativeSessionAdapter` with three calls:
+
+- `transcriptAccess(endpoint)`: `local` (this machine's files), `rpc` (over the
+  runtime's own connection) or null (out of reach). The view is offered on
+  capability plus access, not on the target: null on an `ssh` target reads
+  "local panes only", as herdr over SSH always has, and `rpc` on one would be
+  offered.
+- `watcher(connection)`: a `SessionWatcher` over one live connection
+  (`src/native/sessionWatcher.ts`). Its snapshot of a pane is cwd, agent
+  session, an optional transcript path, status and an optional block kind
+  (`trust`, `permission`, `question`, `auth`); it pushes a pane's session on
+  every report (the model deduplicates by value and re-reads the snapshot only
+  when the session or its path moved), status transitions with their block
+  kind, and scope membership.
+- `transcripts(endpoint, connection)`: the `TranscriptSource` for that
+  endpoint, given the published connection when it is that endpoint's. A
+  `local` source needs no connection; the same object is returned for as long
+  as it stays usable, because a model reopens its tail whenever its source
+  changes.
+
+herdr's watcher is `src/herdr/sessionWatcher.ts`: cwd and status from the
+scope, `agent_session` from the raw `PaneInfo`, and rotation read off
+`pane.updated` one microtask after the client's dispatch, so the scope has
+ingested the update first. It reports no transcript path and no block kind; the
+model derives the path from cwd and session, and the waiting card guesses the
+block from the transcript. herdr-core supplies no native adapter yet.
+
+Session models are keyed by runtime id and pane id (`SessionModelRegistry`).
+Each model asks for its own runtime's watcher and source on every connection
+change and never for the published runtime's on its behalf, so one pane id on
+two runtimes is two models. While another runtime is active a model holds no
+watcher: it keeps its turns, reports `connected: false` and status `unknown`
+(which disables the prompt box), and its tab's status line says the runtime is
+not connected. A `local` tail keeps following meanwhile; one whose source went
+with the connection is closed and read again whole when the runtime is back.
+The native surface and the table of contents compare the runtime as well as
+the pane.
+
+The local tail (`LocalTranscriptSource`) reads from a byte offset in pieces of
+1 MB, and treats anything but growth as another file: a new inode, a size below
+its offset, or a first kilobyte that differs from what it read. Any of them
+restarts it at the beginning, and its next batch carries `restart`, on which
+the model drops the turns it held. A `rename` event rebuilds the `fs.watch`:
+measured 2026-11-05 on Linux (`tests/transcriptSource.test.ts`), a watch on a
+file that is renamed over hears nothing of the replacement afterwards, and
+only the 2 s poll would have found it.
 
 ## herdr-core: the framed `hc connect` seam
 
@@ -328,7 +377,8 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   override (`~` expanded), else the binary its last discovery found, else
   searches for `hc` when it starts, so a tab pinned to an hc runtime opens
   whichever runtime is active. The
-  native view stays off for hc panes (ADR-0005, `nativeUnavailable`).
+  native view stays off for hc panes until the session hook of ADR-0006
+  lands (`nativeUnavailable`, and `native: null` on the kind).
   Measured against `hc` 0.1.18 on 2026-11-05 with throwaway `oh-test-*`
   terminals running `sh`, driving the session class from a script, and
   rendering the bytes into `@xterm/headless` and the ghostty-web WASM terminal:

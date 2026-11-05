@@ -58,15 +58,24 @@ send that fails shows a notice.
 
 ## The waiting card
 
-When herdr reports the agent as **blocked**, the view shows a card naming the
-block: the workspace trust prompt at startup, a question the agent asked with
-its options, a plan awaiting approval, or a tool waiting for permission. Every
-card has **Open in terminal**, which switches the tab to the terminal so you
-can answer anything the view does not.
+When the runtime reports the agent as **blocked**, the view shows a card naming
+the block: the workspace trust prompt at startup, a sign-in, a question the
+agent asked with its options, a plan awaiting approval, or a tool waiting for
+permission. Every card has **Open in terminal**, which switches the tab to the
+terminal so you can answer anything the view does not.
+
+Which block it is comes from the runtime when the runtime says. herdr only says
+"blocked", so on herdr the card reads it off the transcript instead: no
+transcript yet is taken to be the trust prompt, and a call waiting for its
+result is the tool asking for permission.
 
 The trust prompt is the one block the view can answer for you: the card offers
 **Trust this folder**, and the **Trust new folders automatically** setting
-presses it without asking. Nothing else is answered on your behalf. Tool
+presses it without asking, but only when the runtime itself identified the
+block as the trust prompt. A block before the session exists looks the same at
+the trust prompt as at a sign-in or another startup dialog, so a guessed one is
+never answered unasked; on herdr the card keeps its button and tells you to
+check the terminal first. Nothing else is answered on your behalf. Tool
 permissions are Claude's own to ask; questions and plan approvals are yours.
 
 ## Table of contents
@@ -90,22 +99,38 @@ Each tab shows either the native view or a terminal, and remembers its choice.
 A tab switched to the terminal keeps the terminal engine it had when it comes
 back, and a vault that had chosen an engine before 0.4.0 keeps its terminals.
 
-## How it works, in one paragraph
+## How it works
 
 The view never reads the terminal screen. It tails the session's transcript
-file, which Claude Code writes under its projects folder, derived from the
-pane's working directory and the agent session id that herdr reports. Prompts
-go out through herdr as an agent prompt. The view follows the pane's agent
-session: `/clear` empties it, `--resume` refills it. Two tabs on the same pane
-and the table of contents share one session model, so a transcript is tailed
-once. Unknown transcript line types are kept and render nothing, so a Claude
-Code update does not break the view. Details and the verified facts are in
+file, which Claude Code writes under its projects folder: the path the runtime
+reports, or one derived from the pane's working directory and the agent
+session id, which is what herdr gives. Prompts go out through the runtime, on
+herdr as an agent prompt. The view follows the pane's agent session: `/clear`
+empties it, `--resume` refills it, and a transcript replaced or truncated
+under it is read again from the start. Two tabs on the same pane and the table
+of contents share one session model, so a transcript is tailed once; the same
+pane id on another runtime is another pane with a model of its own. Unknown
+transcript line types are kept and render nothing, so a Claude Code update does
+not break the view. Details and the verified facts are in
 [architecture.md](architecture.md).
+
+What the view reads comes through the runtime's kind: a session watcher for
+the pane's session, cwd and status, and a transcript source for the files.
+herdr supplies local ones; herdr-core will supply its own (ADR-0006).
+
+## Switching runtimes
+
+A native tab belongs to the runtime it was opened on. When you switch the
+active runtime, a tab on the other one keeps what it shows, its status line
+says the runtime is not connected, and its prompt box is disabled; it never
+shows a pane of the newly active runtime that happens to have the same id. It
+picks up again when its runtime is active once more.
 
 ## Limits
 
-- **Local panes only.** A remote herdr keeps the terminal view; the setting
-  says so. The transcript source is designed so an SSH adapter can slot in.
+- **Local panes only, on herdr.** A remote herdr keeps the terminal view; the
+  setting says so. The view is offered wherever a runtime's kind can read its
+  transcripts, so a kind that reads them over its connection can slot in.
 - **Claude Code only** for now. Other agent kinds show a terminal. The
   normalized event model is what a second backend would map into.
 - Questions and plan approvals are answered in the terminal; the card takes
