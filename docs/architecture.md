@@ -218,12 +218,96 @@ later gets a generated `rt-…` id that never follows an edit.
 
 Everything that differs by kind sits behind `RuntimeKindAdapter`
 (`src/runtime/kind.ts`): the connection driver the coordinator runs (discovery,
-transport, client, scope, subscriptions), the terminal tab's argv and bridge,
-the folder and row actions, the native view's prompt and key senders, and the
+transport, client, scope, and how the scope is primed and fed), the terminal
+tab's argv and bridge, the folder and row actions, the native view's prompt and
+key senders, the tab-label source, the settings status lines, and the
 capabilities the UI reads to leave out what a kind cannot do. The herdr kind
-(`src/runtime/herdrKind.ts`) is the two seams above. herdr-core is listed and
-selectable but unavailable until its client lands: a connect attempt fails at
-once with that reason and creates nothing.
+(`src/runtime/herdrKind.ts`) is the two seams above; the herdr-core kind
+(`src/runtime/herdrCoreKind.ts`) is the next section.
+
+What the coordinator, the sessions and the views hold is the shared slice:
+`ConnectionClient` (ping, request, the `connected`/`disconnected` edges,
+dispose) and `ConnectionScope` (the rows, `get`, `list`, the four scope
+events, `forget`, `refresh`, the taken names), both in `src/connection.ts`.
+What only herdr has stays behind its driver: `session.snapshot` priming and the
+coalesced `agent.list` refresh live in `src/herdr/connect.ts`, the `pane.list`
+lookup is the herdr scope's own, and the native view narrows its session to
+`HerdrClient` and `WorkspaceScope` because only herdr reports agent sessions.
+Pins follow `capabilities.sharedPins`: herdr's stay in the plugin's
+`pinnedPanes`, herdr-core's are the runtime's own `herdr.pinned` label.
+
+## herdr-core: the framed `hc connect` seam
+
+ADR-0005 records the seam; the API reference it rests on is the finding
+`herdr-core-api` in the docs root (`findings/herdr-core-api.md`). The facts the
+code relies on, and what was measured building it against `hc` 0.1.18 on this
+machine and 0.1.17 on `asher` on 2026-11-05:
+
+- **Transport.** A child process with plain pipes on both targets:
+  `hc connect` locally (the binary is searched for like herdr's, by the name
+  `hc`), `ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o
+  ServerAliveInterval=15 -o ServerAliveCountMax=4 <host> sh -c '…'` remotely,
+  where the script is the runtime's binary or herdr-core's own lookup (`hc` or
+  `herdr-core` on the PATH, then `~/.local/bin/herdr-core`), as the core dials
+  machines itself. Measured: asher's non-interactive SSH PATH has no `hc`, so
+  the fallback is what finds it. `hc connect` starts the core if none runs.
+- **Framed mode** (`src/hc/frames.ts`, `src/hc/connection.ts`). `hello
+  {generation: 1, framed: true}` goes as one plain line; its reply is the last
+  plain line and the decoder switches to frames inside the same chunk. Frames
+  are `[channel u32 LE][kind u8][len u32 LE][payload]`, at most 16 MiB; channel
+  0 is JSON-RPC, concurrent. `unsupported_generation` is retried without a
+  generation and, like any generation other than 1, reported as a mismatch
+  (a notice and a status line), never refused.
+- **Early frames.** The core can put a channel's first frame right behind the
+  reply that names it; frames for an unregistered channel are buffered and
+  handed over on registration, so neither an attach's first paint nor the
+  first event is lost.
+- **Events** (`src/hc/streams.ts`). `events.subscribe {}` answers with `{seq,
+  terminals, channel}`; the channel carries JSON lines, several per DATA frame
+  and split across frames, so it goes through the line splitter. Credit is 1
+  MiB up front, then each frame's length once handled. `missed` replaces the
+  whole state. Measured: a heartbeat came 15002 ms after subscribing, and the
+  client treats 50 s of silence as a dropped stream.
+- **Reconnect** (`src/hc/client.ts`). When the process exits, the event channel
+  closes or the watchdog fires, the client redials with a backoff (1 s,
+  doubling to 30 s), says `hello` again, resubscribes and emits `connected`,
+  which re-primes. seq restarts per core process, so the new snapshot replaces
+  everything. Measured: killing the `hc connect` child redialled after 1 s and
+  the row came back from the new snapshot.
+- **Scope** (`src/hc/scope.ts`, `src/hc/model.ts`). Spaces come from `doc.get
+  {name: "herdr-app"}` (live: `{value: {spaces: [{id, name, folder, tabs:
+  [{id, name, root}]}]}, version}`), re-read on its `doc` event; a core without
+  the document has no spaces. Order: the runtime's space (id or name), the
+  space named like the vault, then terminals whose cwd (`foreground.cwd`, else
+  `cwd`) is under the vault root. Members of a space carry `herdr.space=<id>`.
+  The scope stays unresolved until the document has been read once. Terminals
+  addressed `machine/tN` (federated) are left out on both targets, and so are
+  finished ones. Rows group by `herdr.tab`, labelled with the space's tab
+  names, or the tab's 1-based position when unnamed, as herdr-app writes
+  `where` ("sysadmin / 1").
+- **Agents and status.** A terminal is an agent when it reported `status.app`
+  (`claude-code` is shown as `claude`) or its foreground program is a known
+  agent, looking through `node`/`bun`/`python`/`env`. Measured on asher: `t7`
+  and `t8` never reported (`status: null`), have `env …` in `argv` and
+  `claude` in the foreground, and show as claude with status unknown. Status
+  is ADR-0005's mapping: `working`; `blocked`/`error` as blocked; `done`/`idle`
+  as done when `turn > herdr.seen`, else idle, and as reported without the
+  label; never reported as unknown. Measured: asher `t1` reports `done` at turn
+  17 with `herdr.seen=17`, so it shows idle, as herdr-app shows it.
+- **Actions** (`src/hc/actions.ts`). Start agent is `terminal.run {line, cwd,
+  name, labels}` with `herdr.seen=0` and `herdr.space` when a space resolved;
+  the line runs the agent in the user's own interactive shell and leaves that
+  shell when it exits (`SHELL="${SHELL:-/bin/sh}"; export SHELL; exec "$SHELL"
+  -ic '<agent>; exec "$SHELL" -i'`). Measured with `true` as the program: the
+  terminal's foreground became `/usr/bin/bash -i` in the asked cwd. Close is
+  `terminal.kill` then `terminal.rm`; `not_found` counts as closed. Pins write
+  `herdr.pinned=1` and remove it with an empty value: measured, the `labels`
+  event came back and the row repainted pinned, then unpinned. Prompts are
+  `terminal.send {terminal, text}`; keys are `terminal.keys` with hc's names
+  (`Down` becomes `down`, `C-c` becomes `ctrl+c`).
+- **Terminal tabs** are not built yet: a tab on a herdr-core pane says so at
+  once (`terminalUnavailable`). The attach seam they will use is
+  `attachTerminal` in `src/hc/streams.ts`, one `HcConnection` per tab.
 
 ## The settings tab
 

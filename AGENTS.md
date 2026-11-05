@@ -10,10 +10,14 @@ plugin) holds general plugin conventions.
 
 - Plugin id `herdr`, name `Herdr`, `isDesktopOnly: true`. Ship only `main.js`,
   `manifest.json`, `styles.css`. No helper files, no Python, no native addons.
-- Terminal seam is `herdr terminal session control|observe` over child_process
-  pipes with NDJSON. Not a PTY, not `herdr agent attach`, not the binary client
-  socket. If the seam proves insufficient, write it up as a finding in the docs
-  root before changing it.
+- Each runtime kind has its own seams, over a socket or child_process pipes,
+  never a PTY or a native addon. **herdr:** the terminal seam is `herdr terminal session
+  control|observe` with NDJSON — not `herdr agent attach`, not the binary
+  client socket. **herdr-core:** `hc connect` (or `ssh -T <host> … connect`)
+  in framed mode, JSON-RPC on channel 0, events and attach on their own
+  channels — ADR-0005, the recorded exception, resting on the finding
+  `herdr-core-api`. If a seam proves insufficient, write it up as a finding in
+  the docs root before changing it.
 - No code from Whip (KaminariOS/whip, AGPL). Read it for behaviour only.
 - Obsidian guidelines are rules: `this.app` never global `app`; `registerEvent`,
   `registerDomEvent`, `registerInterval` for everything that must be torn down;
@@ -47,6 +51,11 @@ plugin) holds general plugin conventions.
   observe --help` between the two binaries. Do not run `herdr update` from an
   agent session, and do not stop or restart the server: sessions run inside
   it.
+- herdr-core: `hc` 0.1.18 (generation 1) at `~/.local/bin/hc`, a symlink to
+  `herdr-core`; `asher` has 0.1.17 in `/root/.local/bin`, not on its
+  non-interactive SSH PATH. Live checks may start terminals named `oh-test-*`
+  here and remove only those; never `hc update` or `hc server stop|restart`,
+  and nothing is started on `asher`.
 - Remote test host: `lasse@xl`, herdr at `/home/lasse/.local/bin/herdr` (not on
   the non-interactive PATH), vault at `/home/lasse/hvelv`.
 - Whip checkout for reading: `~/code/herdr/whip` (upstream fetched as FETCH_HEAD).

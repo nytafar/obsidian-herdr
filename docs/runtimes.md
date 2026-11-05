@@ -114,16 +114,65 @@ remote host by the plugin unless you start an agent.
 
 ## herdr-core
 
-A herdr-core runtime can be added and made active already, with its binary
-(`hc` on the PATH when empty), and for an SSH host its host and remote vault
-path, plus a **Space** to pin it to. This version cannot connect to one yet:
-choosing it says so in the agent list, the settings status and a notice, and
-opens nothing. Its tabs, once it connects, will be terminals only: herdr-core
-has no tabs, splits, rename or pane focus, and reports no agent session for the
-native view, so those actions are left out rather than offered and refused.
+A herdr-core runtime connects to `hc`, the headless herdr runtime, through
+`hc connect`: on this machine directly, on another over `ssh -T`. There is no
+socket to set and nothing to forward.
 
-A local herdr-core runtime will show only this machine's terminals. To see hc on
-another machine, add an SSH runtime for it.
+### Setting one up
+
+1. In **Settings → Herdr → Runtimes**, add a runtime and set **Kind** to
+   herdr-core (hc).
+2. **This machine:** leave **Hc binary** empty to search Homebrew,
+   `/usr/local/bin`, `~/.local/bin` and the login shell's PATH, or give the
+   full path. `hc connect` starts the core if none runs.
+3. **SSH host:** set the host (key login without a prompt; the plugin uses
+   `BatchMode=yes`), the **Remote vault path**, and leave **Remote hc binary**
+   empty unless hc lives somewhere unusual: the plugin then looks for `hc` or
+   `herdr-core` on the non-interactive PATH and in `~/.local/bin`, as the core
+   does when it adds a machine. hc must be installed on the host; nothing is
+   needed locally but `ssh`.
+4. **Space** is optional. Empty matches the herdr-app space named like the
+   vault folder, else every terminal whose working directory is inside the
+   vault. Set it to a space's name or id to pin the runtime to that space.
+5. Make it active from the list, the agent list's switcher or **Switch
+   runtime**.
+
+The settings status shows the transport, the core's name, version and
+generation, and which space or folder the list is scoped to. A core that
+speaks another protocol generation is reported there and in a notice, and the
+plugin connects anyway. A missing binary or an unreachable host is reported
+the same way as for herdr.
+
+### What works
+
+- The agent list shows the space's (or the vault's) agent terminals with live
+  status: a terminal counts as an agent when the program reports its status
+  (`claude-code`, `codex`, …) or a known agent runs in it. Done and idle follow
+  herdr-app's shared `herdr.seen` label, so an agent seen in herdr-app is not
+  "done" here either.
+- Pins are the shared `herdr.pinned` label: pinning in Obsidian pins in
+  herdr-app and on the phone, and the other way round.
+- **Start agent here** runs the default agent in the folder, in your own shell,
+  labelled for herdr-app's space when one matched. **Terminate agent** kills
+  and removes the terminal.
+- The connection comes back on its own after the core restarts or the SSH
+  line drops.
+
+herdr-core has no tabs, splits, rename or pane focus, and reports no agent
+session for the native view, so those are left out rather than offered and
+refused. Terminal tabs for herdr-core agents are not built yet: opening one
+says so.
+
+A herdr-core runtime shows only its own machine's terminals, never the
+`machine/tN` ones the core federates from elsewhere. To see hc on another
+machine, add an SSH runtime for it.
+
+### Checking by hand
+
+```bash
+hc ls                      # this machine
+ssh -T <host> hc connect   # should wait silently; Ctrl-D to leave
+```
 
 ## Upgrading from the local/remote settings
 
