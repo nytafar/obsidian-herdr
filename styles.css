@@ -1027,3 +1027,16 @@
 .herdr-terminal-host .xterm-strikethrough {
 	text-decoration: line-through;
 }
+
+/* The Claude session hook's review modal (ADR-0006): the exact script and entry it writes. */
+.herdr-hook-preview {
+	max-height: 16em;
+	overflow: auto;
+	padding: var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	white-space: pre;
+	user-select: text;
+}

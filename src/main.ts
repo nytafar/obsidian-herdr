@@ -79,6 +79,9 @@ import {
 import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
+import { HcClient } from './hc/client';
+import { hcHookMachine } from './sessionHook/installer';
+import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
 
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
@@ -191,6 +194,36 @@ export default class HerdrPlugin extends Plugin {
 	/** Why runtimes of this kind cannot connect in this build, or null. */
 	kindUnavailable(kind: RuntimeKind): string | null {
 		return this.kindOf(kind).unavailable;
+	}
+
+	/**
+	 * The Claude session hook's machine (ADR-0006): the published herdr-core
+	 * connection's, else null. Read per use, so a reconnect is never missed.
+	 */
+	private sessionHookTarget(): SessionHookTarget | null {
+		const current = this.connection.current;
+		const client = current?.client;
+		if (!current || current.endpoint.runtime.kind !== 'herdr-core' || !(client instanceof HcClient)) return null;
+		return {
+			runtimeName: runtimeDisplayName(withLiveName(this.settings, current.endpoint.runtime)),
+			machine: hcHookMachine((method, params) => client.request(method, params)),
+		};
+	}
+
+	/** The hook's review-and-confirm modal; `onDone` runs after a write. */
+	openSessionHook(onDone?: () => void): void {
+		const target = this.sessionHookTarget();
+		if (!target) {
+			new Notice('Herdr: connect to a herdr-core runtime first.');
+			return;
+		}
+		new SessionHookModal(this.app, target, onDone).open();
+	}
+
+	/** The hook's status line for the runtime form, or null while not connected. */
+	async sessionHookStatus(): Promise<{ text: string; warning: boolean } | null> {
+		const target = this.sessionHookTarget();
+		return target ? sessionHookStatusLine(target) : null;
 	}
 
 	/**
@@ -859,6 +892,16 @@ export default class HerdrPlugin extends Plugin {
 			id: 'switch-runtime',
 			name: 'Switch runtime',
 			callback: () => this.openRuntimeSwitcher(),
+		});
+		// ADR-0006: offered while the active runtime is herdr-core.
+		this.addCommand({
+			id: 'claude-session-hook',
+			name: 'Install or remove the Claude session hook',
+			checkCallback: (checking) => {
+				if (activeRuntimeOf(this.settings).kind !== 'herdr-core') return false;
+				if (!checking) this.openSessionHook();
+				return true;
+			},
 		});
 		this.addFolderCommand('new-tab-here', 'New tab here', 'tabs', (path) =>
 			this.actions.newTabHere(path),

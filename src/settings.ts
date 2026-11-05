@@ -679,6 +679,15 @@ export interface SettingsCallbacks {
 	editRuntime: (id: string | null) => void;
 	/** Asks before something destructive; resolves true to go ahead. */
 	confirm: (text: { title: string; body: string; confirm: string }) => Promise<boolean>;
+	/**
+	 * The active herdr-core runtime's Claude session hook (ADR-0006): its
+	 * status line (null while not connected), and the review modal, which
+	 * calls back after it wrote something.
+	 */
+	sessionHook?: {
+		status: () => Promise<{ text: string; warning: boolean } | null>;
+		review: (onDone: () => void) => void;
+	};
 }
 
 /**
@@ -969,6 +978,8 @@ function buildRuntimeForm(
 		},
 	);
 
+	if (!herdr) buildSessionHookSetting(containerEl, isActive, callbacks);
+
 	problems = new Setting(containerEl).setName('Problems').setClass('herdr-runtime-problems');
 	check();
 
@@ -978,6 +989,30 @@ function buildRuntimeForm(
 			.setCta()
 			.onClick(() => callbacks.editRuntime(null)),
 	);
+}
+
+/**
+ * The Claude session hook on a herdr-core runtime's machine (ADR-0006): a
+ * status line and the button to the review modal, for the active runtime
+ * only, since it acts over the runtime's connection.
+ */
+function buildSessionHookSetting(containerEl: HTMLElement, isActive: boolean, callbacks: SettingsCallbacks): void {
+	const hook = isActive ? callbacks.sessionHook : undefined;
+	const purpose = 'Lets the native view follow Claude in this runtime’s terminals.';
+	const row = new Setting(containerEl)
+		.setName('Claude session hook')
+		.setDesc(`${purpose} ${hook ? 'Checking…' : 'Use this runtime to see or change it on its machine.'}`);
+	row.addButton((button) =>
+		button
+			.setButtonText('Review')
+			.setDisabled(!hook)
+			.onClick(() => hook?.review(() => callbacks.redisplay())),
+	);
+	if (!hook) return;
+	void hook.status().then((line) => {
+		row.setDesc(`${purpose} ${line ? line.text : 'Not connected to it yet.'}`);
+		row.descEl.toggleClass('mod-warning', line?.warning === true);
+	});
 }
 
 /**
@@ -1557,6 +1592,10 @@ export class HerdrSettingTab extends PluginSettingTab {
 				this.display();
 			},
 			confirm: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
+			sessionHook: {
+				status: () => plugin.sessionHookStatus(),
+				review: (onDone) => plugin.openSessionHook(onDone),
+			},
 		};
 	}
 

@@ -312,6 +312,46 @@ describe('runtimes section (ADR-0004)', () => {
 		);
 	});
 
+	it('shows the Claude session hook on the active herdr-core runtime only, and opens its review', async () => {
+		const settings = settingsOf();
+		const core = { ...newRuntime('herdr-core', 'local', []), name: 'Core' };
+		settings.runtimes.push(core);
+		const { calls, callbacks } = recorder({ editing: core.id, unavailable: '' });
+		callbacks.kindUnavailable = () => null;
+		callbacks.sessionHook = {
+			status: () => Promise.resolve({ text: 'Outdated: version 0 is installed.', warning: true }),
+			review: (onDone) => {
+				calls.push('review');
+				onDone();
+			},
+		};
+
+		// Not the active runtime: nothing to act over, so the button is off.
+		const inactive = settingsContainer();
+		buildRuntimesSection(inactive, settings, callbacks);
+		const off = settingNamed(inactive, 'Claude session hook');
+		expect(off.desc).toMatch(/Use this runtime to see or change it/);
+		expect((off.control() as ButtonComponent).disabled).toBe(true);
+
+		settings.activeRuntime = core.id;
+		const el = settingsContainer();
+		buildRuntimesSection(el, settings, callbacks);
+		const row = settingNamed(el, 'Claude session hook');
+		expect(row.desc).toMatch(/Checking/);
+		await Promise.resolve();
+		expect(row.desc).toBe('Lets the native view follow Claude in this runtime’s terminals. Outdated: version 0 is installed.');
+		expect(row.descEl.classes.has('mod-warning')).toBe(true);
+		const button = row.control() as ButtonComponent;
+		expect(button.disabled).toBe(false);
+		await button.clickHandler?.();
+		expect(calls).toEqual(['review', 'redisplay']);
+
+		// A herdr runtime has no such row.
+		const herdr = settingsContainer();
+		buildRuntimesSection(herdr, settingsOf(), recorder({ editing: 'local' }).callbacks);
+		expect(settingNames(herdr)).not.toContain('Claude session hook');
+	});
+
 	it('reconnects for a field of the active runtime, and only saves for another', async () => {
 		const settings = twoRuntimes();
 		const xl = 'ssh:lasse@xl:~/.config/herdr/herdr.sock';

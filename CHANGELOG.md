@@ -24,6 +24,12 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   herdr client. You can start and terminate agents from the plugin. Tabs,
   splits, rename and focus don't exist in hc and are hidden. The native view
   is offered for herdr panes only, because hc reports no agent session.
+- **Claude session hook** for herdr-core: a command and a button in the
+  runtime's settings install, update or remove a Claude Code `SessionStart`
+  hook on the runtime's machine, local or over SSH. It labels each hc
+  terminal with its Claude session (`obsidian-herdr.session`). The modal shows
+  the exact script and settings entry first and changes nothing else in the
+  Claude settings. The native view does not read the label yet.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

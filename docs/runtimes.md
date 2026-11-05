@@ -175,8 +175,39 @@ the same way as for herdr.
   herdr-app and on the phone.
 
 herdr-core has no tabs, splits, rename or pane focus, and reports no agent
-session for the native view, so those are left out rather than offered and
-refused; herdr-core panes always open in the terminal view.
+session of its own for the native view, so those are left out rather than
+offered and refused; herdr-core panes open in the terminal view. The Claude
+session hook below is what will let the native view follow Claude there; the
+plugin does not read its label yet.
+
+### The Claude session hook
+
+A Claude Code `SessionStart` hook labels the hc terminal Claude runs in with
+its session (ADR-0006). It runs at every start, resume, `/clear`, compact and
+fork. It is installed on the machine the runtime runs on, through the
+runtime's own connection: for an SSH runtime, on the remote host.
+
+1. Make the herdr-core runtime active.
+2. Run **Install or remove the Claude session hook** from the command palette,
+   or press **Review** on **Claude session hook** in the runtime's form,
+   which also shows whether it is installed, outdated or absent.
+3. The modal shows the exact script and the exact `SessionStart` entry, and
+   where they go: `$CLAUDE_CONFIG_DIR` as the core's environment has it, else
+   `~/.claude`. Nothing is written until you press **Install** (or
+   **Update**).
+
+It writes `hooks/obsidian-herdr-session.sh` and one entry in `settings.json`,
+and changes nothing else in that file. Herdr's own hook and every other hook
+stay as they are. **Remove** takes out that entry and deletes the script. A
+settings file that is not valid JSON is refused, not repaired. If the file
+changes between the modal opening and the click, nothing is written.
+
+The hook needs only `sh` and `awk`. It does nothing outside an hc terminal,
+for subagents, and for a Claude started by another Claude.
+
+Check by hand from inside an hc terminal running Claude:
+`hc get "$HC_TERMINAL_ID" --json` shows `labels["obsidian-herdr.session"]`.
+
 
 A herdr-core runtime shows only its own machine's terminals, never the
 `machine/tN` ones the core federates from elsewhere. To see hc on another

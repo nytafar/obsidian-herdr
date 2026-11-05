@@ -442,6 +442,97 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   looking away and back raised it to 1 again. The agent list reads the label
   through the scope, so the done row clears; herdr rows are unchanged.
 
+## herdr-core: the Claude session hook
+
+ADR-0006 puts a herdr-core terminal's Claude session on a label written by a
+Claude Code `SessionStart` hook. This batch writes the label and installs the
+hook. Reading it for the native view is the next step. Code is in
+`src/sessionHook/`: `hookScript.ts` (the script and its one entry),
+`claudeSettings.ts` (merge, unmerge, status), `installer.ts` (paths, plan,
+apply over hc), `label.ts` (the parser), `modal.ts` (the consent step).
+
+- **The label.** Key `obsidian-herdr.session`, value one JSON object
+  `{"v":1,"session":"<id>","pid":<Claude's pid>,"transcript":"<absolute path>"}`.
+  `parseSessionLabel(value)` / `sessionLabelOf(labels)` return
+  `{sessionId, pid, transcriptPath}` or null. They ignore unknown fields,
+  read any integer `v` ≥ 1, and require a positive integer pid and an
+  absolute transcript path. Parsing does not mean trusting: the caller still
+  compares `pid` with the terminal's `foreground.pid`.
+- **Measured inside the hook** (Claude Code 2.1.318, hc 0.1.18, a throwaway
+  `oh-test-*` terminal running bash, then `CLAUDE_CONFIG_DIR=<tmp> claude`):
+  - `HC_TERMINAL_ID` (`t1d`) and `HC_TERMINAL_SOCKET` reach the hook.
+  - `CLAUDE_PID` was 2385349: Claude's pid, equal to `$PPID` there and to
+    hc's `foreground.pid` for the terminal.
+  - `CLAUDE_CODE_SESSION_ID` equals the input's `session_id`.
+  - `CLAUDE_CODE_CHILD_SESSION=1` is set in **every** hook's environment, a
+    top-level Claude's included: Claude sets it for its children, and the
+    hook is one. Claude's own initial environment (`/proc/<pid>/environ`)
+    does not have it. hc terminals do not inherit it from the caller of
+    `hc run` (the core's environment is the base), but they would if the core
+    itself had been started from inside a Claude.
+  - Claude's tool shells run in a session of their own with no terminal
+    (`TPGID -1`, `TT ?`). The top-level Claude leads the terminal's
+    foreground process group (`PGID == TPGID`).
+  - The hook input for a start is flat: `session_id`, `transcript_path`,
+    `cwd`, `hook_event_name: "SessionStart"`, `source`, `model`.
+- **The child rule, as measured.** Because of the above, the hook cannot use
+  `CLAUDE_CODE_CHILD_SESSION`, which would skip every session. It skips a
+  Claude that is not in the terminal's foreground process group instead
+  (`/proc/<pid>/stat` fields pgrp and tpgid, else `ps -o pgid= -o tpgid=`),
+  which is what a Claude started from another one's tool shell is. Measured:
+  `HC_TERMINAL_ID=t1d claude -p` from a tty-less shell started a session (its
+  transcript appeared) and left t1d's label alone. The same `claude -p` in the
+  foreground of a second `oh-test-*` terminal labelled that terminal. When the
+  group cannot be read, the hook writes the label, and the plugin's pid check
+  still decides. Subagents (`agent_id` non-empty, as herdr checks it) are
+  skipped too.
+- **Live, end to end.** The installer, run over `hc connect` into a throwaway
+  `CLAUDE_CONFIG_DIR` seeded with this machine's real `hooks` section
+  (herdr's entry, repowise's, the PreToolUse and PostToolUse ones), added
+  exactly one `SessionStart` group, and a second install wrote nothing.
+  `claude` in the terminal then gave `hc get`:
+  `obsidian-herdr.session={"v":1,"session":"3dd92716-…","pid":2467640,"transcript":"…/3dd92716-….jsonl"}`,
+  with pid equal to `foreground.pid`. `hc send … /clear` rotated it to
+  `f540889b-…` with the same pid. Remove left the settings byte-identical to
+  the pre-install copy and deleted the script.
+- **The script** is POSIX `sh` plus `awk`: no python3 or jq. It reads the
+  input with a small JSON reader, not regexes over the raw text: top-level
+  string fields only, `\"` `\\` `\/` decoded, nested values skipped whole,
+  and a value with a control character or a `\u` escape refused. Claude's
+  JSON writes non-ASCII raw, so only control characters would be escaped. It
+  was checked with gawk (also `--posix` and `--traditional`) and with
+  busybox ash and awk (alpine:3). busybox `ps` has no `tpgid`, but Linux
+  reads `/proc` first. It writes through `hc label` (found as `hc`, then
+  `herdr-core`, then `~/.local/bin/herdr-core`) and prints nothing: a
+  `SessionStart` hook's stdout becomes model context.
+- **The entry** is one group, `{"matcher":"^(startup|resume|clear|compact|fork)$","hooks":[{"type":"command","command":"sh <absolute script path>","timeout":10}]}`.
+  Run by `sh`, so no exec bit is needed (`file.write` creates 0644). The
+  path is absolute, so a cswap session dir works: there `settings.json` is a
+  symlink to `~/.claude/settings.json`, but `hooks/` is not shared. cswap
+  `execvpe`s Claude, so the pid check holds under it.
+- **Install and remove.**
+  - Both go over the active herdr-core runtime's own connection, local and
+    SSH alike: `machine.exec sh -c 'printf … "$HOME" "${CLAUDE_CONFIG_DIR:-}"'`
+    for the paths (the core's environment, the one its terminals inherit),
+    and `file.read`/`file.write` for the files. `file.write` swaps atomically,
+    keeps the mode and follows a symlinked settings file (measured: a write
+    through a symlink kept the link and the target's 0600). Deleting the
+    script is `machine.exec rm -f --`, and only while it carries the
+    `OBSIDIAN_HERDR_HOOK_VERSION` marker.
+  - Ours is any command hook whose command names `obsidian-herdr-session.sh`.
+    Install replaces our group where it stands, or appends one, and never
+    joins another group. It is idempotent. It keeps the file's indentation
+    and final newline, creates a missing or blank file, and refuses text it
+    cannot parse, a non-object root, a non-object `hooks` or a non-list
+    `SessionStart`. Remove takes out only our hooks, plus a group,
+    `SessionStart` list or `hooks` object that this leaves empty.
+  - The modal shows the plan built from what it read. Applying reads both
+    files again and refuses if either changed. Install writes the script
+    before the entry, remove takes out the entry before the script.
+  - Status: absent, installed (our exact entry and script), outdated (an
+    older marker, a missing or edited script, a different entry), or
+    unreadable settings.
+
 ## The settings tab
 
 The tab itself is an assembler. Its section builders — runtimes, connection,
@@ -451,7 +542,8 @@ over a container, the settings object and a bundle of callbacks, listed in
 callbacks bundle is the whole of what a control may do besides write into the
 settings: save, save and reconnect, redisplay, refresh the agent list or the
 folder hover buttons, hand one changed setting to the open terminals, or switch,
-open and remove runtimes. Which runtime's form is open is the tab's state, handed
+open and remove runtimes, or check and review the active herdr-core runtime's
+Claude session hook. Which runtime's form is open is the tab's state, handed
 in through the same bundle. The tab
 builds that bundle from the plugin once and then just runs the list, which is
 what makes a section renderable on a bare container in a test.
