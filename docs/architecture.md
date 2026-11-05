@@ -360,8 +360,14 @@ machine and 0.1.17 on `asher` on 2026-11-05:
     `0` is not; either goes to the program as `CSI I`/`CSI O` only when it
     enabled 1004. Measured: a program with 1004 set read `ESC[I` then `ESC[O`
     from one tab's FOCUS 1 and 0, and FOCUS 1 took the size from a second
-    controller (70x20 to 90x25) while FOCUS 0 left it there. Nothing is sent
-    on an attach, so a redial stays `resumed`.
+    controller (70x20 to 90x25) while FOCUS 0 left it there. A tab focused
+    while `hc connect` is still dialling (the view focuses the renderer on
+    every start) owes the program that focus: it is sent as FOCUS 1 right
+    after the first attach that takes the size, which already made the tab
+    the leader, so it costs no size; on a placeholder grid it is sent with the
+    first real RESIZE instead. A focus lost again before then is not owed.
+    Nothing is sent on a `resumed` attach (a redial, a restart, a repaint),
+    so those never take the size.
   - **Size ownership.** A control attach at 80x24 resized the terminal from
     its headless 200x120 to 80x24 at once; RESIZE 100x30 made it 100x30. A
     second controller at 90x25 took the size (last active viewer wins); the

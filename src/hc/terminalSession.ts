@@ -249,6 +249,13 @@ export class HcTerminalSession {
 	/** `finished` arrived; the stream drains to the core's CLOSE, then the session ends with this. */
 	private drainReason: string | null = null;
 	private drainTimer: unknown = null;
+	/** Whether the tab has the keyboard focus, as last told; kept while there is no stream. */
+	private hasFocus = false;
+	/**
+	 * A focus gained while there was no stream, or no real size, still owed
+	 * to the program; paid once this tab is the size leader anyway.
+	 */
+	private focusOwed = false;
 	private disposing: Promise<void> | null = null;
 
 	constructor(options: HcTerminalSessionOptions) {
@@ -332,6 +339,8 @@ export class HcTerminalSession {
 		this.noteOwnSize();
 		stream.resize(this.lastCols, this.lastRows);
 		if (cellChanged && cell) stream.facts({ cell });
+		// The RESIZE just made this tab the leader, so the focus costs nothing.
+		this.payFocus(stream);
 		return true;
 	}
 
@@ -342,12 +351,27 @@ export class HcTerminalSession {
 	 * 1004, so the renderer's own focus reports must not go as well.
 	 */
 	focus(gained: boolean): boolean {
+		if (this.options.mode !== 'control' || this.disposed) return false;
+		this.hasFocus = gained;
+		this.focusOwed = false;
 		const stream = this.stream;
-		if (this.options.mode !== 'control' || !stream || this.disposed) return false;
-		if (gained && !this.sized) return false;
+		if (gained && (!stream || !this.sized)) {
+			// Told on the first attach that takes the size, or with the first
+			// real size; never on a resumed one, which must not take it.
+			this.focusOwed = true;
+			return false;
+		}
+		if (!stream) return false;
 		if (gained) this.noteOwnSize();
 		stream.focus(gained);
 		return true;
+	}
+
+	/** Sends a focus gained before the stream (or a real size) was there. */
+	private payFocus(stream: HcAttachStream): void {
+		if (!this.focusOwed || !this.hasFocus || !this.sized) return;
+		this.focusOwed = false;
+		stream.focus(true);
 	}
 
 	/** hc has no scroll method: the renderer scrolls its own scrollback. */
@@ -519,6 +543,9 @@ export class HcTerminalSession {
 		this.backoff = RETRY_INITIAL_MS;
 		const record = parseTerminal(stream.terminal);
 		if (record) this.address = record.address;
+		// An attach that took the size made this tab the leader: a focus it
+		// was given while dialling reaches the program now.
+		if (!observe && !keepSize) this.payFocus(stream);
 		// The terminal's size now, read after this attach took (or did not take)
 		// it; only an observer with notifications has RESIZE frames instead.
 		if (this.followsRecord()) {

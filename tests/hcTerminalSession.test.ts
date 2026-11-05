@@ -9,6 +9,7 @@ import { SeenTracker } from '../src/hc/seen';
 import { HELLO_TIMEOUT_MS } from '../src/hc/connection';
 import {
 	ATTACH_HISTORY_LINES,
+	ATTACH_TIMEOUT_MS,
 	describeEnd,
 	FINISH_DRAIN_MS,
 	HcTerminalSession,
@@ -452,6 +453,24 @@ describe('the herdr-core terminal session', () => {
 			expect(h.events).not.toContain('exit');
 		});
 
+		it('gives up on an attach the core never answers, and tries again on a new connection', async () => {
+			const h = harness();
+			h.nextCores.push((core) => {
+				core.manual = true;
+			});
+			h.session.start();
+			await settle();
+			expect(h.calls('terminal.attach')).toHaveLength(1);
+			expect(h.fire(ATTACH_TIMEOUT_MS)).toBe(1);
+			await settle();
+			expect(h.core().killed).toBe(true);
+			expect(h.events).toEqual(['closed herdr-core did not answer terminal.attach within 15 s; trying again']);
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.cores).toHaveLength(2);
+			expect(h.events.at(-1)).toBe('reopened');
+		});
+
 		it('tries again when hello never comes back (a banner ate it)', async () => {
 			const h = harness();
 			h.nextCores.push((core) => {
@@ -485,6 +504,22 @@ describe('the herdr-core terminal session', () => {
 			h.session.resize(80, 24);
 			h.event('size', { cols: 80, rows: 24 }, 11);
 			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 200x50', 'grid 80x24']);
+		});
+
+		it('follows the attach record on a re-attach over the same connection, which brings no snapshot', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			// The core closes the stream without a reason; the connection and its
+			// subscription stay, and another viewer has taken the size meanwhile.
+			h.options.record = { ...RECORD, cols: 200, rows: 50 };
+			h.core().write(h.core().frame(1, FrameKind.Close));
+			expect(h.fire(RETRY_INITIAL_MS)).toBe(1);
+			await settle();
+			expect(h.cores).toHaveLength(1);
+			expect(h.calls('events.subscribe')).toHaveLength(1);
+			expect(h.calls('terminal.attach')[1]?.params).toMatchObject({ resumed: true });
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 200x50']);
 		});
 
 		it('follows a size from the subscribe snapshot that is newer than the attach record', async () => {
@@ -549,6 +584,49 @@ describe('the herdr-core terminal session', () => {
 			expect(h.fire(FINISH_DRAIN_MS)).toBe(1);
 			expect(h.events.slice(-2)).toEqual(['closed the program exited with code 2', 'exit']);
 			expect(h.core().sent(1, FrameKind.Close)).toHaveLength(1);
+		});
+	});
+
+	describe('a focus given before the stream is there', () => {
+		it('reaches the program once the first attach has taken the size', async () => {
+			const h = harness();
+			h.session.start();
+			// PaneTerminal focuses the renderer while hc connect is still dialling.
+			expect(h.session.focus(true)).toBe(false);
+			await settle();
+			expect(h.core().sent(1, FrameKind.Focus).map((f) => [...f.payload])).toEqual([[1]]);
+		});
+
+		it('is not owed once it was lost again before the attach', async () => {
+			const h = harness();
+			h.session.start();
+			h.session.focus(true);
+			h.session.focus(false);
+			await settle();
+			expect(h.core().sent(1, FrameKind.Focus)).toEqual([]);
+		});
+
+		it('is not sent on a resumed redial, which must not take the size', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			h.session.focus(true);
+			h.core().exit(1);
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.calls('terminal.attach')[0]?.params).toMatchObject({ resumed: true });
+			expect(h.core().sent(1, FrameKind.Focus)).toEqual([]);
+		});
+
+		it('waits for the first real size on a placeholder', async () => {
+			const h = harness('control', {}, undefined, { provisionalSize: true });
+			h.session.start();
+			h.session.focus(true);
+			await settle();
+			expect(h.core().sent(1, FrameKind.Focus)).toEqual([]);
+			h.session.resize(100, 30);
+			const sent = h.core().sent(1).filter((f) => f.kind === FrameKind.Resize || f.kind === FrameKind.Focus);
+			expect(sent.map((f) => f.kind)).toEqual([FrameKind.Resize, FrameKind.Focus]);
 		});
 	});
 

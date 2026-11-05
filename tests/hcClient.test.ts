@@ -296,6 +296,32 @@ describe('the herdr-core kind', () => {
 		await session.dispose();
 	});
 
+	it('passes a placeholder size on, so the tab attaches without taking the size', async () => {
+		const { spawn, cores } = fakeSpawner();
+		const kind = createHerdrCoreKind(kindHost(spawn, manualTimers().timers));
+		const endpoint = endpointOf({ ...LOCAL_HC, binary: '/opt/hc' });
+		const session = kind.createTerminalSession(
+			{
+				command: kind.terminalCommand(endpoint),
+				target: 't7',
+				mode: 'control',
+				cols: 80,
+				rows: 24,
+				provisionalSize: true,
+			},
+			endpoint,
+		);
+		session.on('error', () => undefined);
+		session.start();
+		await settle();
+		expect(cores[0]?.calls.find((call) => call.method === 'terminal.attach')?.params).toMatchObject({
+			cols: 80,
+			rows: 24,
+			resumed: true,
+		});
+		await session.dispose();
+	});
+
 	it('treats a missing herdr-app document as no spaces, not an error', async () => {
 		const scope = new HcScope({ space: '', vaultPath: '/v', vaultName: 'v' });
 		// A lost connection is an error the prime reports.
