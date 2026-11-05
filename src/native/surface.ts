@@ -1163,8 +1163,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			return;
 		}
 		const card = waitingCard({
-			// No transcript at all is the workspace trust prompt: a freshly
-			// started Claude writes no file until its first turn (ADR-0003).
+			// The runtime's own word on the block when it has one (ADR-0006);
+			// else no transcript at all reads as the workspace trust prompt, as a
+			// freshly started Claude writes no file until its first turn
+			// (ADR-0003) — a guess the view shows but never answers by itself.
+			blockKind: this.model?.blockKind ?? null,
 			hasTranscript: this.model?.path != null,
 			turns: this.model?.state.turns ?? [],
 			vaultPath: this.options.vaultPath(),
@@ -1209,10 +1212,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		// The startup kind is "no transcript at all", which is what a Claude
-		// sitting at its trust prompt looks like: it has written no file yet
-		// (ADR-0003). Every other kind is read out of a transcript, so it is a
-		// session that is already running and past this prompt.
+		// The startup kind is the trust prompt the runtime reported, or, where
+		// the runtime says nothing of kinds, "no transcript at all", which is
+		// what a Claude sitting at its trust prompt looks like: it has written no
+		// file yet (ADR-0003). Every other kind is a session past this prompt,
+		// or a block the runtime named as something else (`auth` included).
 		if (card.kind === 'startup') {
 			const trustEl = actions.createEl('button', {
 				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-trust', 'mod-cta'],
@@ -1234,9 +1238,15 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * checked here as well as where the button is drawn, because this is the
 	 * path with nobody looking at it: every other block stays on screen,
 	 * whatever the setting says.
+	 *
+	 * **Only a trust prompt the runtime identified.** A startup card guessed
+	 * from "no transcript yet" is also what an auth prompt, or any dialog
+	 * before the session exists, looks like, and `Down Enter` there picks
+	 * whatever its second option is. The guess keeps its button, which the
+	 * user presses having been told to check; nothing presses it for them.
 	 */
 	private autoTrust(card: WaitingCardModel): void {
-		if (card.kind !== 'startup') return;
+		if (card.kind !== 'startup' || !card.reported) return;
 		if (!this.options.autoTrustFolders()) return;
 		// One answer per block for the pane, not one per view: the claim is the
 		// model's, which is the thing two tabs on one pane share (ADR-0003). It
