@@ -328,6 +328,19 @@ export function activeRuntimeOf(settings: RuntimeSettings): RuntimeConfig {
 }
 
 /**
+ * A connection's runtime snapshot with the name the settings give it now.
+ * The snapshot is frozen for the connection's life, so what it connects to
+ * only changes on a reconnect; a rename is display only and shows at once.
+ */
+export function withLiveName(
+	settings: RuntimeSettings,
+	runtime: Readonly<RuntimeConfig>,
+): RuntimeConfig {
+	const live = runtimeById(settings, runtime.id);
+	return { ...runtime, name: live ? live.name : runtime.name };
+}
+
+/**
  * The name a runtime is shown under: its own, or one derived from what it is
  * when the user left it empty — "Local herdr", "herdr-core on xl".
  */

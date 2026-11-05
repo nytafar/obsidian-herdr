@@ -23,6 +23,7 @@ import {
 	normalizeRuntime,
 	removeRuntime,
 	runtimeDisplayName,
+	withLiveName,
 	runtimeIssues,
 	runtimeSwitcher,
 	type RuntimeConfig,
@@ -365,5 +366,27 @@ describe('removeRuntime', () => {
 		removeRuntime(s, XL_ID);
 		expect(removeRuntime(s, 'local')).toEqual({ removed: false, activeChanged: false });
 		expect(s.runtimes).toHaveLength(1);
+	});
+});
+
+describe('withLiveName: a rename shows before the next reconnect', () => {
+	it('takes the name the settings give the snapshot’s runtime now', () => {
+		const snapshot = { ...defaultLocalRuntime(), name: 'Local', socketPath: '/old.sock' };
+		const settings = {
+			runtimes: [{ ...defaultLocalRuntime(), name: 'Laptop', socketPath: '/new.sock' }],
+			activeRuntime: 'local',
+		};
+		const live = withLiveName(settings, snapshot);
+		expect(runtimeDisplayName(live)).toBe('Laptop');
+		// Only the name: what the connection runs on stays the snapshot's.
+		expect(live.socketPath).toBe('/old.sock');
+		// Cleared, it falls back to the derived name.
+		settings.runtimes[0]!.name = '';
+		expect(runtimeDisplayName(withLiveName(settings, snapshot))).toBe('Local herdr');
+	});
+
+	it('keeps the snapshot’s name for a runtime no longer in the settings', () => {
+		const snapshot = { ...defaultLocalRuntime(), id: 'rt-gone', name: 'Gone' };
+		expect(withLiveName({ runtimes: [], activeRuntime: '' }, snapshot).name).toBe('Gone');
 	});
 });

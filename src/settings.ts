@@ -1516,6 +1516,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private readonly renderStatus: RenderStatus;
 	/** The runtime whose form is open; survives the redisplays its fields cause. */
 	private editing: string | null = null;
+	/** The status block of the last display, redrawn when the registry changes. */
+	private statusEl: HTMLElement | null = null;
 
 	constructor(app: App, plugin: HerdrPlugin, renderStatus: RenderStatus) {
 		super(app, plugin);
@@ -1538,7 +1540,16 @@ export class HerdrSettingTab extends PluginSettingTab {
 			applyTerminalSetting: (setting) => plugin.applyTerminalSetting(setting),
 			refreshNativeViews: () => plugin.refreshNativeViews(),
 			activateRuntime: (id) => plugin.switchRuntime(id),
-			refreshRuntimes: () => plugin.refreshRuntimes(),
+			// The status block names the active runtime: a rename redraws it in
+			// place, so the field being typed in keeps its focus.
+			refreshRuntimes: () => {
+				plugin.refreshRuntimes();
+				const el = this.statusEl;
+				if (el) {
+					el.empty();
+					this.renderStatus(el);
+				}
+			},
 			kindUnavailable: (kind) => plugin.kindUnavailable(kind),
 			editingRuntime: () => this.editing,
 			editRuntime: (id) => {
@@ -1556,7 +1567,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		this.renderStatus(containerEl.createDiv({ cls: 'herdr-settings-status' }));
+		this.statusEl = containerEl.createDiv({ cls: 'herdr-settings-status' });
+		this.renderStatus(this.statusEl);
 
 		for (const section of SETTINGS_SECTIONS) section(containerEl, settings, callbacks);
 	}

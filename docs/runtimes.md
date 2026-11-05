@@ -37,7 +37,9 @@ attached to it whatever you change, the host included.
   no default hotkey.
 
 With more than one runtime the status bar shows the active one's name beside
-the counts; its tooltip always does.
+the counts; its tooltip always does. Renaming a runtime is display only: the
+status bar and the settings status follow the new name at once, without a
+reconnect.
 
 Terminals are pinned to the runtime they were opened on: a local terminal keeps
 running, keeps its title, and reconnects, toggles mode and rebuilds against its

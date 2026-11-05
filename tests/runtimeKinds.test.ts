@@ -318,3 +318,22 @@ describe('loadSettings: a pre-registry data.json (ADR-0004)', () => {
 		expect(settings.activeRuntime).toBe('local');
 	});
 });
+
+describe('the plugin’s status after a rename (no reconnect)', () => {
+	it('names the active runtime by its live name, not the connection’s snapshot', () => {
+		const plugin = Object.create(HerdrPlugin.prototype) as Record<string, unknown>;
+		const snapshot = { ...defaultLocalRuntime(), name: 'Old name' };
+		plugin.settings = {
+			...structuredClone(DEFAULT_SETTINGS),
+			runtimes: [{ ...snapshot, name: 'New name' }],
+			activeRuntime: 'local',
+		};
+		plugin.connection = {
+			current: { endpoint: endpointOf(snapshot), client: null, scope: null, tunnel: null },
+			discovery: null,
+		};
+		plugin.kinds = { herdr: { unavailable: null, statusLines: () => null } };
+		const status = (plugin.connectionStatus as () => { runtime: RuntimeConfig }).call(plugin);
+		expect(status.runtime.name).toBe('New name');
+	});
+});

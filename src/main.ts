@@ -46,6 +46,7 @@ import {
 	migrateRuntimes,
 	runtimeById,
 	runtimeDisplayName,
+	withLiveName,
 	type RuntimeConfig,
 	type RuntimeKind,
 } from './runtimes';
@@ -947,7 +948,8 @@ export default class HerdrPlugin extends Plugin {
 		if (!el) return;
 		el.empty();
 		if (!this.settings.notifications.statusBar) return;
-		const name = runtimeDisplayName(this.endpoint.runtime);
+		// The live name: a rename shows without waiting for a reconnect.
+		const name = runtimeDisplayName(withLiveName(this.settings, this.endpoint.runtime));
 		// Which runtime the counts are for (issue #54), always in the tooltip.
 		const where = `Herdr agents on ${name}`;
 		setTooltip(el, where);
@@ -1048,7 +1050,7 @@ export default class HerdrPlugin extends Plugin {
 		const scope = this.scope;
 		const tunnel = this.tunnel;
 		const discovery = this.connection.discovery;
-		const runtime: RuntimeConfig = this.endpoint.runtime;
+		const runtime: RuntimeConfig = withLiveName(this.settings, this.endpoint.runtime);
 		const herdr = this.client instanceof HerdrClient ? this.client : null;
 		return {
 			runtime,
