@@ -45,9 +45,26 @@ export interface RowMenuItem {
 	separatorBefore: boolean;
 }
 
-/** The entries for one row, in menu order. */
-export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
-	return [
+/**
+ * Which entries the row's runtime can back (ADR-0004). herdr has both;
+ * herdr-core has no rename (ADR-0005). Pin is client-side and always there.
+ */
+export interface RowMenuCapabilities {
+	rename: boolean;
+	close: boolean;
+}
+
+const EVERY_ENTRY: RowMenuCapabilities = { rename: true, close: true };
+
+/**
+ * The entries for one row, in menu order, minus what the runtime cannot do:
+ * an entry that is left out reads better than one that is offered and refused.
+ */
+export function rowMenuItems(
+	row: RowMenuRow,
+	can: RowMenuCapabilities = EVERY_ENTRY,
+): RowMenuItem[] {
+	const items: RowMenuItem[] = [
 		{
 			action: row.pinned ? 'unpin' : 'pin',
 			label: row.pinned ? 'Unpin from top of group' : 'Pin to top of group',
@@ -55,21 +72,26 @@ export function rowMenuItems(row: RowMenuRow): RowMenuItem[] {
 			warning: false,
 			separatorBefore: false,
 		},
-		{
+	];
+	if (can.rename) {
+		items.push({
 			action: 'rename',
 			label: 'Rename agent',
 			icon: 'pencil',
 			warning: false,
 			separatorBefore: false,
-		},
-		{
+		});
+	}
+	if (can.close) {
+		items.push({
 			action: 'close',
 			label: 'Terminate agent',
 			icon: 'x',
 			warning: true,
 			separatorBefore: true,
-		},
-	];
+		});
+	}
+	return items;
 }
 
 /** What the terminate confirmation says. The view draws it as a warning. */

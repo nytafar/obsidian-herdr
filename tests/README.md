@@ -55,17 +55,24 @@ crossterm modifier bits rather than an SGR report the plugin built (#25).
 
 ## The `Setting` fixture and the settings tab (#85)
 
-The settings tab is a status block plus seven sections, and each section is a
+The settings tab is a status block plus eight sections, and each section is a
 plain function over a container, the settings object and a bundle of callbacks
 (`save`, `saveAndReconnect`, `redisplay`, `refreshAgentList`,
-`refreshFolderHoverButton`, `applyTerminalSetting`). No builder sees the plugin,
+`refreshFolderHoverButton`, `applyTerminalSetting`, and for the runtimes
+section `activateRuntime`, `refreshRuntimes`, `editRuntime` and `confirm`). No
+builder sees the plugin,
 so `tests/settingsSections.test.ts` renders a section on a bare container and
 asserts three things: the rows it puts up, what a change writes into the
 settings, and which callbacks run in which order — save before the refresh, and
 the redisplay last where a control shows or hides other fields. Both conditional
-groups are covered: the remote fields, which only exist while the profile is on
-(the enable toggle itself is always there), and the panes-per-tab cap, which
-only exists while agents share a herdr tab.
+groups are covered: a runtime's form, which only exists while that runtime is
+being edited and whose fields follow its kind and target, and the panes-per-tab
+cap, which only exists while agents share a herdr tab.
+
+The runtime registry itself — migration from 0.4.0's `data.json` shapes (no
+remote, remote off, remote on), normalisation, the switcher by count and
+removal — is `tests/runtimes.test.ts`; the kind seam and the real
+`loadSettings` path are `tests/runtimeKinds.test.ts`.
 
 That works because `Setting` in `tests/fixtures/obsidian.ts` is a recorder
 rather than a stub. It records `setName`, `setDesc`, `setHeading` and `setClass`,
@@ -224,7 +231,7 @@ open, settings → Herdr → Terminal → **Terminal engine** → xterm.js:
    the colours must not change when the engine does.
 6. Switch back to ghostty-web and check the same six things.
 
-## Checking the remote profile against `xl` (T10, PRD S5/S17)
+## Checking an SSH runtime against `xl` (T10, PRD S5/S17)
 
 The SSH tunnel unit tests inject the spawn, the socket probe and the unlink, so
 `npm test` never runs `ssh`. The live check is manual and read-only:
@@ -374,7 +381,7 @@ real terminal.
 4. Restart Obsidian: a tab left in native mode comes back in native mode, and a
    tab that never chose follows **Default render mode** in the settings, so
    switching that setting to Native view moves every such tab at once.
-5. With the remote profile on and a terminal opened on the remote endpoint, the
+5. With an SSH runtime active and a terminal opened on it, the
    menu shows "Native view (local panes only)", greyed out, and clicking it does
    nothing (ADR-0002).
 

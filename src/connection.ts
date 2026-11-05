@@ -20,63 +20,73 @@
 import type { DiscoveryResult } from './herdr/binary';
 import type { ClientEventMap, HerdrEvent, Subscription } from './herdr/client';
 import type { AgentInfo, PaneInfo, SessionSnapshot, WorkspaceInfo } from './herdr/types.gen';
-import type { RemoteSettings } from './settings';
+import {
+	LOCAL_RUNTIME_ID,
+	runtimeById,
+	runtimeLocation,
+	type RuntimeConfig,
+	type RuntimeSettings,
+} from './runtimes';
 
-/** Endpoint id of the local herdr; a remote one reads `ssh:<host>:<remote socket>`. */
-export const LOCAL_ENDPOINT_ID = 'local';
+/**
+ * Endpoint id of the local herdr. Since ADR-0004 an endpoint id is a runtime
+ * id; this one, and the `ssh:<host>:<socket>` id a pre-registry remote got,
+ * are kept verbatim by the migration (`runtimes.ts`).
+ */
+export const LOCAL_ENDPOINT_ID = LOCAL_RUNTIME_ID;
 
 /**
  * Where a connection, and everything that inherits from it, talks to (issue
- * #54). A terminal is pinned to the endpoint it first started on, so the same
- * pane id on the local and on a remote herdr never aliases: the id is what the
- * view persists and what the leaf lookup compares, the settings snapshot is what
- * a later start derives its spawn command from. The snapshot is taken once per
- * connection attempt and never changes afterwards, whatever the settings tab
- * does meanwhile.
+ * #54, ADR-0004): one runtime of the registry, frozen. A terminal is pinned to
+ * the endpoint it first started on, so the same pane id on two runtimes never
+ * aliases: the id is what the view persists and what the leaf lookup
+ * compares, the runtime snapshot is what a later start derives its spawn
+ * command from. The snapshot is taken once per connection attempt and never
+ * changes afterwards, whatever the settings tab does meanwhile.
  */
 export interface Endpoint {
-	/** `local`, or `ssh:<host>:<remote socket path>`. */
+	/** The runtime's id: `local`, a legacy `ssh:<host>:<socket>`, or a generated one. */
 	readonly id: string;
-	/** Remote settings as they were; `enabled` is false for the local endpoint. */
-	readonly remote: Readonly<RemoteSettings>;
+	/** The runtime as it was when the snapshot was taken, trimmed and frozen. */
+	readonly runtime: Readonly<RuntimeConfig>;
 }
 
-/** The id of the endpoint these remote settings describe. */
-export function endpointIdOf(
-	remote: Pick<RemoteSettings, 'enabled' | 'host' | 'remoteSocketPath'>,
-): string {
-	if (!remote.enabled) return LOCAL_ENDPOINT_ID;
-	return `ssh:${remote.host.trim()}:${remote.remoteSocketPath.trim()}`;
-}
-
-/** Snapshots the remote settings into an endpoint; the copy is frozen. */
-export function endpointOf(remote: RemoteSettings): Endpoint {
-	const snapshot: RemoteSettings = Object.freeze({
-		enabled: remote.enabled,
-		host: remote.host.trim(),
-		remoteSocketPath: remote.remoteSocketPath.trim(),
-		remoteBinary: remote.remoteBinary.trim(),
-		remoteVaultPath: remote.remoteVaultPath.trim(),
+/** Snapshots a runtime into an endpoint; the copy is trimmed and frozen. */
+export function endpointOf(runtime: RuntimeConfig): Endpoint {
+	const snapshot: RuntimeConfig = Object.freeze({
+		id: runtime.id,
+		name: runtime.name.trim(),
+		kind: runtime.kind,
+		target: runtime.target,
+		host: runtime.host.trim(),
+		binary: runtime.binary.trim(),
+		socketPath: runtime.socketPath.trim(),
+		remoteVaultPath: runtime.remoteVaultPath.trim(),
+		workspace: runtime.workspace.trim(),
 	});
-	return { id: endpointIdOf(snapshot), remote: snapshot };
+	return { id: snapshot.id, runtime: snapshot };
 }
 
 /**
- * Rebuilds the endpoint an id names from the settings as they are now: the
- * local one for `local`, the remote one when the configured host and socket
- * still match. Null when the settings no longer describe it (the host was
- * changed under a pinned terminal), which the caller reports rather than
- * silently pointing the terminal elsewhere.
+ * Rebuilds the endpoint an id names from the registry as it is now. Null when
+ * the registry no longer has it (the runtime was removed under a pinned
+ * terminal), which the caller reports rather than silently pointing the
+ * terminal elsewhere. An edited runtime keeps its id, so a pinned terminal
+ * follows the edit.
  */
-export function resolveEndpoint(id: string, remote: RemoteSettings): Endpoint | null {
-	if (id === LOCAL_ENDPOINT_ID) return endpointOf({ ...remote, enabled: false });
-	const candidate = endpointOf({ ...remote, enabled: true });
-	return candidate.id === id ? candidate : null;
+export function resolveEndpoint(id: string, settings: RuntimeSettings): Endpoint | null {
+	const runtime = runtimeById(settings, id);
+	return runtime ? endpointOf(runtime) : null;
+}
+
+/** True when the endpoint's runtime lives on another machine. */
+export function isRemoteEndpoint(endpoint: Pick<Endpoint, 'runtime'>): boolean {
+	return endpoint.runtime.target === 'ssh';
 }
 
 /** Short human name for status lines and tooltips: `local` or `ssh <host>`. */
-export function endpointLabel(endpoint: Pick<Endpoint, 'remote'>): string {
-	return endpoint.remote.enabled ? `ssh ${endpoint.remote.host}` : 'local';
+export function endpointLabel(endpoint: Pick<Endpoint, 'runtime'>): string {
+	return runtimeLocation(endpoint.runtime);
 }
 
 /** The slice of `HerdrClient` a connection drives. */
@@ -107,33 +117,67 @@ export interface ConnectionTunnel {
 	stop(): Promise<void>;
 }
 
-export interface ConnectionDeps<
+/**
+ * How one runtime kind opens a connection (ADR-0004, ADR-0005): the steps the
+ * coordinator runs in order, each of which a kind answers its own way. The
+ * coordinator owns the order, the generations and the teardown; the driver
+ * owns what is built. The herdr kind discovers the local binary, forwards the
+ * API socket over SSH for an `ssh` target and opens a `HerdrClient` on it
+ * (`runtime/herdrKind.ts`); herdr-core will spawn `hc connect` as its
+ * transport instead.
+ */
+export interface ConnectionDriver<
 	C extends ConnectionClient = ConnectionClient,
 	S extends ConnectionScope = ConnectionScope,
 	T extends ConnectionTunnel = ConnectionTunnel,
 > {
 	/** Finds the binary and the socket. Never expected to throw. */
-	discover(): Promise<DiscoveryResult>;
+	discover(endpoint: Endpoint): Promise<DiscoveryResult>;
 	/**
-	 * The endpoint the attempt targets, read once at its start; a remote one
-	 * goes through an SSH forward. Everything the connection derives from the
-	 * settings comes from this snapshot, not from the live settings.
+	 * Why this discovery cannot carry an attempt on this endpoint, or null when
+	 * it can. herdr on `local` needs the binary it found; over SSH only `ssh`
+	 * is needed here, so a missing local binary stops nothing.
+	 */
+	discoveryIssue(endpoint: Endpoint, discovery: DiscoveryResult): string | null;
+	/**
+	 * The transport the client talks through, or null when the client opens
+	 * `discovery.socketPath` itself. `onSocket` reports the client's socket
+	 * after every (re)connect of the transport. May throw synchronously (no
+	 * host configured); the attempt reports that as its error.
+	 */
+	createTunnel(endpoint: Endpoint, onSocket: (socketPath: string) => void): T | null;
+	createClient(socketPath: string, endpoint: Endpoint): C;
+	/**
+	 * Builds the scope. The endpoint is the attempt's, so whatever hangs off
+	 * the scope's events can label what it reports.
+	 */
+	createScope(endpoint: Endpoint): S;
+	/** Event subscriptions the scope needs (`SCOPE_SUBSCRIPTIONS` for herdr). */
+	subscriptions: readonly Subscription[];
+}
+
+/** A kind this build cannot connect, and the sentence that says so. */
+export interface UnavailableDriver {
+	unavailable: string;
+}
+
+export interface ConnectionDeps<
+	C extends ConnectionClient = ConnectionClient,
+	S extends ConnectionScope = ConnectionScope,
+	T extends ConnectionTunnel = ConnectionTunnel,
+> {
+	/**
+	 * The endpoint the attempt targets, read once at its start. Everything the
+	 * connection derives from the settings comes from this snapshot, not from
+	 * the live settings.
 	 */
 	endpoint(): Endpoint;
 	/**
-	 * Builds the tunnel for a remote attempt. `onSocket` reports the local
-	 * socket after every (re)connect of the forward. May throw synchronously
-	 * (no host configured); the attempt reports that as its error.
+	 * The driver of the endpoint's kind, or why that kind cannot connect. An
+	 * unavailable kind fails the attempt before anything is created, so there
+	 * is never a half-open connection to tear down.
 	 */
-	createTunnel(onSocket: (localSocketPath: string) => void): T;
-	createClient(socketPath: string): C;
-	/**
-	 * Builds the scope and wires whatever the caller hangs off its events. The
-	 * endpoint is the attempt's, so those handlers can label what they report.
-	 */
-	createScope(endpoint: Endpoint): S;
-	/** Event subscriptions the scope needs (`SCOPE_SUBSCRIPTIONS`). */
-	subscriptions: readonly Subscription[];
+	driver(endpoint: Endpoint): ConnectionDriver<C, S, T> | UnavailableDriver;
 	/** Something the user should see (a missing binary, a failed ping). */
 	notice(message: string): void;
 	/** Latest connection error, or null when it cleared. */
@@ -277,42 +321,45 @@ export class ConnectionCoordinator<
 		await this.teardown;
 		if (!alive()) return;
 
-		const discovery = await this.deps.discover();
-		if (!alive()) return;
-		this.latestDiscovery = discovery;
 		const endpoint = this.deps.endpoint();
-		const remote = endpoint.remote.enabled;
-		// A remote profile needs `ssh`, not a local herdr, so a missing local
-		// binary only stops the local path.
-		if (!discovery.binary && !remote) {
-			this.fail(discovery.error ?? 'herdr binary not found');
+		const driver = this.deps.driver(endpoint);
+		if ('unavailable' in driver) {
+			this.fail(driver.unavailable);
 			return;
 		}
 
-		// Remote: the API socket is the local end of an SSH forward (PRD S5).
-		// Terminals do not use it; they run the CLI over `ssh -T` (PRD S17).
+		const discovery = await driver.discover(endpoint);
+		if (!alive()) return;
+		this.latestDiscovery = discovery;
+		const issue = driver.discoveryIssue(endpoint, discovery);
+		if (issue !== null) {
+			this.fail(issue);
+			return;
+		}
+
+		// A transport of the kind's own, when it has one: for herdr over SSH the
+		// API socket is the local end of a forward (PRD S5); terminals do not use
+		// it, they run the CLI over `ssh -T` (PRD S17).
 		let client: C | null = null;
 		let tunnel: T | null = null;
 		let socketPath = discovery.socketPath;
-		if (remote) {
-			try {
-				// The forward's local path never changes, so this matters after a
-				// tunnel reconnect: the client picks the fresh socket up next call.
-				tunnel = this.deps.createTunnel((path) => client?.setSocketPath(path));
-				socketPath = await tunnel.start();
-			} catch (error) {
-				void tunnel?.stop();
-				if (alive()) this.fail((error as Error).message);
-				return;
-			}
-			if (!alive()) {
-				void tunnel.stop();
-				return;
-			}
+		try {
+			// The forward's local path never changes, so this matters after a
+			// tunnel reconnect: the client picks the fresh socket up next call.
+			tunnel = driver.createTunnel(endpoint, (path) => client?.setSocketPath(path));
+			if (tunnel) socketPath = await tunnel.start();
+		} catch (error) {
+			void tunnel?.stop();
+			if (alive()) this.fail((error as Error).message);
+			return;
+		}
+		if (!alive()) {
+			void tunnel?.stop();
+			return;
 		}
 
-		client = this.deps.createClient(socketPath);
-		const scope = this.deps.createScope(endpoint);
+		client = driver.createClient(socketPath, endpoint);
+		const scope = driver.createScope(endpoint);
 		const connection = new Connection(discovery, endpoint, client, scope, tunnel, this.deps);
 		// The one place the scope is loaded: the event stream's `connected` edge,
 		// which fires on the first subscribe ack and again after every reconnect.
@@ -332,7 +379,7 @@ export class ConnectionCoordinator<
 			await client.ping();
 			if (!alive()) return;
 			client.on('*', (event) => scope.ingest(event));
-			client.subscribe([...this.deps.subscriptions]);
+			client.subscribe([...driver.subscriptions]);
 		} catch (error) {
 			if (alive()) this.fail((error as Error).message);
 		}

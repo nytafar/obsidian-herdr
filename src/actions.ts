@@ -6,8 +6,8 @@
  *
  *   - **Paths.** Obsidian speaks vault-relative paths; herdr wants an absolute
  *     cwd on the machine it runs on. Locally that is
- *     `FileSystemAdapter.getBasePath()`, and with a remote profile it is
- *     `settings.remote.remoteVaultPath` (PRD S5, M19). See {@link resolveFolderPath}.
+ *     `FileSystemAdapter.getBasePath()`, and on an `ssh` runtime it is the
+ *     runtime's `remoteVaultPath` (PRD S5, M19). See {@link resolveFolderPath}.
  *   - **Agent names.** herdr rejects a name that does not match
  *     `[a-z][a-z0-9_-]{0,31}` with `invalid_agent_name`, and a duplicate with
  *     `agent_name_taken`. {@link buildAgentName} makes both impossible up front.
@@ -18,7 +18,8 @@
  */
 
 import { lastPathSegment, trimTrailingSlashes } from './paths';
-import { clampPanesPerTab, remoteVaultPathIssue, type HerdrSettings } from './settings';
+import { clampPanesPerTab, type HerdrSettings } from './settings';
+import { remoteVaultPathIssue, type RuntimeConfig } from './runtimes';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
 
@@ -64,6 +65,11 @@ export type Requester = <T>(method: string, params: unknown) => Promise<T>;
 export interface ActionHost {
 	/** Live settings; read through a function because the object is replaced. */
 	settings(): HerdrSettings;
+	/**
+	 * The runtime the actions go to: the published connection's snapshot, or
+	 * the active runtime while none is published (ADR-0004).
+	 */
+	runtime(): RuntimeConfig;
 	/** Scoped workspace id, or null when no herdr workspace matches this vault. */
 	workspaceId(): string | null;
 	/** One JSON API call, over the connection as it is now. Rejects with `HerdrError`. */
@@ -139,14 +145,14 @@ export function normalizePosixPath(path: string): string {
 export interface PathRoots {
 	/** `FileSystemAdapter.getBasePath()`. */
 	basePath: string;
-	/** `settings.remote.remoteVaultPath`, only when the remote profile is on. */
+	/** The runtime's `remoteVaultPath`, only when it is on an `ssh` target. */
 	remoteVaultPath?: string;
 }
 
 /**
  * Turns a vault-relative folder path into the absolute path herdr should use.
  *
- * The remote root wins when a remote profile is enabled, because the cwd is
+ * The remote root wins on an `ssh` runtime, because the cwd is
  * interpreted on the remote host. An already-absolute input is passed through
  * untouched: the file explorer never produces one, but a caller resolving a
  * folder outside the vault might.
@@ -683,7 +689,7 @@ export class HerdrActions {
 			);
 			return false;
 		}
-		const issue = remoteVaultPathIssue(this.host.settings());
+		const issue = remoteVaultPathIssue(this.host.runtime());
 		if (issue) {
 			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
 			return false;

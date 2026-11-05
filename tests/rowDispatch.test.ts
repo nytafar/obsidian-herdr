@@ -21,6 +21,7 @@ import {
 	type RowDispatchHost,
 	type RowPane,
 	type RowTarget,
+	type RowCapabilities,
 } from '../src/views/rowDispatch';
 import type { RowMenuItem } from '../src/views/rowMenu';
 import type { RowClickAction } from '../src/views/rowModel';
@@ -117,7 +118,14 @@ interface Fake {
 	rowClick: RowClickAction;
 }
 
-function fake(options: { rowClick?: RowClickAction; panes?: RowPane[]; pins?: string[] } = {}): Fake {
+function fake(
+	options: {
+		rowClick?: RowClickAction;
+		panes?: RowPane[];
+		pins?: string[];
+		capabilities?: RowCapabilities;
+	} = {},
+): Fake {
 	const state: Fake = {
 		host: null as unknown as RowDispatchHost<FakeEvent>,
 		dispatch: null as unknown as RowDispatcher<FakeEvent>,
@@ -143,6 +151,7 @@ function fake(options: { rowClick?: RowClickAction; panes?: RowPane[]; pins?: st
 		target: () => state.target,
 		pane: (paneId) => state.panes.get(paneId) ?? null,
 		rowClick: () => state.rowClick,
+		...(options.capabilities ? { capabilities: () => options.capabilities as RowCapabilities } : {}),
 		pinned: (ref) => state.pins.has(key(ref)),
 		setPinned: async (ref, pinned) => {
 			state.calls.push({ effect: 'setPinned', ref, extra: pinned });
@@ -238,6 +247,17 @@ describe('click on a row', () => {
 		expect(world.calls).toEqual([
 			{ effect: 'focusPane', ref: { endpointId: LOCAL, paneId: 'w4:p3' } },
 		]);
+	});
+
+	it('opens the terminal when the runtime cannot focus, whatever was asked (ADR-0004)', () => {
+		const world = fake({
+			rowClick: 'focus',
+			capabilities: { rename: false, close: true, focus: false },
+		});
+		world.dispatch.click(event(row('w4:p3').text));
+		// A focus button drawn before the switch does the same.
+		world.dispatch.click(event(row('w4:p3', 'focus').button));
+		expect(effects(world)).toEqual(['openTerminal', 'openTerminal']);
 	});
 
 	it('keys the effect by the endpoint the list is showing', () => {

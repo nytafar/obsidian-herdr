@@ -206,15 +206,36 @@ it is not already showing, and swaps that tab's surface without touching the
 lifecycle. Only an engine change restarts the bridge. A hidden leaf holds every effect the renderer would show
 until it is revealed, except the title, whose tab header is on screen anyway.
 
+## Runtimes and the kind seam
+
+Since ADR-0004 the plugin connects to one **runtime** of a registry at a time
+(`src/runtimes.ts`): a kind (`herdr`, `herdr-core`) on a target (`local`,
+`ssh`), with a stable id. The id is what everything downstream keys on: the
+connection's endpoint carries the runtime snapshot under it, terminal tabs
+persist it as `endpointId`, and `pinnedPanes` is keyed by it. The local herdr
+is `local` and a migrated remote keeps `ssh:<host>:<socket>`; a runtime added
+later gets a generated `rt-…` id that never follows an edit.
+
+Everything that differs by kind sits behind `RuntimeKindAdapter`
+(`src/runtime/kind.ts`): the connection driver the coordinator runs (discovery,
+transport, client, scope, subscriptions), the terminal tab's argv and bridge,
+the folder and row actions, the native view's prompt and key senders, and the
+capabilities the UI reads to leave out what a kind cannot do. The herdr kind
+(`src/runtime/herdrKind.ts`) is the two seams above. herdr-core is listed and
+selectable but unavailable until its client lands: a connect attempt fails at
+once with that reason and creates nothing.
+
 ## The settings tab
 
-The tab itself is an assembler. Seven section builders — connection, remote,
-notifications, agents, file explorer, agent list, terminal — are plain functions
+The tab itself is an assembler. Its section builders — runtimes, connection,
+notifications, agents, file explorer, agent list, terminal, native view — are plain functions
 over a container, the settings object and a bundle of callbacks, listed in
 `SETTINGS_SECTIONS` in `src/settings.ts`; none of them ever sees the plugin. The
 callbacks bundle is the whole of what a control may do besides write into the
 settings: save, save and reconnect, redisplay, refresh the agent list or the
-folder hover buttons, or hand one changed setting to the open terminals. The tab
+folder hover buttons, hand one changed setting to the open terminals, or switch,
+open and remove runtimes. Which runtime's form is open is the tab's state, handed
+in through the same bundle. The tab
 builds that bundle from the plugin once and then just runs the list, which is
 what makes a section renderable on a bare container in a test.
 

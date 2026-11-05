@@ -40,7 +40,8 @@ import type {
 	TerminalRenderer,
 	Unsubscribe,
 } from '../src/views/renderer/TerminalRenderer';
-import type { Endpoint } from '../src/connection';
+import { endpointOf, type Endpoint } from '../src/connection';
+import { defaultLocalRuntime } from '../src/runtimes';
 
 /** A promise plus the handle that settles it, for holding an await open. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
@@ -61,16 +62,7 @@ function settle(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-const LOCAL: Endpoint = {
-	id: 'local',
-	remote: {
-		enabled: false,
-		host: '',
-		remoteSocketPath: '',
-		remoteBinary: '',
-		remoteVaultPath: '',
-	},
-};
+const LOCAL: Endpoint = endpointOf(defaultLocalRuntime());
 
 class FakeRenderer implements TerminalRenderer {
 	readonly writes: string[] = [];
@@ -529,7 +521,7 @@ describe('PaneTerminal generation races', () => {
 		await h.terminal.attach(h.hostEl);
 
 		expect(h.sessions).toHaveLength(0);
-		expect(h.lastStatus().text).toContain('the endpoint local is no longer configured');
+		expect(h.lastStatus().text).toContain('the runtime local is no longer configured');
 		// Not a "waiting for herdr" case, so a connection does not retry it.
 		await h.terminal.connectionArrived();
 		expect(h.sessions).toHaveLength(0);

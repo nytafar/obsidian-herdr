@@ -44,6 +44,14 @@ describe('rowMenuItems', () => {
 	it('gives every entry an icon', () => {
 		for (const item of rowMenuItems(row())) expect(item.icon).not.toBe('');
 	});
+
+	it('leaves out what the runtime cannot do, keeping pin (ADR-0004)', () => {
+		const core = rowMenuItems(row(), { rename: false, close: true });
+		expect(core.map((item) => item.action)).toEqual(['pin', 'close']);
+		expect(rowMenuItems(row(), { rename: false, close: false }).map((item) => item.action)).toEqual([
+			'pin',
+		]);
+	});
 });
 
 describe('closeConfirmation', () => {

@@ -2,24 +2,35 @@
 
 All under **Settings → Herdr**. Sentence case names match the UI.
 
+## Runtimes
+
+The herdr, or herdr-core, instances the plugin can connect to, on this machine
+or over SSH, and which one is active. Each runtime has its own binary, socket,
+remote vault path and workspace. See [runtimes.md](runtimes.md) for adding,
+editing, removing and switching, and for every field.
+
+| Setting | Meaning |
+|---|---|
+| Runtime row | Name and what it is. The plug makes it active (or reconnects the active one), the pencil opens its form, the bin removes it after asking. The last runtime stays. |
+| Add runtime | A new herdr runtime over SSH, its form open. |
+| Name | What the switcher, the status bar and the list call it. Empty shows a name derived from kind and host. |
+| Kind | Herdr, or herdr-core (hc), which this version lists but cannot connect yet. |
+| Target | This machine or an SSH host. |
+| Socket path / Remote socket path | herdr only. The server's socket on the target. Default `~/.config/herdr/herdr.sock`. |
+| Herdr binary / Remote herdr binary | Locally an override for auto-discovery, empty to search; over SSH an absolute path on the remote host. |
+| SSH host, Remote vault path | SSH targets only. The vault path is required for folder actions. |
+| Workspace ID / Space | Pins the workspace (herdr) or space (herdr-core). Empty resolves by the vault folder's name, then by working directories inside the vault. |
+| Problems | What the runtime still lacks, or "None.". |
+
+The agent list's toolbar switches runtimes once there are two or more, and
+**Herdr: Switch runtime** does from the palette. With more than one runtime the
+status bar names the active one.
+
 ## Connection
 
 | Setting | Meaning |
 |---|---|
-| Socket path | Unix socket of the running herdr server. Default `~/.config/herdr/herdr.sock`; the plugin also asks `herdr status server --json` and prefers its answer. |
-| Herdr binary | Absolute path to `herdr`. Empty means auto-discovery in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, the extra PATH entries, then your login shell's PATH. Set it when Obsidian was launched from the Dock. |
 | Extra PATH entries | Colon-separated directories prepended to `PATH` for every process the plugin spawns, so your agents find their tools. |
-| Workspace ID | Pins the herdr workspace. Empty means resolve by label equal to the vault folder name, then by the workspace with the most panes inside the vault path. |
-
-## Remote host
-
-See [remote.md](remote.md). **Use a remote herdr**, **SSH host**, **Remote socket
-path**, **Remote herdr binary** (absolute path), **Remote vault path** (required).
-
-Once an SSH host is set, the agent list's toolbar gains a switch between the
-local and the remote herdr; it flips **Use a remote herdr** and reconnects, the
-same as the settings toggle. The status bar's tooltip names the herdr its
-counts are for.
 
 ## Notifications
 
@@ -52,13 +63,13 @@ counts are for.
 | Sort | Priority (herdr's own: blocked, done, working, idle, unknown, most recent change first among equals) or alphabetical. Also in the list's header menu. |
 | Group by | Herdr tab, working directory, or nothing. Folder grouping keeps a folder's agents together whichever tab herdr put them in. |
 | Clicking an agent row | Opens the terminal (default) or focuses the pane in herdr. The row's hover button does the other one; its tooltip says which. |
-| Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per herdr endpoint, so a local pin never applies to a remote herdr. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
+| Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per runtime id, so a pin on one runtime never applies to another. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
 
 ## Native view
 
 | Setting | Meaning |
 |---|---|
-| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for local panes only; a remote herdr shows terminals. |
+| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for panes of a local herdr only; an SSH runtime, or herdr-core, shows terminals. |
 | Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
 | Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, so an agent started in a new folder begins without a trip to the terminal. Off by default. Nothing else is answered for you. |
 

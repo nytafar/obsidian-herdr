@@ -24,22 +24,39 @@ import {
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
-import { discoverHerdr } from './herdr/binary';
-import { HerdrClient, type ProtocolMismatch } from './herdr/client';
+import type { HerdrClient, ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
 	EndpointSessions,
-	endpointLabel,
-	LOCAL_ENDPOINT_ID,
 	endpointOf,
+	isRemoteEndpoint,
 	resolveEndpoint,
 	type Endpoint,
 	type EndpointSession,
 } from './connection';
-import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
+import type { WorkspaceScope } from './herdr/scope';
 import { TabLabelCache } from './tabLabels';
-import { SshTunnel } from './herdr/ssh';
-import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
+import type { SshTunnel } from './herdr/ssh';
+import { resolveFolderPath, type ActionHost } from './actions';
+import {
+	activeRuntimeOf,
+	migrateRuntimes,
+	runtimeById,
+	runtimeDisplayName,
+	type RuntimeConfig,
+	type RuntimeKind,
+} from './runtimes';
+import {
+	HERDR_CORE_CAPABILITIES,
+	HERDR_CORE_UNAVAILABLE,
+	NATIVE_NO_SESSION_REASON,
+	unavailableKind,
+	type RuntimeActions,
+	type RuntimeCapabilities,
+	type RuntimeKindAdapter,
+} from './runtime/kind';
+import { createHerdrKind } from './runtime/herdrKind';
+import { RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
@@ -91,17 +108,19 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private readonly connection = new ConnectionCoordinator<HerdrClient, WorkspaceScope, SshTunnel>(
 		{
-			discover: () =>
-				discoverHerdr({
-					override: this.settings.herdrBinary,
-					extraPath: this.settings.extraPath,
-					socketOverride: this.settings.socketPath,
-				}),
-			endpoint: () => endpointOf(this.settings.remote),
-			createTunnel: (onSocket) => this.createTunnel(onSocket),
-			createClient: (socketPath) => this.createClient(socketPath),
-			createScope: (endpoint) => this.createScope(endpoint),
-			subscriptions: SCOPE_SUBSCRIPTIONS,
+			endpoint: () => endpointOf(activeRuntimeOf(this.settings)),
+			driver: (endpoint) => {
+				const kind = this.kindOf(endpoint.runtime.kind);
+				const driver = kind.connection;
+				if (kind.unavailable !== null || !driver) {
+					return { unavailable: kind.unavailable ?? `${endpoint.runtime.kind} cannot connect` };
+				}
+				// The kind builds the scope; what hangs off its events is the plugin's.
+				return {
+					...driver,
+					createScope: (attempt) => this.wireScope(driver.createScope(attempt), attempt),
+				};
+			},
 			notice: (message) => {
 				new Notice(message);
 			},
@@ -117,6 +136,46 @@ export default class HerdrPlugin extends Plugin {
 			onPrimed: () => this.updateStatusBar(),
 		},
 	);
+	/**
+	 * One adapter per runtime kind (ADR-0004): everything that differs by kind
+	 * is asked of the adapter of the runtime in question, never decided here.
+	 * herdr-core is listed but unavailable until its client lands (ADR-0005).
+	 */
+	private readonly kinds: Record<
+		RuntimeKind,
+		RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel>
+	> = {
+		herdr: createHerdrKind({
+			extraPath: () => this.settings.extraPath,
+			vaultPath: () => this.vaultPath(),
+			discoveredBinary: () => this.connection.discovery?.binary?.path ?? '',
+			onProtocolMismatch: (mismatch) => {
+				this.mismatch = mismatch;
+			},
+			onUnsupportedMethod: (method) => {
+				new Notice(unsupportedMethodMessage(method));
+			},
+			// The one request the scope makes: what `pane_agent_detected` leaves
+			// out for a pane that just gained an agent (issue #75). Answered by the
+			// client of the connection this scope belongs to, and only while that
+			// connection is the published one — a lookup still in flight when the
+			// connection is replaced must not write into a scope nothing renders,
+			// so it is left hanging rather than answered from the new client.
+			lookupPanes: (scope, workspaceId) => {
+				const current = this.connection.current;
+				if (!current || current.scope !== scope) return Promise.resolve([]);
+				return current.client.listPanes(workspaceId);
+			},
+		}),
+		'herdr-core': unavailableKind(
+			'herdr-core',
+			HERDR_CORE_UNAVAILABLE,
+			HERDR_CORE_CAPABILITIES,
+			NATIVE_NO_SESSION_REASON,
+		),
+	};
+	/** Actions per kind, built on first use over the one action host. */
+	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */
 	get client(): HerdrClient | null {
 		return this.connection.current?.client ?? null;
@@ -129,7 +188,25 @@ export default class HerdrPlugin extends Plugin {
 	 * connect to while no connection is published (issue #54).
 	 */
 	get endpoint(): Endpoint {
-		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
+		return this.connection.current?.endpoint ?? endpointOf(activeRuntimeOf(this.settings));
+	}
+
+	/** The adapter of a kind (ADR-0004). */
+	kindOf(kind: RuntimeKind): RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel> {
+		return this.kinds[kind];
+	}
+
+	/** Why runtimes of this kind cannot connect in this build, or null. */
+	kindUnavailable(kind: RuntimeKind): string | null {
+		return this.kindOf(kind).unavailable;
+	}
+
+	/**
+	 * What the runtime the list points at can do (ADR-0004): the published
+	 * connection's, else the active runtime's. The UI leaves out what is false.
+	 */
+	capabilities(): Readonly<RuntimeCapabilities> {
+		return this.kindOf(this.endpoint.runtime.kind).capabilities;
 	}
 	/**
 	 * The endpoint-match rule, in one place (issue #81): everything a view
@@ -180,20 +257,46 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	endpointFor(endpointId: string): Endpoint | null {
 		const session = this.endpointSession(endpointId);
-		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings.remote);
+		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings);
 	}
-	/** Non-null only while a remote profile is enabled (PRD S5). */
+
+	/**
+	 * The session a native view on this endpoint reads, or null when the
+	 * endpoint is not the published one or cannot show a native view: its kind
+	 * reports no agent session, or its transcripts live on another host
+	 * (ADR-0002, ADR-0005).
+	 */
+	nativeSession(
+		endpointId: string,
+	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+		const session = this.endpointSession(endpointId);
+		if (!session || !this.nativeCapable(session.endpoint)) return null;
+		return session;
+	}
+
+	/** Whether panes on this endpoint can be shown in the native view at all. */
+	nativeCapable(endpoint: Endpoint): boolean {
+		return (
+			!isRemoteEndpoint(endpoint) && this.kindOf(endpoint.runtime.kind).capabilities.nativeView
+		);
+	}
+	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
 	get tunnel(): SshTunnel | null {
 		return this.connection.current?.tunnel ?? null;
 	}
 	/**
 	 * The native view's session models (#93, ADR-0003), one per pane while a
-	 * view watches it. Local only: a remote pane keeps a terminal surface until
-	 * an SSH transcript adapter exists (ADR-0002).
+	 * view watches it. Over the published connection only while that runtime
+	 * can show a native view: a local herdr. A remote pane keeps a terminal
+	 * surface until an SSH transcript adapter exists (ADR-0002), and herdr-core
+	 * reports no agent session (ADR-0005).
 	 */
 	readonly sessionModels = new SessionModelRegistry({
 		source: new LocalTranscriptSource(),
-		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)),
+		watcher: () => {
+			const current = this.connection.current;
+			return scopeWatcher(current ? this.nativeSession(current.endpoint.id) : null);
+		},
 	});
 	/**
 	 * Tabs that swapped their surface where they stand (#100, #105). The table
@@ -201,8 +304,19 @@ export default class HerdrPlugin extends Plugin {
 	 * activates no leaf.
 	 */
 	readonly paneViews = new PaneViewEvents();
-	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
-	actions!: HerdrActions;
+	/**
+	 * Folder and row actions (PRD M19, M20) of the runtime the list points at;
+	 * safe to call before a connection exists.
+	 */
+	get actions(): RuntimeActions {
+		const kind = this.endpoint.runtime.kind;
+		let actions = this.kindActions.get(kind);
+		if (!actions) {
+			actions = this.kindOf(kind).createActions(this.actionHost());
+			this.kindActions.set(kind, actions);
+		}
+		return actions;
+	}
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
 	private explorerButtons!: ExplorerFolderButtons;
 	/**
@@ -225,7 +339,6 @@ export default class HerdrPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		this.actions = new HerdrActions(this.actionHost());
 		this.explorerButtons = new ExplorerFolderButtons(this);
 		this.notifier = new TransitionNotifier({
 			now: () => Date.now(),
@@ -242,7 +355,7 @@ export default class HerdrPlugin extends Plugin {
 		});
 		this.addSettingTab(
 			new HerdrSettingTab(this.app, this, (el) =>
-				renderConnectionStatus(el, this.settings, this.connectionStatus()),
+				renderConnectionStatus(el, this.connectionStatus()),
 			),
 		);
 
@@ -317,6 +430,9 @@ export default class HerdrPlugin extends Plugin {
 		// The v1 render mode setting split into a view and an engine (#104); a
 		// file that still holds the old `native` is written back once, below.
 		const renderMode = migrateRenderMode(stored);
+		// "Local, or the one remote" became a runtime registry (ADR-0004); a file
+		// in the old shape is migrated, ids and all, and written back once.
+		const runtimes = migrateRuntimes(stored);
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			// Minus the keys this build has no setting for, so nothing a past
@@ -324,7 +440,8 @@ export default class HerdrPlugin extends Plugin {
 			...withoutRemovedSettings(stored),
 			defaultView: renderMode.defaultView,
 			terminalEngine: renderMode.terminalEngine,
-			remote: { ...DEFAULT_SETTINGS.remote, ...stored?.remote },
+			runtimes: runtimes.runtimes,
+			activeRuntime: runtimes.activeRuntime,
 			notifications: {
 				...DEFAULT_SETTINGS.notifications,
 				...stored?.notifications,
@@ -341,7 +458,7 @@ export default class HerdrPlugin extends Plugin {
 			// sort (issue #35).
 			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
 		};
-		if (renderMode.migrated) await this.saveSettings();
+		if (renderMode.migrated || runtimes.migrated) await this.saveSettings();
 	}
 
 	async saveSettings() {
@@ -355,32 +472,56 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Vault path as seen by the machine herdr runs on: the remote vault path with
-	 * a remote profile, the local one otherwise (PRD S5, M19).
+	 * Vault path as seen by the machine the runtime runs on: the remote vault
+	 * path on an `ssh` runtime, the local one otherwise (PRD S5, M19). Read from
+	 * the connection's own runtime snapshot, so it always matches the rows.
 	 */
 	herdrVaultPath(): string {
-		const remote = this.settings.remote;
-		if (remote.enabled && remote.remoteVaultPath.trim()) return remote.remoteVaultPath.trim();
+		const runtime = this.endpoint.runtime;
+		if (runtime.target === 'ssh' && runtime.remoteVaultPath) return runtime.remoteVaultPath;
 		return this.vaultPath();
 	}
 
 	/**
-	 * Home directory as seen by the machine herdr runs on (issue #22): the remote
-	 * user's home with a remote profile, this user's home otherwise. Empty when a
-	 * remote tunnel never had to expand a `~`, in which case rows outside the
-	 * vault keep their absolute paths.
+	 * Home directory as seen by the machine the runtime runs on (issue #22): the
+	 * remote user's home on an `ssh` runtime, this user's home otherwise. Empty
+	 * when a remote tunnel never had to expand a `~`, in which case rows outside
+	 * the vault keep their absolute paths.
 	 */
 	herdrHomePath(): string {
-		if (this.settings.remote.enabled) return this.tunnel?.remoteHome ?? '';
+		if (isRemoteEndpoint(this.endpoint)) return this.tunnel?.remoteHome ?? '';
 		return homedir();
 	}
 
 	/**
-	 * Path of the local herdr binary, empty until discovery ran or when it failed.
-	 * The terminal view turns this into a spawn argv (`terminalArgvPrefix`).
+	 * Makes a runtime the active one and reconnects at once (ADR-0004): the
+	 * toolbar switcher, the palette command and the settings list all land
+	 * here. Terminals already open stay pinned to the runtime they started on.
+	 * Choosing the active one reconnects it, which is what a user picking it
+	 * again after an outage wants.
 	 */
-	herdrBinaryPath(): string {
-		return this.connection.discovery?.binary?.path ?? this.settings.herdrBinary.trim();
+	async switchRuntime(id: string): Promise<void> {
+		if (!runtimeById(this.settings, id)) return;
+		this.settings.activeRuntime = id;
+		await this.saveSettings();
+		this.refreshRuntimes();
+		await this.reconnect();
+	}
+
+	/** The registry changed (a name, the list, the active one): redraw what names it. */
+	refreshRuntimes(): void {
+		this.refreshAgentList();
+		this.updateStatusBar();
+	}
+
+	/** Opens the runtime picker over every runtime, the active one marked. */
+	openRuntimeSwitcher(): void {
+		new RuntimeSuggestModal(this.app, {
+			runtimes: () => this.settings.runtimes,
+			activeId: () => activeRuntimeOf(this.settings).id,
+			unavailable: (runtime) => this.kindUnavailable(runtime.kind),
+			choose: (runtime) => void this.switchRuntime(runtime.id),
+		}).open();
 	}
 
 	/**
@@ -601,6 +742,7 @@ export default class HerdrPlugin extends Plugin {
 			// Read lazily: `loadSettings` replaces the object and the settings tab
 			// mutates it while the plugin runs.
 			settings: () => this.settings,
+			runtime: () => this.endpoint.runtime,
 			workspaceId: () => this.scope?.workspaceId ?? null,
 			request: <T,>(method: string, params: unknown): Promise<T> => {
 				const client = this.client;
@@ -644,10 +786,10 @@ export default class HerdrPlugin extends Plugin {
 	/** Absolute path herdr should use for a vault file or folder (PRD M19). */
 	private folderPathOf(file: TAbstractFile): string {
 		const folder = file instanceof TFolder ? file : (file.parent ?? null);
-		const remote = this.settings.remote;
+		const runtime = this.endpoint.runtime;
 		return resolveFolderPath(folder?.path ?? '', {
 			basePath: this.vaultPath(),
-			remoteVaultPath: remote.enabled ? remote.remoteVaultPath : undefined,
+			remoteVaultPath: runtime.target === 'ssh' ? runtime.remoteVaultPath : undefined,
 		});
 	}
 
@@ -680,25 +822,38 @@ export default class HerdrPlugin extends Plugin {
 			name: 'Switch render mode',
 			checkCallback: (checking) => switchRenderModeCommand(this.app, checking),
 		});
-		this.addFolderCommand('new-tab-here', 'New tab here', (path) =>
+		// Any count, one included: picking the active runtime reconnects it.
+		this.addCommand({
+			id: 'switch-runtime',
+			name: 'Switch runtime',
+			callback: () => this.openRuntimeSwitcher(),
+		});
+		this.addFolderCommand('new-tab-here', 'New tab here', 'tabs', (path) =>
 			this.actions.newTabHere(path),
 		);
-		this.addFolderCommand('split-here', 'Split here', (path) => this.actions.splitHere(path));
-		this.addFolderCommand('start-agent-here', 'Start agent here', (path) =>
+		this.addFolderCommand('split-here', 'Split here', 'splits', (path) =>
+			this.actions.splitHere(path),
+		);
+		this.addFolderCommand('start-agent-here', 'Start agent here', 'startAgent', (path) =>
 			this.actions.startAgentHere(path),
 		);
 	}
 
-	/** A command acting on the active file's folder; hidden when there is none. */
+	/**
+	 * A command acting on the active file's folder; hidden when there is none,
+	 * and while the runtime's kind cannot do it (ADR-0004).
+	 */
 	private addFolderCommand(
 		id: string,
 		name: string,
+		capability: keyof RuntimeCapabilities,
 		run: (folderAbsPath: string) => Promise<unknown>,
 	): void {
 		this.addCommand({
 			id,
 			name,
 			checkCallback: (checking) => {
+				if (!this.capabilities()[capability]) return false;
 				const path = this.activeFolderPath();
 				if (!path) return false;
 				if (!checking) void run(path);
@@ -716,6 +871,7 @@ export default class HerdrPlugin extends Plugin {
 		const build = (menu: Menu, file: TAbstractFile): void => {
 			if (!(file instanceof TFolder) && !(file instanceof TFile)) return;
 			const path = this.folderPathOf(file);
+			const can = this.capabilities();
 			const item = (title: string, icon: string, run: () => void): void => {
 				menu.addItem((entry) =>
 					entry
@@ -725,9 +881,14 @@ export default class HerdrPlugin extends Plugin {
 						.onClick(() => run()),
 				);
 			};
-			item('Herdr: new tab here', 'plus', () => void this.actions.newTabHere(path));
-			item('Herdr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
-			item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
+			// What the runtime's kind cannot do is left out, not offered and refused.
+			if (can.tabs) item('Herdr: new tab here', 'plus', () => void this.actions.newTabHere(path));
+			if (can.splits) {
+				item('Herdr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
+			}
+			if (can.startAgent) {
+				item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
+			}
 		};
 
 		this.registerEvent(
@@ -759,18 +920,28 @@ export default class HerdrPlugin extends Plugin {
 		this.updateStatusBar();
 	}
 
-	/** Re-renders the status bar counts. Called only from scope events (PRD N4). */
+	/**
+	 * Re-renders the status bar: the counts, and the active runtime's name once
+	 * there is more than one to tell apart (ADR-0004). Called from scope events
+	 * and registry changes only (PRD N4).
+	 */
 	private updateStatusBar(): void {
 		const el = this.statusBarEl;
 		if (!el) return;
 		el.empty();
 		if (!this.settings.notifications.statusBar) return;
-		const panes = this.scope?.list() ?? [];
-		if (panes.length === 0) return;
-		// Which herdr the counts are for (issue #54); the bar itself stays terse.
-		const where = `Herdr agents on ${endpointLabel(this.endpoint)}`;
+		const name = runtimeDisplayName(this.endpoint.runtime);
+		// Which runtime the counts are for (issue #54), always in the tooltip.
+		const where = `Herdr agents on ${name}`;
 		setTooltip(el, where);
 		el.setAttribute('aria-label', where);
+		// With one runtime there is nothing to tell apart, and the bar stays
+		// terse; with more, the name shows even before any agent does.
+		const named = this.settings.runtimes.length > 1;
+		if (named) el.createSpan({ cls: 'herdr-status-bar-runtime', text: name });
+		const panes = this.scope?.list() ?? [];
+		if (panes.length === 0) return;
+		if (named) el.createSpan({ text: ' · ' });
 		const { blocked, done } = countStatuses(panes);
 		el.createSpan({ cls: 'herdr-status-bar-blocked', text: `${blocked} blocked` });
 		el.createSpan({ text: ' · ' });
@@ -831,42 +1002,12 @@ export default class HerdrPlugin extends Plugin {
 		await this.connection.connect();
 	}
 
-	private createClient(socketPath: string): HerdrClient {
-		return new HerdrClient({
-			socketPath,
-			onProtocolMismatch: (mismatch) => {
-				this.mismatch = mismatch;
-			},
-			// PRD M3: an unsupported method is reported once, then never retried.
-			onUnsupportedMethod: (method) => {
-				new Notice(unsupportedMethodMessage(method));
-			},
-		});
-	}
-
 	/**
-	 * The scope for one connection, with everything downstream hung off its
-	 * events, never off the raw stream: the scope has already collapsed the
-	 * ~10 pane.updated per second (N4).
+	 * Hangs everything downstream off a new scope's events, never off the raw
+	 * stream: the scope has already collapsed the ~10 pane.updated per second
+	 * (N4). The kind builds the scope; this is the plugin's half.
 	 */
-	private createScope(endpoint: Endpoint): WorkspaceScope {
-		const remoteProfile = endpoint.remote;
-		const scope: WorkspaceScope = new WorkspaceScope({
-			workspaceId: this.settings.workspaceId,
-			vaultPath: this.vaultPath(),
-			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
-			// The one request the scope makes: what `pane_agent_detected` leaves out
-			// for a pane that just gained an agent (issue #75). Answered by the
-			// client of the connection this scope belongs to, and only while that
-			// connection is the published one — a lookup still in flight when the
-			// connection is replaced must not write into a scope nothing renders,
-			// so it is left hanging rather than answered from the new client.
-			lookupPanes: (workspaceId) => {
-				const current = this.connection.current;
-				if (!current || current.scope !== scope) return Promise.resolve([]);
-				return current.client.listPanes(workspaceId);
-			},
-		});
+	private wireScope(scope: WorkspaceScope, endpoint: Endpoint): WorkspaceScope {
 		scope.on('changed', (_paneId, prev, next) => {
 			this.notifier.onChanged(prev, next, endpoint.id);
 			this.updateStatusBar();
@@ -910,33 +1051,15 @@ export default class HerdrPlugin extends Plugin {
 		}, AGENT_NAME_REFRESH_MS);
 	}
 
-	/**
-	 * The SSH forward for the remote profile (PRD S5). The connection points its
-	 * client at the forward's local socket instead of the discovered one; the
-	 * tunnel keeps itself alive with backoff after a drop and reports the socket
-	 * through `onSocket` after every reconnect.
-	 */
-	private createTunnel(onSocket: (localSocketPath: string) => void): SshTunnel {
-		const remote = this.settings.remote;
-		const host = remote.host.trim();
-		if (host.length === 0) {
-			throw new Error('the remote profile has no SSH host');
-		}
-		return new SshTunnel({
-			host,
-			remoteSocketPath: remote.remoteSocketPath.trim(),
-			onStatus: (status) => {
-				if (status.state === 'connected') onSocket(status.localSocketPath);
-			},
-		});
-	}
-
 	/** State the settings tab's status block describes (rendered in settings.ts). */
 	private connectionStatus(): ConnectionStatus {
 		const scope = this.scope;
 		const tunnel = this.tunnel;
 		const discovery = this.connection.discovery;
+		const runtime: RuntimeConfig = this.endpoint.runtime;
 		return {
+			runtime,
+			unavailable: this.kindUnavailable(runtime.kind),
 			discovery,
 			socketPath: this.client?.socket ?? discovery?.socketPath ?? '',
 			tunnel: tunnel

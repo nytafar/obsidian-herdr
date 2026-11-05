@@ -55,6 +55,11 @@
 	display: none;
 }
 
+/* Left out for a runtime whose kind cannot start an agent (ADR-0004). */
+.herdr-start-agent-button.herdr-hidden {
+	display: none;
+}
+
 /* Terminal tab header (issue #105). The view toggle is dimmed and inert on a
    remote endpoint, where the native view is unavailable (ADR-0002), rather
    than missing; the observe/control eye applies to a terminal only, so it is
@@ -319,6 +324,20 @@
 
 .herdr-status-bar .herdr-status-bar-done {
 	color: var(--color-green);
+}
+
+/* Which runtime the counts are for, once there is more than one (ADR-0004). */
+.herdr-status-bar .herdr-status-bar-runtime {
+	color: var(--text-muted);
+}
+
+/* Settings: the active runtime's row, and the form's problem line. */
+.herdr-runtime-active .setting-item-name {
+	font-weight: var(--font-semibold);
+}
+
+.herdr-runtime-problems .setting-item-description.mod-warning {
+	color: var(--text-warning);
 }
 
 /* Terminal view ------------------------------------------------------------ */

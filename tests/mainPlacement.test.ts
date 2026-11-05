@@ -25,6 +25,8 @@ import HerdrPlugin from '../src/main';
 import { HerdrActions, type ActionHost } from '../src/actions';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import { FileSystemAdapter } from './fixtures/obsidian';
+import { endpointOf } from '../src/connection';
+import { defaultLocalRuntime } from '../src/runtimes';
 
 const VAULT = '/home/lasse/hvelv';
 const NOTE = 'projects/herdr/notes.md';
@@ -111,7 +113,7 @@ function harness(options: {
 	plugin.settings = { ...DEFAULT_SETTINGS, ...options.settings };
 	plugin.connection = {
 		current: {
-			endpoint: { id: 'local' },
+			endpoint: endpointOf(defaultLocalRuntime()),
 			client: {
 				request: async (method: string) => {
 					requests.push(method);
@@ -166,7 +168,7 @@ describe('openTerminal places a new terminal (issue #28)', () => {
 		// question from whether there is one at all.
 		const { plugin, calls } = harness({
 			mostRecent: 'note',
-			settings: { remote: { ...DEFAULT_SETTINGS.remote } },
+			settings: {},
 		});
 		(plugin as unknown as { connection: { current: { scope: unknown } } }).connection.current.scope =
 			{

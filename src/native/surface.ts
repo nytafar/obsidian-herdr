@@ -101,15 +101,29 @@ export interface PaneViewAvailability {
 }
 
 /**
- * Whether a pane on this endpoint can be shown in this view. Only the native
- * view is ever unavailable, and only on a remote endpoint: the transcript it
- * reads is a path on the pane's own host and the SSH adapters are not built
- * yet (ADR-0002, ADR-0003).
+ * Where a pane lives, as far as the native view cares: on another machine,
+ * and whether its runtime's kind rules the view out by itself (ADR-0004).
  */
-export function paneViewAvailability(
-	view: PaneView,
-	where: { remote: boolean },
-): PaneViewAvailability {
+export interface PaneWhere {
+	remote: boolean;
+	/**
+	 * Why the kind cannot back a native view (herdr-core reports no agent
+	 * session, ADR-0005), or null/absent when only the target decides.
+	 */
+	kindReason?: string | null;
+}
+
+/**
+ * Whether a pane on this endpoint can be shown in this view. Only the native
+ * view is ever unavailable: on a runtime whose kind has no agent session to
+ * follow, and on a remote endpoint, where the transcript it reads is a path on
+ * the pane's own host and the SSH adapters are not built yet (ADR-0002,
+ * ADR-0003). The kind's reason comes first, since it holds on any target.
+ */
+export function paneViewAvailability(view: PaneView, where: PaneWhere): PaneViewAvailability {
+	if (view === 'native' && where.kindReason) {
+		return { available: false, reason: where.kindReason };
+	}
 	if (view === 'native' && where.remote) {
 		return { available: false, reason: NATIVE_REMOTE_REASON };
 	}
@@ -128,9 +142,10 @@ export function effectivePaneView(input: {
 	/** The global default view, normalized. */
 	fallback: PaneView;
 	remote: boolean;
+	kindReason?: string | null;
 }): PaneView {
 	const view = input.stored ?? input.fallback;
-	if (paneViewAvailability(view, { remote: input.remote }).available) return view;
+	if (paneViewAvailability(view, input).available) return view;
 	return 'terminal';
 }
 

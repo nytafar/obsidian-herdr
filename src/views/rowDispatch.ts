@@ -38,6 +38,7 @@ import {
 	rowMenuItems,
 	type CloseConfirmText,
 	type RenamePromptText,
+	type RowMenuCapabilities,
 	type RowMenuItem,
 	type RowMenuRow,
 } from './rowMenu';
@@ -95,6 +96,11 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	pane(paneId: string): RowPane | null;
 	/** Which half of the action pair sits on the row body (issue #21). */
 	rowClick(): RowClickAction;
+	/**
+	 * What the runtime the rows come from can do (ADR-0004): what the row menu
+	 * offers and whether focus exists. Everything when absent.
+	 */
+	capabilities?(): RowCapabilities;
 	/** Whether the pane is pinned to the top of its group on that endpoint. */
 	pinned(ref: PaneRef): boolean;
 	/** Writes the pin state and persists it. No repaint: the caller decides. */
@@ -123,6 +129,13 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	/** Shows a message to the user. */
 	notice(message: string): void;
 }
+
+/** The slice of a runtime's capabilities the rows read. */
+export interface RowCapabilities extends RowMenuCapabilities {
+	focus: boolean;
+}
+
+const EVERYTHING: RowCapabilities = { rename: true, close: true, focus: true };
 
 /** Said when a modal is answered after the herdr under it has changed. */
 export const STALE_TARGET_NOTICE =
@@ -177,7 +190,7 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 			pinned: this.host.pinned(ref),
 			name: pane.name,
 		};
-		this.host.showRowMenu(event, rowMenuItems(row), (item) => {
+		this.host.showRowMenu(event, rowMenuItems(row, this.can()), (item) => {
 			void this.runMenuItem(item, row, target);
 		});
 	}
@@ -250,8 +263,17 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 		if (!paneId) return null;
 		const drawn = this.element(event)?.closest<HTMLElement>('[data-herdr-action]')?.dataset
 			.herdrAction;
-		const action = isRowClickAction(drawn) ? drawn : rowActions(this.host.rowClick()).body;
+		const canFocus = this.can().focus;
+		const fallback = rowActions(this.host.rowClick(), canFocus).body;
+		// A focus drawn before a switch to a runtime without focus opens the
+		// terminal instead, the one action left.
+		const action = isRowClickAction(drawn) && (canFocus || drawn !== 'focus') ? drawn : fallback;
 		return { paneId, action };
+	}
+
+	/** What the rows' runtime can do now; everything for a host that does not say. */
+	private can(): RowCapabilities {
+		return this.host.capabilities?.() ?? EVERYTHING;
 	}
 
 	/** The pane id of the row the event landed in, or undefined outside one. */

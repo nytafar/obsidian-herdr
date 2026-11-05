@@ -36,7 +36,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { connect } from 'node:net';
-import type { HerdrSettings } from '../settings';
+import type { RuntimeConfig } from '../runtimes';
 
 import { clearTimer, setTimer } from '../timers';
 
@@ -641,18 +641,16 @@ function delay(ms: number): Promise<void> {
  * `-T` disables PTY allocation — the bridge is NDJSON over pipes, not a PTY.
  */
 export function terminalArgvPrefix(
-	settings: Pick<HerdrSettings, 'remote'>,
+	runtime: Pick<RuntimeConfig, 'target' | 'host' | 'binary'>,
 	localHerdrPath: string,
 ): string[] {
-	const remote = settings.remote;
-	if (remote.enabled) {
-		const host = remote.host.trim();
-		const binary = remote.remoteBinary.trim();
-		if (host.length === 0) throw new Error('the remote profile has no SSH host');
-		if (binary.length === 0) throw new Error('the remote profile has no remote herdr binary');
+	if (runtime.target === 'ssh') {
+		const host = runtime.host.trim();
+		const binary = runtime.binary.trim();
+		if (host.length === 0) throw new Error('the runtime has no SSH host');
+		if (binary.length === 0) throw new Error('the runtime has no remote herdr binary');
 		return ['ssh', '-T', host, binary];
 	}
 	if (localHerdrPath.trim().length === 0) throw new Error('the herdr binary path is empty');
 	return [localHerdrPath];
 }
-
