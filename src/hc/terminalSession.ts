@@ -20,22 +20,36 @@
  *   fresh repaint from the core.
  * - **Control and observe.** Control attaches as a viewer, which takes the
  *   shared terminal's size at once (last active viewer wins); it types with
- *   DATA, resizes with RESIZE and tells the core its cell size with FACTS.
+ *   DATA, resizes with RESIZE, tells the core its cell size with FACTS and
+ *   whether it has the keyboard focus with FOCUS (gaining it is activity, and
+ *   the core passes `CSI I`/`CSI O` on to a program that asked for them). A
+ *   tab whose size is only a placeholder (its host had no box yet) attaches
+ *   `resumed` and takes the size with its first real one.
  *   Emulator replies (DA, DSR, …) go as AUTOMATIC_INPUT when both the hello
  *   and the attach advertise it, else as DATA. Observe attaches with
  *   `observe: true` and `resize_notifications: true`, and never sends input
  *   or a resize; the core would drop them anyway.
  * - **The grid.** The stream is the program's own bytes at the terminal's one
  *   size, so the tab's renderer follows it: an observer from the RESIZE
- *   notifications (or the `size` event when a core cannot notify), a
- *   controller from `size` events that are not its own, which means another
- *   viewer typed or resized last. Emitted as `grid`.
+ *   notifications (or the record and `size` events when a core cannot
+ *   notify), a controller from the attach record, the subscribe snapshot and
+ *   `size` events that are not its own, which means another viewer typed or
+ *   resized last. A resumed attach is not the size leader (herdr-core
+ *   `viewers.rs`: no activity yet), and a `size` event missed while
+ *   disconnected never comes again, so the record is what it starts from.
+ *   Emitted as `grid`.
  * - **Ends.** A CLOSE with a reason is the program ending; the tab shows it.
  *   A `restarted` terminal (a kept one after a loss) is attached again on its
- *   own; `finished` and `removed` end the session for good. When the
- *   `hc connect` process dies after an attach, or the core closes the stream
- *   without a reason, the session dials again with backoff and attaches with
- *   `resumed: true`, so it does not take the size from someone else.
+ *   own; `finished` and `removed` end the session for good. `finished` waits
+ *   (briefly) for the core's own CLOSE, which comes after the output still
+ *   queued for the stream, so the program's last screen is not cut off. When
+ *   the `hc connect` process dies after an attach, or the core closes the
+ *   stream without a reason, the session dials again with backoff and attaches
+ *   with `resumed: true`, so it does not take the size from someone else. A
+ *   dial or attach that fails is retried the same way once the tab has been
+ *   attached, and before that when the error is a passing one (`unavailable`
+ *   while a kept terminal recovers, a timeout); anything else ends the tab
+ *   with the reason.
  * - **Seen.** A filtered `events.subscribe {terminal}` on the same connection
  *   keeps the terminal's record (turn, labels, status), and a
  *   {@link SeenTracker} writes `herdr.seen=<turn>` while the view says a
@@ -55,7 +69,7 @@ import type {
 	TerminalSessionMode,
 } from '../bridge/terminalSession';
 import { clearTimer, setTimer } from '../timers';
-import { HcConnection, HcError, type HcSpawn } from './connection';
+import { HcConnection, HcError, HcTimeoutError, type HcSpawn, type HcTimers } from './connection';
 import { LABEL_SEEN, TerminalStore, parseTerminal } from './model';
 import { SeenTracker } from './seen';
 import {
@@ -74,6 +88,12 @@ export const RETRY_INITIAL_MS = 1000;
 export const RETRY_MAX_MS = 30_000;
 /** How long `dispose` waits for the child after stdin EOF (it is killed at 1 s). */
 const DISPOSE_WAIT_MS = 1500;
+/** After `finished`, how long the stream may take to bring the core's CLOSE. */
+export const FINISH_DRAIN_MS = 3000;
+/** How long the core may take to answer `terminal.attach` before the link counts as wedged. */
+export const ATTACH_TIMEOUT_MS = 15_000;
+/** Error kinds that say "not now" rather than "never" (herdr-core's `RpcError` kinds). */
+const TRANSIENT_KINDS = new Set(['unavailable', 'unreachable', 'busy']);
 /** Input is sent in frames of at most this much. */
 const INPUT_CHUNK_BYTES = 64 * 1024;
 /** Own sizes still in flight that a `size` event may echo. */
@@ -83,10 +103,7 @@ const CAN = 0x18;
 /** Erase the scrollback: the first paint brings the core's own. */
 const ERASE_SCROLLBACK = Buffer.from('\x1b[3J', 'latin1');
 
-export interface HcSessionTimers {
-	setTimeout(callback: () => void, ms: number): unknown;
-	clearTimeout(handle: unknown): void;
-}
+export type HcSessionTimers = HcTimers;
 
 const defaultTimers: HcSessionTimers = {
 	setTimeout: (callback, ms) => setTimer(callback, ms),
@@ -109,6 +126,12 @@ export interface HcTerminalSessionOptions {
 	timers?: HcSessionTimers;
 	/** Scrollback lines in the first paint; {@link ATTACH_HISTORY_LINES} by default. */
 	history?: number;
+	/**
+	 * `cols`/`rows` are a placeholder (the tab's host had no box): a
+	 * controller attaches `resumed` and takes the size only with the first
+	 * {@link HcTerminalSession.resize}.
+	 */
+	provisionalSize?: boolean;
 }
 
 type Listener<K extends keyof TerminalSessionEventMap> = (...args: TerminalSessionEventMap[K]) => void;
@@ -117,6 +140,12 @@ type AnyListener = (...args: unknown[]) => void;
 function clampDimension(value: number): number {
 	if (!Number.isFinite(value)) return 1;
 	return Math.min(65535, Math.max(1, Math.trunc(value)));
+}
+
+/** A failure that may pass by itself: worth a retry even before the first attach. */
+function isTransient(error: unknown): boolean {
+	if (error instanceof HcTimeoutError) return true;
+	return error instanceof HcError && TRANSIENT_KINDS.has(error.kind);
 }
 
 function messageOf(error: unknown): string {
@@ -215,6 +244,11 @@ export class HcTerminalSession {
 	private awaitingRestart = false;
 	private retryTimer: unknown = null;
 	private backoff = RETRY_INITIAL_MS;
+	/** Whether {@link lastCols}/{@link lastRows} are a real grid, worth taking the size with. */
+	private sized: boolean;
+	/** `finished` arrived; the stream drains to the core's CLOSE, then the session ends with this. */
+	private drainReason: string | null = null;
+	private drainTimer: unknown = null;
 	private disposing: Promise<void> | null = null;
 
 	constructor(options: HcTerminalSessionOptions) {
@@ -222,6 +256,7 @@ export class HcTerminalSession {
 		this.timers = options.timers ?? defaultTimers;
 		this.lastCols = clampDimension(options.cols);
 		this.lastRows = clampDimension(options.rows);
+		this.sized = options.provisionalSize !== true;
 		this.seen = new SeenTracker((turn) => this.writeSeen(turn));
 	}
 
@@ -257,7 +292,7 @@ export class HcTerminalSession {
 	start(): this {
 		if (this.started || this.disposed) return this;
 		this.started = true;
-		void this.connect(false);
+		void this.connect();
 		return this;
 	}
 
@@ -288,6 +323,7 @@ export class HcTerminalSession {
 	resize(cols: number, rows: number, cellWidthPx?: number, cellHeightPx?: number): boolean {
 		this.lastCols = clampDimension(cols);
 		this.lastRows = clampDimension(rows);
+		this.sized = true;
 		const cell = this.cellOf(cellWidthPx, cellHeightPx);
 		const cellChanged = cell !== null && (this.cell?.[0] !== cell[0] || this.cell?.[1] !== cell[1]);
 		if (cell) this.cell = cell;
@@ -296,6 +332,21 @@ export class HcTerminalSession {
 		this.noteOwnSize();
 		stream.resize(this.lastCols, this.lastRows);
 		if (cellChanged && cell) stream.facts({ cell });
+		return true;
+	}
+
+	/**
+	 * The tab's keyboard focus, as FOCUS. Gaining it is activity, so it takes
+	 * the shared size, which a tab with only a placeholder grid does not do.
+	 * The core passes it on as `CSI I`/`CSI O` to a program that enabled mode
+	 * 1004, so the renderer's own focus reports must not go as well.
+	 */
+	focus(gained: boolean): boolean {
+		const stream = this.stream;
+		if (this.options.mode !== 'control' || !stream || this.disposed) return false;
+		if (gained && !this.sized) return false;
+		if (gained) this.noteOwnSize();
+		stream.focus(gained);
 		return true;
 	}
 
@@ -363,7 +414,7 @@ export class HcTerminalSession {
 		if (this.recentSizes.length > RECENT_SIZES) this.recentSizes.shift();
 	}
 
-	private async connect(automatic: boolean): Promise<void> {
+	private async connect(): Promise<void> {
 		let argv: readonly string[];
 		try {
 			argv = typeof this.options.argv === 'function' ? await this.options.argv() : this.options.argv;
@@ -376,19 +427,30 @@ export class HcTerminalSession {
 		this.connectionGone = new Promise<void>((resolve) => {
 			markGone = resolve;
 		});
-		const connection = new HcConnection({
-			argv,
-			env: this.options.env,
-			spawn: this.options.spawn,
-			onExit: (error) => {
-				markGone();
-				this.onConnectionExit(connection, error);
-			},
-		});
+		let connection: HcConnection;
+		try {
+			connection = new HcConnection({
+				argv,
+				env: this.options.env,
+				spawn: this.options.spawn,
+				timers: this.timers,
+				onExit: (error) => {
+					markGone();
+					this.onConnectionExit(connection, error);
+				},
+			});
+		} catch (error) {
+			// `spawn` itself threw (an empty argv, a bad option): nothing to wait for.
+			markGone();
+			this.fail(error);
+			return;
+		}
 		this.connection = connection;
 		try {
 			await connection.open();
-			if (this.connection !== connection) return;
+			// A connection that died meanwhile fails the attach below, and that
+			// is reported like any other failure.
+			if (this.superseded(connection)) return;
 			const mismatch = connection.mismatch;
 			if (mismatch) {
 				this.emit(
@@ -396,11 +458,18 @@ export class HcTerminalSession {
 					`herdr-core ${mismatch.version} speaks generation ${mismatch.server ?? 'unknown'}, this plugin ${mismatch.expected}`,
 				);
 			}
-			await this.attach(connection, automatic);
+			await this.attach(connection, this.everAttached);
 		} catch (error) {
-			if (this.connection !== connection) return;
+			// The exit handler has already let go of a dead connection, so only
+			// a different live one means somebody else took over.
+			if (this.superseded(connection)) return;
 			this.fail(error);
 		}
+	}
+
+	/** Whether another connection has taken this one's place. */
+	private superseded(connection: HcConnection): boolean {
+		return this.connection !== null && this.connection !== connection;
 	}
 
 	private async attach(connection: HcConnection, resumed: boolean): Promise<void> {
@@ -409,7 +478,9 @@ export class HcTerminalSession {
 		this.creditBacklog = 0;
 		this.frameSeq = 0;
 		const observe = this.options.mode === 'observe';
-		if (!observe) this.noteOwnSize();
+		// A placeholder grid is nobody's size: attach without taking it.
+		const keepSize = resumed || (!observe && !this.sized);
+		if (!observe && this.sized) this.noteOwnSize();
 		const stream = await attachTerminal(
 			connection,
 			{
@@ -419,8 +490,9 @@ export class HcTerminalSession {
 				history: this.options.history ?? ATTACH_HISTORY_LINES,
 				observe,
 				resizeNotifications: observe,
-				resumed,
+				resumed: keepSize,
 				...(this.cell && !observe ? { display: { cell: this.cell } } : {}),
+				timeoutMs: ATTACH_TIMEOUT_MS,
 			},
 			{
 				data: (bytes) => this.onData(token, bytes),
@@ -447,8 +519,9 @@ export class HcTerminalSession {
 		this.backoff = RETRY_INITIAL_MS;
 		const record = parseTerminal(stream.terminal);
 		if (record) this.address = record.address;
-		// An observer the core cannot notify follows the record and `size` events.
-		if (observe && !stream.resizeNotifications) {
+		// The terminal's size now, read after this attach took (or did not take)
+		// it; only an observer with notifications has RESIZE frames instead.
+		if (this.followsRecord()) {
 			const grid = gridOf(stream.terminal);
 			if (grid) this.onGrid(grid.cols, grid.rows);
 		}
@@ -468,6 +541,7 @@ export class HcTerminalSession {
 				{
 					snapshot: (seq, terminals) => {
 						this.store.reset(seq, terminals);
+						this.snapshotGrid(terminals);
 						this.recordChanged();
 					},
 					event: (event) => this.onEvent(event),
@@ -488,6 +562,22 @@ export class HcTerminalSession {
 		}
 	}
 
+	/** Whether the grid comes from records and `size` events rather than RESIZE frames. */
+	private followsRecord(): boolean {
+		return !(this.options.mode === 'observe' && this.stream?.resizeNotifications === true);
+	}
+
+	/** The snapshot's grid for this terminal: newer than the attach record, if it moved since. */
+	private snapshotGrid(terminals: readonly unknown[]): void {
+		if (this.disposed || !this.followsRecord()) return;
+		const address = this.address ?? this.options.target;
+		const raw = terminals.find(
+			(entry) => typeof entry === 'object' && entry !== null && (entry as { address?: unknown }).address === address,
+		);
+		const grid = gridOf(raw);
+		if (grid) this.onGrid(grid.cols, grid.rows);
+	}
+
 	private recordChanged(): void {
 		const address = this.address ?? this.options.target;
 		this.seen.update(this.store.get(address) ?? null);
@@ -503,9 +593,7 @@ export class HcTerminalSession {
 			case 'size': {
 				const grid = gridOf(data);
 				// An observer with notifications gets the same as RESIZE frames.
-				if (grid && !(this.options.mode === 'observe' && this.stream?.resizeNotifications)) {
-					this.onGrid(grid.cols, grid.rows);
-				}
+				if (grid && this.followsRecord()) this.onGrid(grid.cols, grid.rows);
 				break;
 			}
 			case 'lost':
@@ -518,7 +606,7 @@ export class HcTerminalSession {
 				}
 				break;
 			case 'finished':
-				this.finish(describeEnd(closeReasonOf(data)));
+				this.finishAfterDrain(describeEnd(closeReasonOf(data)));
 				return;
 			case 'removed':
 				this.finish(`terminal ${this.options.target} not found (removed)`);
@@ -548,7 +636,7 @@ export class HcTerminalSession {
 	 * else is the grid the renderer has to draw at.
 	 */
 	private onGrid(cols: number, rows: number): void {
-		if (this.options.mode === 'control') {
+		if (this.options.mode === 'control' && this.sized) {
 			const own = this.recentSizes.some((size) => size.cols === cols && size.rows === rows);
 			if (own) {
 				if (this.foreignGrid) {
@@ -567,6 +655,12 @@ export class HcTerminalSession {
 		if (token !== this.token) return;
 		this.stream = null;
 		if (this.disposed || this.ended) return;
+		// Drained to the core's CLOSE (or the connection went): the end the
+		// `finished` event announced.
+		if (this.drainReason !== null) {
+			this.finish(reason ? describeEnd(reason) : this.drainReason);
+			return;
+		}
 		// The connection went: its exit handler redials.
 		if (error) return;
 		if (reason) {
@@ -588,12 +682,21 @@ export class HcTerminalSession {
 		this.stream = null;
 		this.subscription = null;
 		if (this.disposed || this.ended) return;
-		// Before an attach, `connect` reports the failure itself.
+		if (this.drainReason !== null) {
+			this.finish(this.drainReason);
+			return;
+		}
+		// Before an attach on it, `connect` (or the attach) reports the failure:
+		// the call it was waiting on rejects a moment after this.
 		if (this.attachedOn !== connection) return;
 		this.scheduleRetry(`herdr-core connection lost: ${error?.message ?? 'closed'}`);
 	}
 
-	/** A failed dial or attach: final when the terminal is gone, else retried once attached. */
+	/**
+	 * A failed dial or attach: final when the terminal is gone; retried once
+	 * the tab has been attached, or when the error may pass by itself; else
+	 * final with the reason.
+	 */
 	private fail(error: unknown): void {
 		if (this.disposed || this.ended) return;
 		if (error instanceof HcError && error.kind === 'not_found') {
@@ -604,7 +707,7 @@ export class HcTerminalSession {
 			this.finish(`the program exited: ${error.message}`);
 			return;
 		}
-		if (this.everAttached) {
+		if (this.everAttached || isTransient(error)) {
 			this.scheduleRetry(messageOf(error));
 			return;
 		}
@@ -621,10 +724,10 @@ export class HcTerminalSession {
 			if (this.disposed || this.ended) return;
 			const connection = this.connection;
 			if (connection && !connection.isEnded) {
-				void this.attach(connection, true).catch((error: unknown) => this.fail(error));
+				void this.attach(connection, this.everAttached).catch((error: unknown) => this.fail(error));
 			} else {
 				this.connection = null;
-				void this.connect(true);
+				void this.connect();
 			}
 		}, delay);
 	}
@@ -633,6 +736,26 @@ export class HcTerminalSession {
 		if (this.closedShown === reason) return;
 		this.closedShown = reason;
 		this.emit('closed', reason);
+	}
+
+	/**
+	 * `finished` came on the events channel, which does not wait for the
+	 * attach stream: output still queued there (for credit) comes first, then
+	 * the core's CLOSE. A CLOSE of ours would drop that output, so the stream
+	 * is left to drain, for a bounded time.
+	 */
+	private finishAfterDrain(reason: string): void {
+		if (this.ended || this.disposed) return;
+		if (!this.stream) {
+			this.finish(reason);
+			return;
+		}
+		if (this.drainReason !== null) return;
+		this.drainReason = reason;
+		this.drainTimer = this.timers.setTimeout(() => {
+			this.drainTimer = null;
+			this.finish(this.drainReason);
+		}, FINISH_DRAIN_MS);
 	}
 
 	/** Ends the session for good: says why, lets everything go, then `exit`. */
@@ -647,6 +770,8 @@ export class HcTerminalSession {
 	private teardown(): void {
 		if (this.retryTimer !== null) this.timers.clearTimeout(this.retryTimer);
 		this.retryTimer = null;
+		if (this.drainTimer !== null) this.timers.clearTimeout(this.drainTimer);
+		this.drainTimer = null;
 		this.token++;
 		const stream = this.stream;
 		this.stream = null;

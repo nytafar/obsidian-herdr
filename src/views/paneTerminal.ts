@@ -608,6 +608,12 @@ export interface PaneSession {
 	repaint?(): void;
 	/** Whether a person is in front of this terminal now (herdr-core's `herdr.seen`). */
 	setLooking?(looking: boolean): void;
+	/**
+	 * The terminal gained or lost the keyboard focus. A session with it tells
+	 * the program itself (herdr-core's FOCUS, passed on as `CSI I`/`CSI O` to
+	 * a program that asked), so the renderer's own focus reports are dropped.
+	 */
+	focus?(gained: boolean): boolean;
 }
 
 /**
@@ -667,6 +673,10 @@ export interface PaneTerminalOptions {
 	/** Decides the host-key policy (#47); `Platform.isMacOS` in the view. */
 	macOS: boolean;
 }
+
+/** Focus reports (mode 1004): gained, lost. */
+const FOCUS_IN = '\x1b[I';
+const FOCUS_OUT = '\x1b[O';
 
 /** The erase-display a pane switch writes: the screen, then the scrollback. */
 const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
@@ -749,6 +759,14 @@ export class PaneTerminal {
 	private sharedGrid: { cols: number; rows: number } | null = null;
 	/** Whether a person is in front of this terminal, as the view last said. */
 	private looking = false;
+	/** Whether the terminal has the keyboard focus, as the view last said. */
+	private focused = false;
+	/**
+	 * Whether the session has been given a measured grid. A start on a host
+	 * with no box spawns with a placeholder, and the first real fit is sent
+	 * even when it happens to equal it.
+	 */
+	private sessionSized = false;
 
 	constructor(options: PaneTerminalOptions) {
 		this.paneIdentity = { ...options.identity };
@@ -928,6 +946,14 @@ export class PaneTerminal {
 		if (this.looking === looking) return;
 		this.looking = looking;
 		this.session?.setLooking?.(looking);
+	}
+
+	/** The renderer's input element gained or lost the keyboard focus. */
+	setFocused(focused: boolean): void {
+		if (this.focused === focused) return;
+		this.focused = focused;
+		const session = this.session;
+		if (session?.mode === 'control') session.focus?.(focused);
 	}
 
 	/**
@@ -1168,8 +1194,10 @@ export class PaneTerminal {
 		// gesture, so nothing of the previous one is carried.
 		this.wheel.setPixelsPerLine(fit.cellHeightPx);
 		this.cancelWheel();
-		const cols = fit.cols > 0 ? fit.cols : FALLBACK_COLS;
-		const rows = fit.rows > 0 ? fit.rows : FALLBACK_ROWS;
+		// No box, no grid: the placeholder must not size a shared terminal.
+		const measured = fit.cols > 0 && fit.rows > 0;
+		const cols = measured ? fit.cols : FALLBACK_COLS;
+		const rows = measured ? fit.rows : FALLBACK_ROWS;
 		const attach = attachFor(mode);
 		const session = this.newSession(
 			{
@@ -1179,11 +1207,13 @@ export class PaneTerminal {
 				takeover: attach.takeover,
 				cols,
 				rows,
+				...(measured ? {} : { provisionalSize: true }),
 				env: this.host.env(),
 			},
 			endpoint,
 		);
 		this.session = session;
+		this.sessionSized = measured;
 
 		session.on('frame', (bytes: Uint8Array, meta: FrameMeta) => {
 			if (this.session !== session) return;
@@ -1235,8 +1265,9 @@ export class PaneTerminal {
 		session.setLooking?.(this.looking);
 		if (attach.mode === 'control') {
 			// The spawn argv already carries the grid; this adds the cell metrics
-			// herdr uses for pixel-aware programs.
-			session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
+			// herdr uses for pixel-aware programs. A placeholder is not sent: the
+			// first real fit is.
+			if (measured) session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
 			renderer.focus();
 		}
 		this.host.onStatus(this.status());
@@ -1410,8 +1441,12 @@ export class PaneTerminal {
 	private onReply(data: string): void {
 		const session = this.session;
 		if (!session || session.mode !== 'control') return;
-		if (session.reply) session.reply(data);
-		else session.input(data);
+		// xterm.js reports focus itself (to a program with mode 1004); a session
+		// that sends focus as such would make the program hear it twice.
+		const reply = session.focus ? data.replaceAll(FOCUS_IN, '').replaceAll(FOCUS_OUT, '') : data;
+		if (reply.length === 0) return;
+		if (session.reply) session.reply(reply);
+		else session.input(reply);
 	}
 
 	/**
@@ -1422,7 +1457,7 @@ export class PaneTerminal {
 	 */
 	private followGrid(session: PaneSession, cols: number, rows: number): void {
 		const own = session.size;
-		if (session.mode === 'control' && own.cols === cols && own.rows === rows) {
+		if (session.mode === 'control' && this.sessionSized && own.cols === cols && own.rows === rows) {
 			this.sharedGrid = null;
 			this.applyFit();
 			return;
@@ -1548,11 +1583,12 @@ export class PaneTerminal {
 			return;
 		}
 		const current = session.size;
-		if (current.cols === fit.cols && current.rows === fit.rows) {
+		if (this.sessionSized && current.cols === fit.cols && current.rows === fit.rows) {
 			// Someone else's grid holds until this tab types or resizes.
 			if (shared) renderer.resize(shared.cols, shared.rows);
 			return;
 		}
+		this.sessionSized = true;
 		session.resize(fit.cols, fit.rows, fit.cellWidthPx, fit.cellHeightPx);
 	}
 

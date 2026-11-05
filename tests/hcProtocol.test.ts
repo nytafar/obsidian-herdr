@@ -15,9 +15,9 @@ import {
 	MAX_FRAME_PAYLOAD,
 	type Frame,
 } from '../src/hc/frames';
-import { describeExit, HcConnection, HcError } from '../src/hc/connection';
+import { describeExit, HcConnection, HcError, HcTimeoutError, HELLO_TIMEOUT_MS } from '../src/hc/connection';
 import { attachTerminal, EVENTS_INITIAL_CREDIT, subscribeEvents, type HcEvent } from '../src/hc/streams';
-import { FakeCore, fakeSpawner, HELLO_RESULT, RpcError, settle } from './fixtures/fakeHc';
+import { FakeCore, fakeSpawner, HELLO_RESULT, manualTimers, RpcError, settle } from './fixtures/fakeHc';
 
 function collect(decoder?: (d: FrameDecoder) => void) {
 	const lines: string[] = [];
@@ -171,6 +171,45 @@ describe('HcConnection', () => {
 		);
 
 		expect(describeExit(['hc'], { code: 127, signal: null }, '')).toContain('not installed');
+	});
+
+	it('finds the hello reply behind a login banner, even on the banner’s own line', async () => {
+		const { connection, hello } = await opened((c) => {
+			c.banner = 'Welcome to box\r\n\x1b]0;box: ~\x07Last login: {never} ';
+		});
+		expect(hello.framed).toBe(true);
+		expect(connection.hello?.version).toBe('0.1.18');
+	});
+
+	it('aborts the connection when hello is never answered', async () => {
+		const { spawn, cores } = fakeSpawner((core) => {
+			core.silent = true;
+		});
+		const timers = manualTimers();
+		const connection = new HcConnection({ argv: ['hc', 'connect'], spawn, timers: timers.timers });
+		const opening = connection.open();
+		expect(timers.fire(HELLO_TIMEOUT_MS)).toBe(1);
+		await expect(opening).rejects.toBeInstanceOf(HcTimeoutError);
+		expect(cores[0]?.killed).toBe(true);
+		expect(connection.isEnded).toBe(true);
+	});
+
+	it('aborts the connection when a call with a timeout gets no answer, and not when it does', async () => {
+		const timers = manualTimers();
+		const { spawn, cores } = fakeSpawner();
+		const connection = new HcConnection({ argv: ['hc', 'connect'], spawn, timers: timers.timers });
+		await connection.open();
+		// The hello deadline is gone once it was answered.
+		expect(timers.pending.size).toBe(0);
+		await expect(connection.request('terminal.list', {}, { timeoutMs: 500 })).resolves.toBeNull();
+		expect(timers.pending.size).toBe(0);
+		const core = cores[0];
+		if (!core) throw new Error('no core');
+		core.manual = true;
+		const hung = connection.request('terminal.attach', {}, { timeoutMs: 500 });
+		expect(timers.fire(500)).toBe(1);
+		await expect(hung).rejects.toThrow('herdr-core did not answer terminal.attach within 1 s');
+		expect(core.killed).toBe(true);
 	});
 
 	it('closes with stdin EOF first and rejects what is pending', async () => {

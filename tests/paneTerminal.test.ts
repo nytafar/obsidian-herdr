@@ -274,6 +274,13 @@ class HcLikeSession extends FakeSession {
 	setLooking(looking: boolean): void {
 		this.looking.push(looking);
 	}
+
+	readonly focuses: boolean[] = [];
+
+	focus(gained: boolean): boolean {
+		this.focuses.push(gained);
+		return true;
+	}
 }
 
 class FakeScheduler implements PaneTerminalScheduler {
@@ -1293,6 +1300,65 @@ describe('PaneTerminal on a raw-byte session (herdr-core)', () => {
 		expect(h.hcSession().looking).toEqual([false, true]);
 		await h.terminal.reconnect();
 		expect(h.hcSession(1).looking).toEqual([true]);
+	});
+
+	it('a host with no box does not size the shared terminal until it has a real fit', async () => {
+		const h = harness({ hcLike: true, deferMounts: true });
+		// The renderer measures nothing: a hidden host.
+		const attaching = h.terminal.attach(h.hostEl);
+		await settle();
+		h.renderer().fitResult = { cols: 0, rows: 0, cellWidthPx: 0, cellHeightPx: 0 };
+		h.renderer().finishMount();
+		await attaching;
+		const session = h.hcSession();
+		expect(session.options).toMatchObject({ cols: 80, rows: 24, provisionalSize: true });
+		expect(session.resizes).toEqual([]);
+		// The shared grid is drawn even when it equals the placeholder.
+		session.emit('grid', 80, 24);
+		expect(h.renderer().gridResizes).toEqual([[80, 24]]);
+		// The first measured fit is sent, though it equals the placeholder.
+		h.renderer().fitResult = { cols: 80, rows: 24, cellWidthPx: 8, cellHeightPx: 16 };
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(session.resizes).toEqual([[80, 24, 8, 16]]);
+		// From then on, an unchanged fit is not news.
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(session.resizes).toHaveLength(1);
+	});
+
+	it('a host with a box sizes the session at once, as before', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		expect(h.hcSession().options).not.toHaveProperty('provisionalSize');
+		expect(h.hcSession().resizes).toEqual([[100, 40, 8, 16]]);
+	});
+
+	it('tells a session with focus about the keyboard focus, and drops the engine’s own reports', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.terminal.setFocused(true);
+		h.terminal.setFocused(true);
+		h.terminal.setFocused(false);
+		expect(h.hcSession().focuses).toEqual([true, false]);
+		// xterm.js's focus reports would reach the program a second time.
+		h.renderer().replyListener?.('\x1b[I');
+		h.renderer().replyListener?.('\x1b[O');
+		h.renderer().replyListener?.('\x1b[?1;2c');
+		expect(h.hcSession().replies).toEqual(['\x1b[?1;2c']);
+		// An observer has no focus to give.
+		const o = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await o.terminal.attach(o.hostEl);
+		o.terminal.setFocused(true);
+		expect(o.hcSession().focuses).toEqual([]);
+	});
+
+	it('a session without focus keeps the engine’s focus reports (herdr)', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.terminal.setFocused(true);
+		h.renderer().replyListener?.('\x1b[I');
+		expect(h.session().inputs).toEqual(['\x1b[I']);
 	});
 
 	it('asks for a fresh paint when the renderer is rebuilt under the live session', async () => {

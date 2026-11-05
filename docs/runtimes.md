@@ -159,11 +159,13 @@ the same way as for herdr.
   line drops.
 
 - **Terminal tabs** work as on herdr: control types and sets the terminal's
-  size, observe only watches. hc has no single controller: whoever typed or
-  resized last sets the size, and a tab whose size another viewer took draws
-  at that size until you type or resize in it. A tab follows the program
-  across a restart of a kept terminal and a lost connection on its own, and
-  says so when the program exits.
+  size, observe only watches. hc has no single controller: whoever typed,
+  resized or clicked into the tab last sets the size, and a tab whose size
+  another viewer took draws at that size until you type, resize or focus it.
+  A tab that opens hidden leaves the size alone until it is shown. A tab
+  follows the program across a restart of a kept terminal and a lost
+  connection on its own, keeps trying while the connection or the terminal
+  is away, shows the program's last output, and says so when it exits.
 - Looking at an agent's terminal tab (window in front, tab on screen) marks it
   seen in herdr-app's shared `herdr.seen` label, so its "done" clears here, in
   herdr-app and on the phone.

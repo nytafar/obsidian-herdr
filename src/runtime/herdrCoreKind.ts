@@ -206,6 +206,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 				mode: options.mode,
 				cols: options.cols,
 				rows: options.rows,
+				provisionalSize: options.provisionalSize,
 				env: options.env,
 				spawn: host.spawn,
 			});
