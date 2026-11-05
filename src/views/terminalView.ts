@@ -82,9 +82,9 @@ import {
 	type AttachMode,
 	type TerminalTitleSource,
 } from '../settings';
-import { terminalArgvPrefix } from '../herdr/ssh';
-import { LOCAL_ENDPOINT_ID, type EndpointSession } from '../connection';
-import { TerminalSession, type TerminalSessionMode } from '../bridge/terminalSession';
+import { isRemoteEndpoint, LOCAL_ENDPOINT_ID, type EndpointSession } from '../connection';
+import type { TerminalSessionMode } from '../bridge/terminalSession';
+import { nativeViewBlock, type RuntimeKindAdapter } from '../runtime/kind';
 import { createRenderer } from './renderer/create';
 import {
 	isTerminalEngine,
@@ -126,13 +126,16 @@ import {
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
+	type PaneWhere,
 } from '../native/surface';
-import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { linkSourcePath } from '../native/noteLinks';
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
+
+/** Why a tab whose runtime was removed from the registry offers no native view. */
+export const NATIVE_UNKNOWN_RUNTIME_REASON = 'runtime no longer configured';
 
 /**
  * Persisted view state. `paneId` is a herdr pane id such as `w4:p1`;
@@ -228,13 +231,14 @@ export interface TerminalHeaderActions {
  * reason the tab menu gives beside native in its tooltip: a button that is
  * missing looks like a bug, one that says why does not.
  */
-export function terminalHeaderActions(where: {
-	view: PaneView;
-	remote: boolean;
-}): TerminalHeaderActions {
+export function terminalHeaderActions(
+	where: {
+		view: PaneView;
+	} & PaneWhere,
+): TerminalHeaderActions {
 	const target = otherPaneView(where.view);
 	const name = target === 'native' ? 'native view' : 'terminal';
-	const { available, reason } = paneViewAvailability(target, { remote: where.remote });
+	const { available, reason } = paneViewAvailability(target, where);
 	const label = `Switch to ${name}${reason === null ? '' : ` (${reason})`}`;
 	return {
 		viewToggle: {
@@ -559,7 +563,9 @@ export class TerminalView extends ItemView {
 				setTimeout: (callback, ms) => this.containerEl.win.setTimeout(callback, ms),
 				clearTimeout: (handle) => this.containerEl.win.clearTimeout(handle),
 			},
-			createSession: (options) => new TerminalSession(options),
+			// The bridge is the pinned runtime's kind's too (ADR-0005).
+			createSession: (options, endpoint) =>
+				this.plugin.kindOf(endpoint.runtime.kind).createTerminalSession(options, endpoint),
 			createRenderer: (options) => createRenderer(options),
 			macOS: Platform.isMacOS,
 		});
@@ -601,13 +607,16 @@ export class TerminalView extends ItemView {
 			cursorOptions: () => cursorOptions(this.plugin.settings),
 			env: () => spawnEnv(process.env, this.plugin.settings.extraPath),
 			endpointFor: (endpointId) => this.plugin.endpointFor(endpointId),
-			// Local: `[<herdr>]`. Remote profile: `['ssh','-T',host,<remote herdr>]`
-			// — terminals never go through the forwarded API socket (PRD S17).
+			// The pinned runtime's kind builds the argv: for herdr `[<herdr>]`
+			// locally and `['ssh','-T',host,<remote herdr>]` over SSH — terminals
+			// never go through the forwarded API socket (PRD S17).
 			commandFor: (endpoint) =>
-				terminalArgvPrefix({ remote: endpoint.remote }, this.plugin.herdrBinaryPath()),
+				this.plugin.kindOf(endpoint.runtime.kind).terminalCommand(endpoint),
 			// Whether the plugin has connected to *anything*: a connection to the
 			// other herdr still means the binary was found (issue #54).
-			connected: () => this.plugin.client !== null,
+			// A kind this build cannot run is not waiting for anything: the tab
+			// shows why at once instead of "waiting for herdr" (ADR-0004).
+			connected: () => this.plugin.client !== null || this.kind().unavailable !== null,
 			perfEnabled: () => perfEnabled(),
 			onStatus: (line) => this.renderStatus(line),
 			// A renderer is mounted, so the grace period has something to come back
@@ -643,8 +652,9 @@ export class TerminalView extends ItemView {
 			stored: this.storedView,
 			fallback: normalizePaneView(this.plugin.settings.defaultView),
 			// ADR-0002: the native view reads a transcript on the pane's own host,
-			// so a tab pinned to a remote herdr keeps its terminal surface.
-			remote: this.isRemote(),
+			// so a tab pinned to a remote runtime keeps its terminal surface, as
+			// does one whose kind has no agent session (ADR-0005).
+			...this.where(),
 		});
 	}
 
@@ -663,18 +673,33 @@ export class TerminalView extends ItemView {
 	 */
 	private paneCwd(): string {
 		const paneId = this.terminal.identity.paneId;
-		const scope = this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.scope;
+		const scope = this.plugin.nativeSession(this.terminal.identity.endpointId)?.scope;
 		return (paneId ? scope?.get(paneId)?.cwd : '') ?? '';
 	}
 
-	/** Whether this tab is pinned to a remote herdr (issue #54, ADR-0002). */
-	private isRemote(): boolean {
-		return this.terminal.identity.endpointId !== LOCAL_ENDPOINT_ID;
+	/**
+	 * Where this tab's pane lives, for the native view's availability (issue
+	 * #54, ADR-0002, ADR-0004): on another machine, and whether its runtime's
+	 * kind rules the view out by itself. A runtime that is no longer in the
+	 * registry can show nothing; its terminal says why.
+	 */
+	private where(): PaneWhere {
+		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
+		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
+		return nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), isRemoteEndpoint(endpoint));
+	}
+
+	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
+	private kind(): RuntimeKindAdapter {
+		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
+		return this.plugin.kindOf(endpoint?.runtime.kind ?? 'herdr');
 	}
 
 	/** The adapter for a kind: the tab's own lifecycle, or a fresh native view. */
 	private createSurface(kind: PaneSurfaceKind): PaneSurface {
 		if (kind === 'terminal') return this.terminal;
+		const nativeClient = () =>
+			this.plugin.nativeSession(this.terminal.identity.endpointId)?.client ?? null;
 		return new NativePaneSurface({
 			// The view's own app, per the Obsidian guidelines, for the Markdown it
 			// renders and the links it opens (#93).
@@ -684,17 +709,19 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
-			// Prompts go to the herdr that is connected now, over the local
-			// endpoint: native mode is local-only until the SSH adapters land
-			// (ADR-0002), and `--wait` is never asked for (#97, ADR-0003).
-			sender: clientPromptSender(
-				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
-			),
+			// Prompts go through the tab's own runtime, its kind's sender over its
+			// session, and only while that runtime is the connected one and can
+			// show a native view at all: native mode is local-only until the SSH
+			// adapters land (ADR-0002), and `--wait` is never asked for (#97,
+			// ADR-0003).
+			sender: {
+				send: (paneId, text) => this.kind().promptSender(nativeClient).send(paneId, text),
+			},
 			// The waiting card's "Trust this folder" (#99), over the same client and
 			// only ever `Down Enter` on the workspace trust prompt.
-			keySender: clientKeySender(
-				() => this.plugin.endpointSession(LOCAL_ENDPOINT_ID)?.client ?? null,
-			),
+			keySender: {
+				sendKeys: (paneId, keys) => this.kind().keySender(nativeClient).sendKeys(paneId, keys),
+			},
 			// "Open in terminal": the tab's own view switch (#92, #104), which is
 			// how a block this view must never press Enter on gets answered. Only
 			// the view moves; the terminal it comes back to is the tab's own
@@ -707,7 +734,7 @@ export class TerminalView extends ItemView {
 			// `/` offers the pane's commands and skills, `@` the vault's files
 			// (#98). The pane's own cwd decides the project scope and the form a
 			// mention takes; the vault path is the local one, because a native
-			// view is local-only (ADR-0002) even with a remote profile enabled.
+			// view is local-only (ADR-0002) even while an SSH runtime is active.
 			onPromptInput: (inputEl) => {
 				const suggest = new PromptSuggest(inputEl, {
 					app: this.app,
@@ -1213,7 +1240,7 @@ export class TerminalView extends ItemView {
 	 */
 	private async togglePaneView(): Promise<void> {
 		const target = otherPaneView(this.view());
-		if (!paneViewAvailability(target, { remote: this.isRemote() }).available) return;
+		if (!paneViewAvailability(target, this.where()).available) return;
 		await this.setPaneView(target);
 	}
 
@@ -1224,7 +1251,7 @@ export class TerminalView extends ItemView {
 	 * in the header moves as a tab is switched back and forth.
 	 */
 	private updateViewActions(): void {
-		const header = terminalHeaderActions({ view: this.view(), remote: this.isRemote() });
+		const header = terminalHeaderActions({ view: this.view(), ...this.where() });
 		const el = this.viewActionEl;
 		if (el) {
 			const { icon, label, disabled } = header.viewToggle;
@@ -1268,9 +1295,9 @@ export class TerminalView extends ItemView {
 	 */
 	private addRenderModeItems(menu: Menu): void {
 		const currentView = this.view();
-		const remote = this.isRemote();
+		const where = this.where();
 		for (const view of PANE_VIEWS) {
-			const { available, reason } = paneViewAvailability(view, { remote });
+			const { available, reason } = paneViewAvailability(view, where);
 			const name = PANE_VIEW_NAMES[view];
 			const title = reason === null ? name : `${name} (${reason})`;
 			menu.addItem((item) => {

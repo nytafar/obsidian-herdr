@@ -11,7 +11,7 @@ import {
 } from '../src/herdr/ssh';
 // Type-only: `src/settings.ts` imports the `obsidian` module, which has no
 // runtime entry point outside the app, so nothing from it may be imported here.
-import type { HerdrSettings } from '../src/settings';
+import { DEFAULT_REMOTE_HERDR_BINARY, type RuntimeConfig } from '../src/runtimes';
 
 const HOST = 'lasse@xl';
 const REMOTE_SOCKET = '/home/lasse/.config/herdr/herdr.sock';
@@ -107,19 +107,11 @@ function harness(
 	return state;
 }
 
-const REMOTE_DEFAULTS: HerdrSettings['remote'] = {
-	enabled: false,
-	host: '',
-	remoteSocketPath: '~/.config/herdr/herdr.sock',
-	remoteBinary: '~/.local/bin/herdr',
-	remoteVaultPath: '',
-};
-
-/** Only the remote profile matters here, so the helpers take just that slice. */
-function settings(
-	remote: Partial<HerdrSettings['remote']>,
-): Pick<HerdrSettings, 'remote'> {
-	return { remote: { ...REMOTE_DEFAULTS, ...remote } };
+/** Only target, host and binary matter to the argv, so the helper takes that slice. */
+function runtime(
+	fields: Partial<Pick<RuntimeConfig, 'target' | 'host' | 'binary'>>,
+): Pick<RuntimeConfig, 'target' | 'host' | 'binary'> {
+	return { target: 'local', host: '', binary: DEFAULT_REMOTE_HERDR_BINARY, ...fields };
 }
 
 describe('localSocketPathFor (S5)', () => {
@@ -583,8 +575,8 @@ describe('SshTunnel ownership (#59)', () => {
 });
 
 describe('terminalArgvPrefix (S17)', () => {
-	it('uses the local binary when the remote profile is off', () => {
-		expect(terminalArgvPrefix(settings({ enabled: false }), '/opt/homebrew/bin/herdr')).toEqual([
+	it('uses the local binary on a local runtime', () => {
+		expect(terminalArgvPrefix(runtime({ target: 'local' }), '/opt/homebrew/bin/herdr')).toEqual([
 			'/opt/homebrew/bin/herdr',
 		]);
 	});
@@ -592,22 +584,22 @@ describe('terminalArgvPrefix (S17)', () => {
 	it('goes over ssh -T with the absolute remote binary, never through the tunnel', () => {
 		expect(
 			terminalArgvPrefix(
-				settings({
-					enabled: true,
+				runtime({
+					target: 'ssh',
 					host: HOST,
-					remoteBinary: '/home/lasse/.local/bin/herdr',
+					binary: '/home/lasse/.local/bin/herdr',
 				}),
 				'/opt/homebrew/bin/herdr',
 			),
 		).toEqual(['ssh', '-T', HOST, '/home/lasse/.local/bin/herdr']);
 	});
 
-	it('refuses an incomplete remote profile rather than spawning a broken command', () => {
-		expect(() => terminalArgvPrefix(settings({ enabled: true, host: '' }), '/bin/herdr')).toThrow(
+	it('refuses an incomplete SSH runtime rather than spawning a broken command', () => {
+		expect(() => terminalArgvPrefix(runtime({ target: 'ssh', host: '' }), '/bin/herdr')).toThrow(
 			/SSH host/,
 		);
 		expect(() =>
-			terminalArgvPrefix(settings({ enabled: true, host: HOST, remoteBinary: '' }), '/bin/herdr'),
+			terminalArgvPrefix(runtime({ target: 'ssh', host: HOST, binary: '' }), '/bin/herdr'),
 		).toThrow(/remote herdr binary/);
 	});
 });

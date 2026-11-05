@@ -236,6 +236,15 @@ export class Modal {
 	constructor(public app: unknown) {}
 }
 
+/** Stand-in for the palette-style picker; only constructible here. */
+export class FuzzySuggestModal<T> extends Modal {
+	setPlaceholder(_placeholder: string): void {}
+	open(): void {}
+	getItems(): T[] {
+		return [];
+	}
+}
+
 export class Notice {
 	constructor(public message: string) {}
 }
@@ -271,6 +280,12 @@ export class FakeElement {
 		this.listeners.push({ type, handler });
 	}
 	removeEventListener(): void {}
+	/** Classes toggled on, as `toggleClass` leaves them. */
+	readonly classes = new Set<string>();
+	toggleClass(cls: string, on: boolean): void {
+		if (on) this.classes.add(cls);
+		else this.classes.delete(cls);
+	}
 	select(): void {}
 	focus(): void {}
 	/** Fires every listener registered for `type`, in order. */
@@ -450,6 +465,8 @@ export class Setting {
 	heading = false;
 	readonly classes: string[] = [];
 	readonly components: SettingComponent[] = [];
+	/** The description element, for code that marks it (`toggleClass`). */
+	readonly descEl = new FakeElement();
 
 	constructor(public readonly containerEl: unknown) {
 		const key = containerEl as object;

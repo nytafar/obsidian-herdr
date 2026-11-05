@@ -638,7 +638,11 @@ export interface PaneTerminalOptions {
 	identity: PaneIdentity;
 	host: PaneTerminalHost;
 	scheduler: PaneTerminalScheduler;
-	createSession: (options: TerminalSessionOptions) => PaneSession;
+	/**
+	 * The bridge for one start, given the endpoint the tab is pinned to, whose
+	 * runtime's kind decides what the bridge is (ADR-0004, ADR-0005).
+	 */
+	createSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
 	createRenderer: (options: RendererOptions) => TerminalRenderer;
 	/** Decides the host-key policy (#47); `Platform.isMacOS` in the view. */
 	macOS: boolean;
@@ -650,7 +654,7 @@ const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
 export class PaneTerminal {
 	private readonly host: PaneTerminalHost;
 	private readonly scheduler: PaneTerminalScheduler;
-	private readonly newSession: (options: TerminalSessionOptions) => PaneSession;
+	private readonly newSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
 	private readonly newRenderer: (options: RendererOptions) => TerminalRenderer;
 
 	private paneIdentity: PaneIdentity;
@@ -1092,14 +1096,16 @@ export class PaneTerminal {
 		this.host.onStarted();
 
 		let command: string[];
+		const endpoint = this.endpoint;
 		try {
-			// Local: `[<herdr>]`. Remote profile: `['ssh','-T',host,<remote herdr>]`
-			// — terminals never go through the forwarded API socket (PRD S17).
-			// The argv comes from the pinned endpoint's snapshot (issue #54).
-			if (!this.endpoint) {
-				throw new Error(`the endpoint ${endpointId} is no longer configured`);
+			// The pinned runtime's kind builds the argv, from the endpoint's
+			// snapshot (issue #54, ADR-0004): for herdr `[<herdr>]` locally and
+			// `['ssh','-T',host,<remote herdr>]` over SSH — terminals never go
+			// through the forwarded API socket (PRD S17).
+			if (!endpoint) {
+				throw new Error(`the runtime ${endpointId} is no longer configured`);
 			}
-			command = this.host.commandFor(this.endpoint);
+			command = this.host.commandFor(endpoint);
 		} catch (error) {
 			// A restored tab opens before `connect()` has discovered the binary
 			// (discovery is async); the plugin announces the connection, and the
@@ -1125,15 +1131,18 @@ export class PaneTerminal {
 		const cols = fit.cols > 0 ? fit.cols : FALLBACK_COLS;
 		const rows = fit.rows > 0 ? fit.rows : FALLBACK_ROWS;
 		const attach = attachFor(mode);
-		const session = this.newSession({
-			command,
-			target: paneId,
-			mode: attach.mode,
-			takeover: attach.takeover,
-			cols,
-			rows,
-			env: this.host.env(),
-		});
+		const session = this.newSession(
+			{
+				command,
+				target: paneId,
+				mode: attach.mode,
+				takeover: attach.takeover,
+				cols,
+				rows,
+				env: this.host.env(),
+			},
+			endpoint,
+		);
 		this.session = session;
 
 		session.on('frame', (bytes: Uint8Array, meta: FrameMeta) => {

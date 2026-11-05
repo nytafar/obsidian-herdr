@@ -1,6 +1,6 @@
 /**
- * Settings-side pure bits: the remote-profile check both the folder actions and
- * the status block ask, and the status block itself. `renderConnectionStatus`
+ * Settings-side pure bits: the remote vault path check both the folder actions
+ * and the status block ask, and the status block itself. `renderConnectionStatus`
  * only ever calls `createEl`, so a two-line stand-in for the container is enough
  * to assert what it says — no DOM needed.
  */
@@ -24,25 +24,30 @@ import {
 	normalizePinnedPanes,
 	pinnedPaneIds,
 	migrateRenderMode,
-	remoteVaultPathIssue,
 	withoutRemovedSettings,
 	renderConnectionStatus,
 	togglePanePin,
 	SCROLLBACK_BYTES_PER_MB,
 	scrollbackBytes,
 	type ConnectionStatus,
-	type HerdrSettings,
 } from '../src/settings';
+import {
+	defaultLocalRuntime,
+	newRuntime,
+	remoteVaultPathIssue,
+	type RuntimeConfig,
+} from '../src/runtimes';
 
-function settings(remote: Partial<HerdrSettings['remote']> = {}): HerdrSettings {
-	return {
-		...DEFAULT_SETTINGS,
-		remote: { ...DEFAULT_SETTINGS.remote, ...remote },
-	};
+/** The local herdr, or an SSH herdr runtime with these fields. */
+function runtime(ssh?: Partial<RuntimeConfig>): RuntimeConfig {
+	if (!ssh) return defaultLocalRuntime();
+	return { ...newRuntime('herdr', 'ssh', [], () => 0.25), ...ssh };
 }
 
 function status(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
 	return {
+		runtime: defaultLocalRuntime(),
+		unavailable: null,
 		discovery: {
 			binary: { path: '/opt/homebrew/bin/herdr', source: 'homebrew' },
 			socketPath: '/tmp/herdr.sock',
@@ -59,7 +64,7 @@ function status(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
 }
 
 /** Collects the text of every line the renderer emits, plus its warning flag. */
-function render(s: HerdrSettings, st: ConnectionStatus): { text: string; warning: boolean }[] {
+function render(rt: RuntimeConfig, st: ConnectionStatus): { text: string; warning: boolean }[] {
 	const lines: { text: string; warning: boolean }[] = [];
 	const el = {
 		createEl: (_tag: string, options: { cls: string; text: string }) => {
@@ -67,34 +72,61 @@ function render(s: HerdrSettings, st: ConnectionStatus): { text: string; warning
 			return el;
 		},
 	};
-	renderConnectionStatus(el as unknown as HTMLElement, s, st);
-	return lines;
+	renderConnectionStatus(el as unknown as HTMLElement, { ...st, runtime: rt });
+	// The first line names the runtime; the cases below are about the rest.
+	expect(lines[0]?.text.startsWith('Runtime: ')).toBe(true);
+	return lines.slice(1);
 }
 
 describe('remoteVaultPathIssue (S5, M19)', () => {
-	it('is silent while the remote profile is off', () => {
-		expect(remoteVaultPathIssue(settings({ enabled: false, remoteVaultPath: '' }))).toBeNull();
+	it('is silent for a local runtime', () => {
+		expect(remoteVaultPathIssue(runtime())).toBeNull();
 	});
 
-	it('flags an enabled remote profile without a remote vault path', () => {
-		expect(remoteVaultPathIssue(settings({ enabled: true, remoteVaultPath: '  ' }))).toMatch(
-			/remote vault path/,
-		);
-		expect(
-			remoteVaultPathIssue(settings({ enabled: true, remoteVaultPath: '/home/lasse/hvelv' })),
-		).toBeNull();
+	it('flags an SSH runtime without a remote vault path', () => {
+		expect(remoteVaultPathIssue(runtime({ remoteVaultPath: '  ' }))).toMatch(/remote vault path/);
+		expect(remoteVaultPathIssue(runtime({ remoteVaultPath: '/home/lasse/hvelv' }))).toBeNull();
 	});
 });
 
 describe('renderConnectionStatus', () => {
 	it('says nothing but "not connected" before discovery ran', () => {
-		expect(render(settings(), status({ discovery: null }))).toEqual([
+		expect(render(runtime(), status({ discovery: null }))).toEqual([
 			{ text: 'Not connected yet.', warning: false },
 		]);
 	});
 
+	it('names the runtime first', () => {
+		const lines: string[] = [];
+		const el = {
+			createEl: (_tag: string, options: { text: string }) => lines.push(options.text),
+		};
+		renderConnectionStatus(el as unknown as HTMLElement, status({ runtime: runtime({ host: 'xl', name: 'XL' }) }));
+		expect(lines[0]).toBe('Runtime: XL, herdr over SSH to xl.');
+	});
+
+	it('says why a runtime of an unavailable kind is not connected, and nothing else', () => {
+		const core = { ...newRuntime('herdr-core', 'local', [], () => 0.5), name: 'Core' };
+		expect(
+			render(
+				core,
+				status({
+					discovery: null,
+					unavailable: 'herdr-core runtimes are not available yet',
+					error: 'herdr-core runtimes are not available yet',
+				}),
+			),
+		).toEqual([{ text: 'Herdr-core runtimes are not available yet.', warning: true }]);
+	});
+
+	it('reports a failure that came before discovery', () => {
+		expect(render(runtime(), status({ discovery: null, error: 'the runtime has no SSH host' }))).toEqual([
+			{ text: 'The runtime has no SSH host.', warning: true },
+		]);
+	});
+
 	it('reports binary, socket, server and workspace', () => {
-		const text = render(settings(), status())
+		const text = render(runtime(), status())
 			.map((line) => line.text)
 			.join('\n');
 		expect(text).toContain('/opt/homebrew/bin/herdr');
@@ -105,7 +137,7 @@ describe('renderConnectionStatus', () => {
 
 	it('warns that folder actions are off without a remote vault path', () => {
 		const lines = render(
-			settings({ enabled: true, host: 'lasse@xl', remoteVaultPath: '' }),
+			runtime({ host: 'lasse@xl', remoteVaultPath: '' }),
 			status(),
 		);
 		const warning = lines.find((line) => line.text.startsWith('Folder actions are off'));
@@ -114,14 +146,14 @@ describe('renderConnectionStatus', () => {
 
 	it('drops the warning once the remote vault path is set', () => {
 		const lines = render(
-			settings({ enabled: true, host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
+			runtime({ host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
 			status(),
 		);
 		expect(lines.some((line) => line.text.startsWith('Folder actions are off'))).toBe(false);
 	});
 
 	it('warns when no workspace matches the vault', () => {
-		const lines = render(settings(), status({ workspace: null }));
+		const lines = render(runtime(), status({ workspace: null }));
 		expect(lines.at(-1)).toEqual({
 			text: 'Workspace: no herdr workspace matches this vault yet.',
 			warning: true,
@@ -130,7 +162,7 @@ describe('renderConnectionStatus', () => {
 
 	it('warns when the chosen binary speaks another protocol than the server (#87)', () => {
 		const lines = render(
-			settings(),
+			runtime(),
 			status({
 				discovery: {
 					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
@@ -150,7 +182,7 @@ describe('renderConnectionStatus', () => {
 
 	it('says nothing about the binary protocol when it matches the server', () => {
 		const lines = render(
-			settings(),
+			runtime(),
 			status({
 				discovery: {
 					binary: { path: '/usr/bin/herdr', source: 'login-shell' },
@@ -164,9 +196,9 @@ describe('renderConnectionStatus', () => {
 		expect(lines.some((line) => line.text.startsWith('Binary protocol mismatch'))).toBe(false);
 	});
 
-	it('stays quiet about the local binary protocol under a remote profile', () => {
+	it('stays quiet about the local binary protocol on an SSH runtime', () => {
 		const lines = render(
-			settings({ enabled: true, host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
+			runtime({ host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
 			status({
 				discovery: {
 					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
@@ -204,7 +236,7 @@ describe('scrollback budget (#15 item 2)', () => {
 	});
 
 	it('hands the renderer bytes, never a line count and never zero', () => {
-		expect(scrollbackBytes(settings())).toBe(DEFAULT_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);
+		expect(scrollbackBytes({ ...DEFAULT_SETTINGS })).toBe(DEFAULT_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);
 		expect(
 			scrollbackBytes({ ...DEFAULT_SETTINGS, terminalScrollbackMb: 0 }),
 		).toBe(MIN_SCROLLBACK_MB * SCROLLBACK_BYTES_PER_MB);

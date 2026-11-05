@@ -15,24 +15,21 @@ import {
 } from '../src/actions';
 import { HerdrError } from '../src/herdr/client';
 import type { HerdrSettings } from '../src/settings';
+import {
+	defaultLocalRuntime,
+	defaultRuntimeSettings,
+	newRuntime,
+	type RuntimeConfig,
+} from '../src/runtimes';
 import type { PaneInfo } from '../src/herdr/types.gen';
 
 const VAULT = '/Users/lasse/Vaults/hvelv';
 
 function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 	return {
-		socketPath: '~/.config/herdr/herdr.sock',
-		herdrBinary: '',
-		workspaceId: '',
+		...defaultRuntimeSettings(),
 		agentListSort: 'priority',
 		agentListGroupBy: 'tab',
-		remote: {
-			enabled: false,
-			host: '',
-			remoteSocketPath: '',
-			remoteBinary: '',
-			remoteVaultPath: '',
-		},
 		notifications: {
 			statusBar: true,
 			blocked: { notice: true, os: true },
@@ -98,6 +95,8 @@ interface Fake {
 
 function fake(options: {
 	settings?: HerdrSettings;
+	/** The runtime the actions go to; the local herdr unless a case says otherwise. */
+	runtime?: RuntimeConfig;
 	workspaceId?: string | null;
 	responses?: Record<string, unknown>;
 	/** Agent panes the scope would report, for the split choice (issue #29). */
@@ -129,6 +128,7 @@ function fake(options: {
 		};
 	const host: ActionHost = {
 		settings: () => options.settings ?? settings(),
+		runtime: () => options.runtime ?? defaultLocalRuntime(),
 		workspaceId: () => (options.workspaceId === undefined ? 'w4' : options.workspaceId),
 		request: <T,>(method: string, params: unknown): Promise<T> =>
 			over(client.generation)<T>(method, params),
@@ -306,17 +306,9 @@ describe('HerdrActions.newTabHere', () => {
 		expect(f.notices[0]).toContain('no herdr workspace');
 	});
 
-	it('refuses when a remote profile has no remote vault path (S5, M19)', async () => {
+	it('refuses when an SSH runtime has no remote vault path (S5, M19)', async () => {
 		const f = fake({
-			settings: settings({
-				remote: {
-					enabled: true,
-					host: 'lasse@xl',
-					remoteSocketPath: '',
-					remoteBinary: '',
-					remoteVaultPath: '   ',
-				},
-			}),
+			runtime: { ...newRuntime('herdr', 'ssh', []), host: 'lasse@xl', remoteVaultPath: '   ' },
 		});
 		// A local macOS path would otherwise be sent to the Linux host.
 		expect(await f.actions.newTabHere('/Users/lasse/Vaults/hvelv/notes')).toBeNull();

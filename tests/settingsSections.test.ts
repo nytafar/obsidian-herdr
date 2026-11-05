@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	ButtonComponent,
 	builtSettings,
 	DropdownComponent,
 	settingNamed,
@@ -29,7 +30,7 @@ import {
 	buildFileExplorerSection,
 	buildNativeViewSection,
 	buildNotificationsSection,
-	buildRemoteSection,
+	buildRuntimesSection,
 	buildTerminalSection,
 	DEFAULT_SETTINGS,
 	MAX_PANES_PER_TAB,
@@ -40,6 +41,7 @@ import {
 	type HerdrSettings,
 	type SettingsCallbacks,
 } from '../src/settings';
+import { defaultLocalRuntime, newRuntime } from '../src/runtimes';
 
 /** A fresh, mutable copy of the defaults plus whatever a case overrides. */
 function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
@@ -47,9 +49,29 @@ function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 }
 
 /** A callback bundle that records the calls, in order, as strings. */
-function recorder(): { calls: string[]; callbacks: SettingsCallbacks } {
+function recorder(
+	options: { editing?: string | null; confirm?: boolean; unavailable?: string } = {},
+): { calls: string[]; callbacks: SettingsCallbacks } {
 	const calls: string[] = [];
+	let editing = options.editing ?? null;
 	const callbacks: SettingsCallbacks = {
+		activateRuntime: async (id) => {
+			calls.push(`activateRuntime:${id}`);
+		},
+		refreshRuntimes: () => {
+			calls.push('refreshRuntimes');
+		},
+		kindUnavailable: (kind) =>
+			kind === 'herdr-core' ? (options.unavailable ?? 'herdr-core is not here yet') : null,
+		editingRuntime: () => editing,
+		editRuntime: (id) => {
+			editing = id;
+			calls.push(`editRuntime:${id}`);
+		},
+		confirm: async () => {
+			calls.push('confirm');
+			return options.confirm ?? true;
+		},
 		save: async () => {
 			calls.push('save');
 		},
@@ -103,98 +125,240 @@ function headings(container: unknown): string[] {
 }
 
 describe('connection section', () => {
-	it('renders the four fields the connection is rebuilt from', () => {
+	it('keeps the one field every runtime on this machine shares', () => {
 		const el = settingsContainer();
 		buildConnectionSection(el, settingsOf(), recorder().callbacks);
 
-		expect(settingNames(el)).toEqual([
-			'Connection',
-			'Socket path',
-			'Herdr binary',
-			'Extra PATH entries',
-			'Workspace ID',
-		]);
+		expect(settingNames(el)).toEqual(['Connection', 'Extra PATH entries']);
 		expect(headings(el)).toEqual(['Connection']);
-		expect(textOf(el, 'Socket path').value).toBe(DEFAULT_SETTINGS.socketPath);
-		expect(textOf(el, 'Workspace ID').placeholder).toBe('Auto-detect');
 	});
 
-	it('saves and reconnects on every field, since each changes the endpoint', async () => {
+	it('saves and reconnects, since spawns read it', async () => {
 		const el = settingsContainer();
 		const settings = settingsOf();
 		const { calls, callbacks } = recorder();
 		buildConnectionSection(el, settings, callbacks);
 
-		await textOf(el, 'Socket path').change('/tmp/other.sock');
-		await textOf(el, 'Herdr binary').change('/usr/bin/herdr');
 		await textOf(el, 'Extra PATH entries').change('/opt/bin');
-		await textOf(el, 'Workspace ID').change('w7');
 
-		expect(settings.socketPath).toBe('/tmp/other.sock');
-		expect(settings.herdrBinary).toBe('/usr/bin/herdr');
 		expect(settings.extraPath).toBe('/opt/bin');
-		expect(settings.workspaceId).toBe('w7');
-		expect(calls).toEqual([
-			'saveAndReconnect',
-			'saveAndReconnect',
-			'saveAndReconnect',
-			'saveAndReconnect',
-		]);
+		expect(calls).toEqual(['saveAndReconnect']);
 	});
 });
 
-describe('remote section', () => {
-	it('shows the enable toggle and nothing else while the profile is off', () => {
-		const el = settingsContainer();
-		buildRemoteSection(el, settingsOf(), recorder().callbacks);
+/** The remote a pre-registry profile migrated to, beside the local herdr. */
+function twoRuntimes(): HerdrSettings {
+	return settingsOf({
+		runtimes: [
+			defaultLocalRuntime(),
+			{
+				...newRuntime('herdr', 'ssh', [], () => 0.5),
+				id: 'ssh:lasse@xl:~/.config/herdr/herdr.sock',
+				name: 'xl',
+				host: 'lasse@xl',
+			},
+		],
+		activeRuntime: 'local',
+		pinnedPanes: { 'ssh:lasse@xl:~/.config/herdr/herdr.sock': ['w4:p1'], local: ['w1:p1'] },
+	});
+}
 
-		expect(settingNames(el)).toEqual(['Remote host', 'Use a remote herdr']);
+/** The extra button with this tooltip on the row named `name`. */
+function rowButton(container: unknown, name: string, tooltip: string): ButtonComponent {
+	const hit = settingNamed(container, name).components.find(
+		(component) => component instanceof ButtonComponent && component.tooltip === tooltip,
+	);
+	if (!(hit instanceof ButtonComponent)) throw new Error(`"${name}" has no "${tooltip}" button`);
+	return hit;
+}
+
+describe('runtimes section (ADR-0004)', () => {
+	it('lists every runtime with what it is, and the add button', () => {
+		const el = settingsContainer();
+		buildRuntimesSection(el, twoRuntimes(), recorder().callbacks);
+
+		expect(settingNames(el)).toEqual(['Runtimes', 'Local', 'xl', 'Add runtime']);
+		expect(settingNamed(el, 'Local').desc).toBe('Herdr on this machine. Active.');
+		expect(settingNamed(el, 'xl').desc).toBe('Herdr over SSH to lasse@xl.');
+		expect(settingNamed(el, 'Local').classes).toContain('herdr-runtime-active');
 	});
 
-	it('shows the profile fields once it is on', () => {
+	it('says when a runtime’s kind is not available in this build', () => {
+		const settings = twoRuntimes();
+		settings.runtimes.push({ ...newRuntime('herdr-core', 'local', []), name: 'Core' });
 		const el = settingsContainer();
-		const settings = settingsOf();
-		settings.remote.enabled = true;
-		buildRemoteSection(el, settings, recorder().callbacks);
+		buildRuntimesSection(el, settings, recorder({ unavailable: 'not in this build yet' }).callbacks);
 
-		expect(settingNames(el)).toEqual([
-			'Remote host',
-			'Use a remote herdr',
+		expect(settingNamed(el, 'Core').desc).toBe(
+			'Herdr-core (hc) on this machine. Not in this build yet.',
+		);
+	});
+
+	it('switches to a runtime from its row', async () => {
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder();
+		buildRuntimesSection(el, twoRuntimes(), callbacks);
+
+		await rowButton(el, 'xl', 'Use this runtime').click();
+		expect(calls).toEqual(['activateRuntime:ssh:lasse@xl:~/.config/herdr/herdr.sock', 'redisplay']);
+	});
+
+	it('never removes the last runtime', () => {
+		const el = settingsContainer();
+		buildRuntimesSection(el, settingsOf(), recorder().callbacks);
+		expect(rowButton(el, 'Local', 'The last runtime cannot be removed').disabled).toBe(true);
+	});
+
+	it('removes a runtime and its pins after asking, and reconnects when it was active', async () => {
+		const settings = twoRuntimes();
+		settings.activeRuntime = 'ssh:lasse@xl:~/.config/herdr/herdr.sock';
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder();
+		buildRuntimesSection(el, settings, callbacks);
+
+		await rowButton(el, 'xl', 'Remove runtime').click();
+
+		expect(settings.runtimes.map((runtime) => runtime.id)).toEqual(['local']);
+		expect(settings.pinnedPanes).toEqual({ local: ['w1:p1'] });
+		expect(calls).toEqual(['confirm', 'activateRuntime:local', 'refreshRuntimes', 'redisplay']);
+	});
+
+	it('keeps a runtime when the removal is not confirmed', async () => {
+		const settings = twoRuntimes();
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder({ confirm: false });
+		buildRuntimesSection(el, settings, callbacks);
+
+		await rowButton(el, 'xl', 'Remove runtime').click();
+		expect(settings.runtimes).toHaveLength(2);
+		expect(calls).toEqual(['confirm']);
+	});
+
+	it('adds an SSH herdr runtime with a fresh id and opens its form', async () => {
+		const settings = settingsOf();
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder();
+		buildRuntimesSection(el, settings, callbacks);
+
+		const add = settingNamed(el, 'Add runtime').control() as ButtonComponent;
+		await add.click();
+
+		const added = settings.runtimes[1];
+		expect(added).toMatchObject({ kind: 'herdr', target: 'ssh', name: '' });
+		expect(added?.id).toMatch(/^rt-/);
+		expect(calls).toEqual(['save', 'refreshRuntimes', `editRuntime:${added?.id}`]);
+	});
+
+	it('shows the fields of an SSH herdr runtime under the list while it is edited', () => {
+		const settings = twoRuntimes();
+		const el = settingsContainer();
+		buildRuntimesSection(
+			el,
+			settings,
+			recorder({ editing: 'ssh:lasse@xl:~/.config/herdr/herdr.sock' }).callbacks,
+		);
+
+		expect(settingNames(el).slice(4)).toEqual([
+			'Edit xl',
+			'Name',
+			'Kind',
+			'Target',
 			'SSH host',
 			'Remote socket path',
 			'Remote herdr binary',
 			'Remote vault path',
+			'Workspace ID',
+			'Problems',
+			'',
 		]);
-		expect(toggleOf(el, 'Use a remote herdr').value).toBe(true);
+		// Carried over from the remote section: a missing vault path is named.
+		expect(settingNamed(el, 'Problems').desc).toBe(
+			'The runtime has no remote vault path, so folder paths cannot be resolved on the remote host.',
+		);
+		expect(settingNamed(el, 'Problems').descEl.classes.has('mod-warning')).toBe(true);
 	});
 
-	it('reconnects and then redisplays when the profile is switched on', async () => {
+	it('shows the local herdr’s socket, binary override and workspace', () => {
 		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildRemoteSection(el, settings, callbacks);
+		buildRuntimesSection(el, settingsOf(), recorder({ editing: 'local' }).callbacks);
 
-		await toggleOf(el, 'Use a remote herdr').change(true);
-
-		expect(settings.remote.enabled).toBe(true);
-		// The fields under the toggle only exist on the next render, so the
-		// redisplay has to come after the save.
-		expect(calls).toEqual(['saveAndReconnect', 'redisplay']);
+		expect(settingNames(el).slice(3)).toEqual([
+			'Edit Local',
+			'Name',
+			'Kind',
+			'Target',
+			'Socket path',
+			'Herdr binary',
+			'Workspace ID',
+			'Problems',
+			'',
+		]);
+		expect(textOf(el, 'Herdr binary').placeholder).toBe('Auto-discover');
+		expect(settingNamed(el, 'Problems').desc).toBe('None.');
 	});
 
-	it('saves and reconnects on a profile field', async () => {
-		const el = settingsContainer();
+	it('asks a herdr-core runtime for neither socket nor herdr binary, and says it is unavailable', () => {
 		const settings = settingsOf();
-		settings.remote.enabled = true;
-		const { calls, callbacks } = recorder();
-		buildRemoteSection(el, settings, callbacks);
+		const core = { ...newRuntime('herdr-core', 'ssh', []), name: 'Asher' };
+		settings.runtimes.push(core);
+		const el = settingsContainer();
+		buildRuntimesSection(el, settings, recorder({ editing: core.id, unavailable: 'not yet' }).callbacks);
 
-		await textOf(el, 'SSH host').change('lasse@xl');
-		await textOf(el, 'Remote vault path').change('/home/lasse/hvelv');
+		expect(settingNames(el)).toContain('Remote hc binary');
+		expect(settingNames(el)).toContain('Space');
+		expect(settingNames(el)).not.toContain('Remote socket path');
+		expect(settingNamed(el, 'Problems').desc).toBe(
+			'Not yet. The runtime has no SSH host. The runtime has no remote vault path, so folder paths cannot be resolved on the remote host.',
+		);
+	});
 
-		expect(settings.remote.host).toBe('lasse@xl');
-		expect(settings.remote.remoteVaultPath).toBe('/home/lasse/hvelv');
-		expect(calls).toEqual(['saveAndReconnect', 'saveAndReconnect']);
+	it('reconnects for a field of the active runtime, and only saves for another', async () => {
+		const settings = twoRuntimes();
+		const xl = 'ssh:lasse@xl:~/.config/herdr/herdr.sock';
+		const active = settingsContainer();
+		const onActive = recorder({ editing: 'local' });
+		buildRuntimesSection(active, settings, onActive.callbacks);
+		await textOf(active, 'Workspace ID').change('w7');
+		expect(settings.runtimes[0]?.workspace).toBe('w7');
+		expect(onActive.calls).toEqual(['saveAndReconnect']);
+
+		const other = settingsContainer();
+		const onOther = recorder({ editing: xl });
+		buildRuntimesSection(other, settings, onOther.callbacks);
+		await textOf(other, 'Remote vault path').change('/home/lasse/hvelv');
+		expect(settings.runtimes[1]?.remoteVaultPath).toBe('/home/lasse/hvelv');
+		expect(onOther.calls).toEqual(['save']);
+		// The problem the form named is gone as soon as the field holds a value.
+		expect(settingNamed(other, 'Problems').desc).toBe('None.');
+		expect(settingNamed(other, 'Problems').descEl.classes.has('mod-warning')).toBe(false);
+		// The id never follows an edit: tabs and pins keep naming this runtime.
+		await textOf(other, 'SSH host').change('lasse@xl2');
+		expect(settings.runtimes[1]?.id).toBe(xl);
+	});
+
+	it('renames without reconnecting, and retitles the switcher', async () => {
+		const settings = settingsOf();
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder({ editing: 'local' });
+		buildRuntimesSection(el, settings, callbacks);
+
+		await textOf(el, 'Name').change('Laptop');
+		expect(settings.runtimes[0]?.name).toBe('Laptop');
+		expect(calls).toEqual(['save', 'refreshRuntimes']);
+	});
+
+	it('moves the binary default along with the target, and redisplays', async () => {
+		const settings = settingsOf();
+		const el = settingsContainer();
+		const { calls, callbacks } = recorder({ editing: 'local' });
+		buildRuntimesSection(el, settings, callbacks);
+
+		await dropdownOf(el, 'Target').change('ssh');
+		expect(settings.runtimes[0]).toMatchObject({ target: 'ssh', binary: '~/.local/bin/herdr' });
+		expect(calls).toEqual(['saveAndReconnect', 'refreshRuntimes', 'redisplay']);
+
+		await dropdownOf(el, 'Kind').change('herdr-core');
+		expect(settings.runtimes[0]).toMatchObject({ kind: 'herdr-core', binary: '', socketPath: '' });
 	});
 });
 
@@ -559,8 +723,8 @@ describe('the tab as a whole', () => {
 		for (const section of SETTINGS_SECTIONS) section(el, settings, callbacks);
 
 		expect(headings(el)).toEqual([
+			'Runtimes',
 			'Connection',
-			'Remote host',
 			'Notifications',
 			'Agents',
 			'File explorer',
@@ -569,9 +733,12 @@ describe('the tab as a whole', () => {
 			'Native view',
 		]);
 		// Every non-heading row carries exactly one control, which is what the
-		// per-section assertions above lean on.
+		// per-section assertions above lean on; a runtime's row is the one
+		// exception, with its use, edit and remove buttons.
+		const runtimeRows = new Set(settings.runtimes.map((runtime) => runtime.name));
 		for (const setting of builtSettings(el)) {
-			expect(setting.components).toHaveLength(setting.heading ? 0 : 1);
+			const expected = setting.heading ? 0 : runtimeRows.has(setting.name) ? 3 : 1;
+			expect(setting.components).toHaveLength(expected);
 		}
 	});
 

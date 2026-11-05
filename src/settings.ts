@@ -1,9 +1,32 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
+import { ConfirmModal } from './views/modals';
 import type { DiscoveryResult } from './herdr/binary';
 import type { ProtocolMismatch } from './herdr/client';
 import type { RowClickAction } from './views/rowModel';
 import type { TerminalSetting } from './views/paneTerminal';
+import {
+	activeRuntimeOf,
+	defaultRuntimeSettings,
+	defaultBinary,
+	DEFAULT_HERDR_SOCKET,
+	DEFAULT_REMOTE_HERDR_BINARY,
+	issueSentence,
+	newRuntime,
+	remoteVaultPathIssue,
+	removeRuntime,
+	runtimeDisplayName,
+	runtimeIssues,
+	runtimeSummary,
+	RUNTIME_KINDS,
+	RUNTIME_KIND_LABELS,
+	RUNTIME_TARGETS,
+	RUNTIME_TARGET_LABELS,
+	type RuntimeConfig,
+	type RuntimeKind,
+	type RuntimeSettings,
+	type RuntimeTarget,
+} from './runtimes';
 import {
 	DEFAULT_CURSOR_STYLE,
 	DEFAULT_TERMINAL_ENGINE,
@@ -156,27 +179,12 @@ export interface NotificationSettings {
 	done: TransitionNotificationSettings;
 }
 
-export interface RemoteSettings {
-	/** Use a remote herdr over SSH instead of the local one. */
-	enabled: boolean;
-	/** SSH destination, e.g. `user@host` or a `~/.ssh/config` alias. */
-	host: string;
-	/** Socket path of the herdr server on the remote host. */
-	remoteSocketPath: string;
-	/** Absolute path to the herdr binary on the remote host. */
-	remoteBinary: string;
-	/** Absolute path of this vault on the remote host. */
-	remoteVaultPath: string;
-}
-
-export interface HerdrSettings {
-	/** Unix socket of the local herdr JSON API. */
-	socketPath: string;
-	/** Override for the local herdr binary. Empty means auto-discovery. */
-	herdrBinary: string;
-	/** Workspace id override. Empty means resolve by label, then by cwd. */
-	workspaceId: string;
-	remote: RemoteSettings;
+/**
+ * Everything the plugin stores. The registry half (`runtimes`, `activeRuntime`)
+ * is `runtimes.ts`'s: which herdr, or herdr-core, on which machine, with the
+ * binary, socket, remote vault path and workspace of each (ADR-0004).
+ */
+export interface HerdrSettings extends RuntimeSettings {
 	notifications: NotificationSettings;
 	/** Agent kind used by "Herdr: start agent here". */
 	defaultAgentKind: AgentKind;
@@ -270,9 +278,9 @@ export interface HerdrSettings {
 	agentListRowClick: RowClickAction;
 	/**
 	 * Rows pinned to the top of their group in the agent list (issue #35), as
-	 * pane ids keyed by the endpoint id they belong to (`connection.ts`). Pane
-	 * ids are only meaningful on the herdr that issued them, so a local pin
-	 * never touches a remote row. Client-side only: herdr knows nothing of it.
+	 * pane ids keyed by the runtime id they belong to (`runtimes.ts`). Pane ids
+	 * are only meaningful on the runtime that issued them, so a pin on one never
+	 * touches a row on another. Client-side only: herdr knows nothing of it.
 	 */
 	pinnedPanes: Record<string, string[]>;
 }
@@ -392,16 +400,7 @@ export function scrollbackBytes(settings: HerdrSettings): number {
 }
 
 export const DEFAULT_SETTINGS: HerdrSettings = {
-	socketPath: '~/.config/herdr/herdr.sock',
-	herdrBinary: '',
-	workspaceId: '',
-	remote: {
-		enabled: false,
-		host: '',
-		remoteSocketPath: '~/.config/herdr/herdr.sock',
-		remoteBinary: '~/.local/bin/herdr',
-		remoteVaultPath: '',
-	},
+	...defaultRuntimeSettings(),
 	notifications: {
 		statusBar: true,
 		blocked: { notice: true, os: true },
@@ -440,8 +439,18 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
  * `nativeAutoAcceptPermissions` (#99, shipped in #113) let the waiting card
  * press "Allow" for a tool permission. Claude decides those itself, through its
  * permission modes, so the plugin answers none of them and the switch is gone.
+ *
+ * `socketPath`, `herdrBinary`, `workspaceId` and `remote` were the local herdr
+ * and the one remote profile before the runtime registry (ADR-0004).
+ * `migrateRuntimes` reads them into `runtimes` first; then they go.
  */
-export const REMOVED_SETTING_KEYS: readonly string[] = ['nativeAutoAcceptPermissions'];
+export const REMOVED_SETTING_KEYS: readonly string[] = [
+	'nativeAutoAcceptPermissions',
+	'socketPath',
+	'herdrBinary',
+	'workspaceId',
+	'remote',
+];
 
 /**
  * A stored `data.json` with the keys this build no longer has taken out, so
@@ -516,22 +525,6 @@ export function migrateRenderMode(stored: unknown): RenderModeMigration {
 }
 
 /**
- * Why the remote profile cannot turn a vault folder into a remote cwd, or null
- * when it can (PRD S5, M19).
- *
- * With the remote profile on and `remoteVaultPath` empty, path resolution falls
- * back to the local base path, which would hand a macOS path to a Linux host.
- * Refusing beats silently running an agent in the wrong (or a non-existent)
- * directory, so both the folder actions and the settings status ask this.
- */
-export function remoteVaultPathIssue(settings: HerdrSettings): string | null {
-	const remote = settings.remote;
-	if (!remote.enabled) return null;
-	if (remote.remoteVaultPath.trim()) return null;
-	return 'the remote profile has no remote vault path, so folder paths cannot be resolved on the remote host';
-}
-
-/**
  * Renders connection status at the top of the settings tab. The plugin owns the
  * connection, so it supplies this; the tab only gives it a container.
  */
@@ -539,9 +532,16 @@ export type RenderStatus = (el: HTMLElement) => void;
 
 /** The live connection state {@link renderConnectionStatus} describes. */
 export interface ConnectionStatus {
+	/**
+	 * The runtime this is about: the published connection's snapshot, or the
+	 * active runtime while none is published.
+	 */
+	runtime: RuntimeConfig;
+	/** Why the runtime's kind cannot connect in this build, or null. */
+	unavailable: string | null;
 	/** Binary and socket discovery, or null before the first connect attempt. */
 	discovery: DiscoveryResult | null;
-	/** Socket the client actually uses; the tunnel's local end when remote. */
+	/** Socket the client actually uses; the tunnel's local end over SSH. */
 	socketPath: string;
 	/** SSH forward state, or null when no tunnel was started. */
 	tunnel: { text: string; connected: boolean } | null;
@@ -556,46 +556,47 @@ export interface ConnectionStatus {
  * The status block at the top of the settings tab (PRD M1-M3, M6, S5). Pure
  * rendering: `main.ts` gathers the state and this decides what to say about it.
  */
-export function renderConnectionStatus(
-	el: HTMLElement,
-	settings: HerdrSettings,
-	status: ConnectionStatus,
-): void {
+export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus): void {
 	const line = (text: string, warning = false): void => {
 		el.createEl('p', {
 			cls: warning ? 'herdr-status-text mod-warning' : 'herdr-status-text',
 			text,
 		});
 	};
-	const { discovery } = status;
-	if (!discovery) {
-		line('Not connected yet.');
+	const { discovery, runtime } = status;
+	line(`Runtime: ${runtimeDisplayName(runtime)}, ${runtimeSummary(runtime)}.`);
+	if (status.unavailable) {
+		line(issueSentence(status.unavailable), true);
 		return;
 	}
-	const remote = settings.remote;
+	if (!discovery) {
+		line(status.error ? issueSentence(status.error) : 'Not connected yet.', status.error !== null);
+		return;
+	}
+	const remote = runtime.target === 'ssh';
 	if (status.tunnel) {
 		line(status.tunnel.text, !status.tunnel.connected);
-	} else if (remote.enabled) {
+	} else if (remote) {
 		line('SSH tunnel: not started.', true);
 	}
 	if (discovery.binary) {
 		line(`Binary: ${discovery.binary.path} (${discovery.binary.source})`);
 	} else {
-		// A remote profile only needs `ssh` locally, so this is not fatal there.
-		line(discovery.error ?? 'Herdr binary not found.', !remote.enabled);
-		if (!remote.enabled) return;
+		// An SSH runtime only needs `ssh` locally, so this is not fatal there.
+		line(discovery.error ?? 'Herdr binary not found.', !remote);
+		if (!remote) return;
 	}
-	if (remote.enabled) {
-		line(`Remote terminals: ssh -T ${remote.host} ${remote.remoteBinary}`);
+	if (remote) {
+		line(`Remote terminals: ssh -T ${runtime.host} ${runtime.binary}`);
 		// Without it the folder actions refuse rather than send a local path to
 		// the remote host (see `remoteVaultPathIssue`).
-		const issue = remoteVaultPathIssue(settings);
+		const issue = remoteVaultPathIssue(runtime);
 		if (issue) line(`Folder actions are off: ${issue}.`, true);
 	}
 	line(`Socket: ${status.socketPath}`);
-	// `discovery.status` describes the *local* server. With a remote profile
-	// that is the wrong machine, so the tunnel line above stands in for it.
-	if (!remote.enabled) {
+	// `discovery.status` describes the *local* server. Over SSH that is the
+	// wrong machine, so the tunnel line above stands in for it.
+	if (!remote) {
 		const server = discovery.status;
 		line(
 			server
@@ -611,13 +612,13 @@ export function renderConnectionStatus(
 		);
 	}
 	// The binary runs every terminal session, so an old one beside a newer
-	// server is worth saying out loud (issue #87). With a remote profile the
-	// local server is the wrong machine to compare against, as above.
+	// server is worth saying out loud (issue #87). Over SSH the local server is
+	// the wrong machine to compare against, as above.
 	const binaryProtocol = discovery.identity?.protocol ?? null;
 	const serverProtocol = discovery.status?.protocol ?? null;
 	const binaryProtocolDiffers =
 		binaryProtocol !== null && serverProtocol !== null && binaryProtocol !== serverProtocol;
-	if (!remote.enabled && binaryProtocolDiffers) {
+	if (!remote && binaryProtocolDiffers) {
 		line(
 			`Binary protocol mismatch: ${discovery.binary?.path ?? 'the herdr binary'} speaks protocol ${binaryProtocol} (version ${discovery.identity?.version ?? 'unknown'}), the server speaks ${serverProtocol}. Terminal sessions run through this binary; point the binary path at the server's herdr.`,
 			true,
@@ -653,11 +654,26 @@ export interface SettingsCallbacks {
 	applyTerminalSetting: (setting: TerminalSetting) => void;
 	/** Draw every open native view again (issue #95). */
 	refreshNativeViews: () => void;
+	/**
+	 * Make this runtime the active one: save, then reconnect at once, the same
+	 * as the agent list's switcher (ADR-0004).
+	 */
+	activateRuntime: (id: string) => Promise<void>;
+	/** A runtime's name or the list changed: retitle the switcher and the status bar. */
+	refreshRuntimes: () => void;
+	/** Why runtimes of this kind cannot connect in this build, or null when they can. */
+	kindUnavailable: (kind: RuntimeKind) => string | null;
+	/** The runtime whose form is open, or null. Held by the tab across redisplays. */
+	editingRuntime: () => string | null;
+	/** Opens the form for a runtime, or closes it with null, and redisplays. */
+	editRuntime: (id: string | null) => void;
+	/** Asks before something destructive; resolves true to go ahead. */
+	confirm: (text: { title: string; body: string; confirm: string }) => Promise<boolean>;
 }
 
 /**
- * Socket, binary, PATH and workspace: everything the connection is rebuilt
- * from, so every field here saves and reconnects.
+ * What applies to every runtime on this machine: the PATH additions herdr
+ * and ssh are spawned with. Rebuilt into the connection, so it reconnects.
  */
 export function buildConnectionSection(
 	containerEl: HTMLElement,
@@ -665,36 +681,6 @@ export function buildConnectionSection(
 	callbacks: SettingsCallbacks,
 ): void {
 	new Setting(containerEl).setName('Connection').setHeading();
-
-	new Setting(containerEl)
-		.setName('Socket path')
-		.setDesc(
-			'Unix socket of the running herdr server. Leave the default unless you start herdr with a custom socket.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder(DEFAULT_SETTINGS.socketPath)
-				.setValue(settings.socketPath)
-				.onChange(async (value) => {
-					settings.socketPath = value;
-					await callbacks.saveAndReconnect();
-				}),
-		);
-
-	new Setting(containerEl)
-		.setName('Herdr binary')
-		.setDesc(
-			'Absolute path to the herdr executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH. Set it if Obsidian was launched from the Dock and cannot find herdr.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder('Auto-discover')
-				.setValue(settings.herdrBinary)
-				.onChange(async (value) => {
-					settings.herdrBinary = value;
-					await callbacks.saveAndReconnect();
-				}),
-		);
 
 	new Setting(containerEl)
 		.setName('Extra PATH entries')
@@ -710,107 +696,293 @@ export function buildConnectionSection(
 					await callbacks.saveAndReconnect();
 				}),
 		);
-
-	new Setting(containerEl)
-		.setName('Workspace ID')
-		.setDesc(
-			'Pin the plugin to one herdr workspace. Leave empty to match the workspace labelled like the vault folder, then the one whose panes run inside the vault. Ids are opaque and change between servers.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder('Auto-detect')
-				.setValue(settings.workspaceId)
-				.onChange(async (value) => {
-					settings.workspaceId = value;
-					await callbacks.saveAndReconnect();
-				}),
-		);
 }
 
 /**
- * The remote profile (PRD S5). The enable toggle is always here — turning the
- * profile off must stay reachable — and only the four fields under it are
- * conditional; the toggle redisplays the tab to show or hide them.
+ * The runtime registry (ADR-0004): one row per runtime with use, edit and
+ * remove, an add button, and the form of the runtime being edited under the
+ * list. Which runtime's form is open is the tab's state, handed in through
+ * the callbacks, so the section stays buildable on a bare container.
+ *
+ * A field of the active runtime saves and reconnects, like the connection
+ * fields always did; a field of another runtime only saves, since nothing is
+ * connected to it. Kind and target redisplay, because they decide which
+ * fields the form has.
  */
-export function buildRemoteSection(
+export function buildRuntimesSection(
 	containerEl: HTMLElement,
 	settings: HerdrSettings,
 	callbacks: SettingsCallbacks,
 ): void {
-	new Setting(containerEl).setName('Remote host').setHeading();
+	new Setting(containerEl).setName('Runtimes').setHeading();
+
+	const active = activeRuntimeOf(settings);
+	const only = settings.runtimes.length <= 1;
+	for (const runtime of settings.runtimes) {
+		const isActive = runtime.id === active.id;
+		const notes = [issueSentence(runtimeSummary(runtime))];
+		if (isActive) notes.push('Active.');
+		const unavailable = callbacks.kindUnavailable(runtime.kind);
+		if (unavailable) notes.push(issueSentence(unavailable));
+		const row = new Setting(containerEl)
+			.setName(runtimeDisplayName(runtime))
+			.setDesc(notes.join(' '));
+		if (isActive) row.setClass('herdr-runtime-active');
+		row.addExtraButton((button) =>
+			button
+				.setIcon('plug-zap')
+				.setTooltip(isActive ? 'Reconnect' : 'Use this runtime')
+				.onClick(async () => {
+					await callbacks.activateRuntime(runtime.id);
+					callbacks.redisplay();
+				}),
+		);
+		row.addExtraButton((button) =>
+			button
+				.setIcon('pencil')
+				.setTooltip('Edit runtime')
+				.onClick(() => {
+					callbacks.editRuntime(callbacks.editingRuntime() === runtime.id ? null : runtime.id);
+				}),
+		);
+		row.addExtraButton((button) =>
+			button
+				.setIcon('trash-2')
+				// The plugin always needs one runtime to connect to.
+				.setTooltip(only ? 'The last runtime cannot be removed' : 'Remove runtime')
+				.setDisabled(only)
+				.onClick(async () => {
+					if (only) return;
+					const confirmed = await callbacks.confirm({
+						title: `Remove "${runtimeDisplayName(runtime)}"?`,
+						body: 'Terminal tabs opened on it stop reconnecting, and its pinned agents are forgotten.',
+						confirm: 'Remove runtime',
+					});
+					if (!confirmed) return;
+					const { removed, activeChanged } = removeRuntime(settings, runtime.id);
+					if (!removed) return;
+					if (callbacks.editingRuntime() === runtime.id) callbacks.editRuntime(null);
+					if (activeChanged) await callbacks.activateRuntime(settings.activeRuntime);
+					else await callbacks.save();
+					callbacks.refreshRuntimes();
+					callbacks.redisplay();
+				}),
+		);
+	}
 
 	new Setting(containerEl)
-		.setName('Use a remote herdr')
+		.setName('Add runtime')
 		.setDesc(
-			'Talk to herdr on another machine over SSH. The socket is forwarded locally and terminals are spawned through SSH.',
+			'Another herdr or herdr-core to switch to, on this machine or over SSH. One runtime is connected at a time.',
 		)
-		.addToggle((toggle) =>
-			toggle.setValue(settings.remote.enabled).onChange(async (value) => {
-				settings.remote.enabled = value;
-				await callbacks.saveAndReconnect();
-				callbacks.redisplay();
+		.addButton((button) =>
+			button.setButtonText('Add runtime').onClick(async () => {
+				const runtime = newRuntime(
+					'herdr',
+					'ssh',
+					settings.runtimes.map((entry) => entry.id),
+				);
+				settings.runtimes = [...settings.runtimes, runtime];
+				await callbacks.save();
+				callbacks.refreshRuntimes();
+				callbacks.editRuntime(runtime.id);
 			}),
 		);
 
-	if (!settings.remote.enabled) return;
+	const editing = settings.runtimes.find((runtime) => runtime.id === callbacks.editingRuntime());
+	if (editing) buildRuntimeForm(containerEl, editing, editing.id === active.id, callbacks);
+}
+
+/** The fields of one runtime, for its kind and target. */
+function buildRuntimeForm(
+	containerEl: HTMLElement,
+	runtime: RuntimeConfig,
+	isActive: boolean,
+	callbacks: SettingsCallbacks,
+): void {
+	new Setting(containerEl).setName(`Edit ${runtimeDisplayName(runtime)}`).setHeading();
+
+	// Every problem the form can see, refreshed as fields change. Built last,
+	// filled by `check`, so typing never redraws the field being typed in.
+	let problems: Setting | null = null;
+	const check = (): void => {
+		const unavailable = callbacks.kindUnavailable(runtime.kind);
+		const issues = [...(unavailable ? [unavailable] : []), ...runtimeIssues(runtime)];
+		problems?.setDesc(issues.length > 0 ? issues.map(issueSentence).join(' ') : 'None.');
+		problems?.descEl.toggleClass('mod-warning', issues.length > 0);
+	};
+	const changed = async (): Promise<void> => {
+		check();
+		if (isActive) await callbacks.saveAndReconnect();
+		else await callbacks.save();
+	};
+	const text = (
+		name: string,
+		desc: string,
+		placeholder: string,
+		read: () => string,
+		write: (value: string) => void,
+	): void => {
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.addText((field) =>
+				field
+					.setPlaceholder(placeholder)
+					.setValue(read())
+					.onChange(async (value) => {
+						write(value);
+						await changed();
+					}),
+			);
+	};
 
 	new Setting(containerEl)
-		.setName('SSH host')
+		.setName('Name')
+		.setDesc('What the switcher, the status bar and this list call it.')
+		.addText((field) =>
+			field
+				.setPlaceholder(runtimeDisplayName({ ...runtime, name: '' }))
+				.setValue(runtime.name)
+				.onChange(async (value) => {
+					runtime.name = value;
+					await callbacks.save();
+					callbacks.refreshRuntimes();
+				}),
+		);
+
+	new Setting(containerEl)
+		.setName('Kind')
 		.setDesc(
+			'Herdr is the terminal multiplexer with tabs and splits. Herdr-core is the headless hc runtime, which has neither.',
+		)
+		.addDropdown((dropdown) => {
+			for (const kind of RUNTIME_KINDS) dropdown.addOption(kind, RUNTIME_KIND_LABELS[kind]);
+			dropdown.setValue(runtime.kind).onChange(async (value) => {
+				retarget(runtime, value as RuntimeKind, runtime.target);
+				await changed();
+				callbacks.refreshRuntimes();
+				callbacks.redisplay();
+			});
+		});
+
+	new Setting(containerEl)
+		.setName('Target')
+		.setDesc('Where it runs: this machine, or a host reached over SSH.')
+		.addDropdown((dropdown) => {
+			for (const target of RUNTIME_TARGETS) {
+				dropdown.addOption(target, RUNTIME_TARGET_LABELS[target]);
+			}
+			dropdown.setValue(runtime.target).onChange(async (value) => {
+				retarget(runtime, runtime.kind, value as RuntimeTarget);
+				await changed();
+				callbacks.refreshRuntimes();
+				callbacks.redisplay();
+			});
+		});
+
+	const herdr = runtime.kind === 'herdr';
+	if (runtime.target === 'ssh') {
+		text(
+			'SSH host',
 			'SSH destination, for example user@host or an alias from your SSH config. Key-based login without a passphrase prompt is required.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder('user@host')
-				.setValue(settings.remote.host)
-				.onChange(async (value) => {
-					settings.remote.host = value;
-					await callbacks.saveAndReconnect();
-				}),
+			'user@host',
+			() => runtime.host,
+			(value) => {
+				runtime.host = value;
+			},
 		);
-
-	new Setting(containerEl)
-		.setName('Remote socket path')
-		.setDesc('Socket of the herdr server on the remote host.')
-		.addText((text) =>
-			text
-				.setPlaceholder(DEFAULT_SETTINGS.remote.remoteSocketPath)
-				.setValue(settings.remote.remoteSocketPath)
-				.onChange(async (value) => {
-					settings.remote.remoteSocketPath = value;
-					await callbacks.saveAndReconnect();
-				}),
+		if (herdr) {
+			text(
+				'Remote socket path',
+				'Socket of the herdr server on the remote host. It is forwarded to this machine over SSH.',
+				DEFAULT_HERDR_SOCKET,
+				() => runtime.socketPath,
+				(value) => {
+					runtime.socketPath = value;
+				},
+			);
+		}
+		text(
+			herdr ? 'Remote herdr binary' : 'Remote hc binary',
+			herdr
+				? 'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.'
+				: 'Path to hc on the remote host. Leave empty for hc on the non-interactive SSH PATH; a full path is safest.',
+			herdr ? DEFAULT_REMOTE_HERDR_BINARY : 'hc',
+			() => runtime.binary,
+			(value) => {
+				runtime.binary = value;
+			},
 		);
-
-	new Setting(containerEl)
-		.setName('Remote herdr binary')
-		.setDesc(
-			'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder(DEFAULT_SETTINGS.remote.remoteBinary)
-				.setValue(settings.remote.remoteBinary)
-				.onChange(async (value) => {
-					settings.remote.remoteBinary = value;
-					await callbacks.saveAndReconnect();
-				}),
-		);
-
-	new Setting(containerEl)
-		.setName('Remote vault path')
-		.setDesc(
+		text(
+			'Remote vault path',
 			'Absolute path of this vault on the remote host. Folder actions resolve note paths against it.',
-		)
-		.addText((text) =>
-			text
-				.setPlaceholder('/home/user/vault')
-				.setValue(settings.remote.remoteVaultPath)
-				.onChange(async (value) => {
-					settings.remote.remoteVaultPath = value;
-					await callbacks.saveAndReconnect();
-				}),
+			'/home/user/vault',
+			() => runtime.remoteVaultPath,
+			(value) => {
+				runtime.remoteVaultPath = value;
+			},
 		);
+	} else {
+		if (herdr) {
+			text(
+				'Socket path',
+				'Unix socket of the running herdr server. Leave the default unless you start herdr with a custom socket.',
+				DEFAULT_HERDR_SOCKET,
+				() => runtime.socketPath,
+				(value) => {
+					runtime.socketPath = value;
+				},
+			);
+		}
+		text(
+			herdr ? 'Herdr binary' : 'Hc binary',
+			herdr
+				? 'Absolute path to the herdr executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH. Set it if Obsidian was launched from the Dock and cannot find herdr.'
+				: 'Absolute path to the hc executable. Leave empty to use hc from the PATH.',
+			herdr ? 'Auto-discover' : 'hc',
+			() => runtime.binary,
+			(value) => {
+				runtime.binary = value;
+			},
+		);
+	}
+	text(
+		herdr ? 'Workspace ID' : 'Space',
+		herdr
+			? 'Pin this runtime to one herdr workspace. Leave empty to match the workspace labelled like the vault folder, then the one whose panes run inside the vault. Ids are opaque and change between servers.'
+			: 'Pin this runtime to one herdr-app space. Leave empty to match the space named like the vault folder, then the terminals running inside the vault.',
+		'Auto-detect',
+		() => runtime.workspace,
+		(value) => {
+			runtime.workspace = value;
+		},
+	);
+
+	problems = new Setting(containerEl).setName('Problems').setClass('herdr-runtime-problems');
+	check();
+
+	new Setting(containerEl).addButton((button) =>
+		button
+			.setButtonText('Done')
+			.setCta()
+			.onClick(() => callbacks.editRuntime(null)),
+	);
+}
+
+/**
+ * A kind or target change: the binary and socket fields follow when they
+ * still hold the old combination's default, and keep what the user typed
+ * otherwise.
+ */
+function retarget(runtime: RuntimeConfig, kind: RuntimeKind, target: RuntimeTarget): void {
+	if (runtime.binary.trim() === defaultBinary(runtime.kind, runtime.target)) {
+		runtime.binary = defaultBinary(kind, target);
+	}
+	if (kind !== 'herdr') runtime.socketPath = '';
+	else if (runtime.socketPath.trim() === '') runtime.socketPath = DEFAULT_HERDR_SOCKET;
+	runtime.kind = kind;
+	runtime.target = target;
 }
 
 /** The notice and system-notification pair for one transition. */
@@ -1314,8 +1486,8 @@ export const SETTINGS_SECTIONS: readonly ((
 	settings: HerdrSettings,
 	callbacks: SettingsCallbacks,
 ) => void)[] = [
+	buildRuntimesSection,
 	buildConnectionSection,
-	buildRemoteSection,
 	buildNotificationsSection,
 	buildAgentsSection,
 	buildFileExplorerSection,
@@ -1332,6 +1504,8 @@ export const SETTINGS_SECTIONS: readonly ((
 export class HerdrSettingTab extends PluginSettingTab {
 	private readonly plugin: HerdrPlugin;
 	private readonly renderStatus: RenderStatus;
+	/** The runtime whose form is open; survives the redisplays its fields cause. */
+	private editing: string | null = null;
 
 	constructor(app: App, plugin: HerdrPlugin, renderStatus: RenderStatus) {
 		super(app, plugin);
@@ -1353,6 +1527,15 @@ export class HerdrSettingTab extends PluginSettingTab {
 			refreshFolderHoverButton: () => plugin.refreshFolderHoverButton(),
 			applyTerminalSetting: (setting) => plugin.applyTerminalSetting(setting),
 			refreshNativeViews: () => plugin.refreshNativeViews(),
+			activateRuntime: (id) => plugin.switchRuntime(id),
+			refreshRuntimes: () => plugin.refreshRuntimes(),
+			kindUnavailable: (kind) => plugin.kindUnavailable(kind),
+			editingRuntime: () => this.editing,
+			editRuntime: (id) => {
+				this.editing = id;
+				this.display();
+			},
+			confirm: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
 		};
 	}
 

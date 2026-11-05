@@ -25,10 +25,12 @@
  * settings menu. What the two menus contain is `listMenu.ts` and
  * `quickSettings.ts`, both pure and tested; choosing an entry writes the same
  * settings the settings tab writes and repaints every open list. A fourth
- * button, shown only when a remote host is configured, switches the list
- * between the local and the remote herdr (issue #54): it flips
- * `settings.remote.enabled` and reconnects. Terminals already open stay pinned
- * to the endpoint they started on.
+ * button switches the runtime the list shows (issue #54, ADR-0004): hidden
+ * with one runtime, a toggle to the other with two, a menu of all of them
+ * with three or more; `runtimeSwitcher` in `runtimes.ts` decides which. Any
+ * switch reconnects; terminals already open stay pinned to the runtime they
+ * started on. "Start agent in the vault" is left out for a runtime whose kind
+ * cannot start one.
  *
  * What an event on a row *does* is `rowDispatch.ts` (issue #82): click,
  * right-click and keyboard activation all go there, and it decides between
@@ -50,7 +52,8 @@ import type { EndpointSession } from '../connection';
 import type { HerdrClient } from '../herdr/client';
 import type { WorkspaceScope } from '../herdr/scope';
 import type { TabLabelCache } from '../tabLabels';
-import { isPanePinned, pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
+import { isPanePinned, pinnedPaneIds, togglePanePin } from '../settings';
+import { activeRuntimeOf, issueSentence, runtimeSwitcher } from '../runtimes';
 import { ConfirmModal, PromptModal } from './modals';
 import type { RowMenuItem } from './rowMenu';
 import { RowDispatcher, type PaneRef, type RowDispatchHost } from './rowDispatch';
@@ -61,38 +64,13 @@ import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
-/** What the local/remote toggle in the toolbar shows (issue #54). */
-export interface EndpointToggle {
-	/** Hidden entirely unless a remote host is configured. */
-	shown: boolean;
-	/** True while the remote profile is the connected one. */
-	remote: boolean;
-	icon: string;
-	/** Tooltip and aria-label: what a click does, not what is on. */
-	label: string;
-}
-
-/**
- * The toggle is a picture of where the list points (`laptop` for the local
- * herdr, `server` for the remote one) and a label naming the other side, so a
- * click reads as "switch to". Without a host there is nothing to switch to.
- */
-export function endpointToggle(settings: Pick<HerdrSettings, 'remote'>): EndpointToggle {
-	const host = settings.remote.host.trim();
-	const remote = settings.remote.enabled;
-	return {
-		shown: host.length > 0,
-		remote,
-		icon: remote ? 'server' : 'laptop',
-		label: remote ? 'Switch to local herdr' : `Switch to remote herdr (${host})`,
-	};
-}
-
 export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private listEl: HTMLElement | null = null;
-	/** The local/remote toggle (issue #54); null until the toolbar is built. */
+	/** The runtime switcher (issue #54, ADR-0004); null until the toolbar is built. */
 	private endpointToggleEl: HTMLElement | null = null;
+	/** "Start agent in the vault", hidden for a kind that cannot start one. */
+	private startButtonEl: HTMLElement | null = null;
 	private pendingRender = 0;
 	/** Unsubscribes from the scope and label cache bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
@@ -153,20 +131,21 @@ export class AgentListView extends ItemView {
 	private renderToolbar(container: HTMLElement): void {
 		const bar = container.createDiv({ cls: 'herdr-list-toolbar' });
 		// Leftmost, apart from the three menu buttons: it changes what the whole
-		// list shows rather than how. Hidden unless a remote host is configured.
-		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch to remote herdr', () => {
-			void this.toggleEndpoint();
+		// list shows rather than how. Hidden while there is one runtime.
+		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch runtime', (event) => {
+			this.switchRuntime(event);
 		});
 		this.endpointToggleEl.addClass('herdr-endpoint-toggle');
 		this.updateEndpointToggle();
 		this.toolbarButton(bar, 'arrow-down-up', 'Sort and group', (event) =>
 			this.openListMenu(event),
 		);
-		this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
+		this.startButtonEl = this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
 			// The same flow as the folder menu, at the vault root: it honours the
 			// share-a-tab setting (issue #29) and reports its own failures.
 			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
 		});
+		this.startButtonEl.addClass('herdr-start-agent-button');
 		this.toolbarButton(bar, 'settings-2', 'Quick settings', (event) =>
 			this.openQuickSettings(event),
 		);
@@ -191,29 +170,45 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
-	 * The local/remote switch (issue #54): the same flip the settings toggle
-	 * does, followed by the same reconnect, without the debounce a typed field
-	 * needs. Open terminals are left alone; each stays pinned to its endpoint.
+	 * The runtime switch (issue #54, ADR-0004). With two runtimes a click goes
+	 * to the other one, without the debounce a typed field needs; with three or
+	 * more it opens a menu of all of them, the active one checked. Open
+	 * terminals are left alone; each stays pinned to its runtime.
 	 */
-	private async toggleEndpoint(): Promise<void> {
-		const settings = this.plugin.settings;
-		if (settings.remote.host.trim().length === 0) return;
-		settings.remote.enabled = !settings.remote.enabled;
-		this.updateEndpointToggle();
-		await this.plugin.saveSettings();
-		await this.plugin.reconnect();
+	private switchRuntime(event: MouseEvent): void {
+		const switcher = runtimeSwitcher(this.plugin.settings);
+		if (switcher.mode === 'toggle' && switcher.next) {
+			void this.plugin.switchRuntime(switcher.next.id);
+			return;
+		}
+		if (switcher.mode !== 'menu') return;
+		const menu = new Menu();
+		for (const entry of switcher.entries) {
+			menu.addItem((item) =>
+				item
+					.setTitle(entry.name)
+					.setChecked(entry.checked)
+					.onClick(() => void this.plugin.switchRuntime(entry.id)),
+			);
+		}
+		menu.showAtMouseEvent(event);
 	}
 
-	/** Icon, label, active state and visibility from the settings as they are. */
+	/**
+	 * Icon, label, pressed state and visibility of the switcher, and whether
+	 * the start button applies, from the registry and kind as they are now.
+	 */
 	private updateEndpointToggle(): void {
+		const start = this.startButtonEl;
+		if (start) start.toggleClass('herdr-hidden', !this.plugin.capabilities().startAgent);
 		const el = this.endpointToggleEl;
 		if (!el) return;
-		const toggle = endpointToggle(this.plugin.settings);
-		el.toggleClass('herdr-hidden', !toggle.shown);
-		el.toggleClass('is-active', toggle.remote);
-		setIcon(el, toggle.icon);
-		setTooltip(el, toggle.label);
-		el.setAttribute('aria-label', toggle.label);
+		const switcher = runtimeSwitcher(this.plugin.settings);
+		el.toggleClass('herdr-hidden', switcher.mode === 'hidden');
+		el.toggleClass('is-active', switcher.remote);
+		setIcon(el, switcher.icon);
+		setTooltip(el, switcher.label);
+		el.setAttribute('aria-label', switcher.label);
 	}
 
 	/**
@@ -361,18 +356,23 @@ export class AgentListView extends ItemView {
 		const list = this.listEl;
 		if (!list) return;
 		list.empty();
-		// The host may have been typed into settings since the toolbar was built,
-		// and the settings tab's own toggle flips the same flag.
+		// Runtimes may have been added, renamed or switched since the toolbar was
+		// built, from the settings tab or the palette.
 		this.updateEndpointToggle();
 
 		const session = this.session();
 		const scope = session?.scope;
 		if (!scope || !scope.workspaceId) {
+			// A runtime whose kind this build cannot run says so, rather than
+			// looking like a herdr that is down (ADR-0004).
+			const unavailable = this.plugin.kindUnavailable(activeRuntimeOf(this.plugin.settings).kind);
 			list.createDiv({
 				cls: 'herdr-empty',
 				text: scope
 					? 'No herdr workspace matches this vault yet.'
-					: 'Not connected to herdr.',
+					: unavailable
+						? issueSentence(unavailable)
+						: 'Not connected to herdr.',
 			});
 			return;
 		}
