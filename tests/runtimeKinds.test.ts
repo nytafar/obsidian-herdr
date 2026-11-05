@@ -222,7 +222,8 @@ describe('loadSettings: a pre-registry data.json (ADR-0004)', () => {
 	});
 
 	it('starts a fresh install on the local herdr without sharing the defaults', async () => {
-		const { settings } = await load(null);
+		const { settings, saved } = await load(null);
+		expect(saved).toHaveLength(0);
 		expect(settings.runtimes).toEqual(DEFAULT_SETTINGS.runtimes);
 		expect(settings.runtimes).not.toBe(DEFAULT_SETTINGS.runtimes);
 		expect(settings.activeRuntime).toBe('local');

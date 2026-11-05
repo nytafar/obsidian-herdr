@@ -204,11 +204,15 @@ export function normalizeRuntime(value: unknown): RuntimeConfig | null {
 /** What {@link migrateRuntimes} makes of a stored `data.json`. */
 export interface RuntimeMigration extends RuntimeSettings {
 	/**
-	 * True when the file was in the pre-registry shape, so `loadSettings`
-	 * writes the registry back once and the legacy keys go with that save.
+	 * True when the file held the pre-registry keys, so `loadSettings` writes
+	 * the registry back once and the legacy keys go with that save. A file
+	 * with neither shape (a fresh install) is not written for this.
 	 */
 	migrated: boolean;
 }
+
+/** The keys the pre-registry settings stored the local herdr and the remote in. */
+const LEGACY_KEYS: readonly string[] = ['socketPath', 'herdrBinary', 'workspaceId', 'remote'];
 
 /** The pre-registry remote block, as `data.json` held it. */
 interface LegacyRemote {
@@ -298,7 +302,8 @@ export function migrateRuntimes(stored: unknown): RuntimeMigration {
 		});
 		if (remote.enabled === true) activeRuntime = id;
 	}
-	return { runtimes, activeRuntime, migrated: true };
+	const legacy = LEGACY_KEYS.some((key) => key in record);
+	return { runtimes, activeRuntime, migrated: legacy };
 }
 
 /** The runtime with this id, or undefined when the registry has none. */

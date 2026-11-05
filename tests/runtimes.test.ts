@@ -137,10 +137,12 @@ describe('migrateRuntimes: a pre-registry data.json (ADR-0004)', () => {
 	});
 
 	it('reads an empty or unreadable file as a fresh install', () => {
-		for (const stored of [null, undefined, 42, 'x', {}]) {
+		for (const stored of [null, undefined, 42, 'x', {}, { agentListSort: 'priority' }]) {
 			const migration = migrateRuntimes(stored);
 			expect(migration.runtimes).toEqual([defaultLocalRuntime()]);
 			expect(migration.activeRuntime).toBe('local');
+			// Nothing to carry over, so nothing to write back.
+			expect(migration.migrated).toBe(false);
 		}
 	});
 
