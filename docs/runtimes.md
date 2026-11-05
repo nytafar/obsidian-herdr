@@ -188,7 +188,11 @@ rather than offered and refused.
 - A terminal without the label stays a terminal: the view switch says
   `no Claude session label; run "Install or remove the Claude session hook"`
   (or `no Claude session in this terminal` when Claude is not running in it),
-  and switches to the native view by itself once Claude labels it. When
+  and switches to the native view by itself once Claude labels it. A label
+  whose pid is not the terminal's foreground process is not taken either,
+  and the switch says the label belongs to another process: a wrapper that
+  forks Claude instead of exec'ing it does that, and so does a label an
+  earlier Claude left behind. Start Claude with `exec` in the wrapper. When
   Claude exits, or hands the terminal to an editor, the tab shows the
   terminal again.
 

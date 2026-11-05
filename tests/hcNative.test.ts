@@ -15,6 +15,7 @@ import {
 	hcSessionWatcher,
 	NATIVE_NO_CLAUDE_REASON,
 	NATIVE_NO_LABEL_REASON,
+	nativeForeignLabelReason,
 	SESSION_HOOK_COMMAND_NAME,
 } from '../src/hc/sessionWatcher';
 import { HcTranscriptSource } from '../src/hc/transcriptSource';
@@ -111,8 +112,9 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		send('labels', 't1', { labels: label('s-1', 4242, PATH_1) });
 		expect(watcher.snapshot('t1')?.agentSession).toBe('');
 		expect(seen).toEqual([]);
-		// It reported itself as Claude, so what is missing is a label it owns.
-		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		// It reported itself as Claude, and the label is there but names
+		// another process: said so, not "install the hook".
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4242, 100));
 
 		// Then it did, and the label holds.
 		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 4242 });
@@ -143,7 +145,7 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		// A new Claude with the same stale label but another pid: still nothing.
 		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 6000 });
 		expect(seen).toEqual(['', 's-1', '']);
-		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4242, 6000));
 	});
 
 	it('clears on a lost or finished terminal', () => {
@@ -260,6 +262,28 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		watcher.looking?.('t1', view, false);
 		send('turn', 't1', { turn: 6 });
 		expect(writes).toHaveLength(3);
+	});
+
+	it('says a rejected label belongs to another process, and never to install the hook', () => {
+		// A wrapper that forks: the hook ran in Claude (pid 4300), the terminal's
+		// foreground is the wrapper (pid 4242).
+		const { scope, send } = scopeWith(
+			terminal('t1', { labels: label('s-1', 4300, PATH_1), foreground: { name: 'claude-wrap', argv: ['claude-wrap'], cwd: CWD, pid: 4242 } }),
+		);
+		const watcher = hcSessionWatcher(scope);
+		const reason = watcher.unavailable?.('t1') ?? '';
+		expect(reason).toBe(nativeForeignLabelReason(4300, 4242));
+		expect(reason).not.toBe(NATIVE_NO_LABEL_REASON);
+		expect(reason).not.toContain(SESSION_HOOK_COMMAND_NAME);
+		expect(reason).toContain('4300');
+		expect(reason).toContain('4242');
+		expect(reason).toContain('forks');
+		// Foreground unknown (lost, or not polled yet): still not "install".
+		send('lost', 't1', { reason: 'holder_lost', exit_code: null, signal: null, finished_ms: null });
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4300, null));
+		// No label at all is the hook missing.
+		send('labels', 't1', { labels: {} });
+		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
 	});
 
 	it('shares no seen without a writer', () => {

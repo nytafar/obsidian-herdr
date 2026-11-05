@@ -132,7 +132,9 @@ sign-in). A block hc gives no kind for, such as a startup dialog, is only
 described; nothing on herdr-core is ever answered for you.
 
 A terminal without the hook's label stays a terminal, and the view switch says
-why and names the install command. The tab moves to the native view by itself
+why and names the install command. A label that names another process than
+the terminal's foreground one, as a wrapper that forks Claude instead of
+exec'ing it leaves, is not taken either, and the switch says so instead. The tab moves to the native view by itself
 once Claude labels the terminal, and back to the terminal when Claude exits or
 hands the terminal to another program, such as an editor.
 
