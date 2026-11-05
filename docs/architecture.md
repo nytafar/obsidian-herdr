@@ -305,9 +305,81 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   event came back and the row repainted pinned, then unpinned. Prompts are
   `terminal.send {terminal, text}`; keys are `terminal.keys` with hc's names
   (`Down` becomes `down`, `C-c` becomes `ctrl+c`).
-- **Terminal tabs** are not built yet: a tab on a herdr-core pane says so at
-  once (`terminalUnavailable`). The attach seam they will use is
-  `attachTerminal` in `src/hc/streams.ts`, one `HcConnection` per tab.
+- **Terminal tabs** (`src/hc/terminalSession.ts`, behind `PaneSession`). One
+  `hc connect` child per tab (`ssh -T …` on an `ssh` target), one
+  `terminal.attach {terminal, cols, rows, history: 2000}` on it, plus
+  `observe: true, resize_notifications: true` in observe mode, and one
+  `events.subscribe {terminal: <address>}` on the same connection for the
+  record (turn, labels, size, restarts). A local runtime's tab uses the
+  binary its last discovery found, else searches for `hc` when it starts, so
+  a tab pinned to an hc runtime that is not the active one still opens. The
+  native view stays off for hc panes (ADR-0005, `nativeUnavailable`).
+  Measured against `hc` 0.1.18 on 2026-11-05 with throwaway `oh-test-*`
+  terminals running `sh`, driving the session class from a script, and
+  rendering the bytes into `@xterm/headless` and the ghostty-web WASM terminal:
+  - **First paint.** The paint arrives in the first DATA frame (CAN, reset,
+    screen, history) and both engines showed the shell's earlier output and
+    prompt from it. The session prefixes the first paint of every attach with
+    `ESC[3J`, so the core's history, colours included, replaces any text the
+    tab replayed from before a suspend; every frame starting with CAN is a
+    `full` frame, which drops bytes still buffered behind it.
+  - **Input and replies.** Typing is DATA (`echo hi-$((6*7))` echoed `hi-42`
+    on both engines). Emulator replies go through `reply`: AUTOMATIC_INPUT
+    when both `hello.features` and the attach result say `automatic_input`
+    (0.1.18 here), DATA otherwise (asher's 0.1.17 has no `automatic_input`).
+    The renderers tell replies from typing (`TerminalRenderer.onReply`,
+    `src/views/renderer/replies.ts`): ghostty-web answers synchronously
+    inside `write()`, xterm.js fires its internal `coreService.onUserInput`
+    before every `onData` a person caused and not before a reply (checked
+    against the real xterm core: DA and DSR came without it, `input(…, true)`
+    with it). herdr sessions have no `reply`, so their replies still go as
+    input.
+  - **Size ownership.** A control attach at 80x24 resized the terminal from
+    its headless 200x120 to 80x24 at once; RESIZE 100x30 made it 100x30. A
+    second controller at 90x25 took the size (last active viewer wins); the
+    first tab then gets `grid 90x25` from the `size` event and draws at it,
+    and its next RESIZE (101x31) took the size back and ended the foreign
+    grid. Cell size goes as FACTS `{cell: [w, h]}` and with the attach as
+    `display`.
+  - **Observe.** The observer got RESIZE 100x30 before its paint and follows
+    every later one (90x25, 101x31, 200x120 when the controller's process was
+    killed, back to 101x31 on its redial); its renderer draws at that grid and
+    it never sends RESIZE, DATA or AUTOMATIC_INPUT (input sent anyway was
+    verified dropped by the core in the finding). Without confirmed
+    notifications it follows the attach record's `cols`/`rows` and `size`
+    events. asher 0.1.17 over SSH, observe-only on an existing terminal:
+    features `framed,attach,events,status,shell,resize_notifications`, RESIZE
+    191x42 then the paint (first byte CAN, 7.6 KB), rendered on both engines.
+  - **Credit.** Bytes are credited back once written into the renderer (and
+    when a full repaint drops buffered ones), never more than was delivered. A
+    3,000,000-byte burst arrived whole (3,000,103 bytes, no repaint) through
+    the crediting tab; an observer that credited nothing received exactly
+    262,148 bytes (256 KiB plus the 4-byte `ESC[3J`) and stopped, then caught
+    up once it credited.
+  - **Ends.** `exit 3` gave CLOSE `{reason: "exited", exit_code: 3}` on both
+    tabs, shown as "the program exited with code 3", then the `finished` event
+    ended the session; attaching to the finished terminal answered `finished`
+    ("t13 has finished"), shown as a final close. A CLOSE with a loss reason
+    shows "waiting for herdr-core to restart it" and the `restarted` event
+    attaches again with `resumed: true` (fake core only; not provoked live).
+    Killing the tab's `hc connect` child showed "herdr-core connection lost …;
+    trying again", redialled after 1 s (backoff to 30 s), attached with
+    `resumed: true` and took typing again. A theme rebuild under a live
+    session asks for a fresh paint the same way (attach resumed, then let the
+    old channel go). The tab detaches (CLOSE) and closes stdin on close.
+  - **Scrolling.** hc has no scroll method, so the wheel is the renderer's own
+    (local scrollback, or the engine's mouse reports to a program that asked).
+- **`herdr.seen`** (`src/hc/seen.ts`). A tab writes `terminal.label
+  {herdr.seen: <turn>}` while a person is in front of it: the view says so
+  when its window has the focus and is visible, the terminal is the surface
+  shown and its host has a box. Once per turn while it stays on screen, only
+  to raise it (or when the label is missing), never for a terminal that has
+  not reported a status, decided on the `turn` event (herdr-app
+  `docs/labels.md`, `share_seen`). Measured: a fake 7501 report (working, then
+  done) moved turn 0 to 1 and the looking tab wrote `herdr.seen=1`; a mark
+  unread (`hc label … herdr.seen=0`) while it stayed on screen was left at 0;
+  looking away and back raised it to 1 again. The agent list reads the label
+  through the scope, so the done row clears; herdr rows are unchanged.
 
 ## The settings tab
 

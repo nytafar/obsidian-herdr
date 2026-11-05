@@ -158,10 +158,19 @@ the same way as for herdr.
 - The connection comes back on its own after the core restarts or the SSH
   line drops.
 
+- **Terminal tabs** work as on herdr: control types and sets the terminal's
+  size, observe only watches. hc has no single controller: whoever typed or
+  resized last sets the size, and a tab whose size another viewer took draws
+  at that size until you type or resize in it. A tab follows the program
+  across a restart of a kept terminal and a lost connection on its own, and
+  says so when the program exits.
+- Looking at an agent's terminal tab (window in front, tab on screen) marks it
+  seen in herdr-app's shared `herdr.seen` label, so its "done" clears here, in
+  herdr-app and on the phone.
+
 herdr-core has no tabs, splits, rename or pane focus, and reports no agent
 session for the native view, so those are left out rather than offered and
-refused. Terminal tabs for herdr-core agents are not built yet: opening one
-says so.
+refused; herdr-core panes always open in the terminal view.
 
 A herdr-core runtime shows only its own machine's terminals, never the
 `machine/tN` ones the core federates from elsewhere. To see hc on another

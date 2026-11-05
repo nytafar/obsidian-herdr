@@ -64,4 +64,5 @@ the remote host.
 
 **A leftover `herdr terminal session` process.** Closing the tab ends it;
 `pgrep -fa 'terminal session'` should show one process per open terminal tab and
-none afterwards.
+none afterwards. On a herdr-core runtime the process is `hc connect` (or `ssh … connect`):
+one for the runtime's connection plus one per open terminal tab.
