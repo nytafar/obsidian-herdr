@@ -716,6 +716,18 @@ describe('native view section', () => {
 		expect(toggleOf(el, 'Trust new folders automatically').value).toBe(false);
 	});
 
+	it('says auto-trust does nothing today, on any runtime, and names the button', () => {
+		// Only a reported trust kind is answered unasked, and no runtime reports
+		// one: herdr says only "blocked", and on herdr-core Claude asks before
+		// its hook has labelled the terminal, so the tab shows the terminal.
+		const el = settingsContainer();
+		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
+		const desc = settingNamed(el, 'Trust new folders automatically').desc;
+		expect(desc).toContain('No runtime reports it today, herdr and herdr-core included');
+		expect(desc).toContain('this does nothing');
+		expect(desc).toContain('\u201cTrust this folder\u201d button');
+	});
+
 	it('saves the presentation and redraws the open native views', async () => {
 		const el = settingsContainer();
 		const settings = settingsOf();

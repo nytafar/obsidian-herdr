@@ -71,11 +71,15 @@ result is the tool asking for permission.
 
 The trust prompt is the one block the view can answer for you: the card offers
 **Trust this folder**, and the **Trust new folders automatically** setting
-presses it without asking, but only when the runtime itself identified the
-block as the trust prompt. A block before the session exists looks the same at
-the trust prompt as at a sign-in or another startup dialog, so a guessed one is
-never answered unasked; on herdr the card keeps its button and tells you to
-check the terminal first. Nothing else is answered on your behalf. Tool
+would press it without asking, but only when the runtime itself identified the
+block as the trust prompt. No runtime does today, so the setting currently
+does nothing and the button is the way. herdr reports no kind of block, and a
+block before the session exists looks the same at the trust prompt as at a
+sign-in or another startup dialog, so a guessed one is never answered unasked;
+on herdr the card keeps its button and tells you to check the terminal first.
+On herdr-core Claude shows the trust prompt before its `SessionStart` hook
+runs, so the terminal has no session label yet and the tab shows the terminal,
+where you answer it. Nothing else is answered on your behalf. Tool
 permissions are Claude's own to ask; questions and plan approvals are yours.
 
 ## Table of contents
