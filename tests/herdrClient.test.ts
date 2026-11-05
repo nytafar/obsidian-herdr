@@ -12,7 +12,8 @@ import {
 	parseStreamError,
 	type HerdrEvent,
 } from '../src/herdr/client';
-import { ConnectionCoordinator, endpointOf, type ConnectionScope } from '../src/connection';
+import { ConnectionCoordinator, endpointOf, type ConnectionDriver, type ConnectionScope } from '../src/connection';
+import { defaultLocalRuntime } from '../src/runtimes';
 import type { AgentInfo, PaneInfo, WorkspaceInfo } from '../src/herdr/types.gen';
 import { unsupportedMethodMessage } from '../src/notify';
 import { FakeApiServer, FakeError } from './fixtures/fakeApiServer';
@@ -556,7 +557,7 @@ describe('events_lost recovery through the connection', () => {
 			ingest: (event) => ingested.push(event),
 		};
 		const clients: HerdrClient[] = [];
-		const coordinator = new ConnectionCoordinator({
+		const driver: ConnectionDriver<HerdrClient> = {
 			discover: () =>
 				Promise.resolve({
 					binary: { path: '/fake/herdr', source: 'setting' },
@@ -565,11 +566,8 @@ describe('events_lost recovery through the connection', () => {
 					socketPath: server.socketPath,
 					error: null,
 				}),
-			endpoint: () =>
-				endpointOf({ enabled: false, host: '', remoteSocketPath: '', remoteBinary: '', remoteVaultPath: '' }),
-			createTunnel: () => {
-				throw new Error('local only');
-			},
+			discoveryIssue: () => null,
+			createTunnel: () => null,
 			createClient: (socketPath) => {
 				const client = new HerdrClient({ socketPath, backoffMs: 60_000, maxBackoffMs: 60_000 });
 				clients.push(client);
@@ -577,6 +575,10 @@ describe('events_lost recovery through the connection', () => {
 			},
 			createScope: () => scope,
 			subscriptions: [{ type: 'pane.updated' }],
+		};
+		const coordinator = new ConnectionCoordinator({
+			endpoint: () => endpointOf(defaultLocalRuntime()),
+			driver: () => driver,
 			notice: () => undefined,
 			setError: () => undefined,
 			onReplaced: () => undefined,
