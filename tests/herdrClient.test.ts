@@ -3,13 +3,17 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
 	CLIENT_ERROR_CODES,
+	EVENTS_LOST_CODE,
 	HerdrClient,
 	HerdrError,
 	expandHome,
 	parseEventLine,
 	parseResponse,
+	parseStreamError,
 	type HerdrEvent,
 } from '../src/herdr/client';
+import { ConnectionCoordinator, endpointOf, type ConnectionScope } from '../src/connection';
+import type { AgentInfo, PaneInfo, WorkspaceInfo } from '../src/herdr/types.gen';
 import { unsupportedMethodMessage } from '../src/notify';
 import { FakeApiServer, FakeError } from './fixtures/fakeApiServer';
 
@@ -59,6 +63,16 @@ describe('parseResponse', () => {
 		}
 	});
 
+	it('flags a removed method (0.9.2+ `unknown_method`) as unsupported', () => {
+		// Shape verified against herdr 0.9.5 for `pane.graphics.info`.
+		try {
+			parseResponse('{"id":"1","error":{"code":"unknown_method","message":"unknown method: pane.graphics.info"}}');
+			throw new Error('should have thrown');
+		} catch (error) {
+			expect((error as HerdrError).isUnsupportedMethod).toBe(true);
+		}
+	});
+
 	it('flags an unknown method as an unsupported method, not a broken connection', () => {
 		try {
 			parseResponse('{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `no.such.method`, expected one of `ping`"}}');
@@ -77,6 +91,23 @@ describe('parseEventLine', () => {
 		});
 		expect(parseEventLine('{"id":"1","result":{}}')).toBeNull();
 		expect(parseEventLine('not json')).toBeNull();
+	});
+});
+
+describe('parseStreamError', () => {
+	it('reads the error line herdr ends a lagging subscription with', () => {
+		const error = parseStreamError(
+			'{"id":"7","error":{"code":"events_lost","message":"event subscription fell behind retained history; resubscribe and resync with session.snapshot"}}',
+		);
+		expect(error).toBeInstanceOf(HerdrError);
+		expect(error?.code).toBe(EVENTS_LOST_CODE);
+		expect(error?.method).toBe('events.subscribe');
+	});
+
+	it('is null for events, results and garbage', () => {
+		expect(parseStreamError('{"event":"pane_updated","data":{}}')).toBeNull();
+		expect(parseStreamError('{"id":"1","result":{}}')).toBeNull();
+		expect(parseStreamError('not json')).toBeNull();
 	});
 });
 
@@ -303,6 +334,45 @@ describe('HerdrClient.ping protocol handling (M3)', () => {
 		await client.ping();
 		expect(client.lastMismatch).toBeNull();
 	});
+
+	it('records the server version and capabilities, even when the protocol matches', async () => {
+		const server = await startServer({ protocol: 22, version: '0.9.5' });
+		const client = makeClient(server, { expectedProtocol: 22 });
+		expect(client.serverInfo).toBeNull();
+		expect(client.serverVersion).toBeNull();
+		expect(client.supportsVersion('0.9.0')).toBe(false);
+		await client.ping();
+		expect(client.serverVersion).toBe('0.9.5');
+		expect(client.serverInfo).toEqual({
+			version: '0.9.5',
+			protocol: 22,
+			capabilities: { live_handoff: true, unknown_future_field: 'ignored' },
+		});
+		expect(client.supportsVersion('0.9.2')).toBe(true);
+		expect(client.supportsVersion('0.9.5')).toBe(true);
+		expect(client.supportsVersion('0.9.6')).toBe(false);
+		expect(client.supportsVersion('0.10.0')).toBe(false);
+	});
+
+	it('tells 0.9.0 from 0.9.5 although both report protocol 22', async () => {
+		const server = await startServer({ protocol: 22, version: '0.9.0' });
+		const client = makeClient(server, { expectedProtocol: 22 });
+		await client.ping();
+		expect(client.lastMismatch).toBeNull();
+		expect(client.supportsVersion('0.9.0')).toBe(true);
+		expect(client.supportsVersion('0.9.2')).toBe(false);
+	});
+
+	it('records the version of an 0.8.x server while warning about protocol 20', async () => {
+		const server = await startServer({ protocol: 20, version: '0.8.2' });
+		const mismatches: unknown[] = [];
+		const client = makeClient(server, { expectedProtocol: 22, onProtocolMismatch: (m) => mismatches.push(m) });
+		await client.ping();
+		expect(mismatches).toEqual([{ server: 20, expected: 22, version: '0.8.2' }]);
+		expect(client.serverInfo?.protocol).toBe(20);
+		expect(client.supportsVersion('0.8.0')).toBe(true);
+		expect(client.supportsVersion('0.9.0')).toBe(false);
+	});
 });
 
 describe('HerdrClient events', () => {
@@ -388,6 +458,51 @@ describe('HerdrClient events', () => {
 		await waitFor(() => events.length === 1);
 	});
 
+	it('resubscribes at once, without backoff or an error, when herdr reports events_lost', async () => {
+		const server = await startServer();
+		// A backoff far longer than the wait below: only the immediate path passes.
+		const client = makeClient(server, { backoffMs: 60_000, maxBackoffMs: 60_000 });
+		let connects = 0;
+		const drops: (Error | null)[] = [];
+		const lost: HerdrError[] = [];
+		const errors: Error[] = [];
+		client.on('connected', () => (connects += 1));
+		client.on('disconnected', (error) => drops.push(error));
+		client.on('eventsLost', (error) => lost.push(error));
+		client.on('error', (error) => errors.push(error));
+		client.subscribe([{ type: 'pane.updated' }]);
+		await waitFor(() => connects === 1);
+
+		server.endSubscribers();
+		await waitFor(() => connects === 2, 2000);
+		expect(lost.map((error) => error.code)).toEqual([EVENTS_LOST_CODE]);
+		expect(drops).toEqual([null]);
+		expect(errors).toEqual([]);
+		expect(client.eventStreamState).toBe('open');
+		const subscribes = server.requests.filter((entry) => entry.method === 'events.subscribe');
+		expect(subscribes).toHaveLength(2);
+		expect(subscribes[1]?.params).toEqual({ subscriptions: [{ type: 'pane.updated' }] });
+	});
+
+	it('reports any other error that ends a subscription and reconnects with backoff', async () => {
+		const server = await startServer();
+		const client = makeClient(server, { backoffMs: 10, maxBackoffMs: 20 });
+		let connects = 0;
+		const errors: HerdrError[] = [];
+		const drops: (Error | null)[] = [];
+		client.on('connected', () => (connects += 1));
+		client.on('error', (error) => errors.push(error as HerdrError));
+		client.on('disconnected', (error) => drops.push(error));
+		client.subscribe([{ type: 'pane.updated' }]);
+		await waitFor(() => connects === 1);
+
+		server.endSubscribers('server_unavailable', 'event history is unavailable');
+		await waitFor(() => connects === 2);
+		expect(errors.map((error) => error.code)).toEqual(['server_unavailable']);
+		expect(drops).toHaveLength(1);
+		expect((drops[0] as HerdrError).code).toBe('server_unavailable');
+	});
+
 	it('stops reconnecting once disposed', async () => {
 		const server = await startServer();
 		const client = makeClient(server, { backoffMs: 10 });
@@ -412,5 +527,72 @@ describe('HerdrClient events', () => {
 		expect(last?.params).toEqual({
 			subscriptions: [{ type: 'pane.updated' }, { type: 'tab.created' }],
 		});
+	});
+});
+
+describe('events_lost recovery through the connection', () => {
+	it('re-snapshots the scope after herdr drops events, instead of carrying on stale', async () => {
+		let snapshots = 0;
+		const server = await startServer({
+			protocol: 22,
+			version: '0.9.5',
+			methods: {
+				'session.snapshot': () => {
+					snapshots += 1;
+					return {
+						type: 'session_snapshot',
+						snapshot: { workspaces: [], panes: [], agents: [], layouts: [], tabs: [], protocol: 22, version: '0.9.5' },
+					};
+				},
+			},
+		});
+		let primes = 0;
+		const ingested: HerdrEvent[] = [];
+		const scope: ConnectionScope = {
+			setAgentNames: (_agents: readonly AgentInfo[]) => undefined,
+			prime: (_workspaces: WorkspaceInfo[], _panes: PaneInfo[]) => {
+				primes += 1;
+			},
+			ingest: (event) => ingested.push(event),
+		};
+		const clients: HerdrClient[] = [];
+		const coordinator = new ConnectionCoordinator({
+			discover: () =>
+				Promise.resolve({
+					binary: { path: '/fake/herdr', source: 'setting' },
+					status: null,
+					identity: null,
+					socketPath: server.socketPath,
+					error: null,
+				}),
+			endpoint: () =>
+				endpointOf({ enabled: false, host: '', remoteSocketPath: '', remoteBinary: '', remoteVaultPath: '' }),
+			createTunnel: () => {
+				throw new Error('local only');
+			},
+			createClient: (socketPath) => {
+				const client = new HerdrClient({ socketPath, backoffMs: 60_000, maxBackoffMs: 60_000 });
+				clients.push(client);
+				return client;
+			},
+			createScope: () => scope,
+			subscriptions: [{ type: 'pane.updated' }],
+			notice: () => undefined,
+			setError: () => undefined,
+			onReplaced: () => undefined,
+			onPrimed: () => undefined,
+		});
+		cleanups.push(() => coordinator.dispose());
+
+		await coordinator.connect();
+		await waitFor(() => primes === 1);
+		expect(clients[0]?.serverVersion).toBe('0.9.5');
+
+		server.endSubscribers();
+		await waitFor(() => primes === 2, 2000);
+		expect(snapshots).toBe(2);
+		// The stream is live again: events after the resync reach the scope.
+		server.push('pane_updated', { type: 'pane_updated' });
+		await waitFor(() => ingested.length === 1);
 	});
 });

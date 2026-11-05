@@ -32,19 +32,21 @@ plugin) holds general plugin conventions.
 
 ## herdr on this machine
 
-- Installed 0.8.2, protocol 20, at `/usr/bin/herdr`, socket
-  `~/.config/herdr/herdr.sock`. A stale 0.8.0 (protocol 19) also sits at
-  `~/.local/bin/herdr`, and both the plugin's binary search and the type
-  generator's fixed directories rank it first; the generator now prefers the
-  PATH binary, the plugin needs the settings override or the stale copy
-  removed. The generated types track the newest herdr release, not the
-  installed one: 0.9.0 (protocol 22) as of 2026-09-13. To regenerate without
-  installing, `gh release download vX.Y.Z -R herdrdev/herdr -p
+- Installed 0.9.5, protocol 22, at `~/.local/bin/herdr`, which is the one on
+  PATH; socket `~/.config/herdr/herdr.sock`. An older 0.9.1 (also protocol 22)
+  sits at `/usr/bin/herdr`; the plugin's binary search and the type generator
+  both find `~/.local/bin` first. The generated types are read from 0.9.5 as
+  of 2026-11-05: `npm run gen:types -- --binary ~/.local/bin/herdr`. 0.9.0
+  through 0.9.5 all report protocol 22 with different schemas, so gate
+  features on the server version, not the protocol (`docs/architecture.md`,
+  "Versions and protocol"). To regenerate against a release without
+  installing it, `gh release download vX.Y.Z -R herdrdev/herdr -p
   herdr-linux-x86_64 -O /tmp/herdr-X.Y.Z`, then
   `npm run gen:types -- --binary /tmp/herdr-X.Y.Z` and review the diff; the
   terminal session seam is checked by diffing `herdr terminal session
   observe --help` between the two binaries. Do not run `herdr update` from an
-  agent session: sessions run inside it.
+  agent session, and do not stop or restart the server: sessions run inside
+  it.
 - Remote test host: `lasse@xl`, herdr at `/home/lasse/.local/bin/herdr` (not on
   the non-interactive PATH), vault at `/home/lasse/hvelv`.
 - Whip checkout for reading: `~/code/herdr/whip` (upstream fetched as FETCH_HEAD).

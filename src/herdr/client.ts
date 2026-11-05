@@ -24,6 +24,7 @@ import { connect, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 
 import { LineSplitter } from './lineSplitter';
+import { herdrVersionAtLeast } from './version';
 import {
 	HERDR_PROTOCOL,
 	type AgentInfo,
@@ -63,9 +64,20 @@ export class HerdrError extends Error {
 	 * wants that to disable one action, not the connection.
 	 */
 	get isUnsupportedMethod(): boolean {
+		// 0.9.2+ answers a method it has removed (`pane.graphics.*`) with its own
+		// code, `unknown_method`, verified against herdr 0.9.5.
+		if (this.code === 'unknown_method') return true;
 		return this.code === 'invalid_request' && this.message.includes('unknown variant');
 	}
 }
+
+/**
+ * herdr 0.9.2+ ends a subscription whose reader fell behind the server's
+ * retained event history with this error code, then closes the stream. The
+ * events in between are gone: the client resubscribes and the `connected` edge
+ * re-snapshots (`docs/architecture.md`, "When the stream loses events").
+ */
+export const EVENTS_LOST_CODE = 'events_lost';
 
 /** Codes minted by the client itself, never by the server. */
 export const CLIENT_ERROR_CODES = {
@@ -81,6 +93,15 @@ export interface ProtocolMismatch {
 	/** Protocol this bundle's generated types were built against. */
 	expected: number;
 	version: string;
+}
+
+/** What the last successful `ping()` said about the server. */
+export interface ServerInfo {
+	/** Release version, `"0.9.5"`; `"unknown"` when the pong carried none. */
+	version: string;
+	/** Protocol number, or null when the pong carried none. */
+	protocol: number | null;
+	capabilities: Record<string, unknown> | null;
 }
 
 /** Lifecycle event stream states, surfaced for the settings tab and list header. */
@@ -134,6 +155,12 @@ export interface ClientEventMap {
 	disconnected: [error: Error | null];
 	/** Non-fatal problem: bad line, oversized line, failed re-subscribe. */
 	error: [error: Error];
+	/**
+	 * herdr ended the subscription with `events_lost` (0.9.2+): events were
+	 * dropped. The client resubscribes at once; the next `connected` is the cue
+	 * to re-snapshot, which a `connected` listener already does.
+	 */
+	eventsLost: [error: HerdrError];
 }
 
 /**
@@ -196,6 +223,27 @@ export function parseResponse<T>(line: string, method?: string): T {
 	return parsed.result as T;
 }
 
+/**
+ * An error response on an acknowledged event stream: the server ends a
+ * subscription this way (`events_lost`, `server_unavailable`) and closes.
+ * Null for anything else, events included.
+ */
+export function parseStreamError(line: string): HerdrError | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return null;
+	}
+	if (!isRecord(parsed) || 'event' in parsed || !isRecord(parsed.error)) return null;
+	try {
+		parseResponse(line, 'events.subscribe');
+	} catch (error) {
+		if (error instanceof HerdrError) return error;
+	}
+	return null;
+}
+
 /** Classifies a push line. `id` present means it is an RPC reply, not an event. */
 export function parseEventLine(line: string): HerdrEvent | null {
 	let parsed: unknown;
@@ -241,6 +289,9 @@ export class HerdrClient {
 	/** Last mismatch seen by `ping()`, for the settings tab. */
 	lastMismatch: ProtocolMismatch | null = null;
 
+	/** What the last successful `ping()` reported; null before the first. */
+	private server: ServerInfo | null = null;
+
 	constructor(options: HerdrClientOptions) {
 		this.socketPath = expandHome(options.socketPath);
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -259,6 +310,29 @@ export class HerdrClient {
 
 	get eventStreamState(): EventStreamState {
 		return this.streamState;
+	}
+
+	/**
+	 * Version, protocol and capabilities from the last successful `ping()`, or
+	 * null before one answered. Protocol alone cannot tell 0.9.0 from 0.9.5
+	 * (both report 22); the version can.
+	 */
+	get serverInfo(): ServerInfo | null {
+		return this.server;
+	}
+
+	/** Server version from the last `ping()`, or null before one answered. */
+	get serverVersion(): string | null {
+		return this.server?.version ?? null;
+	}
+
+	/**
+	 * True when the server is herdr `minimum` (`"0.9.2"`) or newer, judged by
+	 * the last `ping()`. False before a ping answered or when the version is
+	 * unreadable, so a gated feature stays off until the build is known.
+	 */
+	supportsVersion(minimum: string): boolean {
+		return herdrVersionAtLeast(this.server?.version, minimum);
 	}
 
 	/** Points the client at another socket. Reconnects the stream if one is up. */
@@ -372,10 +446,17 @@ export class HerdrClient {
 
 	/**
 	 * `ping`, and the protocol comparison PRD M3 asks for. A mismatch calls
-	 * `onProtocolMismatch` and is recorded; it never rejects.
+	 * `onProtocolMismatch` and is recorded; it never rejects. The version and
+	 * capabilities are recorded too, for {@link serverInfo} and
+	 * {@link supportsVersion}.
 	 */
 	async ping(): Promise<PongResult> {
 		const pong = await this.request<PongResult>('ping', {});
+		this.server = {
+			version: typeof pong.version === 'string' ? pong.version : 'unknown',
+			protocol: typeof pong.protocol === 'number' ? pong.protocol : null,
+			capabilities: isRecord(pong.capabilities) ? pong.capabilities : null,
+		};
 		if (typeof pong.protocol === 'number' && pong.protocol !== this.expectedProtocol) {
 			const mismatch: ProtocolMismatch = {
 				server: pong.protocol,
@@ -582,6 +663,11 @@ export class HerdrClient {
 					this.emitMeta('connected');
 					continue;
 				}
+				const streamError = parseStreamError(line);
+				if (streamError) {
+					this.endStream(socket, streamError);
+					return;
+				}
 				const event = parseEventLine(line);
 				if (!event) continue;
 				this.dispatch(event);
@@ -603,14 +689,37 @@ export class HerdrClient {
 		});
 	}
 
-	private scheduleReconnect(): void {
+	/**
+	 * The server ended an acknowledged subscription with an error line. herdr
+	 * closes the connection after it, but the client does not wait for that.
+	 * `events_lost` resubscribes at once, without backoff and without an error
+	 * on the disconnect: nothing is wrong with the connection, the picture is
+	 * just stale until the `connected` edge re-snapshots it. Any other code
+	 * reconnects with the usual backoff and is reported.
+	 */
+	private endStream(socket: Socket, error: HerdrError): void {
+		if (this.stream !== socket) return;
+		this.stream = null;
+		socket.removeAllListeners();
+		socket.on('error', () => undefined);
+		socket.destroy();
+		const lost = error.code === EVENTS_LOST_CODE;
+		if (lost) this.emitMeta('eventsLost', error);
+		else this.emitError(error);
+		this.emitMeta('disconnected', lost ? null : error);
+		this.scheduleReconnect(lost ? 0 : undefined);
+	}
+
+	private scheduleReconnect(delayOverride?: number): void {
 		if (this.disposed || this.reconnectTimer || this.subscriptions.length === 0) {
 			if (!this.disposed && this.subscriptions.length === 0) this.streamState = 'idle';
 			return;
 		}
 		this.streamState = 'reconnecting';
-		const delay = this.currentBackoff;
-		this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
+		const delay = delayOverride ?? this.currentBackoff;
+		if (delayOverride === undefined) {
+			this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
+		}
 		this.reconnectTimer = setTimer(() => {
 			this.reconnectTimer = null;
 			this.openStream();
@@ -653,6 +762,7 @@ export class HerdrClient {
 
 	private emitMeta(type: 'connected'): void;
 	private emitMeta(type: 'disconnected', error: Error | null): void;
+	private emitMeta(type: 'eventsLost', error: HerdrError): void;
 	private emitMeta(type: string, ...args: unknown[]): void {
 		const set = this.handlers.get(type);
 		if (!set) return;

@@ -13,7 +13,9 @@ the picture current from events. Reads: `ping`, `workspace.list`, `pane.list`,
 your action: `pane.focus`, `tab.create`, `pane.split`, `agent.start`,
 `agent.prompt`, `agent.send_keys`. The last takes `{target, keys}` and nothing
 else, checked against the schema the installed 0.8.2 prints (`herdr api schema
---json`, protocol 20), where both fields are required.
+--json`, protocol 20), where both fields are required. The generated types
+(`src/herdr/types.gen.ts`) are read from herdr 0.9.5's schema; none of these
+methods changed between 0.8.2 and 0.9.5.
 
 Everything is filtered to one workspace on the plugin side. The list reacts to
 agent status transitions, never to the raw `pane.updated` stream, which is about
@@ -113,6 +115,53 @@ A pane id carries its workspace, so moving a pane across workspaces renames it:
 leaving under its old id and another arriving under the new one, which is why
 `ingest` forgets `previous_pane_id` before it upserts. A view pointed at the old
 id is pointed at a pane that no longer exists; there is no rename to follow.
+
+### Versions and protocol
+
+Measured on 2026-11-05: `herdr api schema --json` on 0.9.0, 0.9.1, 0.9.3 and
+0.9.5 (and the 2026-10-14 preview, which reports `0.9.4-preview`) all print
+**protocol 22**, schema version 1, yet the schemas differ: 0.9.2 removed
+`pane.graphics.info|set|clear` and added `pane.clear`, `pane.link.resolve`,
+`server.ssh_agent.register` and a few optional fields (`PaneInfo.restore_error`,
+`AgentInfo.completion_seq`, `resume_argv`, `ServerCapabilities.ssh_agent_registration`).
+0.9.4 was not run. 0.8.x is protocol 20. So the protocol number cannot tell
+the 0.9 releases apart, and the client keeps the `version` string of the last
+`ping` next to the protocol it compares (`HerdrClient.serverInfo`). A feature
+that needs a newer build gates on `HerdrClient.supportsVersion("0.9.2")`
+(`src/herdr/version.ts`); only the numeric core is compared, so a preview
+counts as the release it names, and an unknown version gates off. A protocol
+mismatch still only warns.
+
+The 0.9.5 pong, verbatim from the running server:
+`{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"live_handoff":true,"detached_server_daemon":true,"endpoint_protocol_generation":1,"surface_interest":true,"health_check":true,"ssh_agent_registration":true}}`.
+
+An unknown method comes back two ways on 0.9.5, and both count as unsupported
+(`HerdrError.isUnsupportedMethod`): a name herdr never had fails
+deserialisation as `invalid_request` with "unknown variant `x`, expected one
+of …", while a removed one answers `{"code":"unknown_method","message":"unknown
+method: pane.graphics.info"}`.
+
+### When the stream loses events
+
+herdr 0.9.2 and later keep the last 512 events per server (`EventHub::MAX_EVENTS`
+in `src/api/event_hub.rs`, source at `ee5bfb5`). A subscriber whose position has
+fallen out of that window no longer skips silently: the server writes one error
+response carrying the `events.subscribe` request's id and closes the
+connection (`src/api/server.rs`, the subscription loop):
+
+`{"id":"<subscribe id>","error":{"code":"events_lost","message":"event subscription fell behind retained history; resubscribe and resync with session.snapshot"}}`
+
+The same path carries `server_unavailable` ("event history is unavailable").
+The message string is in the installed 0.9.5 binary and absent from 0.9.1;
+the error itself was not provoked against the live server, because that takes
+a burst of more than 512 events while the reader stalls. The client treats any
+error line on an acknowledged stream as the end of it. For `events_lost` it
+emits `eventsLost`, reports the disconnect without an error and resubscribes
+at once instead of after backoff; the new subscription's `connected` edge is
+where the connection re-primes from `session.snapshot`, as after any reconnect,
+so the scope never carries on with the gap. Other codes are reported as errors
+and reconnect with the usual backoff. Up to 0.9.1 a lagging reader just missed
+events, which the two-second `pane.list` poll above papers over.
 
 ## Pane terminals: the session bridge
 
