@@ -24,6 +24,11 @@
  *   `trust` is never reported: hc has no such kind, and only a positively
  *   identified trust prompt may be answered unasked (`../native/waitingCard.ts`).
  *
+ * - **Seen.** A native view a person is in front of shares `herdr.seen` the
+ *   way a terminal tab does, under herdr-app's rules ({@link SeenTracker}),
+ *   written over this watcher's own connection: a native view has no
+ *   attach connection of its own, and the terminal surface is not mounted.
+ *
  * Everything is read from the scope after it ingested the event
  * (`HcScope.onIngested`), so a handler that re-reads {@link
  * SessionWatcher.snapshot} sees the record the event left.
@@ -40,6 +45,7 @@ import type {
 } from '../native/sessionWatcher';
 import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
+import { SeenTracker } from './seen';
 
 /** The palette command that installs the hook (`main.ts`). */
 export const SESSION_HOOK_COMMAND_NAME = 'Install or remove the Claude session hook';
@@ -146,8 +152,60 @@ function onKeyChange(
 	});
 }
 
+export interface HcSessionWatcherOptions {
+	/**
+	 * Writes `herdr.seen=<turn>` on a terminal, over the connection the scope
+	 * belongs to. Absent, {@link SessionWatcher.looking} does nothing.
+	 */
+	writeSeen?: (address: string, turn: number) => Promise<unknown>;
+}
+
+/**
+ * Who is looking at which terminal through a native view, and one
+ * {@link SeenTracker} per terminal anyone is: looking is per pane, so two
+ * views of one pane count once, and the pane stops being looked at when the
+ * last of them looks away.
+ */
+function seenSharing(
+	scope: HcWatchScope,
+	write: (address: string, turn: number) => Promise<unknown>,
+): (paneId: string, viewer: object, looking: boolean) => void {
+	const lookers = new Map<string, { viewers: Set<object>; tracker: SeenTracker }>();
+	let off: Unsubscribe | null = null;
+	const feed = (address: string): void => {
+		lookers.get(address)?.tracker.update(scope.terminal(address) ?? null);
+	};
+	return (paneId, viewer, looking) => {
+		let entry = lookers.get(paneId);
+		if (looking) {
+			if (!entry) {
+				const tracker = new SeenTracker((turn) => write(paneId, turn));
+				entry = { viewers: new Set(), tracker };
+				lookers.set(paneId, entry);
+				tracker.update(scope.terminal(paneId) ?? null);
+			}
+			entry.viewers.add(viewer);
+			off ??= scope.onIngested((address) => {
+				if (address !== null) feed(address);
+				else for (const each of [...lookers.keys()]) feed(each);
+			});
+			entry.tracker.setLooking(true);
+			return;
+		}
+		if (!entry || !entry.viewers.delete(viewer) || entry.viewers.size > 0) return;
+		entry.tracker.setLooking(false);
+		lookers.delete(paneId);
+		if (lookers.size === 0) {
+			off?.();
+			off = null;
+		}
+	};
+}
+
 /** A watcher over one herdr-core connection's scope. */
-export function hcSessionWatcher(scope: HcWatchScope): SessionWatcher {
+export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherOptions = {}): SessionWatcher {
+	const write = options.writeSeen;
+	const looking = write ? seenSharing(scope, write) : null;
 	return {
 		snapshot(paneId: string): PaneSnapshot | null {
 			const row = scope.get(paneId);
@@ -192,5 +250,6 @@ export function hcSessionWatcher(scope: HcWatchScope): SessionWatcher {
 		onAvailability(handler): Unsubscribe {
 			return onKeyChange(scope, availabilityKey, handler);
 		},
+		...(looking ? { looking } : {}),
 	};
 }

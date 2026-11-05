@@ -218,6 +218,55 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		expect(moved.slice(1).sort()).toEqual(['t1', 't2']);
 	});
 
+	it('marks a terminal read in a native view seen, under herdr-app’s rules', async () => {
+		const { scope, send } = scopeWith(
+			terminal('t1', { turn: 2, labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '1' }, status: { state: 'done', app: 'claude-code' } }),
+		);
+		const writes: [string, number][] = [];
+		const watcher = hcSessionWatcher(scope, {
+			writeSeen: (address, turn) => {
+				writes.push([address, turn]);
+				return Promise.resolve();
+			},
+		});
+		const view = {};
+		// Nobody in front of it: nothing written.
+		send('turn', 't1', { turn: 2 });
+		expect(writes).toEqual([]);
+		watcher.looking?.('t1', view, true);
+		await settle();
+		expect(writes).toEqual([['t1', 2]]);
+		// Told again on every focus or resize: once per turn, not once per call.
+		watcher.looking?.('t1', view, true);
+		// Another client marks it unread while it stays on screen: not overruled.
+		send('labels', 't1', { labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '1' } });
+		// The turn ends: status first, then turn. Decided on the turn.
+		send('status', 't1', { status: { state: 'working', app: 'claude-code' }, reported: true });
+		send('status', 't1', { status: { state: 'done', app: 'claude-code' }, reported: true });
+		expect(writes).toHaveLength(1);
+		send('turn', 't1', { turn: 3 });
+		expect(writes).toEqual([['t1', 2], ['t1', 3]]);
+		// Only to raise it: a label already at the turn is left alone.
+		send('labels', 't1', { labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '4' } });
+		send('turn', 't1', { turn: 4 });
+		expect(writes).toHaveLength(2);
+		// A second view of the pane looking away does not end the first one's look.
+		const other = {};
+		watcher.looking?.('t1', other, true);
+		watcher.looking?.('t1', other, false);
+		send('turn', 't1', { turn: 5 });
+		expect(writes.at(-1)).toEqual(['t1', 5]);
+		// The last one looking away does.
+		watcher.looking?.('t1', view, false);
+		send('turn', 't1', { turn: 6 });
+		expect(writes).toHaveLength(3);
+	});
+
+	it('shares no seen without a writer', () => {
+		const { scope } = scopeWith(terminal('t1'));
+		expect('looking' in hcSessionWatcher(scope)).toBe(false);
+	});
+
 	it('has no snapshot for a terminal outside the vault’s scope', () => {
 		const { scope } = scopeWith(terminal('t1', { cwd: '/srv', foreground: { name: 'claude', argv: [], cwd: '/srv', pid: 4242 }, labels: label('s-1', 4242, PATH_1) }));
 		expect(hcSessionWatcher(scope).snapshot('t1')).toBeNull();
@@ -523,6 +572,22 @@ describe('herdr-core’s native adapter and gate', () => {
 		expect(native.watcher(connection)).toBe(native.watcher(connection));
 		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).available).toBe(true);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
+		coordinator.dispose();
+	});
+
+	it('writes a native view’s herdr.seen over the runtime’s own connection', async () => {
+		const { kind, connection, core, coordinator } = await connected(
+			ASHER,
+			[terminal('t1', { turn: 3, labels: label('s-1', 4242, PATH_1), status: { state: 'done', app: 'claude-code' } })],
+			new Map(),
+		);
+		core.handlers.set('terminal.label', () => ({}));
+		const watcher = kind.native?.watcher(connection);
+		watcher?.looking?.('t1', {}, true);
+		await settle();
+		expect(core.calls.filter((call) => call.method === 'terminal.label').map((call) => call.params)).toEqual([
+			{ terminal: 't1', labels: { 'herdr.seen': '3' } },
+		]);
 		coordinator.dispose();
 	});
 

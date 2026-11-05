@@ -1,11 +1,12 @@
 /**
  * Sharing "a person looked at this agent" as the `herdr.seen=<turn>` label
- * (herdr-app `docs/labels.md`), from one terminal tab.
+ * (herdr-app `docs/labels.md`), from one terminal tab (`./terminalSession.ts`)
+ * or from the native views of one terminal (`./sessionWatcher.ts`).
  *
  * The rules, as herdr-app's `share_seen` applies them:
  *
  * - Only while someone is really in front of it: the tab's window is in the
- *   foreground and the terminal is drawn on screen. The view decides that and
+ *   foreground and the terminal (or its native view) is drawn on screen. The view decides that and
  *   says so through {@link SeenTracker.setLooking}.
  * - Once per turn while it stays on screen: the turn a write was decided at is
  *   remembered, so a "mark unread" from another client is not overruled by a

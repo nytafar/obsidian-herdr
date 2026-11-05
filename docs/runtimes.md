@@ -171,9 +171,9 @@ the same way as for herdr.
   follows the program across a restart of a kept terminal and a lost
   connection on its own, keeps trying while the connection or the terminal
   is away, shows the program's last output, and says so when it exits.
-- Looking at an agent's terminal tab (window in front, tab on screen) marks it
-  seen in herdr-app's shared `herdr.seen` label, so its "done" clears here, in
-  herdr-app and on the phone.
+- Looking at an agent's tab (window in front, tab on screen), in the terminal
+  or the native view, marks it seen in herdr-app's shared `herdr.seen` label,
+  so its "done" clears here, in herdr-app and on the phone.
 
 herdr-core has no tabs, splits, rename or pane focus, so those are left out
 rather than offered and refused.
