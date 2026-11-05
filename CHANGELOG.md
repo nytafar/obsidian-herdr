@@ -3,6 +3,43 @@
 All notable changes to Herdr for Obsidian. Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## Unreleased
+
+Runtimes. The plugin now works with herdr-core (`hc`), herdrdev's headless
+runtime, next to the herdr TUI, and the local/remote pair has become a list of
+runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
+
+### Added
+
+- **Runtimes**: each one is a kind (herdr or herdr-core) on a target (this
+  machine or an SSH host), with its own binary, socket, remote vault path and
+  workspace. One runtime is active at a time. With two runtimes the agent
+  list's toolbar button toggles between them; with three or more it opens a
+  menu. A `Switch runtime` command works for any number of runtimes.
+- **herdr-core**: agents and their status from `hc`, locally and over SSH,
+  scoped to the herdr-app space named like the vault, or else to terminals
+  under the vault. Terminal tabs attach through one `hc connect` per tab, in
+  observe or control mode. Pins use herdr-app's shared `herdr.pinned` label,
+  and looking at a terminal tab writes `herdr.seen`, so "done" clears on every
+  herdr client. You can start and terminate agents from the plugin. Tabs,
+  splits, rename and focus don't exist in hc and are hidden. The native view
+  is offered for herdr panes only, because hc reports no agent session.
+- **herdr 0.9.5**: the types are regenerated from it. The client records the
+  server's version so features can be gated on it, and it recovers from the
+  `events_lost` subscription error (0.9.2+) by resubscribing and taking a
+  fresh snapshot.
+
+### Changed
+
+- The remote profile and the global socket, binary and workspace settings
+  have moved into runtimes. They migrate on first load, and pins and saved
+  terminal tabs keep their runtime. **Downgrading below this version loses
+  the remote profile**, because the old keys are no longer written.
+- A runtime keeps its id when you edit its host, so pins and saved tabs
+  survive the edit.
+- `unknown_method` errors now count as unsupported methods. herdr 0.9.5
+  answers removed methods that way.
+
 ## 0.4.0 — 2026-09-15
 
 The native view. A Claude Code session rendered as Obsidian Markdown, made for
