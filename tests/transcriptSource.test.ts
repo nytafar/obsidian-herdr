@@ -267,6 +267,39 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 		expect(current(seen)).toEqual(['{"uuid":"b"}', '{"uuid":"c"}', '{"uuid":"d"}']);
 	});
 
+	it('starts over on a truncation that keeps the first kilobyte, which only the size tells', async () => {
+		// Same inode, same head: the remembered 1 KB is all inside line 1, so
+		// only the size below the offset says the file is not what was read.
+		const path = join(dir, 'session.jsonl');
+		const first = `{"uuid":"a","pad":"${'x'.repeat(1200)}"}`;
+		writeFileSync(path, `${first}\n{"uuid":"b","pad":"${'y'.repeat(400)}"}\n{"uuid":"c"}\n`);
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 3);
+
+		// Rewritten in place, shorter, line 1 untouched.
+		writeFileSync(path, `${first}\n{"uuid":"z"}\n`);
+
+		await eventually(() => seen.some((batch) => batch.restart) && current(seen).length === 2);
+		expect(current(seen)).toEqual([first, '{"uuid":"z"}']);
+	});
+
+	it('starts over on a same-head replacement renamed over it, which only the inode tells', async () => {
+		// The replacement shares the first 1 KB and is longer than the offset,
+		// so neither the head nor the size gives it away.
+		const path = join(dir, 'session.jsonl');
+		const first = `{"uuid":"a","pad":"${'x'.repeat(1200)}"}`;
+		writeFileSync(path, `${first}\n{"uuid":"old"}\n`);
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 2);
+
+		const next = join(dir, 'next.jsonl');
+		writeFileSync(next, `${first}\n{"uuid":"new-1"}\n{"uuid":"new-2","pad":"${'z'.repeat(200)}"}\n`);
+		renameSync(next, path);
+
+		await eventually(() => seen.some((batch) => batch.restart) && current(seen).length === 3);
+		expect(current(seen)).toEqual([first, '{"uuid":"new-1"}', `{"uuid":"new-2","pad":"${'z'.repeat(200)}"}`]);
+	});
+
 	it('starts over on a file renamed over it, and does not feed the new one into the old', async () => {
 		const path = join(dir, 'session.jsonl');
 		writeFileSync(path, 'old-1\n');

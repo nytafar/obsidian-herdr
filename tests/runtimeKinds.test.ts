@@ -451,3 +451,80 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		expect(attributes.get('aria-label')).toBe('Herdr agents on New name');
 	});
 });
+
+/**
+ * The plugin's three native-view entry points (ADR-0006), over fake kinds:
+ * each must answer for the runtime it is asked about and never hand out the
+ * published runtime's watcher, connection or client on another's behalf.
+ */
+describe('the plugin’s native view inputs, per runtime', () => {
+	const CORE_A: RuntimeConfig = { ...newRuntime('herdr-core', 'local', [], () => 0.1), id: 'rt-core-a', name: 'Core A' };
+	const CORE_B: RuntimeConfig = { ...newRuntime('herdr-core', 'local', [], () => 0.2), id: 'rt-core-b', name: 'Core B' };
+
+	function harness(published: RuntimeConfig) {
+		const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
+		// The private fields the methods read, set the way the other cases do.
+		const raw = plugin as unknown as Record<string, unknown>;
+		plugin.settings = {
+			...structuredClone(DEFAULT_SETTINGS),
+			runtimes: [defaultLocalRuntime(), XL, CORE_A, CORE_B],
+			activeRuntime: published.id,
+		};
+		const client = { name: `client of ${published.id}` };
+		const current = { endpoint: endpointOf(published), client, scope: {}, tunnel: null };
+		raw.connection = { current, discovery: null };
+		// The endpoint-match rule (`EndpointSessions.for`), without its caches.
+		raw.endpointSession = (id: string) =>
+			current.endpoint.id === id ? { endpoint: current.endpoint, client } : null;
+		const transcriptCalls: [string, string | null][] = [];
+		const source = new LocalTranscriptSource();
+		// herdr reads only local transcripts; herdr-core reads them everywhere.
+		const native = (access: (target: string) => TranscriptAccess | null) => ({
+			transcriptAccess: (endpoint: { runtime: RuntimeConfig }) => access(endpoint.runtime.target),
+			watcher: (connection: { endpoint: { id: string } }) => ({ watching: connection.endpoint.id }),
+			transcripts: (endpoint: { id: string }, connection: { endpoint: { id: string } } | null) => {
+				transcriptCalls.push([endpoint.id, connection?.endpoint.id ?? null]);
+				return source;
+			},
+		});
+		raw.kinds = {
+			herdr: {
+				capabilities: HERDR_CAPABILITIES,
+				native: native((target) => (target === 'ssh' ? null : 'local')),
+			},
+			'herdr-core': { capabilities: HERDR_CORE_CAPABILITIES, native: native(() => 'local') },
+		};
+		return { plugin, client, transcriptCalls, source };
+	}
+
+	it('gives a watcher only for the published runtime', () => {
+		const { plugin } = harness(CORE_A);
+		expect(plugin.nativeWatcher(CORE_A.id)).toEqual({ watching: CORE_A.id });
+		// The same pane id on two runtimes is two panes: never A's on B's behalf.
+		expect(plugin.nativeWatcher(CORE_B.id)).toBeNull();
+		expect(plugin.nativeWatcher('rt-gone')).toBeNull();
+	});
+
+	it('passes a runtime’s transcript source its own connection, and null for another’s', () => {
+		const { plugin, transcriptCalls, source } = harness(CORE_A);
+		expect(plugin.nativeTranscripts(CORE_A.id)).toBe(source);
+		expect(plugin.nativeTranscripts(CORE_B.id)).toBe(source);
+		expect(transcriptCalls).toEqual([
+			[CORE_A.id, CORE_A.id],
+			// B's source must not read through A's connection.
+			[CORE_B.id, null],
+		]);
+		expect(plugin.nativeTranscripts('rt-gone')).toBeNull();
+	});
+
+	it('hands out the client only where the kind can back a native view on that endpoint', () => {
+		// herdr over SSH: no transcripts from here, so no native view to send for.
+		expect(harness(XL).plugin.nativeClient(XL.id)).toBeNull();
+		const local = harness(defaultLocalRuntime());
+		expect(local.plugin.nativeClient('local')).toBe(local.client);
+		const core = harness(CORE_A);
+		expect(core.plugin.nativeClient(CORE_A.id)).toBe(core.client);
+		// And never the published runtime's client for another runtime.
+		expect(core.plugin.nativeClient(CORE_B.id)).toBeNull();
+	});
+});
