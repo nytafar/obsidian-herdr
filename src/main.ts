@@ -443,6 +443,12 @@ export default class HerdrPlugin extends Plugin {
 		this.statusBarEl = null;
 	}
 
+	/**
+	 * Stored runtimes this build cannot read (a newer build's kind or target):
+	 * never shown or connected, written back by every save (ADR-0004).
+	 */
+	private foreignRuntimes: unknown[] = [];
+
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<HerdrSettings> | null;
 		// The v1 render mode setting split into a view and an engine (#104); a
@@ -451,6 +457,7 @@ export default class HerdrPlugin extends Plugin {
 		// "Local, or the one remote" became a runtime registry (ADR-0004); a file
 		// in the old shape is migrated, ids and all, and written back once.
 		const runtimes = migrateRuntimes(stored);
+		this.foreignRuntimes = runtimes.foreign;
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			// Minus the keys this build has no setting for, so nothing a past
@@ -480,7 +487,14 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		// Runtimes of a kind or target this build does not know go back where
+		// they were read from, after the known ones, so nothing is erased.
+		const foreign = this.foreignRuntimes;
+		await this.saveData(
+			foreign.length > 0
+				? { ...this.settings, runtimes: [...this.settings.runtimes, ...foreign] }
+				: this.settings,
+		);
 	}
 
 	/** Absolute path of the vault, or empty for a non-filesystem adapter. */

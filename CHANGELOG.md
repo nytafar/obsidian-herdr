@@ -34,7 +34,10 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
 - The remote profile and the global socket, binary and workspace settings
   have moved into runtimes. They migrate on first load, and pins and saved
   terminal tabs keep their runtime. **Downgrading below this version loses
-  the remote profile**, because the old keys are no longer written.
+  the remote profile**, because the old keys are no longer written. A remote
+  set up again in the older build comes back as an extra, inactive runtime
+  on the next upgrade, and a runtime of a kind this build does not know (a
+  newer build's) is kept in `data.json` rather than erased.
 - A runtime keeps its id when you edit its host, so pins and saved tabs
   survive the edit.
 - `unknown_method` errors now count as unsupported methods. herdr 0.9.5

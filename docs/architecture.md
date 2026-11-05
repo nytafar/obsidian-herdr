@@ -214,7 +214,12 @@ Since ADR-0004 the plugin connects to one **runtime** of a registry at a time
 connection's endpoint carries the runtime snapshot under it, terminal tabs
 persist it as `endpointId`, and `pinnedPanes` is keyed by it. The local herdr
 is `local` and a migrated remote keeps `ssh:<host>:<socket>`; a runtime added
-later gets a generated `rt-…` id that never follows an edit.
+later gets a generated `rt-…` id that never follows an edit. Loading never
+erases a stored runtime (`migrateRuntimes`): an entry with an id and a kind or
+target this build does not know is kept aside, never shown or connected, and
+written back after the known ones by every save; a legacy `remote` block
+beside the registry (an older build writes it again after a downgrade) is
+imported as an extra, inactive runtime unless its `ssh:` id is already listed.
 
 Everything that differs by kind sits behind `RuntimeKindAdapter`
 (`src/runtime/kind.ts`): the connection driver the coordinator runs (discovery,

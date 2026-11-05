@@ -196,9 +196,29 @@ describe('migrateRuntimes: a stored registry', () => {
 		expect(migration.activeRuntime).toBe('rt-abc');
 	});
 
-	it('ignores legacy keys beside a registry', () => {
+	it('imports a legacy remote beside a registry as an extra, inactive runtime', () => {
+		// A downgraded build wrote `remote` again; nothing configured there is lost.
 		const migration = migrateRuntimes({ ...REMOTE_ON, runtimes: [extra], activeRuntime: 'rt-abc' });
-		expect(migration.runtimes.map((runtime) => runtime.id)).toEqual(['rt-abc']);
+		expect(migration.runtimes.map((runtime) => runtime.id)).toEqual(['rt-abc', XL_ID]);
+		expect(migration.runtimes[1]).toMatchObject({ kind: 'herdr', target: 'ssh', host: 'lasse@xl' });
+		expect(migration.activeRuntime).toBe('rt-abc');
+		// Written back once, so the legacy keys go.
+		expect(migration.migrated).toBe(true);
+	});
+
+	it('keeps the registry’s own entry when the legacy remote is already in it', () => {
+		const listed = { ...extra, id: XL_ID, kind: 'herdr' as const, target: 'ssh' as const, host: 'lasse@xl', binary: '/mine' };
+		const migration = migrateRuntimes({ ...REMOTE_ON, runtimes: [listed], activeRuntime: XL_ID });
+		expect(migration.runtimes).toEqual([listed]);
+	});
+
+	it('keeps entries of an unknown kind or target aside, for the next save', () => {
+		const future = { id: 'rt-future', kind: 'tmux', target: 'local', name: 'Later' };
+		const moon = { id: 'rt-moon', kind: 'herdr', target: 'moon' };
+		const migration = migrateRuntimes({ runtimes: [future, extra, moon], activeRuntime: 'rt-abc' });
+		expect(migration.runtimes).toEqual([extra]);
+		expect(migration.foreign).toEqual([future, moon]);
+		expect(migration.migrated).toBe(false);
 	});
 
 	it('drops unusable entries and duplicate ids, keeping the first', () => {
@@ -214,6 +234,11 @@ describe('migrateRuntimes: a stored registry', () => {
 			activeRuntime: 'rt-abc',
 		});
 		expect(migration.runtimes).toEqual([extra]);
+		// The unknown kind and target are kept aside, not dropped.
+		expect(migration.foreign).toEqual([
+			{ id: 'x', kind: 'tmux', target: 'local' },
+			{ id: 'y', kind: 'herdr', target: 'moon' },
+		]);
 	});
 
 	it('falls back to the first runtime when the active id names none', () => {

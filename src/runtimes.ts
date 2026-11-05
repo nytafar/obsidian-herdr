@@ -179,6 +179,8 @@ function stringOr(value: unknown, fallback: string): string {
  * names a kind or target this build does not know: such an entry cannot be
  * connected or drawn, and guessing what it meant would point saved tabs at the
  * wrong server. Missing string fields fall back to the kind's defaults.
+ * {@link migrateRuntimes} keeps the unknown-kind ones aside rather than lose
+ * them.
  */
 export function normalizeRuntime(value: unknown): RuntimeConfig | null {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
@@ -209,6 +211,12 @@ export interface RuntimeMigration extends RuntimeSettings {
 	 * with neither shape (a fresh install) is not written for this.
 	 */
 	migrated: boolean;
+	/**
+	 * Stored entries this build cannot read but must not erase: an id, and a
+	 * kind or target it does not know (a newer build's). Never shown or
+	 * connected; `saveSettings` writes them back after the known ones.
+	 */
+	foreign: unknown[];
 }
 
 /** The keys the pre-registry settings stored the local herdr and the remote in. */
@@ -224,13 +232,63 @@ interface LegacyRemote {
 }
 
 /**
+ * The stored entry's id when it has one but names a kind or target this
+ * build does not know, else null.
+ */
+function foreignId(value: unknown): string | null {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	const id = typeof record.id === 'string' ? record.id.trim() : '';
+	if (id.length === 0) return null;
+	return isKind(record.kind) && isTarget(record.target) ? null : id;
+}
+
+/**
+ * The pre-registry remote profile as a runtime, or null when it has no host.
+ * The old load merged the stored block over these defaults before deriving
+ * the id, so a file that never stored a socket still derived it from this.
+ */
+function legacyRemoteRuntime(
+	record: Record<string, unknown>,
+	workspace: string,
+): { runtime: RuntimeConfig; enabled: boolean } | null {
+	const remote = (
+		typeof record.remote === 'object' && record.remote !== null ? record.remote : {}
+	) as LegacyRemote;
+	const host = stringOr(remote.host, '').trim();
+	if (host.length === 0) return null;
+	const socketPath = stringOr(remote.remoteSocketPath, DEFAULT_HERDR_SOCKET);
+	return {
+		runtime: {
+			id: legacySshRuntimeId(host, socketPath),
+			name: host,
+			kind: 'herdr',
+			target: 'ssh',
+			host,
+			binary: stringOr(remote.remoteBinary, DEFAULT_REMOTE_HERDR_BINARY),
+			socketPath,
+			remoteVaultPath: stringOr(remote.remoteVaultPath, ''),
+			workspace,
+		},
+		enabled: remote.enabled === true,
+	};
+}
+
+/**
  * The registry from a stored `data.json` (ADR-0004).
  *
  * A file with a `runtimes` list is read as it is: entries that cannot be used
  * are dropped, duplicate ids keep their first entry, and an `activeRuntime`
  * that names none of them falls back to the first. A list that ends up empty
  * becomes the default local herdr, since the plugin always needs one to
- * connect to.
+ * connect to. Two things beside it are not lost:
+ *
+ * - an entry with an id and a kind or target this build does not know, a
+ *   newer build's, is kept aside in `foreign` and written back by the next
+ *   save, so a downgrade does not erase it;
+ * - a legacy `remote` profile, which an older build writes again after a
+ *   downgrade, is imported as an extra, inactive runtime when its id is not
+ *   in the list yet, and the file is written back once without it.
  *
  * A file without one is the pre-registry shape, and is migrated:
  *
@@ -251,22 +309,35 @@ export function migrateRuntimes(stored: unknown): RuntimeMigration {
 		string,
 		unknown
 	>;
+	const legacy = LEGACY_KEYS.some((key) => key in record);
 	if (Array.isArray(record.runtimes)) {
 		const runtimes: RuntimeConfig[] = [];
+		const foreign: unknown[] = [];
 		const seen = new Set<string>();
 		for (const entry of record.runtimes) {
+			const unknownId = foreignId(entry);
+			if (unknownId !== null) {
+				if (seen.has(unknownId)) continue;
+				seen.add(unknownId);
+				foreign.push(entry);
+				continue;
+			}
 			const runtime = normalizeRuntime(entry);
 			if (!runtime || seen.has(runtime.id)) continue;
 			seen.add(runtime.id);
 			runtimes.push(runtime);
 		}
-		if (runtimes.length === 0) return { ...defaultRuntimeSettings(), migrated: false };
+		const remote = legacyRemoteRuntime(record, stringOr(record.workspaceId, ''));
+		if (remote && !seen.has(remote.runtime.id)) runtimes.push(remote.runtime);
+		const active = new Set(runtimes.map((runtime) => runtime.id));
+		if (runtimes.length === 0) return { ...defaultRuntimeSettings(), migrated: legacy, foreign };
 		const wanted = typeof record.activeRuntime === 'string' ? record.activeRuntime : '';
 		const [first] = runtimes as [RuntimeConfig, ...RuntimeConfig[]];
 		return {
 			runtimes,
-			activeRuntime: seen.has(wanted) ? wanted : first.id,
-			migrated: false,
+			activeRuntime: active.has(wanted) ? wanted : first.id,
+			migrated: legacy,
+			foreign,
 		};
 	}
 
@@ -280,30 +351,12 @@ export function migrateRuntimes(stored: unknown): RuntimeMigration {
 	const runtimes: RuntimeConfig[] = [local];
 	let activeRuntime = LOCAL_RUNTIME_ID;
 
-	const remote = (
-		typeof record.remote === 'object' && record.remote !== null ? record.remote : {}
-	) as LegacyRemote;
-	// The old load merged the stored block over these defaults before deriving
-	// the id, so a file that never stored a socket still derived it from this.
-	const host = stringOr(remote.host, '').trim();
-	if (host.length > 0) {
-		const socketPath = stringOr(remote.remoteSocketPath, DEFAULT_HERDR_SOCKET);
-		const id = legacySshRuntimeId(host, socketPath);
-		runtimes.push({
-			id,
-			name: host,
-			kind: 'herdr',
-			target: 'ssh',
-			host,
-			binary: stringOr(remote.remoteBinary, DEFAULT_REMOTE_HERDR_BINARY),
-			socketPath,
-			remoteVaultPath: stringOr(remote.remoteVaultPath, ''),
-			workspace,
-		});
-		if (remote.enabled === true) activeRuntime = id;
+	const remote = legacyRemoteRuntime(record, workspace);
+	if (remote) {
+		runtimes.push(remote.runtime);
+		if (remote.enabled) activeRuntime = remote.runtime.id;
 	}
-	const legacy = LEGACY_KEYS.some((key) => key in record);
-	return { runtimes, activeRuntime, migrated: legacy };
+	return { runtimes, activeRuntime, migrated: legacy, foreign: [] };
 }
 
 /** The runtime with this id, or undefined when the registry has none. */

@@ -310,6 +310,38 @@ describe('loadSettings: a pre-registry data.json (ADR-0004)', () => {
 		expect(second.settings.activeRuntime).toBe(first.settings.activeRuntime);
 	});
 
+	it('re-imports a remote a downgraded build wrote beside the registry', async () => {
+		const upgraded = (await load({ ...stored, remote: { ...remote, enabled: false } })).saved[0] as Record<string, unknown>;
+		// The old build drops nothing it does not know and writes `remote` again,
+		// now naming another host.
+		const other = { ...remote, host: 'lasse@other', enabled: true };
+		const { settings, saved } = await load({ ...upgraded, remote: other });
+		const otherId = 'ssh:lasse@other:~/.config/herdr/herdr.sock';
+		expect(settings.runtimes.map((runtime) => runtime.id)).toContain(otherId);
+		expect(settings.activeRuntime).toBe(upgraded.activeRuntime);
+		const written = saved[0] as { runtimes: RuntimeConfig[] } & Record<string, unknown>;
+		expect('remote' in written).toBe(false);
+		expect(written.runtimes.map((runtime) => runtime.id)).toContain(otherId);
+	});
+
+	it('keeps a newer build’s runtime through load and save, without showing it', async () => {
+		const future = { id: 'rt-future', kind: 'tmux', target: 'local', name: 'Later', extra: 1 };
+		const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
+		const saved: unknown[] = [];
+		const file = { runtimes: [defaultLocalRuntime(), future], activeRuntime: 'local' };
+		plugin.loadData = () => Promise.resolve(structuredClone(file));
+		plugin.saveData = (data: unknown) => {
+			saved.push(structuredClone(data));
+			return Promise.resolve();
+		};
+		await plugin.loadSettings();
+		expect(plugin.settings.runtimes.map((runtime) => runtime.id)).toEqual(['local']);
+		await plugin.saveSettings();
+		expect((saved[0] as { runtimes: unknown[] }).runtimes).toEqual([defaultLocalRuntime(), future]);
+		// The live settings never gain it.
+		expect(plugin.settings.runtimes.map((runtime) => runtime.id)).toEqual(['local']);
+	});
+
 	it('starts a fresh install on the local herdr without sharing the defaults', async () => {
 		const { settings, saved } = await load(null);
 		expect(saved).toHaveLength(0);
