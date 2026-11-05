@@ -471,7 +471,10 @@ export class AgentListView extends ItemView {
 		// The button records its own action in the dataset,
 		// so a click is dispatched by what was drawn — and promised in the tooltip
 		// — rather than by a setting that may have changed since the last repaint.
-		const actions = rowActions(this.plugin.settings.agentListRowClick);
+		const canFocus = this.plugin.capabilities().focus;
+		const actions = rowActions(this.plugin.settings.agentListRowClick, canFocus);
+		// Without focus there is no other half of the pair to put on a button.
+		if (!canFocus) return;
 		const button = row.createEl('button', {
 			cls: 'clickable-icon herdr-row-action',
 			attr: { type: 'button' },
@@ -501,6 +504,7 @@ export class AgentListView extends ItemView {
 			target: () => ({ endpointId: plugin.endpoint.id, connection: this.session() }),
 			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
 			rowClick: () => plugin.settings.agentListRowClick,
+			capabilities: () => plugin.capabilities(),
 			pinned: (ref) => isPanePinned(plugin.settings, ref.endpointId, ref.paneId),
 			setPinned: async (ref, pinned) => {
 				if (isPanePinned(plugin.settings, ref.endpointId, ref.paneId) !== pinned) {

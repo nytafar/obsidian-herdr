@@ -29,6 +29,7 @@ import {
 } from '../src/explorerButtons';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import type { PaneState } from '../src/herdr/scope';
+import { HERDR_CAPABILITIES } from '../src/runtime/kind';
 
 // The `obsidian` stub's `Menu` is a bare class, and the wiring suite needs to
 // know that a menu was opened and what it offered. One title list per menu
@@ -141,6 +142,11 @@ describe('menuItemsFor', () => {
 			'Copy path from vault root',
 		]);
 		expect(items[0]?.action).toEqual({ kind: 'attach', paneId: 'p7' });
+	});
+
+	it('leaves start out for a runtime that cannot start an agent (ADR-0004)', () => {
+		const items = menuItemsFor(`${VAULT}/notes`, [pane('p7', `${VAULT}/notes`)], false);
+		expect(items.map((item) => item.action.kind)).toEqual(['attach', 'copy']);
 	});
 
 	it('gives every entry an icon', () => {
@@ -352,6 +358,7 @@ function fakePlugin(): ExplorerPlugin {
 		},
 		herdrVaultPath: (): string => VAULT,
 		scope: { list: (): PaneState[] => [] },
+		capabilities: () => HERDR_CAPABILITIES,
 	} as unknown as ExplorerPlugin;
 }
 

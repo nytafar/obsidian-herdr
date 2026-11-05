@@ -439,9 +439,13 @@ const ACTION_LABEL: Record<RowClickAction, string> = {
  *
  * An unrecognised value falls back to that default rather than throwing — this
  * reads a stored setting, and a hand-edited `data.json` should not break a row.
+ *
+ * A runtime whose kind cannot focus a pane (herdr-core, ADR-0005) puts the
+ * terminal on the body whatever the setting says; the view then draws no
+ * button, since the other half of the pair does not exist.
  */
-export function rowActions(rowClick: RowClickAction): RowActions {
-	const body: RowClickAction = rowClick === 'focus' ? 'focus' : 'terminal';
+export function rowActions(rowClick: RowClickAction, canFocus = true): RowActions {
+	const body: RowClickAction = canFocus && rowClick === 'focus' ? 'focus' : 'terminal';
 	const button: RowClickAction = body === 'terminal' ? 'focus' : 'terminal';
 	return {
 		body,

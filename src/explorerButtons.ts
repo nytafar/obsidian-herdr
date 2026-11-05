@@ -122,6 +122,8 @@ export function attachablePane(
 export function menuItemsFor(
 	folderAbsPath: string,
 	panes: readonly PaneState[],
+	/** Whether the runtime's kind can start an agent (ADR-0004); left out when not. */
+	canStartAgent = true,
 ): FolderMenuItem[] {
 	const items: FolderMenuItem[] = [];
 	const pane = attachablePane(folderAbsPath, panes);
@@ -132,7 +134,7 @@ export function menuItemsFor(
 			action: { kind: 'attach', paneId: pane.paneId },
 		});
 	}
-	items.push({ title: 'Start agent here', icon: 'bot', action: { kind: 'start' } });
+	if (canStartAgent) items.push({ title: 'Start agent here', icon: 'bot', action: { kind: 'start' } });
 	items.push({ title: 'Copy path from vault root', icon: 'copy', action: { kind: 'copy' } });
 	return items;
 }
@@ -392,7 +394,8 @@ export class ExplorerFolderButtons {
 		const absolute = folderAbsPath(dataPath, this.plugin.herdrVaultPath());
 		const panes = this.plugin.scope?.list() ?? [];
 		const menu = new Menu();
-		for (const item of menuItemsFor(absolute, panes)) {
+		const canStart = this.plugin.capabilities().startAgent;
+		for (const item of menuItemsFor(absolute, panes, canStart)) {
 			menu.addItem((entry) =>
 				entry
 					.setTitle(item.title)
