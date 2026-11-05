@@ -368,4 +368,29 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		const status = (plugin.connectionStatus as () => { runtime: RuntimeConfig }).call(plugin);
 		expect(status.runtime.name).toBe('New name');
 	});
+
+	it('shows the live name in the status bar and its label', () => {
+		const plugin = Object.create(HerdrPlugin.prototype) as Record<string, unknown>;
+		const snapshot = { ...defaultLocalRuntime(), name: 'Old name' };
+		plugin.settings = {
+			...structuredClone(DEFAULT_SETTINGS),
+			// Two runtimes, so the bar names the active one.
+			runtimes: [{ ...snapshot, name: 'New name' }, XL],
+			activeRuntime: 'local',
+		};
+		plugin.connection = {
+			current: { endpoint: endpointOf(snapshot), client: null, scope: null, tunnel: null },
+			discovery: null,
+		};
+		const spans: string[] = [];
+		const attributes = new Map<string, string>();
+		plugin.statusBarEl = {
+			empty: () => spans.splice(0),
+			createSpan: (options: { text: string }) => spans.push(options.text),
+			setAttribute: (name: string, value: string) => attributes.set(name, value),
+		};
+		(plugin.updateStatusBar as () => void).call(plugin);
+		expect(spans).toEqual(['New name']);
+		expect(attributes.get('aria-label')).toBe('Herdr agents on New name');
+	});
 });
