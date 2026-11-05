@@ -24,19 +24,22 @@ import {
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
-import type { HerdrClient, ProtocolMismatch } from './herdr/client';
+import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
 	EndpointSessions,
 	endpointOf,
 	isRemoteEndpoint,
 	resolveEndpoint,
+	type ConnectionClient,
+	type ConnectionScope,
 	type Endpoint,
 	type EndpointSession,
 } from './connection';
-import type { WorkspaceScope } from './herdr/scope';
-import { TabLabelCache } from './tabLabels';
-import type { SshTunnel } from './herdr/ssh';
+import { WorkspaceScope } from './herdr/scope';
+import type { TabLabels } from './tabLabels';
+import { SshTunnel } from './herdr/ssh';
+import { isPanePinned, pinnedPaneIds, togglePanePin } from './settings';
 import { resolveFolderPath, type ActionHost } from './actions';
 import {
 	activeRuntimeOf,
@@ -83,8 +86,6 @@ import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
 import { LocalTranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 
-/** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
-const AGENT_NAME_REFRESH_MS = 300;
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
 /**
@@ -106,7 +107,7 @@ export default class HerdrPlugin extends Plugin {
 	 * priming (issue #57). `client`, `scope` and `tunnel` below read from the
 	 * published connection; a retired or superseded attempt never shows here.
 	 */
-	private readonly connection = new ConnectionCoordinator<HerdrClient, WorkspaceScope, SshTunnel>(
+	private readonly connection = new ConnectionCoordinator(
 		{
 			endpoint: () => endpointOf(activeRuntimeOf(this.settings)),
 			driver: (endpoint) => {
@@ -118,7 +119,8 @@ export default class HerdrPlugin extends Plugin {
 				// The kind builds the scope; what hangs off its events is the plugin's.
 				return {
 					...driver,
-					createScope: (attempt) => this.wireScope(driver.createScope(attempt), attempt),
+					createScope: (attempt, client) =>
+						this.wireScope(driver.createScope(attempt, client), attempt),
 				};
 			},
 			notice: (message) => {
@@ -141,10 +143,7 @@ export default class HerdrPlugin extends Plugin {
 	 * is asked of the adapter of the runtime in question, never decided here.
 	 * herdr-core is listed but unavailable until its client lands (ADR-0005).
 	 */
-	private readonly kinds: Record<
-		RuntimeKind,
-		RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel>
-	> = {
+	private readonly kinds: Record<RuntimeKind, RuntimeKindAdapter> = {
 		herdr: createHerdrKind({
 			extraPath: () => this.settings.extraPath,
 			vaultPath: () => this.vaultPath(),
@@ -155,17 +154,9 @@ export default class HerdrPlugin extends Plugin {
 			onUnsupportedMethod: (method) => {
 				new Notice(unsupportedMethodMessage(method));
 			},
-			// The one request the scope makes: what `pane_agent_detected` leaves
-			// out for a pane that just gained an agent (issue #75). Answered by the
-			// client of the connection this scope belongs to, and only while that
-			// connection is the published one — a lookup still in flight when the
-			// connection is replaced must not write into a scope nothing renders,
-			// so it is left hanging rather than answered from the new client.
-			lookupPanes: (scope, workspaceId) => {
-				const current = this.connection.current;
-				if (!current || current.scope !== scope) return Promise.resolve([]);
-				return current.client.listPanes(workspaceId);
-			},
+			// The scope's one request (issue #75) is answered by its own
+			// connection's client, and only while that connection is published.
+			isPublished: (scope) => this.connection.current?.scope === scope,
 		}),
 		'herdr-core': unavailableKind(
 			'herdr-core',
@@ -177,10 +168,10 @@ export default class HerdrPlugin extends Plugin {
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */
-	get client(): HerdrClient | null {
+	get client(): ConnectionClient | null {
 		return this.connection.current?.client ?? null;
 	}
-	get scope(): WorkspaceScope | null {
+	get scope(): ConnectionScope | null {
 		return this.connection.current?.scope ?? null;
 	}
 	/**
@@ -192,7 +183,7 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/** The adapter of a kind (ADR-0004). */
-	kindOf(kind: RuntimeKind): RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel> {
+	kindOf(kind: RuntimeKind): RuntimeKindAdapter {
 		return this.kinds[kind];
 	}
 
@@ -217,27 +208,15 @@ export default class HerdrPlugin extends Plugin {
 	 * them apart; it is retired with its connection (issue #43), and views never
 	 * fetch labels themselves.
 	 */
-	private readonly sessions = new EndpointSessions<
-		HerdrClient,
-		WorkspaceScope,
-		TabLabelCache,
-		SshTunnel
-	>({
+	private readonly sessions = new EndpointSessions<ConnectionClient, ConnectionScope, TabLabels>({
 		current: () => this.connection.current,
-		createTabLabels: (connection) => {
-			const { client, scope } = connection;
-			return new TabLabelCache({
-				client,
-				scope: {
-					get workspaceId() {
-						return scope.workspaceId;
-					},
-					tabIds: () => scope.list().map((pane) => pane.tabId),
-					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
-				},
-				alive: () => this.connection.current === connection,
-			});
-		},
+		// The kind's own source: herdr's `tab.list` cache, herdr-core's
+		// `herdr-app` tabs.
+		createTabLabels: (connection) =>
+			this.kindOf(connection.endpoint.runtime.kind).createTabLabels(
+				connection,
+				() => this.connection.current === connection,
+			),
 	});
 	/**
 	 * What `endpointId` names on the published connection, or null when that
@@ -246,7 +225,7 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	endpointSession(
 		endpointId: string,
-	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
 		return this.sessions.for(endpointId);
 	}
 	/**
@@ -268,10 +247,14 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	nativeSession(
 		endpointId: string,
-	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	): EndpointSession<HerdrClient, WorkspaceScope, TabLabels> | null {
 		const session = this.endpointSession(endpointId);
 		if (!session || !this.nativeCapable(session.endpoint)) return null;
-		return session;
+		// Only herdr reports agent sessions; the capability says so, and this
+		// narrows the session to the herdr client and scope the view reads.
+		const { client, scope } = session;
+		if (!(client instanceof HerdrClient) || !(scope instanceof WorkspaceScope)) return null;
+		return { endpoint: session.endpoint, client, scope, tabLabels: session.tabLabels };
 	}
 
 	/** Whether panes on this endpoint can be shown in the native view at all. */
@@ -282,7 +265,45 @@ export default class HerdrPlugin extends Plugin {
 	}
 	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
 	get tunnel(): SshTunnel | null {
-		return this.connection.current?.tunnel ?? null;
+		const tunnel = this.connection.current?.tunnel ?? null;
+		return tunnel instanceof SshTunnel ? tunnel : null;
+	}
+
+	/**
+	 * Pane ids pinned on an endpoint (issue #35): from the plugin's settings,
+	 * or, for a kind that keeps pins on the runtime (herdr-core's shared
+	 * `herdr.pinned`, ADR-0005), from the rows of that endpoint's connection.
+	 */
+	pinnedPaneIds(endpointId: string): string[] {
+		if (!this.sharedPins(endpointId)) return pinnedPaneIds(this.settings, endpointId);
+		return (this.endpointSession(endpointId)?.scope.list() ?? [])
+			.filter((pane) => pane.pinned === true)
+			.map((pane) => pane.paneId);
+	}
+
+	isPanePinned(endpointId: string, paneId: string): boolean {
+		if (!this.sharedPins(endpointId)) return isPanePinned(this.settings, endpointId, paneId);
+		return this.endpointSession(endpointId)?.scope.get(paneId)?.pinned === true;
+	}
+
+	/** Pins or unpins where that endpoint's kind keeps pins. */
+	async setPanePinned(endpointId: string, paneId: string, pinned: boolean): Promise<void> {
+		if (this.sharedPins(endpointId)) {
+			// Only the published connection can write the label; the row repaints
+			// when the core's `labels` event comes back.
+			if (this.endpoint.id !== endpointId) return;
+			await this.actions.setPinned?.(paneId, pinned);
+			return;
+		}
+		if (isPanePinned(this.settings, endpointId, paneId) !== pinned) {
+			togglePanePin(this.settings, endpointId, paneId);
+		}
+		await this.saveSettings();
+	}
+
+	private sharedPins(endpointId: string): boolean {
+		const endpoint = this.endpointFor(endpointId);
+		return endpoint ? this.kindOf(endpoint.runtime.kind).capabilities.sharedPins : false;
 	}
 	/**
 	 * The native view's session models (#93, ADR-0003), one per pane while a
@@ -326,8 +347,6 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private readonly scopeListeners = new Set<() => void>();
 
-	/** Pending coalesced `agent.list`, 0 when none. */
-	private agentNameTimer = 0;
 	/** Pending reconnect after a connection setting changed, 0 when none. */
 	private reconnectTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
@@ -418,8 +437,6 @@ export default class HerdrPlugin extends Plugin {
 		this.sessions.dispose();
 		this.sessionModels.dispose();
 		this.scopeListeners.clear();
-		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
-		this.agentNameTimer = 0;
 		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
 		this.reconnectTimer = 0;
 		this.statusBarEl = null;
@@ -1007,17 +1024,14 @@ export default class HerdrPlugin extends Plugin {
 	 * stream: the scope has already collapsed the ~10 pane.updated per second
 	 * (N4). The kind builds the scope; this is the plugin's half.
 	 */
-	private wireScope(scope: WorkspaceScope, endpoint: Endpoint): WorkspaceScope {
+	private wireScope<S extends ConnectionScope>(scope: S, endpoint: Endpoint): S {
 		scope.on('changed', (_paneId, prev, next) => {
 			this.notifier.onChanged(prev, next, endpoint.id);
 			this.updateStatusBar();
 		});
-		scope.on('added', () => {
-			this.updateStatusBar();
-			// A pane that just gained an agent has no name yet: names are not on
-			// the event stream, only in `agent.list` (PRD M8).
-			this.refreshAgentNames();
-		});
+		// Agent names, which herdr's stream never carries, are the herdr
+		// kind's own business since ADR-0005 (`herdr/connect.ts`).
+		scope.on('added', () => this.updateStatusBar());
 		scope.on('removed', (pane) => {
 			this.notifier.forget(pane.paneId, endpoint.id);
 			this.updateStatusBar();
@@ -1025,30 +1039,8 @@ export default class HerdrPlugin extends Plugin {
 		scope.on('workspaceResolved', () => {
 			this.notifier.reset();
 			this.updateStatusBar();
-			this.refreshAgentNames();
 		});
 		return scope;
-	}
-
-	/**
-	 * Coalesced `agent.list`. Agent names are the one thing the event stream
-	 * never carries, so they are re-read after the scope changes shape rather
-	 * than on a timer. A failure is cosmetic: rows fall back to the title.
-	 */
-	private refreshAgentNames(): void {
-		if (this.agentNameTimer) return;
-		// A herdr without `agent.list` said so once already: stay off it.
-		if (this.client?.isUnsupported('agent.list')) return;
-		this.agentNameTimer = window.setTimeout(() => {
-			this.agentNameTimer = 0;
-			const client = this.client;
-			const scope = this.scope;
-			if (!client || !scope) return;
-			void client.listAgents().then(
-				(agents) => scope.setAgentNames(agents),
-				() => undefined,
-			);
-		}, AGENT_NAME_REFRESH_MS);
 	}
 
 	/** State the settings tab's status block describes (rendered in settings.ts). */
@@ -1057,15 +1049,17 @@ export default class HerdrPlugin extends Plugin {
 		const tunnel = this.tunnel;
 		const discovery = this.connection.discovery;
 		const runtime: RuntimeConfig = this.endpoint.runtime;
+		const herdr = this.client instanceof HerdrClient ? this.client : null;
 		return {
 			runtime,
 			unavailable: this.kindUnavailable(runtime.kind),
+			details: this.kindOf(runtime.kind).statusLines(this.connection.current),
 			discovery,
-			socketPath: this.client?.socket ?? discovery?.socketPath ?? '',
+			socketPath: herdr?.socket ?? discovery?.socketPath ?? '',
 			tunnel: tunnel
 				? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' }
 				: null,
-			mismatch: this.mismatch ?? this.client?.lastMismatch ?? null,
+			mismatch: this.mismatch ?? herdr?.lastMismatch ?? null,
 			workspace: scope?.workspaceId
 				? {
 						id: scope.workspaceId,

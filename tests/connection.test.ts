@@ -23,6 +23,8 @@ import {
 	type ConnectionScope,
 	type ConnectionTunnel,
 } from '../src/connection';
+import { primeHerdrScope, startHerdrStream } from '../src/herdr/connect';
+import type { PaneState, ScopeEventMap } from '../src/herdr/scope';
 import {
 	defaultLocalRuntime,
 	legacySshRuntimeId,
@@ -83,7 +85,7 @@ class FakeClient implements ConnectionClient {
 	disposed = false;
 	subscribed = 0;
 	socketPath: string;
-	readonly handlers = new Map<string, ((...args: never[]) => void)[]>();
+	readonly handlers = new Map<string, ((...args: never) => void)[]>();
 	/** Deferred answers to `ping`, `snapshot`; resolved by the test. */
 	readonly pings: Deferred<unknown>[] = [];
 	readonly snapshots: Deferred<SessionSnapshot | null>[] = [];
@@ -112,14 +114,22 @@ class FakeClient implements ConnectionClient {
 		this.subscribed++;
 	}
 
-	on(type: string, handler: (...args: never[]) => void): void {
+	isUnsupported(): boolean {
+		return false;
+	}
+
+	request<T>(): Promise<T> {
+		return Promise.reject(new Error('not used'));
+	}
+
+	on(type: string, handler: (...args: never) => void): void {
 		const list = this.handlers.get(type) ?? [];
 		list.push(handler);
 		this.handlers.set(type, list);
 	}
 
 	emit(type: string, ...args: unknown[]): void {
-		for (const handler of this.handlers.get(type) ?? []) handler(...(args as never[]));
+		for (const handler of this.handlers.get(type) ?? []) (handler as (...rest: unknown[]) => void)(...args);
 	}
 
 	setSocketPath(path: string): void {
@@ -141,6 +151,26 @@ class FakeScope implements ConnectionScope {
 	}
 	ingest(event: HerdrEvent): void {
 		this.ingested.push(event);
+	}
+	readonly workspaceId = null;
+	readonly workspaceLabel = null;
+	readonly method = 'none' as const;
+	readonly size = 0;
+	list(): PaneState[] {
+		return [];
+	}
+	get(): PaneState | undefined {
+		return undefined;
+	}
+	on<K extends keyof ScopeEventMap>(_type: K, _handler: (...args: ScopeEventMap[K]) => void): () => void {
+		return () => undefined;
+	}
+	forget(): void {}
+	refresh(): Promise<void> {
+		return Promise.resolve();
+	}
+	agentNames(): Set<string> {
+		return new Set();
 	}
 }
 
@@ -171,7 +201,7 @@ function harness(
 	// The herdr kind's driver, with fakes for what it builds: a local runtime
 	// needs the local binary and opens the discovered socket, an SSH one
 	// forwards it and needs nothing local.
-	const driver: ConnectionDriver = {
+	const driver: ConnectionDriver<FakeClient, FakeScope, FakeTunnel> = {
 		discover: () => {
 			const d = deferred<DiscoveryResult>();
 			discoveries.push(d);
@@ -199,9 +229,11 @@ function harness(
 			scopes.push(scope);
 			return scope;
 		},
-		subscriptions: [{ kind: 'pane.updated' } as never],
+		prime: (client, scope, retired) => primeHerdrScope(client, scope, retired),
+		start: (client, scope) =>
+			startHerdrStream(client, scope, { subscriptions: [{ kind: 'pane.updated' } as never] }),
 	};
-	const deps: ConnectionDeps = {
+	const deps: ConnectionDeps<FakeClient, FakeScope, FakeTunnel> = {
 		endpoint: () => endpointOf(options.remote ? XL : defaultLocalRuntime()),
 		driver: () => (options.unavailable ? { unavailable: options.unavailable } : driver),
 		notice: (message) => notices.push(message),
@@ -666,7 +698,7 @@ class FakeLabels {
 function sessionsOver(h: ReturnType<typeof harness>) {
 	const built: FakeLabels[] = [];
 	const sessions = new EndpointSessions<FakeClient, FakeScope, FakeLabels, FakeTunnel>({
-		current: () => h.coordinator.current as never,
+		current: () => h.coordinator.current,
 		createTabLabels: (connection) => {
 			const labels = new FakeLabels(connection.client);
 			built.push(labels);

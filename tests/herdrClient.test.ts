@@ -12,9 +12,11 @@ import {
 	parseStreamError,
 	type HerdrEvent,
 } from '../src/herdr/client';
-import { ConnectionCoordinator, endpointOf, type ConnectionDriver, type ConnectionScope } from '../src/connection';
+import { ConnectionCoordinator, endpointOf, type ConnectionDriver } from '../src/connection';
+import { primeHerdrScope, startHerdrStream } from '../src/herdr/connect';
+import { WorkspaceScope } from '../src/herdr/scope';
 import { defaultLocalRuntime } from '../src/runtimes';
-import type { AgentInfo, PaneInfo, WorkspaceInfo } from '../src/herdr/types.gen';
+import type { PaneInfo, WorkspaceInfo } from '../src/herdr/types.gen';
 import { unsupportedMethodMessage } from '../src/notify';
 import { FakeApiServer, FakeError } from './fixtures/fakeApiServer';
 
@@ -549,15 +551,19 @@ describe('events_lost recovery through the connection', () => {
 		});
 		let primes = 0;
 		const ingested: HerdrEvent[] = [];
-		const scope: ConnectionScope = {
-			setAgentNames: (_agents: readonly AgentInfo[]) => undefined,
-			prime: (_workspaces: WorkspaceInfo[], _panes: PaneInfo[]) => {
-				primes += 1;
-			},
-			ingest: (event) => ingested.push(event),
+		const scope = new WorkspaceScope({ vaultPath: '/nowhere' });
+		const prime = scope.prime.bind(scope);
+		scope.prime = (workspaces: WorkspaceInfo[], panes: PaneInfo[]) => {
+			primes += 1;
+			prime(workspaces, panes);
+		};
+		const ingest = scope.ingest.bind(scope);
+		scope.ingest = (event: HerdrEvent) => {
+			ingested.push(event);
+			ingest(event);
 		};
 		const clients: HerdrClient[] = [];
-		const driver: ConnectionDriver<HerdrClient> = {
+		const driver: ConnectionDriver<HerdrClient, WorkspaceScope> = {
 			discover: () =>
 				Promise.resolve({
 					binary: { path: '/fake/herdr', source: 'setting' },
@@ -574,7 +580,9 @@ describe('events_lost recovery through the connection', () => {
 				return client;
 			},
 			createScope: () => scope,
-			subscriptions: [{ type: 'pane.updated' }],
+			prime: (client, target, retired) => primeHerdrScope(client, target, retired),
+			start: (client, target) =>
+				startHerdrStream(client, target, { subscriptions: [{ type: 'pane.updated' }] }),
 		};
 		const coordinator = new ConnectionCoordinator({
 			endpoint: () => endpointOf(defaultLocalRuntime()),

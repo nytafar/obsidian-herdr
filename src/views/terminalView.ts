@@ -82,7 +82,13 @@ import {
 	type AttachMode,
 	type TerminalTitleSource,
 } from '../settings';
-import { isRemoteEndpoint, LOCAL_ENDPOINT_ID, type EndpointSession } from '../connection';
+import {
+	isRemoteEndpoint,
+	LOCAL_ENDPOINT_ID,
+	type ConnectionClient,
+	type ConnectionScope,
+	type EndpointSession,
+} from '../connection';
 import type { TerminalSessionMode } from '../bridge/terminalSession';
 import { nativeViewBlock, type RuntimeKindAdapter } from '../runtime/kind';
 import { createRenderer } from './renderer/create';
@@ -103,9 +109,8 @@ import {
 	type TerminalEffect,
 	type TerminalSetting,
 } from './paneTerminal';
-import type { PaneState, WorkspaceScope } from '../herdr/scope';
-import type { HerdrClient } from '../herdr/client';
-import type { TabLabelCache } from '../tabLabels';
+import type { PaneState } from '../herdr/scope';
+import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
 	effectiveEngine,
@@ -616,7 +621,11 @@ export class TerminalView extends ItemView {
 			// other herdr still means the binary was found (issue #54).
 			// A kind this build cannot run is not waiting for anything: the tab
 			// shows why at once instead of "waiting for herdr" (ADR-0004).
-			connected: () => this.plugin.client !== null || this.kind().unavailable !== null,
+			// Nor is a kind whose terminal tab is not built yet (herdr-core, ADR-0005).
+			connected: () =>
+				this.plugin.client !== null ||
+				this.kind().unavailable !== null ||
+				this.kind().terminalUnavailable !== null,
 			perfEnabled: () => perfEnabled(),
 			onStatus: (line) => this.renderStatus(line),
 			// A renderer is mounted, so the grace period has something to come back
@@ -803,7 +812,7 @@ export class TerminalView extends ItemView {
 	 * the list is connected elsewhere, or to nothing. The one place this view
 	 * asks that question.
 	 */
-	private endpointSession(): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	private endpointSession(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
 		return this.plugin.endpointSession(this.terminal.identity.endpointId);
 	}
 

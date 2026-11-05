@@ -103,6 +103,12 @@ export interface PaneState {
 	 * row model's name tie-break. Never a wall clock.
 	 */
 	statusChangedSeq: number;
+	/**
+	 * Pinned on the runtime itself, for a kind that keeps pins there (herdr-core's
+	 * shared `herdr.pinned` label, ADR-0005). herdr never sets it: its pins live
+	 * in the plugin's settings (issue #35).
+	 */
+	pinned?: boolean;
 }
 
 export interface ScopeEventMap {

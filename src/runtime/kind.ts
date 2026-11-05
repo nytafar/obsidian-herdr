@@ -21,6 +21,7 @@
 import type { ActionHost } from '../actions';
 import type { TerminalSessionOptions } from '../bridge/terminalSession';
 import type {
+	Connection,
 	ConnectionClient,
 	ConnectionDriver,
 	ConnectionScope,
@@ -30,6 +31,7 @@ import type {
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
 import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
+import type { TabLabels } from '../tabLabels';
 
 /**
  * What a runtime of a kind can do, as the UI asks it. herdr has all of it;
@@ -50,6 +52,11 @@ export interface RuntimeCapabilities {
 	/** "Terminate agent" in the row menu. */
 	close: boolean;
 	/**
+	 * Pins live on the runtime, shared with its other clients (herdr-core's
+	 * `herdr.pinned` label, ADR-0005), rather than in this plugin's settings.
+	 */
+	sharedPins: boolean;
+	/**
 	 * The native view, which follows the agent session the kind reports. Only
 	 * on a `local` target even then: the transcript is a file on the pane's
 	 * own host (ADR-0002).
@@ -64,6 +71,7 @@ export const HERDR_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	rename: true,
 	focus: true,
 	close: true,
+	sharedPins: false,
 	nativeView: true,
 });
 
@@ -75,15 +83,26 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 	rename: false,
 	focus: false,
 	close: true,
+	sharedPins: true,
 	nativeView: false,
 });
 
 /** Why the native view is not offered for a kind without agent sessions. */
 export const NATIVE_NO_SESSION_REASON = 'no agent session on herdr-core';
 
-/** What every use of a herdr-core runtime says until its kind lands. */
+/** What every use of a herdr-core runtime said before its kind landed. */
 export const HERDR_CORE_UNAVAILABLE =
 	'herdr-core runtimes are not available in this version of the plugin yet';
+
+/** What a terminal tab on a herdr-core pane says until the attach tab lands (ADR-0005). */
+export const HERDR_CORE_TERMINAL_UNAVAILABLE =
+	'terminal tabs for herdr-core agents are not available in this version of the plugin yet';
+
+/** One line of the settings tab's connection status. */
+export interface StatusLine {
+	text: string;
+	warning?: boolean;
+}
 
 /**
  * The folder and row actions, as the plugin calls them. herdr's are
@@ -99,6 +118,11 @@ export interface RuntimeActions {
 	renameAgent(paneId: string, name: string): Promise<unknown>;
 	/** True when the runtime focused the pane. */
 	focusPane(paneId: string): Promise<boolean>;
+	/**
+	 * Pins or unpins on the runtime; only for a kind with
+	 * {@link RuntimeCapabilities.sharedPins}. True when the runtime took it.
+	 */
+	setPinned?(paneId: string, pinned: boolean): Promise<boolean>;
 }
 
 /**
@@ -116,6 +140,12 @@ export interface RuntimeKindAdapter<
 	 * use reports (settings, the agent list, a connect attempt, a terminal).
 	 */
 	readonly unavailable: string | null;
+	/**
+	 * Why a terminal tab on this kind cannot start, whatever the connection
+	 * does, or null when it can. The tab shows it at once instead of waiting
+	 * for a connection (herdr-core until its attach tab lands, ADR-0005).
+	 */
+	readonly terminalUnavailable: string | null;
 	readonly capabilities: Readonly<RuntimeCapabilities>;
 	/**
 	 * Why the kind itself rules the native view out, whatever the target, or
@@ -138,6 +168,16 @@ export interface RuntimeKindAdapter<
 	promptSender(client: () => PromptClient | null): PromptSender;
 	/** The waiting card's key presses, over the same client. */
 	keySender(client: () => PromptClient | null): KeySender;
+	/**
+	 * The tab labels views on this connection read, built once per connection.
+	 * `alive()` is true while that connection is the published one.
+	 */
+	createTabLabels(connection: Connection<C, S, T>, alive: () => boolean): TabLabels;
+	/**
+	 * The settings tab's status lines for this kind, below the runtime line, or
+	 * null for the herdr layout (binary, socket, server, workspace).
+	 */
+	statusLines(connection: Connection<C, S, T> | null): StatusLine[] | null;
 }
 
 /**
@@ -156,6 +196,7 @@ export function unavailableKind(
 	return {
 		kind,
 		unavailable: reason,
+		terminalUnavailable: reason,
 		capabilities,
 		nativeUnavailable,
 		connection: null,
@@ -184,6 +225,10 @@ export function unavailableKind(
 		},
 		promptSender: () => ({ send: () => Promise.reject(refuse()) }),
 		keySender: () => ({ sendKeys: () => Promise.reject(refuse()) }),
+		createTabLabels: () => {
+			throw refuse();
+		},
+		statusLines: () => null,
 	};
 }
 

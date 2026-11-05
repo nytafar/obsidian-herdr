@@ -24,9 +24,10 @@ import { HerdrActions } from '../actions';
 import { discoverHerdr } from '../herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from '../herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from '../herdr/scope';
+import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
 import { SshTunnel, terminalArgvPrefix } from '../herdr/ssh';
-import type { PaneInfo } from '../herdr/types.gen';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
+import { TabLabelCache } from '../tabLabels';
 import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
 
 /** What the herdr kind needs from the plugin; everything Obsidian-shaped is here. */
@@ -40,10 +41,12 @@ export interface HerdrKindHost {
 	onProtocolMismatch(mismatch: ProtocolMismatch): void;
 	onUnsupportedMethod(method: string): void;
 	/**
-	 * `pane.list` for the scope's one request (issue #75), answered only while
-	 * that scope's connection is the published one; see `main.ts`.
+	 * Whether this scope's connection is the published one. The scope's one
+	 * request (`pane.list`, issue #75) is only answered while it is: a lookup
+	 * still in flight when the connection is replaced must not write into a
+	 * scope nothing renders.
 	 */
-	lookupPanes(scope: WorkspaceScope, workspaceId: string): Promise<PaneInfo[]>;
+	isPublished(scope: WorkspaceScope): boolean;
 }
 
 export type HerdrKind = RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel>;
@@ -52,6 +55,7 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 	return {
 		kind: 'herdr',
 		unavailable: null,
+		terminalUnavailable: null,
 		capabilities: HERDR_CAPABILITIES,
 		nativeUnavailable: null,
 		connection: {
@@ -93,17 +97,22 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 					// PRD M3: an unsupported method is reported once, then never retried.
 					onUnsupportedMethod: (method) => host.onUnsupportedMethod(method),
 				}),
-			createScope: (endpoint) => {
+			createScope: (endpoint, client) => {
 				const runtime = endpoint.runtime;
 				const scope: WorkspaceScope = new WorkspaceScope({
 					workspaceId: runtime.workspace,
 					vaultPath: host.vaultPath(),
 					remoteVaultPath: runtime.target === 'ssh' ? runtime.remoteVaultPath : undefined,
-					lookupPanes: (workspaceId) => host.lookupPanes(scope, workspaceId),
+					// The one request the scope makes: what `pane_agent_detected`
+					// leaves out for a pane that just gained an agent (issue #75).
+					lookupPanes: (workspaceId) =>
+						host.isPublished(scope) ? client.listPanes(workspaceId) : Promise.resolve([]),
 				});
 				return scope;
 			},
-			subscriptions: SCOPE_SUBSCRIPTIONS,
+			prime: (client, scope, retired) => primeHerdrScope(client, scope, retired),
+			start: (client, scope) =>
+				startHerdrStream(client, scope, { subscriptions: SCOPE_SUBSCRIPTIONS }),
 		},
 		terminalCommand: (endpoint: Endpoint) => {
 			const runtime = endpoint.runtime;
@@ -117,5 +126,22 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		createActions: (actionHost) => new HerdrActions(actionHost),
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),
+		// One `tab.list` cache per connection (issue #43), over its own client
+		// and scope.
+		createTabLabels: (connection, alive) => {
+			const { client, scope } = connection;
+			return new TabLabelCache({
+				client,
+				scope: {
+					get workspaceId() {
+						return scope.workspaceId;
+					},
+					tabIds: () => scope.list().map((pane) => pane.tabId),
+					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+				},
+				alive,
+			});
+		},
+		statusLines: () => null,
 	};
 }

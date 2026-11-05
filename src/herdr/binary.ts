@@ -107,6 +107,8 @@ export interface ResolveOptions {
 	extraPath?: string;
 	/** Skip the login-shell step (it spawns a shell and can be slow). */
 	skipLoginShell?: boolean;
+	/** The executable's file name; `herdr` unless another kind searches (`hc`). */
+	binaryName?: string;
 	loginShellTimeoutMs?: number;
 }
 
@@ -144,7 +146,7 @@ export function localCandidates(
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
 	const add = (directory: string, source: BinarySource): void => {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+		const path = join(expandHome(directory, deps.home), options.binaryName ?? 'herdr');
 		if (seen.has(path) || !deps.isExecutable(path)) return;
 		seen.add(path);
 		found.push({ path, source });
@@ -164,7 +166,7 @@ export async function loginShellCandidates(
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
 	for (const directory of splitPath(shellPath ?? '')) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+		const path = join(expandHome(directory, deps.home), options.binaryName ?? 'herdr');
 		if (seen.has(path) || !deps.isExecutable(path)) continue;
 		seen.add(path);
 		found.push({ path, source: 'login-shell' });

@@ -539,6 +539,11 @@ export interface ConnectionStatus {
 	runtime: RuntimeConfig;
 	/** Why the runtime's kind cannot connect in this build, or null. */
 	unavailable: string | null;
+	/**
+	 * The kind's own status lines for its connection (herdr-core: transport,
+	 * core, scope), or null for herdr's binary, socket and server layout.
+	 */
+	details?: readonly { text: string; warning?: boolean }[] | null;
 	/** Binary and socket discovery, or null before the first connect attempt. */
 	discovery: DiscoveryResult | null;
 	/** Socket the client actually uses; the tunnel's local end over SSH. */
@@ -567,6 +572,11 @@ export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus
 	line(`Runtime: ${runtimeDisplayName(runtime)}, ${runtimeSummary(runtime)}.`);
 	if (status.unavailable) {
 		line(issueSentence(status.unavailable), true);
+		return;
+	}
+	if (status.details) {
+		for (const detail of status.details) line(detail.text, detail.warning === true);
+		if (status.error) line(issueSentence(status.error), true);
 		return;
 	}
 	if (!discovery) {

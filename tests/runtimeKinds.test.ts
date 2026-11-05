@@ -34,7 +34,7 @@ function host(overrides: Partial<HerdrKindHost> = {}): HerdrKindHost {
 		discoveredBinary: () => '/usr/bin/herdr',
 		onProtocolMismatch: () => undefined,
 		onUnsupportedMethod: () => undefined,
-		lookupPanes: () => Promise.resolve([]),
+		isPublished: () => true,
 		...overrides,
 	};
 }
@@ -85,7 +85,7 @@ describe('the herdr kind (ADR-0004)', () => {
 	});
 
 	it('scopes to the runtime’s own workspace and remote vault path', () => {
-		const scope = driver.createScope(xl);
+		const scope = driver.createScope(xl, driver.createClient('/tmp/x.sock', xl, FOUND));
 		expect(scope).toBeInstanceOf(WorkspaceScope);
 		expect((scope as unknown as { options: { workspaceId: string } }).options.workspaceId).toBe(
 			'w7',

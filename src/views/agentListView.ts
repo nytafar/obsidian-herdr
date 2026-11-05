@@ -48,11 +48,8 @@
 
 import { ItemView, Menu, Notice, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import type { EndpointSession } from '../connection';
-import type { HerdrClient } from '../herdr/client';
-import type { WorkspaceScope } from '../herdr/scope';
-import type { TabLabelCache } from '../tabLabels';
-import { isPanePinned, pinnedPaneIds, togglePanePin } from '../settings';
+import type { ConnectionClient, ConnectionScope, EndpointSession } from '../connection';
+import type { TabLabels } from '../tabLabels';
 import { activeRuntimeOf, issueSentence, runtimeSwitcher } from '../runtimes';
 import { ConfirmModal, PromptModal } from './modals';
 import type { RowMenuItem } from './rowMenu';
@@ -290,7 +287,7 @@ export class AgentListView extends ItemView {
 	 * is (issue #81). One lookup answers with the scope, the tab labels and the
 	 * endpoint together; null means nothing is connected.
 	 */
-	private session(): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	private session(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
 		return this.plugin.endpointSession(this.plugin.endpoint.id);
 	}
 
@@ -392,8 +389,9 @@ export class AgentListView extends ItemView {
 			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
 			// Pins are per endpoint (issue #35): a local pane id says nothing about
-			// a remote pane that happens to share it.
-			pinnedPaneIds: pinnedPaneIds(settings, this.plugin.endpoint.id),
+			// a remote pane that happens to share it. herdr-core keeps them on the
+			// runtime (ADR-0005); the plugin asks the right store.
+			pinnedPaneIds: this.plugin.pinnedPaneIds(this.plugin.endpoint.id),
 		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
@@ -505,13 +503,8 @@ export class AgentListView extends ItemView {
 			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
 			rowClick: () => plugin.settings.agentListRowClick,
 			capabilities: () => plugin.capabilities(),
-			pinned: (ref) => isPanePinned(plugin.settings, ref.endpointId, ref.paneId),
-			setPinned: async (ref, pinned) => {
-				if (isPanePinned(plugin.settings, ref.endpointId, ref.paneId) !== pinned) {
-					togglePanePin(plugin.settings, ref.endpointId, ref.paneId);
-				}
-				await plugin.saveSettings();
-			},
+			pinned: (ref) => plugin.isPanePinned(ref.endpointId, ref.paneId),
+			setPinned: (ref, pinned) => plugin.setPanePinned(ref.endpointId, ref.paneId, pinned),
 			// The plugin acts on the published connection, so a ref captured on
 			// another endpoint must not be handed to it (issue #54). The dispatcher
 			// already notices on a stale target; these just refuse to act.

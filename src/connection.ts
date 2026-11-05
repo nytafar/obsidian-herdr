@@ -18,8 +18,7 @@
  * is testable with fakes (see `tests/connection.test.ts`).
  */
 import type { DiscoveryResult } from './herdr/binary';
-import type { ClientEventMap, HerdrEvent, Subscription } from './herdr/client';
-import type { AgentInfo, PaneInfo, SessionSnapshot, WorkspaceInfo } from './herdr/types.gen';
+import type { PaneState, ResolutionMethod, ScopeEventMap, Unsubscribe } from './herdr/scope';
 import {
 	LOCAL_RUNTIME_ID,
 	runtimeById,
@@ -89,25 +88,52 @@ export function endpointLabel(endpoint: Pick<Endpoint, 'runtime'>): string {
 	return runtimeLocation(endpoint.runtime);
 }
 
-/** The slice of `HerdrClient` a connection drives. */
+/** The connection edges every kind's client reports. */
+export interface ConnectionEventMap {
+	/** The event stream is up: the first subscribe, and again after every reconnect. */
+	connected: [];
+	/** The event stream dropped; the client reconnects on its own unless disposed. */
+	disconnected: [error: Error | null];
+}
+
+/**
+ * The slice of a runtime client the coordinator and the plugin drive, whatever
+ * the kind: `HerdrClient` for herdr, `HcClient` for herdr-core (ADR-0005).
+ * What only one kind has (herdr's snapshot, its agent names) stays behind that
+ * kind's driver.
+ */
 export interface ConnectionClient {
+	/** The first round trip; rejects with a readable error when nothing answers. */
 	ping(): Promise<unknown>;
-	snapshot(): Promise<SessionSnapshot | null>;
-	listAgents(): Promise<AgentInfo[]>;
-	listWorkspaces(): Promise<WorkspaceInfo[]>;
-	listPanes(): Promise<PaneInfo[]>;
-	subscribe(subscriptions: Subscription[]): void;
-	on<K extends keyof ClientEventMap>(type: K, handler: (...args: ClientEventMap[K]) => void): unknown;
-	on(type: '*', handler: (event: HerdrEvent) => void): unknown;
+	/** One API call over the connection as it is now. */
+	request<T>(method: string, params?: unknown): Promise<T>;
+	on<K extends keyof ConnectionEventMap>(
+		type: K,
+		handler: (...args: ConnectionEventMap[K]) => void,
+	): unknown;
 	setSocketPath(path: string): void;
 	dispose(): void;
 }
 
-/** The slice of `WorkspaceScope` a connection feeds. */
+/**
+ * The scoped agent rows, as every view, the notifier and the status bar read
+ * them: herdr's `WorkspaceScope` and herdr-core's `HcScope` both give them.
+ */
 export interface ConnectionScope {
-	setAgentNames(agents: readonly AgentInfo[]): void;
-	prime(workspaces: WorkspaceInfo[], panes: PaneInfo[]): void;
-	ingest(event: HerdrEvent): void;
+	/** The scoped workspace (herdr), space or vault root (herdr-core); null while none. */
+	readonly workspaceId: string | null;
+	readonly workspaceLabel: string | null;
+	readonly method: ResolutionMethod;
+	readonly size: number;
+	list(): PaneState[];
+	get(paneId: string): PaneState | undefined;
+	on<K extends keyof ScopeEventMap>(type: K, handler: (...args: ScopeEventMap[K]) => void): Unsubscribe;
+	/** Takes a pane out at once, for an answer that says it is gone. */
+	forget(paneId: string): void;
+	/** Re-reads what the stream cannot announce; a no-op where it announces everything. */
+	refresh(): Promise<void>;
+	/** Names already taken on the runtime, for a new agent's name. */
+	agentNames(): Set<string>;
 }
 
 /** The slice of `SshTunnel` a connection owns. */
@@ -123,8 +149,8 @@ export interface ConnectionTunnel {
  * coordinator owns the order, the generations and the teardown; the driver
  * owns what is built. The herdr kind discovers the local binary, forwards the
  * API socket over SSH for an `ssh` target and opens a `HerdrClient` on it
- * (`runtime/herdrKind.ts`); herdr-core will spawn `hc connect` as its
- * transport instead.
+ * (`runtime/herdrKind.ts`); herdr-core spawns `hc connect` as its
+ * transport and has no tunnel (`runtime/herdrCoreKind.ts`).
  */
 export interface ConnectionDriver<
 	C extends ConnectionClient = ConnectionClient,
@@ -146,14 +172,27 @@ export interface ConnectionDriver<
 	 * host configured); the attempt reports that as its error.
 	 */
 	createTunnel(endpoint: Endpoint, onSocket: (socketPath: string) => void): T | null;
-	createClient(socketPath: string, endpoint: Endpoint): C;
+	/** The client, over the socket (herdr) or the discovered binary (herdr-core). */
+	createClient(socketPath: string, endpoint: Endpoint, discovery: DiscoveryResult): C;
 	/**
 	 * Builds the scope. The endpoint is the attempt's, so whatever hangs off
-	 * the scope's events can label what it reports.
+	 * the scope's events can label what it reports; the client is the one the
+	 * scope's own requests go to.
 	 */
-	createScope(endpoint: Endpoint): S;
-	/** Event subscriptions the scope needs (`SCOPE_SUBSCRIPTIONS` for herdr). */
-	subscriptions: readonly Subscription[];
+	createScope(endpoint: Endpoint, client: C): S;
+	/**
+	 * Loads the scope from the client, on every `connected` edge. Throws a
+	 * readable error; `retired()` turns true once the connection is gone, and
+	 * nothing may be written into the scope after that. The connection
+	 * serialises calls (see {@link Connection.prime}).
+	 */
+	prime(client: C, scope: S, retired: () => boolean): Promise<void>;
+	/**
+	 * After the first ping answered: feeds the scope from the client's stream
+	 * and starts it. herdr subscribes to its pane events; herdr-core subscribes
+	 * to `events.subscribe`.
+	 */
+	start(client: C, scope: S): void;
 }
 
 /** A kind this build cannot connect, and the sentence that says so. */
@@ -207,6 +246,7 @@ export class Connection<
 		readonly client: C,
 		readonly scope: S,
 		readonly tunnel: T | null,
+		private readonly load: (retired: () => boolean) => Promise<void>,
 		private readonly deps: Pick<ConnectionDeps, 'setError' | 'onPrimed'>,
 	) {}
 
@@ -215,14 +255,13 @@ export class Connection<
 	}
 
 	/**
-	 * Loads workspaces, panes and agent names into the scope. `session.snapshot`
-	 * carries all three in one round trip (PRD section 7); a server without it
-	 * falls back to the three list calls (PRD M3). `scope.prime` diffs rather
-	 * than resets, so a re-prime is invisible unless something changed.
+	 * Loads the scope through the kind's driver: for herdr, workspaces, panes
+	 * and agent names from `session.snapshot` (or the three list calls); for
+	 * herdr-core, the `herdr-app` spaces. A failure lands in `setError`.
 	 *
 	 * One prime runs at a time per connection. A request that lands while one is
 	 * in flight is queued: the stream's `connected` edge can fire again before
-	 * the previous snapshot answered, and the later edge may carry newer state.
+	 * the previous load answered, and the later edge may carry newer state.
 	 */
 	prime(): Promise<void> {
 		if (this.retired) return Promise.resolve();
@@ -240,24 +279,9 @@ export class Connection<
 	}
 
 	private async runPrime(): Promise<void> {
-		const { client, scope } = this;
 		try {
-			const snapshot = await client.snapshot();
+			await this.load(() => this.retired);
 			if (this.retired) return;
-			// Names first: `prime` reads them when it builds the pane states.
-			if (snapshot) {
-				scope.setAgentNames(snapshot.agents ?? []);
-				scope.prime(snapshot.workspaces ?? [], snapshot.panes ?? []);
-			} else {
-				const agents = await client.listAgents();
-				if (this.retired) return;
-				const workspaces = await client.listWorkspaces();
-				if (this.retired) return;
-				const panes = await client.listPanes();
-				if (this.retired) return;
-				scope.setAgentNames(agents);
-				scope.prime(workspaces, panes);
-			}
 			this.deps.setError(null);
 		} catch (error) {
 			if (this.retired) return;
@@ -358,9 +382,18 @@ export class ConnectionCoordinator<
 			return;
 		}
 
-		client = driver.createClient(socketPath, endpoint);
-		const scope = driver.createScope(endpoint);
-		const connection = new Connection(discovery, endpoint, client, scope, tunnel, this.deps);
+		const connectionClient = driver.createClient(socketPath, endpoint, discovery);
+		client = connectionClient;
+		const scope = driver.createScope(endpoint, connectionClient);
+		const connection = new Connection(
+			discovery,
+			endpoint,
+			client,
+			scope,
+			tunnel,
+			(retired) => driver.prime(connectionClient, scope, retired),
+			this.deps,
+		);
 		// The one place the scope is loaded: the event stream's `connected` edge,
 		// which fires on the first subscribe ack and again after every reconnect.
 		// Listing only there means nothing is missed between the two (PRD M4) and
@@ -378,8 +411,7 @@ export class ConnectionCoordinator<
 		try {
 			await client.ping();
 			if (!alive()) return;
-			client.on('*', (event) => scope.ingest(event));
-			client.subscribe([...driver.subscriptions]);
+			driver.start(client, scope);
 		} catch (error) {
 			if (alive()) this.fail((error as Error).message);
 		}
