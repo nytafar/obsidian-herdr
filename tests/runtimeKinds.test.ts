@@ -21,10 +21,14 @@ import {
 	HERDR_CAPABILITIES,
 	HERDR_CORE_CAPABILITIES,
 	HERDR_CORE_UNAVAILABLE,
+	nativeAdapterFor,
 	nativeViewBlock,
 	NATIVE_NO_SESSION_REASON,
+	NATIVE_NO_TRANSCRIPT_REASON,
 	unavailableKind,
+	type TranscriptAccess,
 } from '../src/runtime/kind';
+import { LocalTranscriptSource } from '../src/native/transcriptSource';
 import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import { paneViewAvailability } from '../src/native/surface';
@@ -171,10 +175,25 @@ describe('the herdr kind (ADR-0004)', () => {
 	});
 
 	it('allows the native view on a local runtime only', () => {
-		expect(paneViewAvailability('native', nativeViewBlock(kind, false)).available).toBe(true);
-		expect(paneViewAvailability('native', nativeViewBlock(kind, true)).reason).toBe(
+		const local = endpointOf(defaultLocalRuntime());
+		const remote = endpointOf({ ...newRuntime('herdr', 'ssh', []), host: 'xl' });
+		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
+		// herdr over SSH has no transcript adapter, so it reads as it always has.
+		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).reason).toBe(
 			'local panes only',
 		);
+	});
+
+	it('reads local transcripts on a local target and none over SSH', () => {
+		const local = endpointOf(defaultLocalRuntime());
+		const remote = endpointOf({ ...newRuntime('herdr', 'ssh', []), host: 'xl' });
+		expect(kind.native?.transcriptAccess(local)).toBe('local');
+		expect(kind.native?.transcriptAccess(remote)).toBeNull();
+		expect(kind.native?.transcripts(local, null)).toBeInstanceOf(LocalTranscriptSource);
+		// The same source for every local runtime and every call: a session
+		// model reopens its tail whenever the source it is handed changes.
+		expect(kind.native?.transcripts(local, null)).toBe(kind.native?.transcripts(local, null));
+		expect(kind.native?.transcripts(remote, null)).toBeNull();
 	});
 });
 
@@ -249,9 +268,45 @@ describe('a kind this build cannot run yet', () => {
 			startAgent: true,
 			close: true,
 		});
-		expect(paneViewAvailability('native', nativeViewBlock(core, false)).reason).toBe(
+		expect(paneViewAvailability('native', nativeViewBlock(core, endpoint)).reason).toBe(
 			NATIVE_NO_SESSION_REASON,
 		);
+	});
+});
+
+describe('nativeViewBlock: capability and transcript access, not the target', () => {
+	const remote = endpointOf({ ...newRuntime('herdr', 'ssh', []), host: 'xl' });
+	const local = endpointOf(defaultLocalRuntime());
+	const withAccess = (access: TranscriptAccess | null): Parameters<typeof nativeViewBlock>[0] => ({
+		capabilities: HERDR_CAPABILITIES,
+		nativeUnavailable: null,
+		native: {
+			transcriptAccess: () => access,
+			watcher: () => null,
+			transcripts: () => null,
+		},
+	});
+
+	it('offers the view on a remote runtime whose kind reads transcripts over its connection', () => {
+		expect(paneViewAvailability('native', nativeViewBlock(withAccess('rpc'), remote))).toEqual({
+			available: true,
+			reason: null,
+		});
+	});
+
+	it('refuses it where the transcripts are out of reach, saying why', () => {
+		expect(paneViewAvailability('native', nativeViewBlock(withAccess(null), remote)).reason).toBe(
+			'local panes only',
+		);
+		expect(paneViewAvailability('native', nativeViewBlock(withAccess(null), local)).reason).toBe(
+			NATIVE_NO_TRANSCRIPT_REASON,
+		);
+	});
+
+	it('refuses it for a kind that claims the capability but supplies no native adapter', () => {
+		const block = nativeViewBlock({ ...withAccess('local'), native: null }, local);
+		expect(paneViewAvailability('native', block).reason).toBe(NATIVE_NO_SESSION_REASON);
+		expect(nativeAdapterFor({ capabilities: HERDR_CAPABILITIES, native: null }, local)).toBeNull();
 	});
 });
 

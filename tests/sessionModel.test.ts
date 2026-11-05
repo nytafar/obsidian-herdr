@@ -1,46 +1,45 @@
 /**
- * The session model (issues #93 and #94, ADR-0003).
+ * The session model (issues #93 and #94, ADR-0003, ADR-0006).
  *
- * The plugin-held, per-pane reduced state of a transcript (CONTEXT.md). Driven
- * here through a fake transcript source and a fake herdr — a pane snapshot,
- * raw client events and status transitions — because that is exactly what it is
- * made of: identity from the pane, content from a path.
- *
- * The `pane_updated` events are raw, the shape herdr really sends, because
- * reading `agent_session` off them is the one recorded exception to "react to
- * status transitions, never to raw pane updates" (CLAUDE.md, ADR-0003) and the
- * exception is only sound if the parsing is.
+ * The plugin-held, per-runtime-and-pane reduced state of a transcript
+ * (CONTEXT.md). Driven here through a fake transcript source and a fake
+ * session watcher — a pane snapshot, session pushes and status transitions —
+ * because that is exactly what it is made of: identity from the runtime,
+ * content from a path. herdr's own watcher, and the raw `pane_updated` it
+ * reads, are `tests/herdrSessionWatcher.test.ts`.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import {
-	scopeWatcher,
 	SessionModelRegistry,
+	type BlockKind,
 	type PaneSnapshot,
 	type SessionChange,
 	type SessionWatcher,
 	type Unsubscribe,
-	type WatchableScope,
 } from '../src/native/sessionModel';
 import type {
 	TailOptions,
+	TranscriptLines,
 	TranscriptSource,
 	TranscriptStream,
 } from '../src/native/transcriptSource';
-import type { HerdrEvent } from '../src/herdr/client';
-import type { PaneState } from '../src/herdr/scope';
-import type { AgentStatus, PaneInfo } from '../src/herdr/types.gen';
+import type { AgentStatus } from '../src/herdr/types.gen';
 
 /** One tail the fake source handed out. */
 class FakeTail implements TranscriptStream {
 	closed = false;
 	constructor(
 		readonly path: string,
-		private readonly onLines: (lines: string[]) => void,
+		private readonly onLines: TranscriptLines,
 	) {}
 	/** What the file growing looks like from the model's side. */
 	emit(lines: string[]): void {
 		if (!this.closed) this.onLines(lines);
+	}
+	/** The file was replaced or truncated: these lines are it from its start. */
+	restart(lines: string[]): void {
+		if (!this.closed) this.onLines(lines, true);
 	}
 	close(): void {
 		this.closed = true;
@@ -70,7 +69,7 @@ class FakeSource implements TranscriptSource {
 		for (const resolve of this.held.splice(0)) resolve();
 	}
 
-	open(path: string, onLines: (lines: string[]) => void, _options?: TailOptions): TranscriptStream {
+	open(path: string, onLines: TranscriptLines, _options?: TailOptions): TranscriptStream {
 		const tail = new FakeTail(path, onLines);
 		this.tails.push(tail);
 		const text = this.files.get(path);
@@ -149,10 +148,14 @@ function reportOf(model: { state: { turns: { entries: unknown[] }[] } }): string
 	return null;
 }
 
-/** A herdr that reports one pane, and sends the events a test asks it to. */
+/** A runtime that reports one pane, and says what a test asks it to. */
 class FakeWatcher implements SessionWatcher {
-	private readonly eventHandlers = new Set<(event: HerdrEvent) => void>();
-	private readonly statusHandlers = new Set<(paneId: string, status: AgentStatus) => void>();
+	private readonly sessionHandlers = new Set<
+		(paneId: string, agentSession: string, transcriptPath?: string) => void
+	>();
+	private readonly statusHandlers = new Set<
+		(paneId: string, status: AgentStatus, blockKind?: BlockKind) => void
+	>();
 	private readonly membershipHandlers = new Set<(paneId: string) => void>();
 	constructor(private pane: PaneSnapshot | null) {}
 
@@ -160,12 +163,16 @@ class FakeWatcher implements SessionWatcher {
 		return this.pane && this.pane.paneId === paneId ? this.pane : null;
 	}
 
-	onEvent(handler: (event: HerdrEvent) => void): Unsubscribe {
-		this.eventHandlers.add(handler);
-		return () => this.eventHandlers.delete(handler);
+	onSession(
+		handler: (paneId: string, agentSession: string, transcriptPath?: string) => void,
+	): Unsubscribe {
+		this.sessionHandlers.add(handler);
+		return () => this.sessionHandlers.delete(handler);
 	}
 
-	onStatus(handler: (paneId: string, status: AgentStatus) => void): Unsubscribe {
+	onStatus(
+		handler: (paneId: string, status: AgentStatus, blockKind?: BlockKind) => void,
+	): Unsubscribe {
 		this.statusHandlers.add(handler);
 		return () => this.statusHandlers.delete(handler);
 	}
@@ -175,47 +182,33 @@ class FakeWatcher implements SessionWatcher {
 		return () => this.membershipHandlers.delete(handler);
 	}
 
-	/** What the pane now is, as far as herdr is concerned. */
+	/** Whether anything is still subscribed: a model that let go leaves nothing. */
+	get subscribed(): boolean {
+		return (
+			this.sessionHandlers.size + this.statusHandlers.size + this.membershipHandlers.size > 0
+		);
+	}
+
+	/** What the pane now is, as far as the runtime is concerned. */
 	set(pane: PaneSnapshot | null): void {
 		this.pane = pane;
 	}
 
-	/** A `pane_updated` push, in the shape herdr really sends it. */
-	paneUpdated(paneId: string, agentSession: string | null): void {
-		const event: HerdrEvent = {
-			event: 'pane_updated',
-			data: {
-				type: 'pane_updated',
-				pane: {
-					pane_id: paneId,
-					workspace_id: 'w4',
-					tab_id: 'w4:t1',
-					terminal_id: 'term_1',
-					agent: 'claude',
-					agent_status: 'idle',
-					focused: false,
-					revision: 7,
-					...(agentSession
-						? {
-								agent_session: {
-									agent: 'claude',
-									kind: 'id',
-									source: 'herdr:claude',
-									value: agentSession,
-								},
-							}
-						: {}),
-				},
-			},
-		};
-		for (const handler of [...this.eventHandlers]) handler(event);
+	/**
+	 * The session the runtime reports for a pane, as herdr's watcher passes on
+	 * every `pane_updated` and herdr-core's would on every `labels` event.
+	 */
+	paneUpdated(paneId: string, agentSession: string | null, transcriptPath?: string): void {
+		for (const handler of [...this.sessionHandlers]) {
+			handler(paneId, agentSession ?? '', transcriptPath);
+		}
 	}
 
-	statusChanged(paneId: string, status: AgentStatus): void {
-		for (const handler of [...this.statusHandlers]) handler(paneId, status);
+	statusChanged(paneId: string, status: AgentStatus, blockKind?: BlockKind): void {
+		for (const handler of [...this.statusHandlers]) handler(paneId, status, blockKind);
 	}
 
-	/** The pane left the scoped workspace: herdr still has it, this vault does not. */
+	/** The pane left the scope: the runtime still has it, this vault does not. */
 	removed(paneId: string): void {
 		if (this.pane?.paneId === paneId) this.pane = null;
 		for (const handler of [...this.membershipHandlers]) handler(paneId);
@@ -228,6 +221,11 @@ class FakeWatcher implements SessionWatcher {
 	}
 }
 
+/** The local runtime's id, as a tab pinned to it stores it. */
+const LOCAL = 'local';
+/** Another runtime, on another machine, with panes of its own. */
+const XL = 'xl';
+
 function registryWith(
 	files: Map<string, string>,
 	pane: PaneSnapshot | null = PANE,
@@ -235,25 +233,39 @@ function registryWith(
 	registry: SessionModelRegistry;
 	source: FakeSource;
 	watcher: FakeWatcher;
-	/** Replaces the watcher the way a reconnect replaces the scope (#94). */
+	/** A fresh connection to the local runtime, the way a reconnect replaces the scope (#94). */
 	reconnect: () => FakeWatcher;
+	/**
+	 * Publishes another runtime, or none, the way a runtime switch does: one
+	 * connection at a time (ADR-0004). Returns that runtime's watcher.
+	 */
+	publish: (endpointId: string | null, pane?: PaneSnapshot | null) => FakeWatcher | null;
 } {
 	const source = new FakeSource(files);
-	let watcher = new FakeWatcher(pane);
+	let published: { endpointId: string; watcher: FakeWatcher } | null = {
+		endpointId: LOCAL,
+		watcher: new FakeWatcher(pane),
+	};
 	const registry = new SessionModelRegistry({
-		source,
-		watcher: () => watcher,
+		watcher: (endpointId) =>
+			published && published.endpointId === endpointId ? published.watcher : null,
+		source: () => source,
 		home: '/home/lasse',
 	});
+	const publish = (
+		endpointId: string | null,
+		next: PaneSnapshot | null = pane,
+	): FakeWatcher | null => {
+		published = endpointId ? { endpointId, watcher: new FakeWatcher(next) } : null;
+		registry.rebind();
+		return published?.watcher ?? null;
+	};
 	return {
 		registry,
 		source,
-		watcher,
-		reconnect: () => {
-			watcher = new FakeWatcher(pane);
-			registry.rebind();
-			return watcher;
-		},
+		watcher: published.watcher,
+		reconnect: () => publish(LOCAL) as FakeWatcher,
+		publish,
 	};
 }
 
@@ -265,7 +277,7 @@ describe('SessionModel: the pane’s current transcript', () => {
 	it('tails the file its cwd and agent session name, and reduces what it delivers', () => {
 		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
 
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
 		expect(handle.model.path).toBe(PATH_1);
@@ -278,7 +290,7 @@ describe('SessionModel: the pane’s current transcript', () => {
 		// first prompt (docs/architecture.md); the view shows "no session yet".
 		const { registry, source } = registryWith(new Map(), { ...PANE, agentSession: '' });
 
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		expect(handle.model.path).toBeNull();
 		expect(handle.model.state.turns).toEqual([]);
@@ -290,7 +302,7 @@ describe('SessionModel: the pane’s current transcript', () => {
 		// tail afterwards, so "path known" is not "transcript read": anything
 		// that acts on what the state does not hold has to wait for this.
 		const { registry, source } = registryWith(new Map());
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		expect(handle.model.path).toBe(PATH_1);
 		expect(handle.model.loaded).toBe(false);
@@ -302,7 +314,7 @@ describe('SessionModel: the pane’s current transcript', () => {
 
 	it('is not loaded again until the rotated session’s first lines land', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		expect(handle.model.loaded).toBe(true);
 
 		// `/clear`: a new file, of which nothing has been read (ADR-0003).
@@ -319,7 +331,7 @@ describe('SessionModel: the pane’s current transcript', () => {
 
 	it('tells its subscribers which turns each batch of lines changed', () => {
 		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -337,7 +349,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		const { registry, source, watcher } = registryWith(
 			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),
 		);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -361,7 +373,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 
 	it('ignores a repeat of the session it is already showing, and other panes', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		registry.acquire('w4:p1');
+		registry.acquire(LOCAL, 'w4:p1');
 
 		// Deduplicated by value: herdr sends about ten pane updates a second.
 		watcher.paneUpdated('w4:p1', 'session-1');
@@ -378,7 +390,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 			...PANE,
 			agentSession: '',
 		});
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		expect(handle.model.path).toBeNull();
 
 		watcher.set(PANE);
@@ -394,7 +406,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		// status falls back to "no agent here", which is also what disables the
 		// prompt box (#94, #97).
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -410,7 +422,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 
 	it('ignores another pane leaving the workspace', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		watcher.removed('w4:p2');
 
@@ -422,7 +434,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		// A reconnect rebinds the models before the fresh scope has primed, so
 		// the pane is not there yet; priming then announces it as added (#94).
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]), null);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		expect(handle.model.agentStatus).toBe('unknown');
 
 		watcher.added(PANE);
@@ -434,7 +446,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 
 	it('empties the view when the pane loses its session', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		watcher.set({ ...PANE, agentSession: '' });
 		watcher.paneUpdated('w4:p1', null);
@@ -448,7 +460,7 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 describe('SessionModel: the agent’s status', () => {
 	it('follows status transitions and tells its subscribers', () => {
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -462,8 +474,8 @@ describe('SessionModel: the agent’s status', () => {
 		// The claim is the pane's, not a view's: two tabs on one pane hold this
 		// same model, and each draws the same waiting card (ADR-0003).
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
-		const second = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const second = registry.acquire(LOCAL, 'w4:p1');
 		expect(second.model).toBe(handle.model);
 
 		watcher.statusChanged('w4:p1', 'blocked');
@@ -484,7 +496,7 @@ describe('SessionModel: the agent’s status', () => {
 		// leaving `blocked`. The claim is one press per block, and the block is
 		// which call is dangling, so the next call is a block of its own.
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		watcher.statusChanged('w4:p1', 'blocked');
 		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
@@ -499,8 +511,8 @@ describe('SessionModel: the agent’s status', () => {
 		// trust answer is claimed for is the empty one. Once for the pane, and
 		// again once the pane has left `blocked`.
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
-		const second = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const second = registry.acquire(LOCAL, 'w4:p1');
 
 		watcher.statusChanged('w4:p1', 'blocked');
 		expect(handle.model.claimBlock('')).toBe(true);
@@ -518,7 +530,7 @@ describe('SessionModel: the agent’s status', () => {
 		const { registry, watcher } = registryWith(
 			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),
 		);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		watcher.statusChanged('w4:p1', 'blocked');
 		expect(handle.model.claimBlock('toolu_01XB')).toBe(true);
 
@@ -531,7 +543,7 @@ describe('SessionModel: the agent’s status', () => {
 
 	it('ignores another pane’s status', () => {
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		watcher.statusChanged('w4:p2', 'blocked');
 
@@ -539,17 +551,18 @@ describe('SessionModel: the agent’s status', () => {
 	});
 });
 
-describe('SessionModel: a replaced scope (#94)', () => {
-	it('rebinds to the new herdr and re-reads the pane', () => {
-		// Endpoint sessions are replaced on reconnect and on an endpoint switch;
-		// a model that kept the old subscription would simply stop following.
+describe('SessionModel: a replaced connection (#94, ADR-0006)', () => {
+	it('rebinds to a fresh connection of its own runtime and re-reads the pane', () => {
+		// A reconnect replaces the watcher; a model that kept the old
+		// subscription would simply stop following.
 		const { registry, source, watcher, reconnect } = registryWith(
 			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),
 		);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		const fresh = reconnect();
-		// The old herdr is gone; anything it says now is ignored.
+		// The old connection is gone; anything it says now is ignored.
+		expect(watcher.subscribed).toBe(false);
 		watcher.set({ ...PANE, agentSession: 'session-2' });
 		watcher.paneUpdated('w4:p1', 'session-2');
 		expect(handle.model.agentSession).toBe('session-1');
@@ -557,14 +570,129 @@ describe('SessionModel: a replaced scope (#94)', () => {
 		fresh.set({ ...PANE, agentSession: 'session-2' });
 		fresh.paneUpdated('w4:p1', 'session-2');
 
+		expect(handle.model.connected).toBe(true);
 		expect(handle.model.agentSession).toBe('session-2');
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 		expect(source.openTails.map((tail) => tail.path)).toEqual([PATH_2]);
 	});
 
+	it('keeps its content and says it is disconnected while another runtime is active', () => {
+		const { registry, source, watcher, publish } = registryWith(
+			filesWith([PATH_1, TRANSCRIPT_1], [PATH_2, TRANSCRIPT_2]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		watcher.statusChanged('w4:p1', 'working');
+		changes.length = 0;
+
+		// The switch: `xl` has a `w4:p1` of its own, on another session.
+		const other = publish(XL, { ...PANE, agentSession: 'session-2' });
+
+		expect(handle.model.connected).toBe(false);
+		expect(watcher.subscribed).toBe(false);
+		// What it showed stays: still the local pane's session, nothing of xl's.
+		expect(handle.model.path).toBe(PATH_1);
+		expect(handle.model.agentSession).toBe('session-1');
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+		// Nothing is known of the agent now, which is what disables the prompt box.
+		expect(handle.model.agentStatus).toBe('unknown');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		// The local file is still readable without a connection, so it is still followed.
+		expect(source.openTails.map((tail) => tail.path)).toEqual([PATH_1]);
+
+		// xl's pane with the same id is none of this model's business.
+		other?.paneUpdated('w4:p1', 'session-2');
+		other?.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.agentSession).toBe('session-1');
+		expect(handle.model.agentStatus).toBe('unknown');
+		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
+	});
+
+	it('never shows another runtime’s pane with the same id', () => {
+		// A tab pinned to xl opened while local is published: local's `w4:p1`
+		// is another pane, and must not be read on xl's behalf.
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const local = registry.acquire(LOCAL, 'w4:p1');
+		const remote = registry.acquire(XL, 'w4:p1');
+
+		expect(remote.model).not.toBe(local.model);
+		expect(remote.model.connected).toBe(false);
+		expect(remote.model.path).toBeNull();
+		expect(remote.model.state.turns).toEqual([]);
+
+		watcher.statusChanged('w4:p1', 'working');
+		watcher.paneUpdated('w4:p1', 'session-9');
+		expect(remote.model.agentStatus).toBe('unknown');
+		expect(remote.model.agentSession).toBe('');
+		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
+	});
+
+	it('follows its own pane once its runtime is published, and lets go when it is not', () => {
+		const { registry, publish } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const remote = registry.acquire(XL, 'w4:p1');
+
+		const xl = publish(XL, { ...PANE, agentStatus: 'working' });
+		expect(remote.model.connected).toBe(true);
+		expect(remote.model.agentStatus).toBe('working');
+		expect(remote.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+
+		publish(LOCAL);
+		expect(remote.model.connected).toBe(false);
+		expect(xl?.subscribed).toBe(false);
+		expect(remote.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+	});
+
+	it('picks up where it was when its own runtime comes back, on the same tail', () => {
+		const { registry, source, publish } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		publish(XL);
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		publish(LOCAL);
+
+		expect(handle.model.connected).toBe(true);
+		expect(handle.model.agentStatus).toBe('idle');
+		// Same session, same file, same source: nothing to read again.
+		expect(source.tails).toHaveLength(1);
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+	});
+
+	it('closes a tail whose source went with the connection, and reads again from the start', () => {
+		// A source that needs the runtime's connection (herdr-core over SSH reads
+		// with `file.read`, ADR-0006) is none while another runtime is active.
+		const files = filesWith([PATH_1, TRANSCRIPT_1]);
+		const source = new FakeSource(files);
+		let published: { endpointId: string; watcher: FakeWatcher } | null = {
+			endpointId: XL,
+			watcher: new FakeWatcher(PANE),
+		};
+		const registry = new SessionModelRegistry({
+			watcher: (id) => (published?.endpointId === id ? published.watcher : null),
+			source: (id) => (published?.endpointId === id ? source : null),
+			home: '/home/lasse',
+		});
+		const handle = registry.acquire(XL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		published = null;
+		registry.rebind();
+		expect(source.openTails).toEqual([]);
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+
+		published = { endpointId: XL, watcher: new FakeWatcher(PANE) };
+		registry.rebind();
+		expect(source.openTails.map((tail) => tail.path)).toEqual([PATH_1]);
+		// Read again whole, so not appended to what was already there.
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
+		expect(changes.some((change) => change.reset)).toBe(true);
+	});
+
 	it('reports a status that moved across the rebind, on the same session', () => {
 		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -576,134 +704,87 @@ describe('SessionModel: a replaced scope (#94)', () => {
 	});
 });
 
-describe('scopeWatcher: the pane as herdr reports it', () => {
-	const events = new Set<(event: HerdrEvent) => void>();
-	const client = {
-		on: (type: string, handler: (event: HerdrEvent) => void): Unsubscribe => {
-			expect(type).toBe('pane_updated');
-			events.add(handler);
-			return () => events.delete(handler);
-		},
-	};
+describe('SessionModel: what the runtime says beyond herdr (ADR-0006)', () => {
+	it('carries the block kind a runtime reports, and drops it when the block ends', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		expect(handle.model.blockKind).toBeNull();
 
-	it('takes cwd and status from the scope and the agent session from the raw pane', () => {
-		// `PaneState` has no `agent_session` — nothing renders it — so the one
-		// field the session model needs comes from the pane herdr last sent.
-		const scope = {
-			get: (paneId: string) =>
-				paneId === 'w4:p1'
-					? ({ paneId, cwd: '/home/lasse/hvelv', agentStatus: 'working' } as PaneState)
-					: undefined,
-			paneInfo: (paneId: string) =>
-				paneId === 'w4:p1'
-					? ({
-							pane_id: paneId,
-							agent_session: { agent: 'claude', kind: 'id', source: 'screen', value: 'session-1' },
-						} as PaneInfo)
-					: undefined,
-			on: () => () => {},
-		};
+		watcher.statusChanged('w4:p1', 'blocked', 'auth');
+		expect(handle.model.blockKind).toBe('auth');
+		// The kind moving inside one block is news too.
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		watcher.statusChanged('w4:p1', 'blocked', 'permission');
+		expect(handle.model.blockKind).toBe('permission');
+		expect(changes).toHaveLength(1);
 
-		expect(scopeWatcher({ scope, client })?.snapshot('w4:p1')).toEqual({
-			paneId: 'w4:p1',
-			cwd: '/home/lasse/hvelv',
-			agentSession: 'session-1',
-			agentStatus: 'working',
+		watcher.statusChanged('w4:p1', 'working', 'permission');
+		expect(handle.model.blockKind).toBeNull();
+	});
+
+	it('reads the block kind off the snapshot too, as after a rebind', () => {
+		const { registry } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]), {
+			...PANE,
+			agentStatus: 'blocked',
+			blockKind: 'trust',
 		});
-		expect(scopeWatcher({ scope, client })?.snapshot('w4:p9')).toBeNull();
-		// Nothing connected: no pane to read, which is not an error.
-		expect(scopeWatcher(null)).toBeNull();
+		expect(registry.acquire(LOCAL, 'w4:p1').model.blockKind).toBe('trust');
 	});
 
-	/** A scope that records the handlers it was given, one list per event. */
-	function recordingScope(): {
-		scope: WatchableScope;
-		changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[];
-		added: ((pane: PaneState) => void)[];
-		removed: ((pane: PaneState) => void)[];
-	} {
-		const changed: ((paneId: string, prev: PaneState, next: PaneState) => void)[] = [];
-		const added: ((pane: PaneState) => void)[] = [];
-		const removed: ((pane: PaneState) => void)[] = [];
-		const scope = {
-			get: () => undefined,
-			paneInfo: () => undefined,
-			on: (event: string, handler: unknown) => {
-				if (event === 'changed') {
-					changed.push(handler as (paneId: string, prev: PaneState, next: PaneState) => void);
-				} else if (event === 'added') {
-					added.push(handler as (pane: PaneState) => void);
-				} else if (event === 'removed') {
-					removed.push(handler as (pane: PaneState) => void);
-				}
-				return () => {};
-			},
-		} as unknown as WatchableScope;
-		return { scope, changed, added, removed };
-	}
+	it('tails the path the runtime names rather than deriving one', () => {
+		const named = '/srv/claude/projects/x/session-1.jsonl';
+		const { registry, source } = registryWith(filesWith([named, TRANSCRIPT_1]), {
+			...PANE,
+			transcriptPath: named,
+		});
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
-	it('reports no agent session for a pane that has not taken a prompt yet', () => {
-		const scope = {
-			get: () => ({ paneId: 'w4:p1', cwd: '/home/lasse', agentStatus: 'idle' }) as PaneState,
-			paneInfo: () => ({ pane_id: 'w4:p1' }) as PaneInfo,
-			on: () => () => {},
-		};
-
-		expect(scopeWatcher({ scope, client })?.snapshot('w4:p1')?.agentSession).toBe('');
+		expect(handle.model.path).toBe(named);
+		expect(source.tails.map((tail) => tail.path)).toEqual([named]);
 	});
 
-	it('reports a pane joining the scoped workspace and one leaving it', () => {
-		// Scope removal is how a pane stops being this vault's (CLAUDE.md); an
-		// addition is how a freshly primed scope first shows it.
-		const { scope, added, removed } = recordingScope();
-		const seen: string[] = [];
-		scopeWatcher({ scope, client })?.onMembership((paneId) => seen.push(paneId));
+	it('follows a new path even when the session id stays the same', () => {
+		// A resumed or forked session can keep its id and move its file; a model
+		// that only compared ids would go on tailing the old one.
+		const moved = '/srv/claude/projects/y/session-1.jsonl';
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, TRANSCRIPT_1], [moved, TRANSCRIPT_2]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
-		added[0]?.({ paneId: 'w4:p1' } as PaneState);
-		removed[0]?.({ paneId: 'w4:p2' } as PaneState);
+		watcher.set({ ...PANE, transcriptPath: moved });
+		watcher.paneUpdated('w4:p1', 'session-1', moved);
 
-		expect(seen).toEqual(['w4:p1', 'w4:p2']);
+		expect(handle.model.path).toBe(moved);
+		expect(source.openTails.map((tail) => tail.path)).toEqual([moved]);
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 	});
 
-	it('hands a pane update on only once the client’s whole dispatch is done', async () => {
-		// The client runs exact-name handlers before `'*'`, where the scope
-		// ingests the update; a snapshot read inside the dispatch is stale.
-		let push: (event: HerdrEvent) => void = () => {};
-		const deferring = {
-			on: (_type: 'pane_updated', handler: (event: HerdrEvent) => void) => {
-				push = handler;
-				return () => {};
-			},
-		};
-		const { scope } = recordingScope();
-		const seen: HerdrEvent[] = [];
-		const off = scopeWatcher({ scope, client: deferring })?.onEvent((event) => seen.push(event));
-		const event: HerdrEvent = { event: 'pane_updated', data: {} };
+	it('starts over when the tail says the file was replaced under it', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
 
-		push(event);
-		expect(seen).toEqual([]);
-		await Promise.resolve();
-		expect(seen).toEqual([event]);
+		source.tails[0]?.restart(TRANSCRIPT_2.split('\n').filter(Boolean));
 
-		// An update still queued when the model lets go is dropped.
-		push(event);
-		off?.();
-		await Promise.resolve();
-		expect(seen).toHaveLength(1);
+		// The old file's turns are gone, not merged with the new file's.
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
+		expect(changes).toEqual([{ changedTurnIds: [], reset: true }]);
+		// Same path, same tail: the replacement is the tail's to read.
+		expect(source.tails).toHaveLength(1);
 	});
 
-	it('reports a status transition, and only a transition', () => {
-		const { scope, changed } = recordingScope();
-		const seen: [string, AgentStatus][] = [];
-		scopeWatcher({ scope, client })?.onStatus((paneId, status) => seen.push([paneId, status]));
+	it('drops the block claim when the file is replaced', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('')).toBe(true);
 
-		const idle = { agentStatus: 'idle' } as PaneState;
-		const working = { agentStatus: 'working' } as PaneState;
-		changed[0]?.('w4:p1', idle, working);
-		// A title or token change is not a transition, and moves nothing here.
-		changed[0]?.('w4:p1', working, working);
+		source.tails[0]?.restart([]);
 
-		expect(seen).toEqual([['w4:p1', 'working']]);
+		expect(handle.model.claimBlock('')).toBe(true);
 	});
 });
 
@@ -711,50 +792,61 @@ describe('SessionModelRegistry: one model per pane', () => {
 	it('gives two subscribers the same model, one tail, and closes it on the last release', () => {
 		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
 
-		const first = registry.acquire('w4:p1');
-		const second = registry.acquire('w4:p1');
+		const first = registry.acquire(LOCAL, 'w4:p1');
+		const second = registry.acquire(LOCAL, 'w4:p1');
 		expect(second.model).toBe(first.model);
 		expect(source.tails).toHaveLength(1);
 
 		first.release();
 		// One leaf closed, the other still watching: the model and its tail stay.
-		expect(registry.has('w4:p1')).toBe(true);
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(true);
 		expect(source.openTails).toHaveLength(1);
 
 		second.release();
-		expect(registry.has('w4:p1')).toBe(false);
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(false);
 		expect(source.openTails).toEqual([]);
 		// Opening the pane again starts a model of its own.
-		expect(registry.acquire('w4:p1').model).not.toBe(first.model);
+		expect(registry.acquire(LOCAL, 'w4:p1').model).not.toBe(first.model);
 	});
 
 	it('ignores a second release from the same handle', () => {
 		const { registry } = registryWith(new Map());
-		const handle = registry.acquire('w4:p1');
-		const other = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const other = registry.acquire(LOCAL, 'w4:p1');
 
 		handle.release();
 		handle.release();
 
-		expect(registry.has('w4:p1')).toBe(true);
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(true);
 		other.release();
-		expect(registry.has('w4:p1')).toBe(false);
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(false);
 	});
 
 	it('gives different panes different models', () => {
 		const { registry } = registryWith(new Map());
 
-		expect(registry.acquire('w4:p1').model).not.toBe(registry.acquire('w4:p2').model);
+		expect(registry.acquire(LOCAL, 'w4:p1').model).not.toBe(registry.acquire(LOCAL, 'w4:p2').model);
+	});
+
+	it('gives the same pane id on two runtimes two models, released apart', () => {
+		const { registry } = registryWith(new Map());
+		const local = registry.acquire(LOCAL, 'w4:p1');
+		const remote = registry.acquire(XL, 'w4:p1');
+
+		expect(remote.model).not.toBe(local.model);
+		local.release();
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(false);
+		expect(registry.has(XL, 'w4:p1')).toBe(true);
 	});
 
 	it('closes every tail on dispose', () => {
 		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
-		registry.acquire('w4:p1');
+		registry.acquire(LOCAL, 'w4:p1');
 
 		registry.dispose();
 
 		expect(source.openTails).toEqual([]);
-		expect(registry.has('w4:p1')).toBe(false);
+		expect(registry.has(LOCAL, 'w4:p1')).toBe(false);
 	});
 });
 
@@ -763,7 +855,7 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		const { registry, source } = registryWith(
 			filesWith([PATH_1, LAUNCHED], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
 		);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 
@@ -780,7 +872,7 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		const { registry, source } = registryWith(
 			filesWith([PATH_1, LAUNCHED], [SUBAGENT_FILE, SUBAGENT_TRANSCRIPT]),
 		);
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 
 		await vi.waitFor(() => expect(reportOf(handle.model)).not.toBeNull());
 
@@ -793,7 +885,7 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 			filesWith([PATH_1, LAUNCHED], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT], [PATH_2, TRANSCRIPT_2]),
 		);
 		source.hold = true;
-		const handle = registry.acquire('w4:p1');
+		const handle = registry.acquire(LOCAL, 'w4:p1');
 		const changes: SessionChange[] = [];
 		handle.model.on((change) => changes.push(change));
 

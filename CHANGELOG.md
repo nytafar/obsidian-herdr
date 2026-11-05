@@ -48,6 +48,22 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   survive the edit.
 - `unknown_method` errors now count as unsupported methods. herdr 0.9.5
   answers removed methods that way.
+- **Trust new folders automatically** only answers a trust prompt the runtime
+  itself identified. herdr reports no kind of block, so on herdr the setting no
+  longer presses anything: a block before the session exists looks the same at
+  the trust prompt as at a sign-in, and `Down Enter` would land on the wrong
+  dialog. The waiting card's **Trust this folder** button still answers it.
+
+### Fixed
+
+- After a runtime switch, a native tab on the other runtime keeps what it
+  showed and says its runtime is not connected, instead of showing the newly
+  active runtime's pane with the same id. The table of contents follows the
+  same runtime-and-pane pair.
+- A transcript replaced or truncated under the native view is read again from
+  the start instead of being appended to the old session's turns, and a file
+  renamed over the transcript is followed at once rather than after the next
+  2 s poll. A long transcript's first read is taken 1 MB at a time.
 
 ## 0.4.0 — 2026-09-15
 

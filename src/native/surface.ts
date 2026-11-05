@@ -13,10 +13,12 @@
  * then build and attach the new one. The terminal view owns the holder and
  * feeds it a factory, which is the seam `tests/paneSurface.test.ts` fakes.
  *
- * Remote endpoints keep a terminal surface (ADR-0002): everything the native
- * view reads is a path on the transcript's host, and the SSH adapters for that
- * do not exist yet, so {@link paneViewAvailability} reports native as
- * unavailable there and {@link effectivePaneView} falls back.
+ * A pane whose transcripts cannot be reached from here keeps a terminal
+ * surface (ADR-0002): everything the native view reads is a path on the
+ * transcript's host, and herdr over SSH has no adapter for that, so {@link
+ * paneViewAvailability} reports native as unavailable there and {@link
+ * effectivePaneView} falls back. Which runtimes can is the kind's to say
+ * (`nativeViewBlock` in `../runtime/kind.ts`).
  */
 
 import {
@@ -101,10 +103,16 @@ export interface PaneViewAvailability {
 }
 
 /**
- * Where a pane lives, as far as the native view cares: on another machine,
- * and whether its runtime's kind rules the view out by itself (ADR-0004).
+ * Where a pane lives, as far as the native view cares: on another machine
+ * whose transcripts cannot be reached, and whether its runtime's kind rules
+ * the view out by itself (ADR-0004).
  */
 export interface PaneWhere {
+	/**
+	 * On another machine, with no way to read its transcripts from here. A
+	 * remote runtime whose kind reads them over its connection is not `remote`
+	 * in this sense.
+	 */
 	remote: boolean;
 	/**
 	 * Why the kind cannot back a native view (herdr-core reports no agent
@@ -583,13 +591,16 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
-		const samePane = identity.paneId === this.identity.paneId;
+		// The same pane id on another runtime is another pane (ADR-0006).
+		const samePane =
+			identity.paneId === this.identity.paneId && identity.endpointId === this.identity.endpointId;
 		this.identity = identity;
 		if (samePane) {
 			this.report();
 			return;
 		}
 		// Another pane is another session: let the old model go and start over.
+		// The new one is pinned to the identity's runtime, never the published one.
 		this.unbind();
 		this.bind();
 	}
@@ -654,7 +665,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		if (!this.rootEl) return;
 		this.following = true;
 		if (this.identity.paneId) {
-			this.handle = this.options.models.acquire(this.identity.paneId);
+			this.handle = this.options.models.acquire(this.identity.endpointId, this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
 		}
 		this.renderAll();
@@ -1152,8 +1163,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			return;
 		}
 		const card = waitingCard({
-			// No transcript at all is the workspace trust prompt: a freshly
-			// started Claude writes no file until its first turn (ADR-0003).
+			// The runtime's own word on the block when it has one (ADR-0006);
+			// else no transcript at all reads as the workspace trust prompt, as a
+			// freshly started Claude writes no file until its first turn
+			// (ADR-0003) — a guess the view shows but never answers by itself.
+			blockKind: this.model?.blockKind ?? null,
 			hasTranscript: this.model?.path != null,
 			turns: this.model?.state.turns ?? [],
 			vaultPath: this.options.vaultPath(),
@@ -1198,10 +1212,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		// The startup kind is "no transcript at all", which is what a Claude
-		// sitting at its trust prompt looks like: it has written no file yet
-		// (ADR-0003). Every other kind is read out of a transcript, so it is a
-		// session that is already running and past this prompt.
+		// The startup kind is the trust prompt the runtime reported, or, where
+		// the runtime says nothing of kinds, "no transcript at all", which is
+		// what a Claude sitting at its trust prompt looks like: it has written no
+		// file yet (ADR-0003). Every other kind is a session past this prompt,
+		// or a block the runtime named as something else (`auth` included).
 		if (card.kind === 'startup') {
 			const trustEl = actions.createEl('button', {
 				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-trust', 'mod-cta'],
@@ -1223,9 +1238,15 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * checked here as well as where the button is drawn, because this is the
 	 * path with nobody looking at it: every other block stays on screen,
 	 * whatever the setting says.
+	 *
+	 * **Only a trust prompt the runtime identified.** A startup card guessed
+	 * from "no transcript yet" is also what an auth prompt, or any dialog
+	 * before the session exists, looks like, and `Down Enter` there picks
+	 * whatever its second option is. The guess keeps its button, which the
+	 * user presses having been told to check; nothing presses it for them.
 	 */
 	private autoTrust(card: WaitingCardModel): void {
-		if (card.kind !== 'startup') return;
+		if (card.kind !== 'startup' || !card.reported) return;
 		if (!this.options.autoTrustFolders()) return;
 		// One answer per block for the pane, not one per view: the claim is the
 		// model's, which is the thing two tabs on one pane share (ADR-0003). It
@@ -1269,11 +1290,17 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private report(): void {
 		const paneId = this.identity.paneId;
 		const session = this.model?.agentSession ?? '';
+		// Another runtime is active, or none is: what is on screen is what the
+		// session said when this one was last connected (ADR-0006).
+		const disconnected = paneId !== '' && this.model?.connected === false;
+		const tail = disconnected
+			? ' Its runtime is not connected.'
+			: session
+				? ''
+				: ' No session yet.';
 		this.options.onStatus({
-			text: paneId
-				? `Native view of ${paneId}.${session ? '' : ' No session yet.'}`
-				: 'Native view. No pane.',
-			warning: false,
+			text: paneId ? `Native view of ${paneId}.${tail}` : 'Native view. No pane.',
+			warning: disconnected,
 			detail: null,
 		});
 	}

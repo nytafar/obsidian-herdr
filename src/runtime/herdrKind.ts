@@ -19,6 +19,10 @@
  *   another kind's binary, or none (an SSH herdr-core runtime).
  * - **Actions and prompts.** herdr's JSON API methods (`actions.ts`,
  *   `native/promptSender.ts`).
+ * - **Native view.** A session watcher over the connection's scope and
+ *   client (`herdr/sessionWatcher.ts`) and this machine's transcript files,
+ *   on a `local` target only: herdr over SSH has no transcript adapter, so
+ *   its panes keep the terminal (ADR-0002).
  */
 
 import { TerminalSession } from '../bridge/terminalSession';
@@ -32,6 +36,8 @@ import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from '../herdr/scope';
 import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
 import { SshTunnel, terminalArgvPrefix } from '../herdr/ssh';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
+import { LocalTranscriptSource } from '../native/transcriptSource';
+import { herdrSessionWatcher } from '../herdr/sessionWatcher';
 import { TabLabelCache } from '../tabLabels';
 import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
 
@@ -83,12 +89,21 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		const override = runtime.binary.trim();
 		return override ? expandHome(override, home()) : (discovered.get(runtime.id) ?? '');
 	};
+	/** One for every local runtime of this kind: they all read this machine's files. */
+	const localTranscripts = new LocalTranscriptSource();
 	return {
 		kind: 'herdr',
 		unavailable: null,
 		terminalUnavailable: null,
 		capabilities: HERDR_CAPABILITIES,
 		nativeUnavailable: null,
+		native: {
+			transcriptAccess: (endpoint) => (endpoint.runtime.target === 'local' ? 'local' : null),
+			watcher: (connection) => herdrSessionWatcher(connection),
+			// A local file needs no connection, so a tab on a local herdr keeps
+			// following its transcript while another runtime is active.
+			transcripts: (endpoint) => (endpoint.runtime.target === 'local' ? localTranscripts : null),
+		},
 		connection: {
 			discover: (endpoint) => {
 				const runtime = endpoint.runtime;

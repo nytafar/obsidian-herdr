@@ -36,7 +36,6 @@ import {
 	type Endpoint,
 	type EndpointSession,
 } from './connection';
-import { WorkspaceScope } from './herdr/scope';
 import type { TabLabels } from './tabLabels';
 import { SshTunnel } from './herdr/ssh';
 import { isPanePinned, pinnedPaneIds, togglePanePin } from './settings';
@@ -50,7 +49,12 @@ import {
 	type RuntimeConfig,
 	type RuntimeKind,
 } from './runtimes';
-import type { RuntimeActions, RuntimeCapabilities, RuntimeKindAdapter } from './runtime/kind';
+import {
+	nativeAdapterFor,
+	type RuntimeActions,
+	type RuntimeCapabilities,
+	type RuntimeKindAdapter,
+} from './runtime/kind';
 import { createHerdrKind } from './runtime/herdrKind';
 import { createHerdrCoreKind } from './runtime/herdrCoreKind';
 import { RuntimeSuggestModal } from './views/modals';
@@ -76,8 +80,10 @@ import {
 	decidePlacement,
 	type NoteLeafCandidate,
 } from './terminalPlacement';
-import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
-import { LocalTranscriptSource } from './native/transcriptSource';
+import { SessionModelRegistry } from './native/sessionModel';
+import type { SessionWatcher } from './native/sessionWatcher';
+import type { PromptClient } from './native/promptSender';
+import type { TranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { HcClient } from './hc/client';
 import { hcHookMachine } from './sessionHook/installer';
@@ -274,28 +280,34 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * The session a native view on this endpoint reads, or null when the
-	 * endpoint is not the published one or cannot show a native view: its kind
-	 * reports no agent session, or its transcripts live on another host
-	 * (ADR-0002, ADR-0005).
+	 * The native view's session watcher for panes on this runtime (ADR-0006),
+	 * or null while that runtime is not the published one or cannot back a
+	 * native view. Never the published runtime's on another's behalf: the
+	 * same pane id on two runtimes is two panes.
 	 */
-	nativeSession(
-		endpointId: string,
-	): EndpointSession<HerdrClient, WorkspaceScope, TabLabels> | null {
-		const session = this.endpointSession(endpointId);
-		if (!session || !this.nativeCapable(session.endpoint)) return null;
-		// Only herdr reports agent sessions; the capability says so, and this
-		// narrows the session to the herdr client and scope the view reads.
-		const { client, scope } = session;
-		if (!(client instanceof HerdrClient) || !(scope instanceof WorkspaceScope)) return null;
-		return { endpoint: session.endpoint, client, scope, tabLabels: session.tabLabels };
+	nativeWatcher(endpointId: string): SessionWatcher | null {
+		const current = this.connection.current;
+		if (!current || current.endpoint.id !== endpointId) return null;
+		const native = nativeAdapterFor(this.kindOf(current.endpoint.runtime.kind), current.endpoint);
+		return native?.watcher(current) ?? null;
 	}
 
-	/** Whether panes on this endpoint can be shown in the native view at all. */
-	nativeCapable(endpoint: Endpoint): boolean {
-		return (
-			!isRemoteEndpoint(endpoint) && this.kindOf(endpoint.runtime.kind).capabilities.nativeView
-		);
+	/** Where this runtime's transcripts are read, or null while they cannot be. */
+	nativeTranscripts(endpointId: string): TranscriptSource | null {
+		const endpoint = this.endpointFor(endpointId);
+		if (!endpoint) return null;
+		const native = nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint);
+		const current = this.connection.current;
+		return native?.transcripts(endpoint, current?.endpoint.id === endpointId ? current : null) ?? null;
+	}
+
+	/** What a native view's prompt and key senders go through: its own runtime's client. */
+	nativeClient(endpointId: string): PromptClient | null {
+		const session = this.endpointSession(endpointId);
+		if (!session) return null;
+		return nativeAdapterFor(this.kindOf(session.endpoint.runtime.kind), session.endpoint)
+			? session.client
+			: null;
 	}
 	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -340,18 +352,13 @@ export default class HerdrPlugin extends Plugin {
 		return endpoint ? this.kindOf(endpoint.runtime.kind).capabilities.sharedPins : false;
 	}
 	/**
-	 * The native view's session models (#93, ADR-0003), one per pane while a
-	 * view watches it. Over the published connection only while that runtime
-	 * can show a native view: a local herdr. A remote pane keeps a terminal
-	 * surface until an SSH transcript adapter exists (ADR-0002), and herdr-core
-	 * reports no agent session (ADR-0005).
+	 * The native view's session models (#93, ADR-0003), one per runtime and
+	 * pane while a view watches it, each over its own runtime's watcher and
+	 * transcript source as that runtime's kind supplies them (ADR-0006).
 	 */
 	readonly sessionModels = new SessionModelRegistry({
-		source: new LocalTranscriptSource(),
-		watcher: () => {
-			const current = this.connection.current;
-			return scopeWatcher(current ? this.nativeSession(current.endpoint.id) : null);
-		},
+		watcher: (endpointId) => this.nativeWatcher(endpointId),
+		source: (endpointId) => this.nativeTranscripts(endpointId),
 	});
 	/**
 	 * Tabs that swapped their surface where they stand (#100, #105). The table

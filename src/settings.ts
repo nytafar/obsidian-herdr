@@ -1508,7 +1508,7 @@ export function buildNativeViewSection(
 	new Setting(containerEl)
 		.setName('Trust new folders automatically')
 		.setDesc(
-			'Answer the workspace trust prompt from the native view, so a fresh agent in a new folder starts without a trip to the terminal. Nothing else is answered for you: tool permissions are Claude\u2019s own, and questions and plan approval are yours. Off by default.',
+			'Answer the workspace trust prompt from the native view, so a fresh agent in a new folder starts without a trip to the terminal. Only where the runtime identifies the prompt as the trust prompt; herdr does not, so there the waiting card\u2019s button answers it. Nothing else is answered for you: tool permissions are Claude\u2019s own, and questions and plan approval are yours. Off by default.',
 		)
 		.addToggle((toggle) =>
 			toggle.setValue(settings.nativeAutoTrustFolders === true).onChange(async (value) => {
