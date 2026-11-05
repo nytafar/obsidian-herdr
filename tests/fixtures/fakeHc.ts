@@ -251,3 +251,43 @@ export function manualTimers() {
 	};
 	return { timers, fire, pending };
 }
+
+/**
+ * hc's `file.read` over in-memory files, as `files.rs` answers it (0.1.18):
+ * lines `offset..`, at most `limit` and at most `maxBytes` of them as JSON
+ * (whole lines; a control character, `"` or `\` counts six), a trailing
+ * partial line counted and sent as it stands, and `invalid_params` for an
+ * offset past the end (unless 1) or a line over the cap. `maxBytes` is 8 MB
+ * in hc; a test scales it down.
+ */
+export function fileLines(
+	files: ReadonlyMap<string, string>,
+	params: Record<string, unknown>,
+	maxBytes = 8 << 20,
+): { text: string; first: number; last: number; lines: number } {
+	const path = String(params.path);
+	const text = files.get(path);
+	if (text === undefined) throw new RpcError('not_found', `no file ${path}`);
+	const first = typeof params.offset === 'number' ? params.offset : 1;
+	const limit = typeof params.limit === 'number' ? params.limit : Number.MAX_SAFE_INTEGER;
+	const all = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+	const total = all.length;
+	if (first === 0 || (first > total && first > 1)) {
+		throw new RpcError('invalid_params', `offset ${first}: the file has ${total} lines`, -32602);
+	}
+	const jsonLength = (line: string): number =>
+		Buffer.byteLength(line) + 5 * [...Buffer.from(line)].filter((b) => b < 0x20 || b === 0x22 || b === 0x5c).length;
+	let out = '';
+	let size = 0;
+	let given = 0;
+	for (const line of all.slice(first - 1, first - 1 + limit)) {
+		size += jsonLength(line);
+		if (size > maxBytes) break;
+		out += line;
+		given++;
+	}
+	if (given === 0 && limit > 0 && first <= total) {
+		throw new RpcError('invalid_params', `line ${first} is over the cap`, -32602);
+	}
+	return { text: out, first, last: first + given - 1, lines: total };
+}

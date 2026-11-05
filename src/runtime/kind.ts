@@ -42,8 +42,8 @@ import type { TabLabels } from '../tabLabels';
 
 /**
  * What a runtime of a kind can do, as the UI asks it. herdr has all of it;
- * herdr-core has no tabs, splits, rename or pane focus, and no agent session
- * for the native view to follow (ADR-0005).
+ * herdr-core has no tabs, splits, rename or pane focus (ADR-0005), and its
+ * native view needs the Claude session hook per terminal (ADR-0006).
  */
 export interface RuntimeCapabilities {
 	/** "New tab here", and tab labels for grouping. */
@@ -82,7 +82,10 @@ export const HERDR_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	nativeView: true,
 });
 
-/** ADR-0005's mapping: start and close exist, the rest has no hc method. */
+/**
+ * ADR-0005's mapping: start and close exist, the rest has no hc method. The
+ * native view follows the session label the Claude hook writes (ADR-0006).
+ */
 export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	tabs: false,
 	splits: false,
@@ -91,11 +94,11 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 	focus: false,
 	close: true,
 	sharedPins: true,
-	nativeView: false,
+	nativeView: true,
 });
 
 /** Why the native view is not offered for a kind without agent sessions. */
-export const NATIVE_NO_SESSION_REASON = 'no agent session on herdr-core';
+export const NATIVE_NO_SESSION_REASON = 'no agent session for this runtime kind';
 
 /**
  * Why the native view is not offered for a runtime whose kind has one but

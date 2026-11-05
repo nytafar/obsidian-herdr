@@ -37,6 +37,9 @@ import {
 } from './model';
 import type { HcEvent } from './streams';
 
+/** See {@link HcScope.onIngested}. */
+export type IngestListener = (address: string | null, type: string) => void;
+
 export interface HcScopeOptions {
 	/** The runtime's space override (id or name); empty resolves. */
 	space: string;
@@ -57,6 +60,7 @@ export class HcScope implements ConnectionScope {
 	private readonly handlers = new Map<string, Set<(...args: never) => void>>();
 	private readonly docListeners = new Set<() => void>();
 	private readonly tabListeners = new Set<() => void>();
+	private readonly ingestListeners = new Set<IngestListener>();
 
 	constructor(private readonly options: HcScopeOptions) {}
 
@@ -106,6 +110,11 @@ export class HcScope implements ConnectionScope {
 		return this.store.get(address);
 	}
 
+	/** Every terminal on the core, in scope or not, as last reported. */
+	terminals(): HcTerminal[] {
+		return this.store.all();
+	}
+
 	/** Names of every live terminal on the core: a new one must not reuse any. */
 	agentNames(): Set<string> {
 		const names = new Set<string>();
@@ -133,6 +142,7 @@ export class HcScope implements ConnectionScope {
 	reset(seq: number, terminals: readonly unknown[]): void {
 		this.store.reset(seq, terminals);
 		this.reconcile();
+		this.emitIngested(null, 'snapshot');
 	}
 
 	/** One event from the stream, in order. */
@@ -142,7 +152,33 @@ export class HcScope implements ConnectionScope {
 			if (name === 'herdr-app') for (const listener of [...this.docListeners]) listener();
 			return;
 		}
-		if (this.store.apply(event)) this.reconcile();
+		if (!this.store.apply(event)) return;
+		this.reconcile();
+		if (event.terminal) this.emitIngested(event.terminal, event.type);
+	}
+
+	/**
+	 * Every change to a terminal's record, once the store holds it and the
+	 * rows have been reconciled: the event's terminal and type, or a null
+	 * address and `snapshot` when every terminal was replaced at once. For
+	 * readers of what the rows leave out — the session label and the
+	 * foreground pid (`./sessionWatcher.ts`), and what kicks a transcript read
+	 * (`./transcriptSource.ts`) — which must see the record as the event left
+	 * it.
+	 */
+	onIngested(listener: IngestListener): Unsubscribe {
+		this.ingestListeners.add(listener);
+		return () => this.ingestListeners.delete(listener);
+	}
+
+	private emitIngested(address: string | null, type: string): void {
+		for (const listener of [...this.ingestListeners]) {
+			try {
+				listener(address, type);
+			} catch {
+				// One bad subscriber must not stop the others or the event stream.
+			}
+		}
 	}
 
 	/** Called when the `herdr-app` document changed and should be read again. */
@@ -163,6 +199,7 @@ export class HcScope implements ConnectionScope {
 	forget(paneId: string): void {
 		this.store.delete(paneId);
 		this.reconcile();
+		this.emitIngested(paneId, 'removed');
 	}
 
 	/** herdr-core announces every change, so there is nothing to poll. */

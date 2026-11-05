@@ -20,6 +20,12 @@
  *   discovery by this kind found, else it is searched for when the tab
  *   starts, so a tab pinned to an hc runtime still opens while a runtime of
  *   either kind is active.
+ * - **Native view** (ADR-0006). The session is the label the Claude hook
+ *   writes, read by `hc/sessionWatcher.ts` with the foreground pid check.
+ *   Transcripts are this machine's files on a local runtime, and read with
+ *   `file.read` over the runtime's own connection on an SSH one
+ *   (`hc/transcriptSource.ts`). One watcher and one source per connection,
+ *   so a session model never reopens a tail for a source that did not change.
  */
 
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
@@ -31,13 +37,12 @@ import { HcTerminalSession } from '../hc/terminalSession';
 import { parseSpaces } from '../hc/model';
 import { HcScope } from '../hc/scope';
 import { HcTabLabels } from '../hc/tabLabels';
+import { hcSessionWatcher } from '../hc/sessionWatcher';
+import { HcTranscriptSource } from '../hc/transcriptSource';
+import { LocalTranscriptSource } from '../native/transcriptSource';
+import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
-import {
-	HERDR_CORE_CAPABILITIES,
-	NATIVE_NO_SESSION_REASON,
-	type RuntimeKindAdapter,
-	type StatusLine,
-} from './kind';
+import { HERDR_CORE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
 
 /** The document herdr-app keeps its spaces in. */
 export const HERDR_APP_DOC = 'herdr-app';
@@ -104,6 +109,10 @@ const HC_NOT_FOUND =
 export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 	/** The local `hc` each runtime's last discovery found, by runtime id. */
 	const discovered = new Map<string, string>();
+	const localTranscripts = new LocalTranscriptSource();
+	// Per connection, keyed by its scope, which lives exactly as long.
+	const watchers = new WeakMap<HcScope, SessionWatcher>();
+	const remoteTranscripts = new WeakMap<HcScope, HcTranscriptSource>();
 	const localArgv = (runtime: Readonly<RuntimeConfig>): string[] | null => {
 		// Spawned without a shell, so a `~` in the override is expanded here.
 		const override = runtime.binary.trim();
@@ -115,9 +124,37 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 		unavailable: null,
 		terminalUnavailable: null,
 		capabilities: HERDR_CORE_CAPABILITIES,
-		nativeUnavailable: NATIVE_NO_SESSION_REASON,
-		// The session hook and its label watcher come with ADR-0006's next step.
-		native: null,
+		nativeUnavailable: null,
+		native: {
+			transcriptAccess: (endpoint) => (endpoint.runtime.target === 'ssh' ? 'rpc' : 'local'),
+			watcher: (connection) => {
+				const scope = connection.scope;
+				let watcher = watchers.get(scope);
+				if (!watcher) {
+					watcher = hcSessionWatcher(scope);
+					watchers.set(scope, watcher);
+				}
+				return watcher;
+			},
+			// A local runtime's files stay readable while another runtime is
+			// active; a remote one's only through its own live connection.
+			transcripts: (endpoint, connection) => {
+				if (endpoint.runtime.target !== 'ssh') return localTranscripts;
+				if (!connection) return null;
+				const scope = connection.scope;
+				let source = remoteTranscripts.get(scope);
+				if (!source) {
+					const client = connection.client;
+					source = new HcTranscriptSource(
+						{ request: (method, params) => client.request(method, params) },
+						scope,
+						{ timers: host.timers },
+					);
+					remoteTranscripts.set(scope, source);
+				}
+				return source;
+			},
+		},
 		connection: {
 			discover: async (endpoint) => {
 				const runtime = endpoint.runtime;

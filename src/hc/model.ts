@@ -36,6 +36,12 @@ export interface HcStatus {
 	/** `idle`, `working`, `done`, `blocked`, `error`; anything else is kept as sent. */
 	state: string;
 	app: string;
+	/**
+	 * What a `blocked` program is waiting for, when it said: `permission`,
+	 * `question` or `auth` (OSC 7501 `kind=`, [[herdr-core-api]] §6). Absent
+	 * otherwise; anything else is kept as sent.
+	 */
+	kind?: string;
 }
 
 /** The Terminal record fields the plugin reads. */
@@ -95,7 +101,8 @@ export function parseForeground(value: unknown): HcForeground | null {
 export function parseStatus(value: unknown): HcStatus | null {
 	const source = record(value);
 	if (!source || typeof source.state !== 'string') return null;
-	return { state: source.state, app: str(source.app) };
+	const kind = str(source.kind);
+	return { state: source.state, app: str(source.app), ...(kind ? { kind } : {}) };
 }
 
 /** A Terminal record, or null when it has no address. */

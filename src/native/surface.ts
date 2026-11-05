@@ -115,8 +115,9 @@ export interface PaneWhere {
 	 */
 	remote: boolean;
 	/**
-	 * Why the kind cannot back a native view (herdr-core reports no agent
-	 * session, ADR-0005), or null/absent when only the target decides.
+	 * Why the native view cannot be offered here, or null/absent when only the
+	 * target decides: the kind's reason (a kind with no agent session), or the
+	 * pane's own (an hc terminal with no Claude session label, ADR-0006).
 	 */
 	kindReason?: string | null;
 }

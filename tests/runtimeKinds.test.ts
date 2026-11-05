@@ -258,16 +258,18 @@ describe('a kind this build cannot run yet', () => {
 		);
 	});
 
-	it('leaves out tabs, splits, rename, focus and the native view (ADR-0005)', () => {
+	it('leaves out tabs, splits, rename and focus, and has no native adapter to show anything with', () => {
 		expect(core.capabilities).toMatchObject({
 			tabs: false,
 			splits: false,
 			rename: false,
 			focus: false,
-			nativeView: false,
 			startAgent: true,
 			close: true,
 		});
+		// The capability is herdr-core's (ADR-0006), but a kind that cannot run
+		// supplies no watcher or source, so the view says why instead.
+		expect(core.native).toBeNull();
 		expect(paneViewAvailability('native', nativeViewBlock(core, endpoint)).reason).toBe(
 			NATIVE_NO_SESSION_REASON,
 		);

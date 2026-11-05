@@ -255,6 +255,18 @@ export function terminalHeaderActions(
 }
 
 /**
+ * Where a pane lives, with the pane's own reason against the native view on
+ * top of its runtime's (ADR-0006): an hc terminal whose Claude has not
+ * labelled it with its session stays a terminal and names the install
+ * command. The runtime's reason comes first; only a connected runtime has a
+ * pane reason, so a tab on one that is not keeps what it shows.
+ */
+export function withPaneReason(block: PaneWhere, paneReason: string | null): PaneWhere {
+	if (block.remote || block.kindReason || !paneReason) return block;
+	return { remote: false, kindReason: paneReason };
+}
+
+/**
  * What the `defaultView` setting does to one open tab (#104).
  *
  * The vault default is not every tab's view. A tab that pinned its own view is
@@ -693,9 +705,34 @@ export class TerminalView extends ItemView {
 	 * registry can show nothing; its terminal says why.
 	 */
 	private where(): PaneWhere {
-		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
+		const { endpointId, paneId } = this.terminal.identity;
+		const endpoint = this.plugin.endpointFor(endpointId);
 		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
-		return nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), endpoint);
+		const block = nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), endpoint);
+		if (block.remote || block.kindReason || !paneId) return block;
+		return withPaneReason(block, this.plugin.nativeWatcher(endpointId)?.unavailable?.(paneId) ?? null);
+	}
+
+	/**
+	 * The pane's cwd on this machine, for what is looked up here: the `/`
+	 * catalog and relative links. A pane on an SSH runtime working inside the
+	 * remote vault maps onto this vault; anywhere else it stays as reported.
+	 */
+	private paneCwdHere(): string {
+		const cwd = this.paneCwd();
+		const remoteVault = this.remoteVaultPath();
+		if (!remoteVault || !cwd) return cwd;
+		const local = this.plugin.vaultPath();
+		if (cwd === remoteVault) return local;
+		return cwd.startsWith(`${remoteVault}/`) ? `${local}${cwd.slice(remoteVault.length)}` : cwd;
+	}
+
+	/** The vault's path on the pane's machine when that is another one, else ''. */
+	private remoteVaultPath(): string {
+		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
+		const runtime = endpoint?.runtime;
+		if (runtime?.target !== 'ssh') return '';
+		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
 	}
 
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
@@ -740,13 +777,17 @@ export class TerminalView extends ItemView {
 			autoTrustFolders: () => this.plugin.settings.nativeAutoTrustFolders === true,
 			// `/` offers the pane's commands and skills, `@` the vault's files
 			// (#98). The pane's own cwd decides the project scope and the form a
-			// mention takes; the vault path is the local one, because a native
-			// view is local-only (ADR-0002) even while an SSH runtime is active.
+			// mention takes, on the pane's own machine (ADR-0006).
 			onPromptInput: (inputEl) => {
 				const suggest = new PromptSuggest(inputEl, {
 					app: this.app,
 					cwd: () => this.paneCwd(),
+					catalogCwd: () => this.paneCwdHere(),
+					// The agent opens a mention on its own machine: on an SSH
+					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {
+						const remote = this.remoteVaultPath();
+						if (remote) return remote;
 						const adapter = this.app.vault.adapter;
 						return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
 					},
@@ -766,7 +807,7 @@ export class TerminalView extends ItemView {
 			noteSplitBefore: () =>
 				normalizeTerminalPlacement(this.plugin.settings.terminalPlacement) !== 'split-left',
 			// Relative links resolve from the pane's cwd when it is in the vault.
-			linkSourcePath: () => linkSourcePath(this.paneCwd(), this.plugin.vaultPath()),
+			linkSourcePath: () => linkSourcePath(this.paneCwdHere(), this.plugin.vaultPath()),
 		});
 	}
 
@@ -947,6 +988,8 @@ export class TerminalView extends ItemView {
 				// Only a start that failed for want of a herdr retries; the
 				// lifecycle knows whether this was one.
 				this.detached('reconnect', () => this.terminal.connectionArrived());
+				// What the pane can be shown as may have moved with the runtime.
+				this.detached('native availability', () => this.showSurface());
 			}),
 		);
 		this.register(() => {
@@ -1065,6 +1108,13 @@ export class TerminalView extends ItemView {
 		this.unbindScope.push(labels.subscribe(() => this.scheduleHeader()));
 		labels.ensure(scope.get(this.paneId)?.tabId);
 		this.scheduleHeader();
+		// A pane whose native view comes and goes with its session (an hc
+		// terminal's label, ADR-0006): mount whichever surface it can show now.
+		const watcher = this.plugin.nativeWatcher(this.terminal.identity.endpointId);
+		const off = watcher?.onAvailability?.((paneId) => {
+			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
+		});
+		if (off) this.unbindScope.push(off);
 	}
 
 	/** Coalesces a burst of scope events into one retitle per animation frame. */

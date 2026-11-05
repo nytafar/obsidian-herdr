@@ -12,8 +12,11 @@ import {
 	keymapReturn,
 	VisibilityTracker,
 	TERMINAL_VIEW_TYPE,
+	withPaneReason,
 	type TitleContext,
 } from '../src/views/terminalView';
+import { NATIVE_NO_LABEL_REASON } from '../src/hc/sessionWatcher';
+import { effectivePaneView } from '../src/native/surface';
 // The session-and-renderer half of the view moved to the lifecycle module (#83);
 // its pure decisions moved with it.
 import {
@@ -167,6 +170,30 @@ describe('terminalHeaderActions (issue #105)', () => {
 		expect(header.viewToggle.label).toBe('Switch to native view (local panes only)');
 		// A remote terminal is still a terminal: the eye stays.
 		expect(header.controlToggle).toBe(true);
+	});
+});
+
+describe('withPaneReason: an hc terminal without a session label (ADR-0006)', () => {
+	it('keeps the tab a terminal and names the install command', () => {
+		const where = withPaneReason({ remote: false, kindReason: null }, NATIVE_NO_LABEL_REASON);
+		expect(effectivePaneView({ stored: 'native', fallback: 'native', ...where })).toBe('terminal');
+		const header = terminalHeaderActions({ view: 'terminal', ...where });
+		expect(header.viewToggle.disabled).toBe(true);
+		expect(header.viewToggle.label).toBe(
+			'Switch to native view (no Claude session label; run "Install or remove the Claude session hook")',
+		);
+	});
+
+	it('offers native once the label is there, and never outranks the runtime’s reason', () => {
+		const open = withPaneReason({ remote: false, kindReason: null }, null);
+		expect(effectivePaneView({ stored: null, fallback: 'native', ...open })).toBe('native');
+		expect(withPaneReason({ remote: true, kindReason: null }, NATIVE_NO_LABEL_REASON)).toEqual({
+			remote: true,
+			kindReason: null,
+		});
+		expect(withPaneReason({ remote: false, kindReason: 'kind says no' }, NATIVE_NO_LABEL_REASON).kindReason).toBe(
+			'kind says no',
+		);
 	});
 });
 

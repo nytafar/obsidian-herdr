@@ -1365,7 +1365,7 @@ export function buildTerminalSection(
 	new Setting(containerEl)
 		.setName('Default view')
 		.setDesc(
-			'What a tab shows until it chooses for itself. A terminal, or the native view, which shows the pane’s agent session as Markdown with a prompt box and is offered for local panes only. Each tab keeps its own choice, switched from its header button or its tab menu; open tabs that never chose follow this one and are rebuilt on change.',
+			'What a tab shows until it chooses for itself. A terminal, or the native view, which shows the pane’s agent session as Markdown with a prompt box. It is offered for herdr on this machine and for herdr-core on this machine or over SSH, where each terminal needs the Claude session hook; other panes show a terminal. Each tab keeps its own choice, switched from its header button or its tab menu; open tabs that never chose follow this one and are rebuilt on change.',
 		)
 		.addDropdown((dropdown) => {
 			for (const view of PANE_VIEWS) {

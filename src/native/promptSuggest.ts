@@ -94,9 +94,18 @@ export function withSuggestion(
 
 export interface PromptSuggestOptions {
 	app: App;
-	/** The pane's working directory: the project scope and the mention form. */
+	/** The pane's working directory, on the pane's machine: the mention form. */
 	cwd: () => string;
-	/** The vault's base path on this machine, or '' when it has none. */
+	/**
+	 * The same directory as this machine sees it, for the project scope of the
+	 * `/` catalog, which is read here. Defaults to {@link cwd}; differs for a
+	 * pane on an SSH runtime working inside the remote copy of the vault.
+	 */
+	catalogCwd?: () => string;
+	/**
+	 * The vault's base path on the pane's machine (an SSH runtime's remote
+	 * vault path), or '' when it has none: where a mentioned file is opened.
+	 */
 	vaultPath: () => string;
 }
 
@@ -208,7 +217,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 
 	/** The catalog for this pane's cwd, re-read when it is stale or the cwd moved. */
 	private catalog(): CatalogEntry[] {
-		const cwd = this.options.cwd();
+		const cwd = (this.options.catalogCwd ?? this.options.cwd)();
 		const now = Date.now();
 		const cached = this.cached;
 		if (cached && cached.cwd === cwd && now - cached.at < CATALOG_TTL_MS) return cached.entries;

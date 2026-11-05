@@ -10,9 +10,10 @@
  *
  * herdr's watcher is `../herdr/sessionWatcher.ts`: the scope for cwd and
  * status, and `agent_session` off `pane.updated`, the one recorded exception
- * to reacting only to status transitions (CLAUDE.md). herdr-core's will read
- * the session label its Claude hook writes (ADR-0006) and the blocked kinds
- * its program status carries.
+ * to reacting only to status transitions (CLAUDE.md). herdr-core's is
+ * `../hc/sessionWatcher.ts`: the session label its Claude hook writes, taken
+ * only while its pid is the terminal's foreground pid (ADR-0006), and the
+ * blocked kinds its program status carries.
  */
 
 import type { AgentStatus } from '../herdr/types.gen';
@@ -92,4 +93,19 @@ export interface SessionWatcher {
 	 * when a fresh connection primes its scope, is followed from then on.
 	 */
 	onMembership(handler: (paneId: string) => void): Unsubscribe;
+	/**
+	 * Why this pane cannot be shown in the native view although its runtime
+	 * can, or null when it can or the runtime does not know the pane. Only a
+	 * kind whose session needs something on the pane's side says anything
+	 * here: herdr-core, whose session is the Claude hook's label (ADR-0006),
+	 * so a terminal without one stays a terminal and names the install
+	 * command. herdr's watcher leaves it out.
+	 */
+	unavailable?(paneId: string): string | null;
+	/**
+	 * Fires with a pane whose {@link unavailable} answer may have changed, so a
+	 * tab can mount the surface it can show now. Present wherever
+	 * `unavailable` is.
+	 */
+	onAvailability?(handler: (paneId: string) => void): Unsubscribe;
 }

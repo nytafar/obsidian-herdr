@@ -87,6 +87,7 @@ import type { TranscriptSource } from './native/transcriptSource';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { HcClient } from './hc/client';
 import { hcHookMachine } from './sessionHook/installer';
+import { SESSION_HOOK_COMMAND_NAME } from './hc/sessionWatcher';
 import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
 
 /** Delay after a connection setting changes before reconnecting (typing). */
@@ -903,7 +904,7 @@ export default class HerdrPlugin extends Plugin {
 		// ADR-0006: offered while the active runtime is herdr-core.
 		this.addCommand({
 			id: 'claude-session-hook',
-			name: 'Install or remove the Claude session hook',
+			name: SESSION_HOOK_COMMAND_NAME,
 			checkCallback: (checking) => {
 				if (activeRuntimeOf(this.settings).kind !== 'herdr-core') return false;
 				if (!checking) this.openSessionHook();
