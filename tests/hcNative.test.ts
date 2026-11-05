@@ -18,7 +18,7 @@ import {
 	nativeForeignLabelReason,
 	SESSION_HOOK_COMMAND_NAME,
 } from '../src/hc/sessionWatcher';
-import { HcTranscriptSource } from '../src/hc/transcriptSource';
+import { HC_TRANSCRIPT_UNREADABLE, HcTranscriptSource } from '../src/hc/transcriptSource';
 import type { HcTerminal } from '../src/hc/model';
 import type { HcEvent } from '../src/hc/streams';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
@@ -357,9 +357,12 @@ describe('the herdr-core transcript source over file.read', () => {
 		const { scope, state } = sourceScope(options.terminals);
 		const source = new HcTranscriptSource(reader, scope, { timers, pageLines: options.pageLines });
 		const batches: { lines: string[]; restart: boolean }[] = [];
-		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }));
+		const problems: (string | null)[] = [];
+		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }), {
+			onProblem: (problem) => problems.push(problem),
+		});
 		const delivered = (): string[] => batches.flatMap((batch) => batch.lines);
-		return { source, stream, batches, delivered, fire, delays, calls, state };
+		return { source, stream, batches, delivered, fire, delays, calls, state, problems };
 	}
 
 	it('delivers whole lines and holds a partial last line until its newline arrives', async () => {
@@ -462,6 +465,29 @@ describe('the herdr-core transcript source over file.read', () => {
 		tail.fire(15_000);
 		await vi.waitFor(() => expect(tail.delivered()).toEqual([line(1), line(3), line(4)]));
 		expect(tail.batches.some((batch) => batch.restart)).toBe(false);
+		tail.stream.close();
+	});
+
+	it('says why when hc refuses even line 1, and clears it once the file reads', async () => {
+		// Line 1 over the cap (8 MB in hc): the probe that tells refusals apart
+		// is refused too, so nothing can be read, and the view must not stay
+		// silently empty.
+		const big = line(1, 'y'.repeat(500));
+		const files = new Map([[PATH_1, `${big}\n${line(2)}\n`]]);
+		const tail = openTail(files, { maxBytes: 200 });
+		await vi.waitFor(() => expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE]));
+		expect(tail.delivered()).toEqual([]);
+		expect(HC_TRANSCRIPT_UNREADABLE).toContain('64 MB');
+		expect(HC_TRANSCRIPT_UNREADABLE).toContain('8 MB');
+		// Said once, not on every poll.
+		tail.fire(15_000);
+		await settle();
+		expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE]);
+		// The file is readable again: the reason goes, the lines come.
+		files.set(PATH_1, `${line(1)}\n${line(2)}\n`);
+		tail.fire(15_000);
+		await vi.waitFor(() => expect(tail.delivered()).toEqual([line(1), line(2)]));
+		expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE, null]);
 		tail.stream.close();
 	});
 

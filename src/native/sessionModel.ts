@@ -73,6 +73,12 @@ export interface SessionModelView {
 	 * anything that would act on what the state does not hold must wait for this.
 	 */
 	readonly loaded: boolean;
+	/**
+	 * Why the transcript cannot be read although the session names it, in
+	 * words for the view (herdr-core's `file.read` limits), or null. Optional
+	 * so a fake need not say it; a missing value is no problem.
+	 */
+	readonly readProblem?: string | null;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	/**
@@ -157,6 +163,8 @@ export class SessionModel implements SessionModelView {
 	private streamSource: TranscriptSource | null = null;
 	/** Whether the current tail has delivered anything; see {@link loaded}. */
 	private delivered = false;
+	/** What the tail last said it cannot read, for the file being shown. */
+	private problem: string | null = null;
 	/**
 	 * The dangling `tool_use` this pane's block has been claimed for, or null
 	 * while it is unclaimed. Per pane rather than per view, which is the whole
@@ -220,6 +228,10 @@ export class SessionModel implements SessionModelView {
 	 */
 	get loaded(): boolean {
 		return this.delivered;
+	}
+
+	get readProblem(): string | null {
+		return this.problem;
 	}
 
 	/** The runtime's agent session for the pane, empty when there is none yet. */
@@ -292,6 +304,7 @@ export class SessionModel implements SessionModelView {
 		this.stream?.close();
 		this.stream = null;
 		this.streamSource = null;
+		this.problem = null;
 	}
 
 	/**
@@ -390,8 +403,17 @@ export class SessionModel implements SessionModelView {
 		// there is no gap between reading the history and following it.
 		// A closed tail delivers nothing (`TranscriptStream`), so whatever this
 		// hears is the file being shown.
-		this.stream = source.open(path, (lines, restart) => this.onLines(lines, restart === true));
+		this.stream = source.open(path, (lines, restart) => this.onLines(lines, restart === true), {
+			onProblem: (problem) => this.onProblem(problem),
+		});
 		this.streamSource = source;
+	}
+
+	/** The tail says it cannot read the file, or can again: news to the view. */
+	private onProblem(problem: string | null): void {
+		if (problem === this.problem) return;
+		this.problem = problem;
+		this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	/** Empties everything read so far, for another file or the same one replaced. */

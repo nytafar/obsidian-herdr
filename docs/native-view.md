@@ -161,7 +161,10 @@ picks up again when its runtime is active once more.
   setting says so. herdr-core reads its transcripts over its connection, so
   its SSH runtimes have the view.
 - **herdr-core over SSH:** a transcript over 64 MB cannot be read (hc's
-  `file.read` limit), and a single transcript line over 8 MB is skipped. On
+  `file.read` limit), and a single transcript line over 8 MB is skipped. When
+  the file is over 64 MB, or its first line is over 8 MB, nothing can be read
+  and the view says so where it would say "No turns in this session yet."; the
+  terminal view still follows the agent. On
   SSH the `/` list comes from this machine's commands and the vault's own.
 - **A prompt to a herdr-core terminal less than 10 seconds old** may be
   refused while its screen is still settling; send it again.

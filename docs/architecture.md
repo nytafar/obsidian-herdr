@@ -641,8 +641,20 @@ session model never reopens a tail for a source that did not change.
     head restarts it with `restart: true`. An `invalid_params` is diagnosed
     with a one-line read of line 1: shorter or another head restarts, an
     offset past the count is "nothing new", and a line that exists but
-    cannot be sent is skipped and counted.
+    cannot be sent is skipped and counted. When that one-line read of line 1
+    is itself `invalid_params` (the file over 64 MB, or line 1 over 8 MB),
+    nothing can be read or told apart: the tail says so through
+    `TailOptions.onProblem`, the session model keeps it as `readProblem`, and
+    the native view shows it in the empty line, above any turns already read.
+    The next successful read clears it.
   - Pages follow `last` to `lines`, 4000 lines at most per read.
+  - **Cost, not redesigned:** the core reads the whole file for every
+    `file.read`, whatever `offset` and `limit` say. Each poll and each kick is
+    at least one whole-file read on the remote host (two when something new
+    came and the head is compared, more for a multi-page catch-up), so a
+    transcript of tens of megabytes is read in full every 2 s while its agent
+    works. Fine for the sizes sessions reach; a cheaper seam (a byte offset,
+    a stat) would need hc to offer one.
   - Reads are kicked by `status` and `turn` of the terminal whose label
     names the file (debounced 50 ms, and again 1 s later for what Claude
     writes after reporting) and by every snapshot; a poll runs every 2 s
