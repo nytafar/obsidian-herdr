@@ -1106,16 +1106,21 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.resizeObserver.observe(el);
 	}
 
-	/** The line shown when there is nothing to show, and nothing when there is. */
+	/**
+	 * The line shown when there is nothing to show, and nothing when there is;
+	 * or, above whatever is shown, why the transcript cannot be read (a
+	 * runtime's own limit), which an empty view would otherwise hide.
+	 */
 	private updateEmpty(): void {
 		const root = this.rootEl;
 		if (!root) return;
-		if (this.turnEls.size > 0) {
+		const problem = this.model?.readProblem ?? null;
+		if (this.turnEls.size > 0 && !problem) {
 			this.emptyEl?.remove();
 			this.emptyEl = null;
 			return;
 		}
-		const text = this.model?.path ? 'No turns in this session yet.' : 'No session yet.';
+		const text = problem ?? (this.model?.path ? 'No turns in this session yet.' : 'No session yet.');
 		if (!this.emptyEl) {
 			this.emptyEl = root.createDiv({ cls: ['herdr-native-empty', 'herdr-native-sizer'] });
 		}

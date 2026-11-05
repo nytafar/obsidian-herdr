@@ -13,8 +13,11 @@ import {
 	VisibilityTracker,
 	TERMINAL_VIEW_TYPE,
 	withPaneReason,
+	lookingAt,
+	NativeLook,
 	type TitleContext,
 } from '../src/views/terminalView';
+import type { SessionWatcher } from '../src/native/sessionWatcher';
 import { NATIVE_NO_LABEL_REASON } from '../src/hc/sessionWatcher';
 import { effectivePaneView } from '../src/native/surface';
 // The session-and-renderer half of the view moved to the lifecycle module (#83);
@@ -194,6 +197,68 @@ describe('withPaneReason: an hc terminal without a session label (ADR-0006)', ()
 		expect(withPaneReason({ remote: false, kindReason: 'kind says no' }, NATIVE_NO_LABEL_REASON).kindReason).toBe(
 			'kind says no',
 		);
+	});
+});
+
+describe('lookingAt: herdr-app’s "looking" for either surface', () => {
+	const front = { hostVisible: true, documentVisible: true, focused: true } as const;
+
+	it('counts a visible native view in a focused window as looking', () => {
+		expect(lookingAt({ ...front, surface: 'native' })).toEqual({ terminal: false, native: true });
+		expect(lookingAt({ ...front, surface: 'terminal' })).toEqual({ terminal: true, native: false });
+		expect(lookingAt({ ...front, surface: null })).toEqual({ terminal: false, native: false });
+	});
+
+	it('counts neither while the window is behind, hidden or the host has no box', () => {
+		for (const away of [
+			{ ...front, focused: false },
+			{ ...front, documentVisible: false },
+			{ ...front, hostVisible: false },
+			{ ...front, hostVisible: null },
+		]) {
+			expect(lookingAt({ ...away, surface: 'native' })).toEqual({ terminal: false, native: false });
+			expect(lookingAt({ ...away, surface: 'terminal' })).toEqual({ terminal: false, native: false });
+		}
+	});
+});
+
+describe('NativeLook: one tab’s look, told to the watcher of its runtime', () => {
+	function watcher(log: string[], name: string): SessionWatcher {
+		return {
+			snapshot: () => null,
+			onSession: () => () => undefined,
+			onStatus: () => () => undefined,
+			onMembership: () => () => undefined,
+			looking: (paneId, _viewer, looking) => log.push(`${name} ${paneId} ${String(looking)}`),
+		};
+	}
+
+	it('ends the look on the old watcher or pane before starting another', () => {
+		const log: string[] = [];
+		const viewer = {};
+		const look = new NativeLook(viewer);
+		const first = watcher(log, 'a');
+		look.set(first, 't1');
+		look.set(first, 't1');
+		expect(log).toEqual(['a t1 true', 'a t1 true']);
+		// A reconnect replaces the watcher.
+		const second = watcher(log, 'b');
+		look.set(second, 't1');
+		expect(log.slice(2)).toEqual(['a t1 false', 'b t1 true']);
+		// Pointed at another pane.
+		look.set(second, 't2');
+		expect(log.slice(4)).toEqual(['b t1 false', 'b t2 true']);
+		// Looking away, or closing.
+		look.set(null, 't2');
+		look.set(null, '');
+		expect(log.slice(6)).toEqual(['b t2 false']);
+	});
+
+	it('tells nothing to a runtime that shares no seen (herdr)', () => {
+		const look = new NativeLook({});
+		const herdr: SessionWatcher = { ...watcher([], 'h'), looking: undefined };
+		expect(() => look.set(herdr, 't1')).not.toThrow();
+		expect(() => look.set(null, '')).not.toThrow();
 	});
 });
 

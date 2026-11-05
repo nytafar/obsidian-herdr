@@ -103,6 +103,13 @@ export interface TailOptions {
 	pollMs?: number;
 	/** The most bytes one read takes; a longer file is read in pieces this size. */
 	chunkBytes?: number;
+	/**
+	 * Why the tail cannot read the file although it is there, in words for
+	 * the view, or null once it can again. Only a source with limits of its
+	 * own says anything (herdr-core's `file.read`, `../hc/transcriptSource.ts`);
+	 * a file that is not there yet is not a problem.
+	 */
+	onProblem?: (problem: string | null) => void;
 }
 
 /** A burst of writes inside this window is read once. */

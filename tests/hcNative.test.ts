@@ -15,9 +15,10 @@ import {
 	hcSessionWatcher,
 	NATIVE_NO_CLAUDE_REASON,
 	NATIVE_NO_LABEL_REASON,
+	nativeForeignLabelReason,
 	SESSION_HOOK_COMMAND_NAME,
 } from '../src/hc/sessionWatcher';
-import { HcTranscriptSource } from '../src/hc/transcriptSource';
+import { HC_TRANSCRIPT_UNREADABLE, HcTranscriptSource } from '../src/hc/transcriptSource';
 import { HcCommandCatalog } from '../src/hc/commandCatalog';
 import { BUILTIN_CATALOG_SOURCE } from '../src/native/commandCatalog';
 import type { HcTerminal } from '../src/hc/model';
@@ -113,8 +114,9 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		send('labels', 't1', { labels: label('s-1', 4242, PATH_1) });
 		expect(watcher.snapshot('t1')?.agentSession).toBe('');
 		expect(seen).toEqual([]);
-		// It reported itself as Claude, so what is missing is a label it owns.
-		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		// It reported itself as Claude, and the label is there but names
+		// another process: said so, not "install the hook".
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4242, 100));
 
 		// Then it did, and the label holds.
 		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 4242 });
@@ -145,7 +147,7 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		// A new Claude with the same stale label but another pid: still nothing.
 		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 6000 });
 		expect(seen).toEqual(['', 's-1', '']);
-		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4242, 6000));
 	});
 
 	it('clears on a lost or finished terminal', () => {
@@ -220,6 +222,77 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		expect(moved.slice(1).sort()).toEqual(['t1', 't2']);
 	});
 
+	it('marks a terminal read in a native view seen, under herdr-app’s rules', async () => {
+		const { scope, send } = scopeWith(
+			terminal('t1', { turn: 2, labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '1' }, status: { state: 'done', app: 'claude-code' } }),
+		);
+		const writes: [string, number][] = [];
+		const watcher = hcSessionWatcher(scope, {
+			writeSeen: (address, turn) => {
+				writes.push([address, turn]);
+				return Promise.resolve();
+			},
+		});
+		const view = {};
+		// Nobody in front of it: nothing written.
+		send('turn', 't1', { turn: 2 });
+		expect(writes).toEqual([]);
+		watcher.looking?.('t1', view, true);
+		await settle();
+		expect(writes).toEqual([['t1', 2]]);
+		// Told again on every focus or resize: once per turn, not once per call.
+		watcher.looking?.('t1', view, true);
+		// Another client marks it unread while it stays on screen: not overruled.
+		send('labels', 't1', { labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '1' } });
+		// The turn ends: status first, then turn. Decided on the turn.
+		send('status', 't1', { status: { state: 'working', app: 'claude-code' }, reported: true });
+		send('status', 't1', { status: { state: 'done', app: 'claude-code' }, reported: true });
+		expect(writes).toHaveLength(1);
+		send('turn', 't1', { turn: 3 });
+		expect(writes).toEqual([['t1', 2], ['t1', 3]]);
+		// Only to raise it: a label already at the turn is left alone.
+		send('labels', 't1', { labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '4' } });
+		send('turn', 't1', { turn: 4 });
+		expect(writes).toHaveLength(2);
+		// A second view of the pane looking away does not end the first one's look.
+		const other = {};
+		watcher.looking?.('t1', other, true);
+		watcher.looking?.('t1', other, false);
+		send('turn', 't1', { turn: 5 });
+		expect(writes.at(-1)).toEqual(['t1', 5]);
+		// The last one looking away does.
+		watcher.looking?.('t1', view, false);
+		send('turn', 't1', { turn: 6 });
+		expect(writes).toHaveLength(3);
+	});
+
+	it('says a rejected label belongs to another process, and never to install the hook', () => {
+		// A wrapper that forks: the hook ran in Claude (pid 4300), the terminal's
+		// foreground is the wrapper (pid 4242).
+		const { scope, send } = scopeWith(
+			terminal('t1', { labels: label('s-1', 4300, PATH_1), foreground: { name: 'claude-wrap', argv: ['claude-wrap'], cwd: CWD, pid: 4242 } }),
+		);
+		const watcher = hcSessionWatcher(scope);
+		const reason = watcher.unavailable?.('t1') ?? '';
+		expect(reason).toBe(nativeForeignLabelReason(4300, 4242));
+		expect(reason).not.toBe(NATIVE_NO_LABEL_REASON);
+		expect(reason).not.toContain(SESSION_HOOK_COMMAND_NAME);
+		expect(reason).toContain('4300');
+		expect(reason).toContain('4242');
+		expect(reason).toContain('forks');
+		// Foreground unknown (lost, or not polled yet): still not "install".
+		send('lost', 't1', { reason: 'holder_lost', exit_code: null, signal: null, finished_ms: null });
+		expect(watcher.unavailable?.('t1')).toBe(nativeForeignLabelReason(4300, null));
+		// No label at all is the hook missing.
+		send('labels', 't1', { labels: {} });
+		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+	});
+
+	it('shares no seen without a writer', () => {
+		const { scope } = scopeWith(terminal('t1'));
+		expect('looking' in hcSessionWatcher(scope)).toBe(false);
+	});
+
 	it('has no snapshot for a terminal outside the vault’s scope', () => {
 		const { scope } = scopeWith(terminal('t1', { cwd: '/srv', foreground: { name: 'claude', argv: [], cwd: '/srv', pid: 4242 }, labels: label('s-1', 4242, PATH_1) }));
 		expect(hcSessionWatcher(scope).snapshot('t1')).toBeNull();
@@ -286,9 +359,12 @@ describe('the herdr-core transcript source over file.read', () => {
 		const { scope, state } = sourceScope(options.terminals);
 		const source = new HcTranscriptSource(reader, scope, { timers, pageLines: options.pageLines });
 		const batches: { lines: string[]; restart: boolean }[] = [];
-		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }));
+		const problems: (string | null)[] = [];
+		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }), {
+			onProblem: (problem) => problems.push(problem),
+		});
 		const delivered = (): string[] => batches.flatMap((batch) => batch.lines);
-		return { source, stream, batches, delivered, fire, delays, calls, state };
+		return { source, stream, batches, delivered, fire, delays, calls, state, problems };
 	}
 
 	it('delivers whole lines and holds a partial last line until its newline arrives', async () => {
@@ -391,6 +467,29 @@ describe('the herdr-core transcript source over file.read', () => {
 		tail.fire(15_000);
 		await vi.waitFor(() => expect(tail.delivered()).toEqual([line(1), line(3), line(4)]));
 		expect(tail.batches.some((batch) => batch.restart)).toBe(false);
+		tail.stream.close();
+	});
+
+	it('says why when hc refuses even line 1, and clears it once the file reads', async () => {
+		// Line 1 over the cap (8 MB in hc): the probe that tells refusals apart
+		// is refused too, so nothing can be read, and the view must not stay
+		// silently empty.
+		const big = line(1, 'y'.repeat(500));
+		const files = new Map([[PATH_1, `${big}\n${line(2)}\n`]]);
+		const tail = openTail(files, { maxBytes: 200 });
+		await vi.waitFor(() => expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE]));
+		expect(tail.delivered()).toEqual([]);
+		expect(HC_TRANSCRIPT_UNREADABLE).toContain('64 MB');
+		expect(HC_TRANSCRIPT_UNREADABLE).toContain('8 MB');
+		// Said once, not on every poll.
+		tail.fire(15_000);
+		await settle();
+		expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE]);
+		// The file is readable again: the reason goes, the lines come.
+		files.set(PATH_1, `${line(1)}\n${line(2)}\n`);
+		tail.fire(15_000);
+		await vi.waitFor(() => expect(tail.delivered()).toEqual([line(1), line(2)]));
+		expect(tail.problems).toEqual([HC_TRANSCRIPT_UNREADABLE, null]);
 		tail.stream.close();
 	});
 
@@ -533,6 +632,22 @@ describe('herdr-core’s native adapter and gate', () => {
 		expect(native.commandCatalog?.(remote, connection)).toBe(catalog);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).available).toBe(true);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
+		coordinator.dispose();
+	});
+
+	it('writes a native view’s herdr.seen over the runtime’s own connection', async () => {
+		const { kind, connection, core, coordinator } = await connected(
+			ASHER,
+			[terminal('t1', { turn: 3, labels: label('s-1', 4242, PATH_1), status: { state: 'done', app: 'claude-code' } })],
+			new Map(),
+		);
+		core.handlers.set('terminal.label', () => ({}));
+		const watcher = kind.native?.watcher(connection);
+		watcher?.looking?.('t1', {}, true);
+		await settle();
+		expect(core.calls.filter((call) => call.method === 'terminal.label').map((call) => call.params)).toEqual([
+			{ terminal: 't1', labels: { 'herdr.seen': '3' } },
+		]);
 		coordinator.dispose();
 	});
 

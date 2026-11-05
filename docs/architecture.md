@@ -492,6 +492,14 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   unread (`hc label … herdr.seen=0`) while it stayed on screen was left at 0;
   looking away and back raised it to 1 again. The agent list reads the label
   through the scope, so the done row clears; herdr rows are unchanged.
+  A native view of an hc terminal counts the same way, under the same rules:
+  its window focused and visible and its host with a box. It has no attach
+  connection, so the write goes over the plugin's own `hc connect`: the
+  session watcher (`src/hc/sessionWatcher.ts`) keeps one tracker per terminal
+  some native view is in front of, fed from the scope's ingested events, and
+  the view says when it looks and when it looks away
+  (`SessionWatcher.looking`). Two views of one terminal look once; herdr's
+  watcher has no such method, so a herdr tab is untouched.
 
 ## herdr-core: the Claude session hook
 
@@ -645,8 +653,20 @@ session model never reopens a tail for a source that did not change.
     head restarts it with `restart: true`. An `invalid_params` is diagnosed
     with a one-line read of line 1: shorter or another head restarts, an
     offset past the count is "nothing new", and a line that exists but
-    cannot be sent is skipped and counted.
+    cannot be sent is skipped and counted. When that one-line read of line 1
+    is itself `invalid_params` (the file over 64 MB, or line 1 over 8 MB),
+    nothing can be read or told apart: the tail says so through
+    `TailOptions.onProblem`, the session model keeps it as `readProblem`, and
+    the native view shows it in the empty line, above any turns already read.
+    The next successful read clears it.
   - Pages follow `last` to `lines`, 4000 lines at most per read.
+  - **Cost, not redesigned:** the core reads the whole file for every
+    `file.read`, whatever `offset` and `limit` say. Each poll and each kick is
+    at least one whole-file read on the remote host (two when something new
+    came and the head is compared, more for a multi-page catch-up), so a
+    transcript of tens of megabytes is read in full every 2 s while its agent
+    works. Fine for the sizes sessions reach; a cheaper seam (a byte offset,
+    a stat) would need hc to offer one.
   - Reads are kicked by `status` and `turn` of the terminal whose label
     names the file (debounced 50 ms, and again 1 s later for what Claude
     writes after reporting) and by every snapshot; a poll runs every 2 s

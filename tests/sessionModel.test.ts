@@ -32,7 +32,12 @@ class FakeTail implements TranscriptStream {
 	constructor(
 		readonly path: string,
 		private readonly onLines: TranscriptLines,
+		private readonly options: TailOptions = {},
 	) {}
+	/** The source's own limit stopped it reading, or no longer does. */
+	problem(problem: string | null): void {
+		if (!this.closed) this.options.onProblem?.(problem);
+	}
 	/** What the file growing looks like from the model's side. */
 	emit(lines: string[]): void {
 		if (!this.closed) this.onLines(lines);
@@ -69,8 +74,8 @@ class FakeSource implements TranscriptSource {
 		for (const resolve of this.held.splice(0)) resolve();
 	}
 
-	open(path: string, onLines: TranscriptLines, _options?: TailOptions): TranscriptStream {
-		const tail = new FakeTail(path, onLines);
+	open(path: string, onLines: TranscriptLines, options?: TailOptions): TranscriptStream {
+		const tail = new FakeTail(path, onLines, options);
 		this.tails.push(tail);
 		const text = this.files.get(path);
 		if (text) tail.emit(text.split('\n').filter(Boolean));
@@ -383,6 +388,30 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 
 		expect(source.tails).toHaveLength(1);
 		expect(source.openTails).toHaveLength(1);
+	});
+
+	it('passes on why its tail cannot read the file, and forgets it with the file', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		expect(handle.model.readProblem).toBeNull();
+
+		source.tails[0]?.problem('over the limit');
+		expect(handle.model.readProblem).toBe('over the limit');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		// Said again, unchanged: no news.
+		source.tails[0]?.problem('over the limit');
+		expect(changes).toHaveLength(1);
+		source.tails[0]?.problem(null);
+		expect(handle.model.readProblem).toBeNull();
+
+		// Another file starts with no problem, whatever the last one had.
+		source.tails[0]?.problem('over the limit');
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		expect(handle.model.path).toBe(PATH_2);
+		expect(handle.model.readProblem).toBeNull();
 	});
 
 	it('starts tailing when a fresh Claude’s session id appears', () => {

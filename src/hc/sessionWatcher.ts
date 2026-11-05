@@ -24,6 +24,11 @@
  *   `trust` is never reported: hc has no such kind, and only a positively
  *   identified trust prompt may be answered unasked (`../native/waitingCard.ts`).
  *
+ * - **Seen.** A native view a person is in front of shares `herdr.seen` the
+ *   way a terminal tab does, under herdr-app's rules ({@link SeenTracker}),
+ *   written over this watcher's own connection: a native view has no
+ *   attach connection of its own, and the terminal surface is not mounted.
+ *
  * Everything is read from the scope after it ingested the event
  * (`HcScope.onIngested`), so a handler that re-reads {@link
  * SessionWatcher.snapshot} sees the record the event left.
@@ -40,6 +45,7 @@ import type {
 } from '../native/sessionWatcher';
 import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
+import { SeenTracker } from './seen';
 
 /** The palette command that installs the hook (`main.ts`). */
 export const SESSION_HOOK_COMMAND_NAME = 'Install or remove the Claude session hook';
@@ -50,6 +56,23 @@ export const SESSION_HOOK_COMMAND_NAME = 'Install or remove the Claude session h
  * failing). Names the command that installs it.
  */
 export const NATIVE_NO_LABEL_REASON = `no Claude session label; run "${SESSION_HOOK_COMMAND_NAME}"`;
+
+/**
+ * Why a Claude in an hc terminal cannot be shown natively although a session
+ * label is there: the label names another process than the terminal's
+ * foreground one, and only the foreground's own label is taken as the
+ * terminal's session (ADR-0006). A wrapper that forks Claude rather than
+ * exec'ing it does this, and so does a label an earlier Claude left behind.
+ * Never names the install command: the hook did run.
+ */
+export function nativeForeignLabelReason(labelPid: number, foregroundPid: number | null): string {
+	const foreground = foregroundPid === null ? 'foreground process' : `foreground process ${foregroundPid}`;
+	return (
+		`the Claude session label belongs to process ${labelPid}, not this terminal's ${foreground}, ` +
+		'so it is not taken as this terminal’s session (a wrapper that forks Claude instead of exec’ing it, ' +
+		'or a label left by an earlier Claude)'
+	);
+}
 
 /** Why an hc terminal with no Claude in its foreground cannot be shown natively. */
 export const NATIVE_NO_CLAUDE_REASON = 'no Claude session in this terminal';
@@ -98,7 +121,11 @@ export function nativeStatus(terminal: HcTerminal): { status: AgentStatus; block
  */
 export function nativeUnavailable(terminal: HcTerminal | undefined): string | null {
 	if (!terminal || acceptedSession(terminal)) return null;
-	return agentKindOf(terminal) === 'claude' ? NATIVE_NO_LABEL_REASON : NATIVE_NO_CLAUDE_REASON;
+	if (agentKindOf(terminal) !== 'claude') return NATIVE_NO_CLAUDE_REASON;
+	const label = sessionLabelOf(terminal.labels);
+	if (!label) return NATIVE_NO_LABEL_REASON;
+	const pid = terminal.foreground?.pid;
+	return nativeForeignLabelReason(label.pid, typeof pid === 'number' ? pid : null);
 }
 
 function sessionKey(terminal: HcTerminal | undefined): string {
@@ -146,8 +173,60 @@ function onKeyChange(
 	});
 }
 
+export interface HcSessionWatcherOptions {
+	/**
+	 * Writes `herdr.seen=<turn>` on a terminal, over the connection the scope
+	 * belongs to. Absent, {@link SessionWatcher.looking} does nothing.
+	 */
+	writeSeen?: (address: string, turn: number) => Promise<unknown>;
+}
+
+/**
+ * Who is looking at which terminal through a native view, and one
+ * {@link SeenTracker} per terminal anyone is: looking is per pane, so two
+ * views of one pane count once, and the pane stops being looked at when the
+ * last of them looks away.
+ */
+function seenSharing(
+	scope: HcWatchScope,
+	write: (address: string, turn: number) => Promise<unknown>,
+): (paneId: string, viewer: object, looking: boolean) => void {
+	const lookers = new Map<string, { viewers: Set<object>; tracker: SeenTracker }>();
+	let off: Unsubscribe | null = null;
+	const feed = (address: string): void => {
+		lookers.get(address)?.tracker.update(scope.terminal(address) ?? null);
+	};
+	return (paneId, viewer, looking) => {
+		let entry = lookers.get(paneId);
+		if (looking) {
+			if (!entry) {
+				const tracker = new SeenTracker((turn) => write(paneId, turn));
+				entry = { viewers: new Set(), tracker };
+				lookers.set(paneId, entry);
+				tracker.update(scope.terminal(paneId) ?? null);
+			}
+			entry.viewers.add(viewer);
+			off ??= scope.onIngested((address) => {
+				if (address !== null) feed(address);
+				else for (const each of [...lookers.keys()]) feed(each);
+			});
+			entry.tracker.setLooking(true);
+			return;
+		}
+		if (!entry || !entry.viewers.delete(viewer) || entry.viewers.size > 0) return;
+		entry.tracker.setLooking(false);
+		lookers.delete(paneId);
+		if (lookers.size === 0) {
+			off?.();
+			off = null;
+		}
+	};
+}
+
 /** A watcher over one herdr-core connection's scope. */
-export function hcSessionWatcher(scope: HcWatchScope): SessionWatcher {
+export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherOptions = {}): SessionWatcher {
+	const write = options.writeSeen;
+	const looking = write ? seenSharing(scope, write) : null;
 	return {
 		snapshot(paneId: string): PaneSnapshot | null {
 			const row = scope.get(paneId);
@@ -192,5 +271,6 @@ export function hcSessionWatcher(scope: HcWatchScope): SessionWatcher {
 		onAvailability(handler): Unsubscribe {
 			return onKeyChange(scope, availabilityKey, handler);
 		},
+		...(looking ? { looking } : {}),
 	};
 }

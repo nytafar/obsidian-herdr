@@ -73,11 +73,15 @@ result is the tool asking for permission.
 
 The trust prompt is the one block the view can answer for you: the card offers
 **Trust this folder**, and the **Trust new folders automatically** setting
-presses it without asking, but only when the runtime itself identified the
-block as the trust prompt. A block before the session exists looks the same at
-the trust prompt as at a sign-in or another startup dialog, so a guessed one is
-never answered unasked; on herdr the card keeps its button and tells you to
-check the terminal first. Nothing else is answered on your behalf. Tool
+would press it without asking, but only when the runtime itself identified the
+block as the trust prompt. No runtime does today, so the setting currently
+does nothing and the button is the way. herdr reports no kind of block, and a
+block before the session exists looks the same at the trust prompt as at a
+sign-in or another startup dialog, so a guessed one is never answered unasked;
+on herdr the card keeps its button and tells you to check the terminal first.
+On herdr-core Claude shows the trust prompt before its `SessionStart` hook
+runs, so the terminal has no session label yet and the tab shows the terminal,
+where you answer it. Nothing else is answered on your behalf. Tool
 permissions are Claude's own to ask; questions and plan approvals are yours.
 
 ## Table of contents
@@ -134,7 +138,9 @@ sign-in). A block hc gives no kind for, such as a startup dialog, is only
 described; nothing on herdr-core is ever answered for you.
 
 A terminal without the hook's label stays a terminal, and the view switch says
-why and names the install command. The tab moves to the native view by itself
+why and names the install command. A label that names another process than
+the terminal's foreground one, as a wrapper that forks Claude instead of
+exec'ing it leaves, is not taken either, and the switch says so instead. The tab moves to the native view by itself
 once Claude labels the terminal, and back to the terminal when Claude exits or
 hands the terminal to another program, such as an editor.
 
@@ -160,9 +166,11 @@ picks up again when its runtime is active once more.
   setting says so. herdr-core reads its transcripts over its connection, so
   its SSH runtimes have the view.
 - **herdr-core over SSH:** a transcript over 64 MB cannot be read (hc's
-  `file.read` limit), and a single transcript line over 8 MB is skipped. The
-  remote needs `sh`, `awk` and `tr` for its `/` list, as the session hook
-  does.
+  `file.read` limit), and a single transcript line over 8 MB is skipped. When
+  the file is over 64 MB, or its first line is over 8 MB, nothing can be read
+  and the view says so where it would say "No turns in this session yet."; the
+  terminal view still follows the agent. The remote needs `sh`, `awk` and `tr`
+  for its `/` list, as the session hook does.
 - **A prompt to a herdr-core terminal less than 10 seconds old** may be
   refused while its screen is still settling; send it again.
 - **Claude Code only** for now. Other agent kinds show a terminal. The

@@ -108,4 +108,15 @@ export interface SessionWatcher {
 	 * `unavailable` is.
 	 */
 	onAvailability?(handler: (paneId: string) => void): Unsubscribe;
+	/**
+	 * Whether a person is in front of `viewer`, a native view of this pane: its
+	 * window has the focus and is not hidden, and the view has a box. Only a
+	 * kind that shares "a person looked at this agent" with other clients
+	 * implements it: herdr-core, as `herdr.seen` under herdr-app's rules,
+	 * which is what clears its "done until seen". Per viewer, so a second view
+	 * of the same pane looking away does not end the first one's look; a view
+	 * says false before it goes. herdr's watcher leaves it out: herdr keeps
+	 * its own seen state, and a herdr tab is unaffected.
+	 */
+	looking?(paneId: string, viewer: object, looking: boolean): void;
 }

@@ -29,6 +29,9 @@
  *   `restart: true`.
  * - **Pages** follow `last` until it reaches `lines`, so a file over 8 MB is
  *   read in pieces. A line hc cannot send at all is skipped and counted.
+ *   When hc refuses even line 1 (the file over 64 MB, or line 1 over 8 MB)
+ *   nothing can be read or told apart, and the tail says so to the view
+ *   (`TailOptions.onProblem`) instead of staying empty.
  * - **Kicks, not watches.** There is nothing to watch on another machine. A
  *   `status` or `turn` event of the terminal whose session label names the
  *   file reads it (and once more a moment later, for what Claude writes just
@@ -44,10 +47,19 @@ import { HcError } from './connection';
 import type { HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import type {
+	TailOptions,
 	TranscriptLines,
 	TranscriptSource,
 	TranscriptStream,
 } from '../native/transcriptSource';
+
+/**
+ * What the view says when hc refuses the file itself: `file.read` answers
+ * `invalid_params` for a file over 64 MB, and for line 1 over 8 MB the probe
+ * that tells the other refusals apart is refused the same way.
+ */
+export const HC_TRANSCRIPT_UNREADABLE =
+	'This transcript cannot be read over the connection: herdr-core’s file.read refuses a file over 64 MB and a first line over 8 MB. Open the terminal to follow the agent.';
 
 /** `file.read`'s answer. */
 export interface HcFileLines {
@@ -158,8 +170,8 @@ export class HcTranscriptSource implements TranscriptSource {
 		}
 	}
 
-	open(path: string, onLines: TranscriptLines): TranscriptStream {
-		const tail = new HcTranscriptTail(this, path, onLines, () => this.closed(tail));
+	open(path: string, onLines: TranscriptLines, options: TailOptions = {}): TranscriptStream {
+		const tail = new HcTranscriptTail(this, path, onLines, () => this.closed(tail), options.onProblem);
 		this.tails.add(tail);
 		this.unsubscribe ??= this.scope.onIngested((address, type) => this.onIngested(address, type));
 		tail.start();
@@ -222,7 +234,17 @@ class HcTranscriptTail implements TranscriptStream {
 		readonly path: string,
 		private readonly onLines: TranscriptLines,
 		private readonly onClose: () => void,
+		private readonly onProblem?: (problem: string | null) => void,
 	) {}
+
+	/** The problem said last, so each change is said once. */
+	private problem: string | null = null;
+
+	private sayProblem(problem: string | null): void {
+		if (this.closedFlag || problem === this.problem) return;
+		this.problem = problem;
+		this.onProblem?.(problem);
+	}
 
 	start(): void {
 		void this.pump();
@@ -309,6 +331,12 @@ class HcTranscriptTail implements TranscriptStream {
 				// `not_found` (no file yet), or no connection: look again later.
 				if (!isInvalidParams(error)) break;
 				const verdict = await this.diagnose(offset);
+				if (verdict === 'refused') {
+					// Nothing to read and nothing to tell apart: say so, and look
+					// again on the next kick or poll, in case the file changed.
+					this.sayProblem(HC_TRANSCRIPT_UNREADABLE);
+					break;
+				}
 				if (verdict === 'restart') {
 					this.restart();
 					continue;
@@ -322,6 +350,7 @@ class HcTranscriptTail implements TranscriptStream {
 				break;
 			}
 			if (this.closedFlag) return;
+			this.sayProblem(null);
 			if (page.lines < this.complete) {
 				this.restart();
 				continue;
@@ -370,14 +399,16 @@ class HcTranscriptTail implements TranscriptStream {
 	/**
 	 * Why a read at `offset` was refused: the file got shorter or another one
 	 * took its place (`restart`), the line there cannot be sent (`skip`),
-	 * there is nothing at `offset` yet (`idle`), or no telling (`later`).
+	 * there is nothing at `offset` yet (`idle`), hc refuses even line 1, which
+	 * is the file over 64 MB or line 1 over 8 MB (`refused`), or no telling
+	 * (`later`).
 	 */
-	private async diagnose(offset: number): Promise<'restart' | 'skip' | 'idle' | 'later'> {
+	private async diagnose(offset: number): Promise<'restart' | 'skip' | 'idle' | 'refused' | 'later'> {
 		let probe: HcFileLines;
 		try {
 			probe = await this.source.readLines(this.path, 1, 1);
-		} catch {
-			return 'later';
+		} catch (error) {
+			return isInvalidParams(error) ? 'refused' : 'later';
 		}
 		if (probe.lines < this.complete) return 'restart';
 		if (this.complete > 0 && this.head !== null && probe.text !== this.head) return 'restart';

@@ -37,7 +37,7 @@ import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
-import { parseSpaces } from '../hc/model';
+import { LABEL_SEEN, parseSpaces } from '../hc/model';
 import { HcScope } from '../hc/scope';
 import { HcTabLabels } from '../hc/tabLabels';
 import { hcSessionWatcher } from '../hc/sessionWatcher';
@@ -137,7 +137,13 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 				const scope = connection.scope;
 				let watcher = watchers.get(scope);
 				if (!watcher) {
-					watcher = hcSessionWatcher(scope);
+					const client = connection.client;
+					// Over the plugin's own connection: a native view has no attach
+					// connection, so this is the one that is there while it shows.
+					watcher = hcSessionWatcher(scope, {
+						writeSeen: (address, turn) =>
+							client.request('terminal.label', { terminal: address, labels: { [LABEL_SEEN]: String(turn) } }),
+					});
 					watchers.set(scope, watcher);
 				}
 				return watcher;

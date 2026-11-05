@@ -39,6 +39,7 @@ class FakeModel implements SessionModelView {
 	agentStatus: AgentStatus = 'idle';
 	blockKind: BlockKind | null = null;
 	connected = true;
+	readProblem: string | null = null;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 
 	on(listener: (change: SessionChange) => void): () => void {
@@ -841,6 +842,26 @@ describe('NativePaneSurface: keeping up', () => {
 		// The pane does have a session — a new one — so the empty line says that
 		// rather than "no session yet".
 		expect(el.find('herdr-native-empty').textContent).toBe('No turns in this session yet.');
+	});
+});
+
+describe('NativePaneSurface: a transcript the runtime cannot read', () => {
+	it('says why in the empty line, above any turns, and drops it once readable', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.path = '/transcript.jsonl';
+		model.readProblem = 'cannot be read: over the limit';
+		model.push([], { changedTurnIds: [], reset: false });
+		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+
+		// Turns read before the file grew past the limit stay, under the reason.
+		model.push([turn('u1', 'Before')], { changedTurnIds: ['u1'], reset: false });
+		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+
+		model.readProblem = null;
+		model.push([turn('u1', 'Before')], { changedTurnIds: [], reset: false });
+		expect(el.findAll('herdr-native-empty')).toEqual([]);
 	});
 });
 

@@ -40,10 +40,15 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   runtime's connection, paged, restarted when the file is replaced or
   truncated, and read when the agent's status changes and every 2 s while it
   works. A terminal without the label stays a terminal and its view switch
-  names the install command. `@` mentions on an SSH runtime name the remote
-  vault's file, and its `/` list offers the remote machine's commands and
-  skills (user, plugin and the pane's project), read over the runtime's
-  connection; while they cannot be read it offers only the built-ins.
+  names the install command; one whose label names another process (a
+  wrapper that forks Claude) says that instead. Reading an agent in the
+  native view marks it seen in `herdr.seen`, as a terminal tab does. A
+  transcript hc's `file.read` refuses outright (over 64 MB, or a first line
+  over 8 MB) is named in the view instead of leaving it empty. `@` mentions
+  on an SSH runtime name the remote vault's file, and its `/` list offers the
+  remote machine's commands and skills (user, plugin and the pane's project),
+  read over the runtime's connection; while they cannot be read it offers
+  only the built-ins.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a
@@ -66,7 +71,10 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   itself identified. herdr reports no kind of block, so on herdr the setting no
   longer presses anything: a block before the session exists looks the same at
   the trust prompt as at a sign-in, and `Down Enter` would land on the wrong
-  dialog. The waiting card's **Trust this folder** button still answers it.
+  dialog. herdr-core reports no trust kind either, and Claude asks there
+  before its session hook labels the terminal, so today the setting does
+  nothing on any runtime and says so. The waiting card's **Trust this
+  folder** button still answers it.
 
 ### Fixed
 

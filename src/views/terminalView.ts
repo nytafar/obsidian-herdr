@@ -109,6 +109,7 @@ import {
 	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState } from '../herdr/scope';
+import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
@@ -514,6 +515,46 @@ export class PaneViewEvents {
 	/** A tab mounted the other surface. Told by the tab itself. */
 	changed(leaf: WorkspaceLeaf): void {
 		for (const listener of [...this.listeners]) listener(leaf);
+	}
+}
+
+/**
+ * Which half of a tab a person is in front of (herdr-app's "looking",
+ * `docs/labels.md`): the window has the focus and is not hidden, the host has
+ * a box, and then whichever surface is mounted. A native view counts as much
+ * as a terminal does: it is where the agent is read.
+ */
+export function lookingAt(input: {
+	surface: 'terminal' | 'native' | null;
+	hostVisible: boolean | null;
+	documentVisible: boolean;
+	focused: boolean;
+}): { terminal: boolean; native: boolean } {
+	const present = input.hostVisible === true && input.documentVisible && input.focused;
+	return { terminal: present && input.surface === 'terminal', native: present && input.surface === 'native' };
+}
+
+/**
+ * One tab's look through its native view, told to the watcher of the
+ * runtime the pane is on ({@link SessionWatcher.looking}). The watcher is
+ * replaced on every reconnect and the tab can be pointed at another pane, so
+ * the one told last is remembered and told it is over before another is
+ * told anything.
+ */
+export class NativeLook {
+	private told: { watcher: SessionWatcher; paneId: string } | null = null;
+
+	constructor(private readonly viewer: object) {}
+
+	/** Looking at `paneId` through `watcher`, or at nothing (`null`). */
+	set(watcher: SessionWatcher | null, paneId: string): void {
+		const next = watcher?.looking && paneId ? { watcher, paneId } : null;
+		const told = this.told;
+		if (told && (told.watcher !== next?.watcher || told.paneId !== next.paneId)) {
+			told.watcher.looking?.(told.paneId, this.viewer, false);
+		}
+		this.told = next;
+		next?.watcher.looking?.(next.paneId, this.viewer, true);
 	}
 }
 
@@ -1062,6 +1103,7 @@ export class TerminalView extends ItemView {
 	}
 
 	protected override async onClose(): Promise<void> {
+		this.nativeLook.set(null, '');
 		this.visibility?.cancel();
 		this.visibility = null;
 		this.pendingEffects.clear();
@@ -1118,6 +1160,8 @@ export class TerminalView extends ItemView {
 			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
 		});
 		if (off) this.unbindScope.push(off);
+		// A new connection is a new watcher, which knows nothing of this look yet.
+		this.updateLooking();
 	}
 
 	/** Coalesces a burst of scope events into one retitle per animation frame. */
@@ -1198,6 +1242,9 @@ export class TerminalView extends ItemView {
 		});
 	}
 
+	/** What the native view last told its runtime about a person in front of it. */
+	private readonly nativeLook = new NativeLook(this);
+
 	/** Windows whose focus and visibility this view already listens to. */
 	private readonly boundWindows = new WeakSet<Window>();
 
@@ -1220,12 +1267,25 @@ export class TerminalView extends ItemView {
 		const win = this.containerEl.win;
 		this.bindWindow(win);
 		const doc = win.document;
-		const looking =
-			this.surfaces.current === (this.terminal as PaneSurface) &&
-			this.hostVisible() === true &&
-			doc.visibilityState === 'visible' &&
-			doc.hasFocus();
-		this.terminal.setLooking(looking);
+		const current = this.surfaces.current;
+		const looking = lookingAt({
+			surface:
+				current === (this.terminal as PaneSurface)
+					? 'terminal'
+					: current instanceof NativePaneSurface
+						? 'native'
+						: null,
+			hostVisible: this.hostVisible(),
+			documentVisible: doc.visibilityState === 'visible',
+			focused: doc.hasFocus(),
+		});
+		this.terminal.setLooking(looking.terminal);
+		// The native view has no attach connection: its runtime's watcher writes
+		// over the plugin's own (herdr-core's `herdr.seen`; herdr has no such hook).
+		this.nativeLook.set(
+			looking.native ? this.plugin.nativeWatcher(this.terminal.identity.endpointId) : null,
+			this.paneId,
+		);
 	}
 
 	/** Whether the host element has a box at all; null when there is no host. */
