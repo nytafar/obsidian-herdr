@@ -9,14 +9,16 @@
  * go wrong and neither shows up in a fake.
  */
 
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
 	encodeProjectDir,
+	DEFAULT_CHUNK_BYTES,
 	LocalTranscriptSource,
 	transcriptPath,
+	type TailOptions,
 	type TranscriptStream,
 } from '../src/native/transcriptSource';
 
@@ -210,5 +212,133 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 
 		await eventually(() => after.length === 1);
 		expect(after).toEqual(['new']);
+	});
+
+	/** One delivery: the lines, and whether the tail said it started over. */
+	interface Batch {
+		lines: string[];
+		restart: boolean;
+	}
+
+	/** Like {@link tail}, but keeping each batch and its restart flag. */
+	function batches(path: string, options: TailOptions = {}): Batch[] {
+		const source = new LocalTranscriptSource();
+		const seen: Batch[] = [];
+		streams.push(
+			source.open(path, (lines, restart) => seen.push({ lines, restart: restart === true }), {
+				debounceMs: 5,
+				pollMs: 20,
+				...options,
+			}),
+		);
+		return seen;
+	}
+
+	/** Every line delivered since the last restart: what the model would hold. */
+	function current(seen: Batch[]): string[] {
+		const last = seen.map((batch) => batch.restart).lastIndexOf(true);
+		return seen.slice(Math.max(0, last)).flatMap((batch) => batch.lines);
+	}
+
+	it('starts over when the file is truncated under it', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\ntwo\n');
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 2);
+
+		// Shorter than what was read: not the file this tail started on.
+		writeFileSync(path, 'x\n');
+
+		await eventually(() => seen.some((batch) => batch.restart));
+		await eventually(() => current(seen).join() === 'x');
+		expect(seen[0]?.restart).toBe(false);
+	});
+
+	it('starts over when the file is rewritten in place, longer than before', async () => {
+		// Same inode, a size past the offset: only the head says it is another file.
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, '{"uuid":"a"}\n');
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 1);
+
+		writeFileSync(path, '{"uuid":"b"}\n{"uuid":"c"}\n{"uuid":"d"}\n');
+
+		await eventually(() => current(seen).length === 3 && seen.some((batch) => batch.restart));
+		expect(current(seen)).toEqual(['{"uuid":"b"}', '{"uuid":"c"}', '{"uuid":"d"}']);
+	});
+
+	it('starts over on a file renamed over it, and does not feed the new one into the old', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'old-1\n');
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 1);
+
+		// A replacement longer than the offset, so size alone would not tell.
+		const next = join(dir, 'next.jsonl');
+		writeFileSync(next, 'new-1\nnew-2\nnew-3\n');
+		renameSync(next, path);
+
+		await eventually(() => current(seen).length === 3 && seen.some((batch) => batch.restart));
+		expect(current(seen)).toEqual(['new-1', 'new-2', 'new-3']);
+	});
+
+	it('watches the replacement itself, not the inode the path used to name', async () => {
+		// On Linux a watch on a file that is renamed over stays on the old inode
+		// and hears nothing more. With the poll out of the way, only a watch
+		// rebuilt on the rename can see the append that follows.
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'old-1\n');
+		const seen = batches(path, { pollMs: 60_000 });
+		await eventually(() => current(seen).length === 1);
+
+		const next = join(dir, 'next.jsonl');
+		writeFileSync(next, 'new-1\n');
+		renameSync(next, path);
+		await eventually(() => seen.some((batch) => batch.restart));
+		appendFileSync(path, 'new-2\n');
+
+		await eventually(() => current(seen).join() === 'new-1,new-2');
+	});
+
+	it('picks a deleted file up again when it comes back', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\n');
+		const seen = batches(path);
+		await eventually(() => current(seen).length === 1);
+
+		rmSync(path);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		writeFileSync(path, 'again\n');
+
+		await eventually(() => current(seen).join() === 'again');
+	});
+
+	it('reads a large first file in pieces, whole lines and characters intact', async () => {
+		// Lines and multi-byte characters straddle every piece boundary here.
+		const path = join(dir, 'session.jsonl');
+		const written = Array.from({ length: 50 }, (_, i) => `{"n":${i},"t":"æøå–${'x'.repeat(i)}"}`);
+		writeFileSync(path, `${written.join('\n')}\n`);
+
+		const seen = batches(path, { chunkBytes: 37 });
+
+		await eventually(() => current(seen).length === written.length);
+		expect(current(seen)).toEqual(written);
+		expect(seen.length).toBeGreaterThan(1);
+		expect(seen.every((batch) => !batch.restart)).toBe(true);
+	});
+
+	it('reads in pieces of about a megabyte by default', async () => {
+		expect(DEFAULT_CHUNK_BYTES).toBe(1024 * 1024);
+		const path = join(dir, 'session.jsonl');
+		const line = `{"pad":"${'y'.repeat(1000)}"}`;
+		const count = 3000;
+		writeFileSync(path, `${Array.from({ length: count }, () => line).join('\n')}\n`);
+
+		const seen = batches(path);
+
+		await eventually(() => current(seen).length === count);
+		// About 3 MB, so no fewer than three reads, and no line lost between them.
+		expect(seen.length).toBeGreaterThanOrEqual(3);
+		expect(current(seen).every((delivered) => delivered === line)).toBe(true);
 	});
 });

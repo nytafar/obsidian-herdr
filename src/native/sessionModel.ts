@@ -77,7 +77,7 @@ export interface SessionWatcher {
 export interface SessionChange {
 	/** Turns created or changed, in order. Empty when only the status moved. */
 	changedTurnIds: string[];
-	/** The whole view is stale: reloaded, or the session rotated. */
+	/** The whole view is stale: reloaded, replaced, or the session rotated. */
 	reset: boolean;
 }
 
@@ -260,8 +260,9 @@ export class SessionModel implements SessionModelView {
 	/** Unsubscribes from the herdr currently bound; replaced by `rebind`. */
 	private bound: Unsubscribe[] = [];
 	/**
-	 * Which session the model is on. Bumped by every `follow`, so a read that
-	 * was in flight across a rotation can tell that its answer is stale.
+	 * Which file contents the model is on. Bumped by every `follow` that
+	 * changes file and by every restart of the tail, so a read that was in
+	 * flight across either can tell that its answer is stale.
 	 */
 	private generation = 0;
 	/** Calls whose report is being read, so a second batch does not read it twice. */
@@ -423,13 +424,7 @@ export class SessionModel implements SessionModelView {
 		this.stream?.close();
 		this.stream = null;
 		this.currentPath = path;
-		this.transcript = emptyTranscript();
-		// Nothing of the new file has been read, whatever was read of the old one.
-		this.delivered = false;
-		// Another session is another block, whatever the status still says.
-		this.blockClaim = null;
-		this.generation++;
-		this.readingReports.clear();
+		this.restart();
 		// Said now, not when the new file's first lines land: a tail delivers
 		// those asynchronously, and the session that is gone must not still be on
 		// screen in between.
@@ -437,15 +432,33 @@ export class SessionModel implements SessionModelView {
 		if (!path) return;
 		// The tail delivers the file as it stands before anything is appended, so
 		// there is no gap between reading the history and following it.
-		this.stream = this.options.source.open(path, (lines) => this.onLines(lines));
+		this.stream = this.options.source.open(path, (lines, restart) =>
+			this.onLines(lines, restart === true),
+		);
 	}
 
-	/** A batch of whole lines from the tail. */
-	private onLines(lines: string[]): void {
+	/** Empties everything read so far, for another file or the same one replaced. */
+	private restart(): void {
+		this.transcript = emptyTranscript();
+		// Nothing of the new file has been read, whatever was read of the old one.
+		this.delivered = false;
+		// Another file is another block, whatever the status still says.
+		this.blockClaim = null;
+		this.generation++;
+		this.readingReports.clear();
+	}
+
+	/**
+	 * A batch of whole lines from the tail. `restart` is the tail saying the
+	 * file was replaced or truncated under it: what was read before is void, and
+	 * these lines are the file again from its start.
+	 */
+	private onLines(lines: string[], restart: boolean): void {
+		if (restart) this.restart();
 		this.delivered = true;
 		const { state, changedTurnIds } = reduce(this.transcript, lines);
 		this.transcript = state;
-		this.emit({ changedTurnIds, reset: false });
+		this.emit({ changedTurnIds: restart ? [] : changedTurnIds, reset: restart });
 		this.readReports(changedTurnIds);
 	}
 

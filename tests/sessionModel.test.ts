@@ -24,6 +24,7 @@ import {
 } from '../src/native/sessionModel';
 import type {
 	TailOptions,
+	TranscriptLines,
 	TranscriptSource,
 	TranscriptStream,
 } from '../src/native/transcriptSource';
@@ -36,11 +37,15 @@ class FakeTail implements TranscriptStream {
 	closed = false;
 	constructor(
 		readonly path: string,
-		private readonly onLines: (lines: string[]) => void,
+		private readonly onLines: TranscriptLines,
 	) {}
 	/** What the file growing looks like from the model's side. */
 	emit(lines: string[]): void {
 		if (!this.closed) this.onLines(lines);
+	}
+	/** The file was replaced or truncated: these lines are it from its start. */
+	restart(lines: string[]): void {
+		if (!this.closed) this.onLines(lines, true);
 	}
 	close(): void {
 		this.closed = true;
@@ -70,7 +75,7 @@ class FakeSource implements TranscriptSource {
 		for (const resolve of this.held.splice(0)) resolve();
 	}
 
-	open(path: string, onLines: (lines: string[]) => void, _options?: TailOptions): TranscriptStream {
+	open(path: string, onLines: TranscriptLines, _options?: TailOptions): TranscriptStream {
 		const tail = new FakeTail(path, onLines);
 		this.tails.push(tail);
 		const text = this.files.get(path);
@@ -536,6 +541,34 @@ describe('SessionModel: the agent’s status', () => {
 		watcher.statusChanged('w4:p2', 'blocked');
 
 		expect(handle.model.agentStatus).toBe('idle');
+	});
+});
+
+describe('SessionModel: a file replaced under its tail', () => {
+	it('starts over when the tail says the file was replaced under it', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		source.tails[0]?.restart(TRANSCRIPT_2.split('\n').filter(Boolean));
+
+		// The old file's turns are gone, not merged with the new file's.
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
+		expect(changes).toEqual([{ changedTurnIds: [], reset: true }]);
+		// Same path, same tail: the replacement is the tail's to read.
+		expect(source.tails).toHaveLength(1);
+	});
+
+	it('drops the block claim when the file is replaced', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire('w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		expect(handle.model.claimBlock('')).toBe(true);
+
+		source.tails[0]?.restart([]);
+
+		expect(handle.model.claimBlock('')).toBe(true);
 	});
 });
 
