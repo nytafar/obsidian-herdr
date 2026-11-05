@@ -138,6 +138,14 @@ export interface TerminalRenderer {
 	onData(cb: (data: string) => void): Unsubscribe;
 	onResize(cb: (size: { cols: number; rows: number }) => void): Unsubscribe;
 	/**
+	 * Replies the emulator makes by itself to what it was written (DA, DSR,
+	 * mode reports, …), split off {@link onData}: once a listener is here,
+	 * `onData` carries only what the person typed, pasted or clicked.
+	 * herdr-core wants the two apart (AUTOMATIC_INPUT is not human activity).
+	 * Optional: without it every byte goes through `onData`, as before.
+	 */
+	onReply?(cb: (data: string) => void): Unsubscribe;
+	/**
 	 * Sees a keydown *before* the renderer encodes it, so the input layer
 	 * (`src/views/input/`, #17) can send its own bytes for keys the renderer
 	 * would get wrong — shift+enter in #18, for one.

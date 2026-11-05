@@ -36,6 +36,7 @@
  * Smoke-testing needs a DOM, so this file is not unit tested; see
  * `tests/README.md`.
  */
+import { DataRouter, type DataListener } from './replies';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { IDisposable, ITheme, Terminal } from '@xterm/xterm';
 import {
@@ -93,7 +94,6 @@ async function loadLibraries(): Promise<{ xterm: XtermModule; fit: FitModule }> 
 	return libraries;
 }
 
-type DataListener = (data: string) => void;
 type ResizeListener = (size: { cols: number; rows: number }) => void;
 /** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
 type KeyListener = (event: KeyboardEvent) => boolean;
@@ -105,6 +105,23 @@ type WheelListener = (event: WheelEvent) => boolean;
  * hidden (#15).
  */
 export const MAX_SNAPSHOT_LINES = 10_000;
+
+/**
+ * xterm.js's internal `coreService.onUserInput` (5.5.0), which fires right
+ * before an `onData` that came from the keyboard, a paste or the mouse, and
+ * not before an emulator reply. Undefined when a build no longer has it; the
+ * renderer then reports everything as input, as it always did.
+ */
+export function userInputEvent(
+	terminal: unknown,
+): ((listener: () => void) => IDisposable) | undefined {
+	const core = (terminal as { _core?: { coreService?: { onUserInput?: unknown } } } | null)?._core;
+	const service = core?.coreService;
+	const event = service?.onUserInput;
+	return typeof event === 'function'
+		? (listener) => (event as (this: unknown, cb: () => void) => IDisposable).call(service, listener)
+		: undefined;
+}
 
 /**
  * How many scrollback *lines* one megabyte of ghostty-web's byte budget buys,
@@ -167,7 +184,8 @@ export class XtermJsRenderer implements TerminalRenderer {
 
 	/** Writes that arrived before `mount()` built the terminal. */
 	private readonly pending: Uint8Array[] = [];
-	private readonly dataListeners = new Set<DataListener>();
+	/** `onData` and `onReply` listeners, and which is which ({@link DataRouter}). */
+	private readonly router = new DataRouter('user-input');
 	private readonly resizeListeners = new Set<ResizeListener>();
 	private readonly keyListeners = new Set<KeyListener>();
 	private readonly wheelListeners = new Set<WheelListener>();
@@ -237,18 +255,25 @@ export class XtermJsRenderer implements TerminalRenderer {
 
 		this.libraryDisposables.push(
 			terminal.onData((data) => {
-				for (const cb of [...this.dataListeners]) cb(data);
+				this.router.dispatch(data);
 			}),
 			terminal.onResize((size) => {
 				for (const cb of [...this.resizeListeners]) cb(size);
 			}),
 		);
+		// xterm's core says "a person did this" right before such an `onData`
+		// and not before a reply; internal, so wired only when it is there.
+		const userInput = userInputEvent(terminal)?.(() => this.router.markUserInput());
+		if (userInput) {
+			this.router.enableUserSignal();
+			this.libraryDisposables.push(userInput);
+		}
 
 		this.terminal = terminal;
 		this.fitAddon = fitAddon;
 		this.attachInterceptors();
 
-		for (const chunk of this.pending.splice(0)) terminal.write(chunk);
+		for (const chunk of this.pending.splice(0)) this.router.write(() => terminal.write(chunk));
 		this.fit();
 		if (this.focusRequested) {
 			this.focusRequested = false;
@@ -262,7 +287,8 @@ export class XtermJsRenderer implements TerminalRenderer {
 			this.pending.push(bytes);
 			return;
 		}
-		this.terminal.write(bytes);
+		const terminal = this.terminal;
+		this.router.write(() => terminal.write(bytes));
 	}
 
 	resize(cols: number, rows: number): void {
@@ -358,8 +384,14 @@ export class XtermJsRenderer implements TerminalRenderer {
 	}
 
 	onData(cb: DataListener): Unsubscribe {
-		this.dataListeners.add(cb);
-		return () => this.dataListeners.delete(cb);
+		this.router.data.add(cb);
+		return () => this.router.data.delete(cb);
+	}
+
+	/** See `TerminalRenderer.onReply` and {@link DataRouter}. */
+	onReply(cb: DataListener): Unsubscribe {
+		this.router.replies.add(cb);
+		return () => this.router.replies.delete(cb);
 	}
 
 	onResize(cb: ResizeListener): Unsubscribe {
@@ -502,7 +534,7 @@ export class XtermJsRenderer implements TerminalRenderer {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.dataListeners.clear();
+		this.router.clear();
 		this.resizeListeners.clear();
 		this.keyListeners.clear();
 		this.wheelListeners.clear();
