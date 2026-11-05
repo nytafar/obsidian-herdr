@@ -92,8 +92,9 @@ a mirrored vault on 2026-09-06; it works.
 - **Workspace ID**: as for a local runtime, on the remote server.
 
 The status block in settings shows the tunnel state; a dropped link reconnects
-with backoff. The native view is for local panes only; an SSH runtime's tabs
-show the terminal.
+with backoff. The native view is for local panes only on herdr; an SSH herdr
+runtime's tabs show the terminal. (herdr-core reads transcripts over its
+connection, so its SSH runtimes have the native view; see below.)
 
 ### Two caveats
 
@@ -174,11 +175,22 @@ the same way as for herdr.
   seen in herdr-app's shared `herdr.seen` label, so its "done" clears here, in
   herdr-app and on the phone.
 
-herdr-core has no tabs, splits, rename or pane focus, and reports no agent
-session of its own for the native view, so those are left out rather than
-offered and refused; herdr-core panes open in the terminal view. The Claude
-session hook below is what will let the native view follow Claude there; the
-plugin does not read its label yet.
+herdr-core has no tabs, splits, rename or pane focus, so those are left out
+rather than offered and refused.
+
+- **The native view** works on herdr-core, on this machine and over SSH,
+  for a Claude whose terminal carries the session hook's label (below). It
+  follows `/clear` and `--resume` like on herdr, prompts go through
+  `terminal.send` (queued while the agent works), keys through
+  `terminal.keys`, and the waiting card names hc's blocked kinds (permission,
+  question, sign-in). On an SSH runtime the transcript is read over the
+  runtime's connection with hc's `file.read`, so nothing needs mounting.
+- A terminal without the label stays a terminal: the view switch says
+  `no Claude session label; run "Install or remove the Claude session hook"`
+  (or `no Claude session in this terminal` when Claude is not running in it),
+  and switches to the native view by itself once Claude labels it. When
+  Claude exits, or hands the terminal to an editor, the tab shows the
+  terminal again.
 
 ### The Claude session hook
 
@@ -195,6 +207,9 @@ runtime's own connection: for an SSH runtime, on the remote host.
    where they go: `$CLAUDE_CONFIG_DIR` as the core's environment has it, else
    `~/.claude`. Nothing is written until you press **Install** (or
    **Update**).
+
+Start Claude again after installing: Claude Code reads its hooks when a
+session starts up, and a Claude already running may not pick a new one up.
 
 It writes `hooks/obsidian-herdr-session.sh` and one entry in `settings.json`,
 and changes nothing else in that file. Herdr's own hook and every other hook

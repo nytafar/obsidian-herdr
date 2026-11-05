@@ -69,7 +69,7 @@ status bar names the active one.
 
 | Setting | Meaning |
 |---|---|
-| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for panes of a local herdr only; an SSH runtime, or herdr-core, shows terminals. |
+| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for panes of a local herdr, and for herdr-core terminals on this machine or over SSH once the Claude session hook labels them; an SSH herdr runtime shows terminals. |
 | Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
 | Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, so an agent started in a new folder begins without a trip to the terminal. Only where the runtime identifies the prompt as the trust prompt: herdr reports no kind of block, so on herdr the waiting card's **Trust this folder** button answers it instead. Off by default. Nothing else is answered for you. |
 

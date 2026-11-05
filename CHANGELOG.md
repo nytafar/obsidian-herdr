@@ -22,14 +22,25 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   observe or control mode. Pins use herdr-app's shared `herdr.pinned` label,
   and looking at a terminal tab writes `herdr.seen`, so "done" clears on every
   herdr client. You can start and terminate agents from the plugin. Tabs,
-  splits, rename and focus don't exist in hc and are hidden. The native view
-  is offered for herdr panes only, because hc reports no agent session.
+  splits, rename and focus don't exist in hc and are hidden.
 - **Claude session hook** for herdr-core: a command and a button in the
   runtime's settings install, update or remove a Claude Code `SessionStart`
   hook on the runtime's machine, local or over SSH. It labels each hc
   terminal with its Claude session (`obsidian-herdr.session`). The modal shows
   the exact script and settings entry first and changes nothing else in the
-  Claude settings. The native view does not read the label yet.
+  Claude settings.
+- **Native view on herdr-core**, on this machine and over SSH: a Claude in an
+  hc terminal labelled by the session hook opens in the native view. The
+  label counts only while its pid is the terminal's foreground process, so a
+  Claude that exited or a child Claude never takes over the tab. It follows
+  `/clear` and `--resume`, sends and queues prompts, `/` commands and keys
+  through hc, and the waiting card names hc's blocked kinds. Over SSH the
+  transcript and subagent reports are read with hc's `file.read` on the
+  runtime's connection, paged, restarted when the file is replaced or
+  truncated, and read when the agent's status changes and every 2 s while it
+  works. A terminal without the label stays a terminal and its view switch
+  names the install command. `@` mentions on an SSH runtime name the remote
+  vault's file.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

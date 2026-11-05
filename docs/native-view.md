@@ -116,7 +116,30 @@ not break the view. Details and the verified facts are in
 
 What the view reads comes through the runtime's kind: a session watcher for
 the pane's session, cwd and status, and a transcript source for the files.
-herdr supplies local ones; herdr-core will supply its own (ADR-0006).
+herdr supplies local ones. herdr-core reads the session from the label the
+Claude session hook writes on the terminal, and its transcripts from this
+machine's files or, over SSH, through the runtime's connection (ADR-0006).
+
+## On herdr-core
+
+A Claude in a herdr-core terminal opens in the native view once the Claude
+session hook is installed on the runtime's machine (**Install or remove the
+Claude session hook**, see [runtimes.md](runtimes.md)), on this machine and
+over SSH alike. Everything above works the same: `/clear` and `--resume` are
+followed, prompts are sent or queued, `/` commands and keys go through hc,
+and the waiting card names the block hc reports (a permission, a question, a
+sign-in). A block hc gives no kind for, such as a startup dialog, is only
+described; nothing on herdr-core is ever answered for you.
+
+A terminal without the hook's label stays a terminal, and the view switch says
+why and names the install command. The tab moves to the native view by itself
+once Claude labels the terminal, and back to the terminal when Claude exits or
+hands the terminal to another program, such as an editor.
+
+On an SSH runtime, `@` mentions name the file in the remote vault, and the
+transcript is read with hc's `file.read` when the agent's status changes and
+every 2 s while it works, so new content can take a moment longer than
+locally.
 
 ## Switching runtimes
 
@@ -129,8 +152,13 @@ picks up again when its runtime is active once more.
 ## Limits
 
 - **Local panes only, on herdr.** A remote herdr keeps the terminal view; the
-  setting says so. The view is offered wherever a runtime's kind can read its
-  transcripts, so a kind that reads them over its connection can slot in.
+  setting says so. herdr-core reads its transcripts over its connection, so
+  its SSH runtimes have the view.
+- **herdr-core over SSH:** a transcript over 64 MB cannot be read (hc's
+  `file.read` limit), and a single transcript line over 8 MB is skipped. On
+  SSH the `/` list comes from this machine's commands and the vault's own.
+- **A prompt to a herdr-core terminal less than 10 seconds old** may be
+  refused while its screen is still settling; send it again.
 - **Claude Code only** for now. Other agent kinds show a terminal. The
   normalized event model is what a second backend would map into.
 - Questions and plan approvals are answered in the terminal; the card takes

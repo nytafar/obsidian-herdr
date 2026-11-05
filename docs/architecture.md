@@ -277,7 +277,8 @@ scope, `agent_session` from the raw `PaneInfo`, and rotation read off
 `pane.updated` one microtask after the client's dispatch, so the scope has
 ingested the update first. It reports no transcript path and no block kind; the
 model derives the path from cwd and session, and the waiting card guesses the
-block from the transcript. herdr-core supplies no native adapter yet.
+block from the transcript. herdr-core's watcher and sources are in
+"herdr-core: the native view" below.
 
 Session models are keyed by runtime id and pane id (`SessionModelRegistry`).
 Each model asks for its own runtime's watcher and source on every connection
@@ -377,8 +378,8 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   override (`~` expanded), else the binary its last discovery found, else
   searches for `hc` when it starts, so a tab pinned to an hc runtime opens
   whichever runtime is active. The
-  native view stays off for hc panes until the session hook of ADR-0006
-  lands (`nativeUnavailable`, and `native: null` on the kind).
+  native view follows the Claude session hook's label (ADR-0006; "herdr-core:
+  the native view" below).
   Measured against `hc` 0.1.18 on 2026-11-05 with throwaway `oh-test-*`
   terminals running `sh`, driving the session class from a script, and
   rendering the bytes into `@xterm/headless` and the ghostty-web WASM terminal:
@@ -495,8 +496,8 @@ machine and 0.1.17 on `asher` on 2026-11-05:
 ## herdr-core: the Claude session hook
 
 ADR-0006 puts a herdr-core terminal's Claude session on a label written by a
-Claude Code `SessionStart` hook. This batch writes the label and installs the
-hook. Reading it for the native view is the next step. Code is in
+Claude Code `SessionStart` hook. This section is the label and the installer;
+the native view that reads it is the next section. Code is in
 `src/sessionHook/`: `hookScript.ts` (the script and its one entry),
 `claudeSettings.ts` (merge, unmerge, status), `installer.ts` (paths, plan,
 apply over hc), `label.ts` (the parser), `modal.ts` (the consent step).
@@ -582,6 +583,105 @@ apply over hc), `label.ts` (the parser), `modal.ts` (the consent step).
   - Status: absent, installed (our exact entry and script), outdated (an
     older marker, a missing or edited script, a different entry), or
     unreadable settings.
+
+## herdr-core: the native view
+
+The hc kind's `NativeSessionAdapter` (ADR-0006), in `src/runtime/herdrCoreKind.ts`:
+transcript access is `local` on this machine and `rpc` over SSH, with one
+watcher and one transcript source per connection (keyed by its scope), so a
+session model never reopens a tail for a source that did not change.
+
+- **The watcher** (`src/hc/sessionWatcher.ts`) reads the scope after it has
+  ingested each event: `HcScope.onIngested(address, type)` fires once the
+  store holds the event and the rows are reconciled, with a null address
+  after a snapshot (subscribe, `missed`, a redial).
+  - The session is the `obsidian-herdr.session` label, **accepted only while
+    its pid equals `foreground.pid`** (the foreground process group's
+    leader). A label that lands before the 2/s foreground poll has seen
+    Claude is taken when `foreground` arrives; when Claude exits, is
+    suspended or hands the terminal to an editor (Ctrl-G), the pid no longer
+    matches and the session clears; `lost` and `finished` clear it too. The
+    label's transcript path is the model's path, so nothing is derived from
+    the cwd. `onSession` and `onStatus` fire only when the value moved.
+  - Status is the row's (herdr.seen over `turn`), except that `error` reads
+    as `done`/`idle`: Claude is back at its prompt and there is no dialog to
+    name. Block kinds are hc's `permission`, `question`, `auth`; anything
+    else, `trust` included, is no kind, so the waiting card never answers an
+    hc block by itself.
+  - `unavailable(paneId)` is the per-pane gate the contract gained: null for
+    an accepted session and for a terminal the core has not reported (not
+    connected yet), `no Claude session label; run "Install or remove the
+    Claude session hook"` for a terminal whose program is Claude
+    (`status.app` or the foreground), `no Claude session in this terminal`
+    otherwise. `onAvailability` fires when that answer moved, and the tab
+    mounts the surface it can show now; the stored view is kept, as on a
+    remote endpoint.
+- **The RPC transcript source** (`src/hc/transcriptSource.ts`) reads with
+  `file.read {path, offset, limit}` over the runtime's own connection.
+  `file.read`'s rules, from hc's `files.rs` and measured live:
+  - The core reads the whole file (refusing one over **64 MB** with
+    `invalid_params`) and answers lines `offset..`, at most `limit` and at
+    most **8 MB as JSON** of them, whole lines only, with `lines` the file's
+    count. A trailing line with no newline counts and is sent as it stands.
+  - An offset past the end is `invalid_params` ("offset 9: the file has 3
+    lines"), not an empty answer, except offset 1 on an empty file; so is a
+    single line over the 8 MB.
+  - The tail delivers only complete lines and counts them. Each read starts
+    at the last delivered line (the anchor), which keeps the offset valid and
+    checks the file still says it; line 1 (the head) is compared whenever
+    something new came. A shorter count, a different anchor or a different
+    head restarts it with `restart: true`. An `invalid_params` is diagnosed
+    with a one-line read of line 1: shorter or another head restarts, an
+    offset past the count is "nothing new", and a line that exists but
+    cannot be sent is skipped and counted.
+  - Pages follow `last` to `lines`, 4000 lines at most per read.
+  - Reads are kicked by `status` and `turn` of the terminal whose label
+    names the file (debounced 50 ms, and again 1 s later for what Claude
+    writes after reporting) and by every snapshot; a poll runs every 2 s
+    while that agent is `working` or never reported, every 15 s otherwise.
+  - `read(path)` (a subagent's `outputFile`, `subagents/agent-<id>.jsonl`)
+    pages the whole file.
+- **Senders** are the kind's `terminal.send` / `terminal.keys` over the tab's
+  own runtime's client (`plugin.nativeClient`), as before.
+- **On SSH**, `@` mentions use the runtime's remote vault path (the agent opens
+  the file on its machine), and the `/` catalog and relative links map a
+  remote cwd inside the remote vault onto this vault.
+
+Measured 2026-11-06 against `hc` 0.1.18 and Claude Code 2.1.318, with the
+plugin's own modules driven from a script outside the repo, a throwaway
+`CLAUDE_CONFIG_DIR` (credentials copied in, `settings.json` `{"model":
+"haiku"}`) and Claude started with the plugin's own launch line in
+`oh-test-*` terminals:
+
+- Without the hook, a Claude terminal had no session and the gate gave the
+  install command. After installing into the throwaway dir, a new Claude was
+  picked up within a second: `pid` equal to `foreground.pid` under the
+  launch line's `bash -ic`, transcript under the throwaway config dir.
+- A prompt arrived and its turn rendered from the transcript; a prompt sent
+  while working was queued (two `queue-operation` lines) and rendered inline.
+- `/clear` rotated the label and the model followed with a reset. The new
+  session's file starts with Claude's own `/clear` local-command lines, which
+  the view shows as a turn, as it does on herdr. `/exit` cleared the session
+  and the gate said no Claude; `claude --resume <first id>` in the same
+  terminal brought the first session back with its turns.
+- Blocks on the wire: a Bash permission prompt reported `{"state":"blocked",
+  "kind":"permission"}`; Claude's "Make auto mode your default?" startup
+  dialog reported `blocked` with `msg: "dialog open"` and **no kind**, so it
+  shows as a block the card only describes. `terminal.keys` `Down Enter` and
+  `Escape` answered them.
+- hc refuses `terminal.send` to a terminal younger than 10 s whose screen has
+  not settled within 5 s (`unavailable`, "still starting: its output has not
+  settled"); the prompt box shows that error.
+- The RPC source over the local core (connection given explicitly) delivered
+  a live transcript line for line in pages of 3, `read` returned it
+  byte-identical, a model over it rendered the same turns, and it followed a
+  live turn through the status and turn kicks. On a scratch file: a partial
+  last line held and then delivered, an idle read past the end delivering
+  nothing, truncation and a rename-replace both restarting.
+- asher (0.1.17, read only, through the local core's federation with `on`):
+  an 11 MB, 951-line transcript paged to the same 951 lines; with a large
+  limit hc's 8 MB cap ended the first page at line 609 and the second
+  continued at 610.
 
 ## The settings tab
 
