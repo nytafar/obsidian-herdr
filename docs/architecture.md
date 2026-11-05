@@ -349,13 +349,36 @@ machine and 0.1.17 on `asher` on 2026-11-05:
     against the real xterm core: DA and DSR came without it, `input(…, true)`
     with it). herdr sessions have no `reply`, so their replies still go as
     input.
+  - **Focus.** ghostty-web never emits focus reports (`ESC[I`/`ESC[O`): its
+    bundle only has `hasFocusEvents()`, nothing writes the sequences. xterm.js
+    does, for a program with mode 1004, and they arrive as replies. So the
+    view tells the session itself (`focusin`/`focusout` on the host; a
+    `focusout` with no related target is the window losing the foreground),
+    the session sends FOCUS `1`/`0`, and the reply path drops xterm.js's own
+    reports so the program does not hear them twice. In the core
+    (`viewers.rs` `viewer_focus`) FOCUS `1` is activity and takes the size;
+    `0` is not; either goes to the program as `CSI I`/`CSI O` only when it
+    enabled 1004. Measured: a program with 1004 set read `ESC[I` then `ESC[O`
+    from one tab's FOCUS 1 and 0, and FOCUS 1 took the size from a second
+    controller (70x20 to 90x25) while FOCUS 0 left it there. Nothing is sent
+    on an attach, so a redial stays `resumed`.
   - **Size ownership.** A control attach at 80x24 resized the terminal from
     its headless 200x120 to 80x24 at once; RESIZE 100x30 made it 100x30. A
     second controller at 90x25 took the size (last active viewer wins); the
     first tab then gets `grid 90x25` from the `size` event and draws at it,
     and its next RESIZE (101x31) took the size back and ended the foreign
     grid. Cell size goes as FACTS `{cell: [w, h]}` and with the attach as
-    `display`.
+    `display`. A `resumed` attach is not the size leader (no `active_at`
+    until it types, resizes or gains focus, `viewers.rs`), and a `size` event
+    missed while the tab was disconnected never comes again, so a controller
+    also follows the attach record's `cols`/`rows` (read after the attach
+    took effect) and the subscribe snapshot's record. Measured: a tab at
+    100x30 whose `hc connect` was killed while another controller took 60x15
+    reattached resumed and drew at 60x15 at once. A control tab whose host
+    has no box yet (fit 0x0) starts with the 80x24 placeholder but marks it
+    `provisionalSize`: it attaches `resumed`, follows the shared grid, sends
+    no RESIZE and no FOCUS `1`, and takes the size with its first measured
+    fit, even one equal to the placeholder. herdr's bridge ignores the flag.
   - **Observe.** The observer got RESIZE 100x30 before its paint and follows
     every later one (90x25, 101x31, 200x120 when the controller's process was
     killed, back to 101x31 on its redial); its renderer draws at that grid and
@@ -377,9 +400,26 @@ machine and 0.1.17 on `asher` on 2026-11-05:
     ("t13 has finished"), shown as a final close. A CLOSE with a loss reason
     shows "waiting for herdr-core to restart it" and the `restarted` event
     attaches again with `resumed: true` (fake core only; not provoked live).
+    `finished` (events channel) can come before output still queued on the
+    attach stream for credit, and a CLOSE of ours would drop that output
+    (`wire.rs`), while the core's own CLOSE follows it; so on `finished` the
+    session lets the stream drain to the core's CLOSE, for at most 3 s, then
+    ends. Measured: `seq 1 120000; echo LAST-LINE-MARKER; exit 4` into a tab
+    crediting 150 ms late got 262,517 bytes and no marker when ending on
+    `finished`, and all 849,282 bytes with the marker when draining.
     Killing the tab's `hc connect` child showed "herdr-core connection lost …;
     trying again", redialled after 1 s (backoff to 30 s), attached with
-    `resumed: true` and took typing again. A theme rebuild under a live
+    `resumed: true` and took typing again. A redial that fails before or
+    during the attach (ssh down, the child gone) is reported and retried on
+    the same backoff, as is a passing error on the very first attach
+    (`unavailable` while a kept terminal waits for its new shell,
+    `unreachable`, `busy`) or a timeout; any other failure before the first
+    attach (no `hc`, ENOENT reported by the spawn, an unreachable host)
+    shows its reason and ends the tab. `hello` has a 20 s deadline and
+    `terminal.attach` 15 s; either passing aborts the connection, which then
+    fails like a dead process. Plain lines before the `hello` reply that are
+    not JSON (a login banner) are skipped, and a reply sharing a line with a
+    banner's unterminated tail is found at the first `{` it parses from. A theme rebuild under a live
     session asks for a fresh paint the same way (attach resumed, then let the
     old channel go). The tab detaches (CLOSE) and closes stdin on close.
   - **Scrolling.** hc has no scroll method, so the wheel is the renderer's own

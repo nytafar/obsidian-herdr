@@ -6,44 +6,20 @@
 import { describe, expect, it } from 'vitest';
 import { decodeCredit, decodeResize, FrameKind } from '../src/hc/frames';
 import { SeenTracker } from '../src/hc/seen';
+import { HELLO_TIMEOUT_MS } from '../src/hc/connection';
 import {
 	ATTACH_HISTORY_LINES,
 	describeEnd,
+	FINISH_DRAIN_MS,
 	HcTerminalSession,
 	RETRY_INITIAL_MS,
-	type HcSessionTimers,
+	type HcTerminalSessionOptions,
 } from '../src/hc/terminalSession';
 import type { FrameMeta } from '../src/bridge/terminalSession';
-import { FakeCore, fakeSpawner, HELLO_RESULT, RpcError, settle } from './fixtures/fakeHc';
+import { FakeCore, fakeSpawner, HELLO_RESULT, manualTimers, RpcError, settle } from './fixtures/fakeHc';
 
 const CAN = '\x18';
 const PAINT = `${CAN}\x1b[!p\x1b[H\x1b[2Jhello$ `;
-
-function manualTimers() {
-	const pending = new Map<number, { callback: () => void; ms: number }>();
-	let next = 1;
-	const timers: HcSessionTimers = {
-		setTimeout: (callback, ms) => {
-			const id = next++;
-			pending.set(id, { callback, ms });
-			return id;
-		},
-		clearTimeout: (handle) => {
-			pending.delete(handle as number);
-		},
-	};
-	const fire = (ms: number): number => {
-		let fired = 0;
-		for (const [id, entry] of [...pending]) {
-			if (entry.ms !== ms) continue;
-			pending.delete(id);
-			entry.callback();
-			fired++;
-		}
-		return fired;
-	};
-	return { timers, fire, pending };
-}
 
 interface CoreOptions {
 	features?: string[];
@@ -108,10 +84,25 @@ function harness(
 	mode: 'control' | 'observe' = 'control',
 	options: CoreOptions = {},
 	argv: readonly string[] | (() => Promise<readonly string[]>) = ['hc', 'connect'],
+	extra: Partial<HcTerminalSessionOptions> = {},
 ) {
-	const { spawn, cores } = fakeSpawner(setupCore(options));
+	/** Run on the next cores spawned, one each, after the usual setup. */
+	const nextCores: ((core: FakeCore) => void)[] = [];
+	const { spawn, cores } = fakeSpawner((core) => {
+		setupCore(options)(core);
+		nextCores.shift()?.(core);
+	});
 	const { timers, fire, pending } = manualTimers();
-	const session = new HcTerminalSession({ argv, target: 'oh-test-x', mode, cols: 80, rows: 24, spawn, timers });
+	const session = new HcTerminalSession({
+		argv,
+		target: 'oh-test-x',
+		mode,
+		cols: 80,
+		rows: 24,
+		spawn,
+		timers,
+		...extra,
+	});
 	const events: string[] = [];
 	const frames: { text: string; meta: FrameMeta }[] = [];
 	session.on('frame', (bytes, meta) => {
@@ -136,7 +127,7 @@ function harness(
 		const channel = c.calls.filter((call) => call.method === 'terminal.attach').length + subscribe;
 		c.write(c.eventFrames(channel, [{ method: 'event', params: { seq, type, terminal: 't7', data } }]));
 	};
-	return { session, events, frames, cores, core, calls, event, fire, pending };
+	return { session, events, frames, cores, core, calls, event, fire, pending, nextCores, options };
 }
 
 describe('the herdr-core terminal session', () => {
@@ -348,6 +339,231 @@ describe('the herdr-core terminal session', () => {
 		expect(h.core().sent(1, FrameKind.Close)).toHaveLength(1);
 		expect(h.core().stdinEnded).toBe(true);
 		expect(h.events).not.toContain('exit');
+	});
+
+	describe('a dial or attach that fails', () => {
+		/** Attached once, then the connection drops: the retry timer is armed. */
+		async function dropped(h: ReturnType<typeof harness>): Promise<void> {
+			h.session.start();
+			await settle();
+			h.core().exit(1);
+			expect(h.events.at(-1)).toMatch(/trying again$/);
+		}
+
+		it('tries again when a redial dies before hello (ssh fails after a network drop)', async () => {
+			const h = harness();
+			await dropped(h);
+			h.nextCores.push((core) => {
+				core.silent = true;
+			});
+			expect(h.fire(RETRY_INITIAL_MS)).toBe(1);
+			await settle();
+			h.core().stderrText('ssh: connect to host box port 22: Network is unreachable\n');
+			h.core().exit(255);
+			await settle();
+			expect(h.events.at(-1)).toBe(
+				'closed hc connect exited: ssh: connect to host box port 22: Network is unreachable; trying again',
+			);
+			// Backed off, and the next dial gets through.
+			expect(h.fire(RETRY_INITIAL_MS * 2)).toBe(1);
+			await settle();
+			expect(h.cores).toHaveLength(3);
+			expect(h.calls('terminal.attach')[0]?.params).toMatchObject({ resumed: true });
+			expect(h.events.at(-1)).toBe('reopened');
+		});
+
+		it('tries again when a redialled connection dies during the attach', async () => {
+			const h = harness();
+			await dropped(h);
+			h.nextCores.push((core) => {
+				core.manual = true;
+			});
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.calls('terminal.attach')).toHaveLength(1);
+			h.core().exit(1);
+			await settle();
+			expect(h.events.at(-1)).toMatch(/^closed .*hc connect exited with code 1; trying again$/);
+			expect(h.fire(RETRY_INITIAL_MS * 2)).toBe(1);
+		});
+
+		it('says why when the first dial dies before hello: no hc there', async () => {
+			const h = harness();
+			h.nextCores.push((core) => {
+				core.silent = true;
+			});
+			h.session.start();
+			await settle();
+			h.core().exit(null, null, Object.assign(new Error('spawn hc ENOENT'), { code: 'ENOENT' }));
+			await settle();
+			expect(h.events).toEqual(['closed hc was not found (hc connect)', 'exit']);
+			expect(h.pending.size).toBe(0);
+		});
+
+		it('says why when the process cannot even be spawned', async () => {
+			const { timers } = manualTimers();
+			const session = new HcTerminalSession({
+				argv: ['hc', 'connect'],
+				target: 'oh-test-x',
+				mode: 'control',
+				cols: 80,
+				rows: 24,
+				timers,
+				spawn: () => {
+					throw new Error('spawn EACCES');
+				},
+			});
+			const events: string[] = [];
+			session.on('closed', (reason) => events.push(`closed ${reason}`));
+			session.on('exit', () => events.push('exit'));
+			session.start();
+			await settle();
+			expect(events).toEqual(['closed spawn EACCES', 'exit']);
+		});
+
+		it('says why when the first connection dies during the attach', async () => {
+			const h = harness();
+			h.nextCores.push((core) => {
+				core.manual = true;
+			});
+			h.session.start();
+			await settle();
+			h.core().stderrText('core: lost the socket\n');
+			h.core().exit(1);
+			await settle();
+			expect(h.events).toEqual(['closed hc connect exited: core: lost the socket', 'exit']);
+		});
+
+		it('retries a passing error on the first attach, and takes the size when it gets through', async () => {
+			const h = harness('control', {
+				attachError: new RpcError('unavailable', 't7 is lost, waiting for its new shell'),
+			});
+			h.session.start();
+			await settle();
+			expect(h.events).toEqual(['closed t7 is lost, waiting for its new shell (unavailable); trying again']);
+			h.options.attachError = undefined;
+			expect(h.fire(RETRY_INITIAL_MS)).toBe(1);
+			await settle();
+			const attaches = h.calls('terminal.attach');
+			expect(attaches).toHaveLength(2);
+			// Never attached before: not resumed, so this tab takes the size.
+			expect(attaches[1]?.params).not.toHaveProperty('resumed');
+			expect(h.events.at(-1)).toBe('reopened');
+			expect(h.events).not.toContain('exit');
+		});
+
+		it('tries again when hello never comes back (a banner ate it)', async () => {
+			const h = harness();
+			h.nextCores.push((core) => {
+				core.silent = true;
+			});
+			h.session.start();
+			await settle();
+			expect(h.fire(HELLO_TIMEOUT_MS)).toBe(1);
+			await settle();
+			expect(h.core().killed).toBe(true);
+			expect(h.events).toEqual(['closed herdr-core did not answer hello within 20 s; trying again']);
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.events.at(-1)).toBe('reopened');
+		});
+	});
+
+	describe('the size after a resumed attach', () => {
+		it('a controller draws at the grid the record says, then takes it back by resizing', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			// Another viewer took the size while this tab's connection was down;
+			// the `size` event for it went with the old connection.
+			h.core().exit(1);
+			h.options.record = { ...RECORD, cols: 200, rows: 50 };
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.calls('terminal.attach')[0]?.params).toMatchObject({ resumed: true });
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 200x50']);
+			h.session.resize(80, 24);
+			h.event('size', { cols: 80, rows: 24 }, 11);
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 200x50', 'grid 80x24']);
+		});
+
+		it('follows a size from the subscribe snapshot that is newer than the attach record', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			h.core().exit(1);
+			h.nextCores.push((core) => {
+				core.handlers.set('events.subscribe', () => ({
+					seq: 10,
+					channel: 2,
+					terminals: [{ ...RECORD, cols: 120, rows: 40 }],
+				}));
+			});
+			h.fire(RETRY_INITIAL_MS);
+			await settle();
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 120x40']);
+		});
+	});
+
+	describe('a placeholder size (a host with no box)', () => {
+		it('attaches without taking the size, follows the shared grid, and takes it with the first real fit', async () => {
+			const h = harness('control', { record: { ...RECORD, cols: 191, rows: 42 } }, undefined, {
+				provisionalSize: true,
+			});
+			h.session.start();
+			await settle();
+			expect(h.calls('terminal.attach')[0]?.params).toMatchObject({ cols: 80, rows: 24, resumed: true });
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 191x42']);
+			// Focus would be activity: not with a placeholder.
+			expect(h.session.focus(true)).toBe(false);
+			// The first real fit is sent even when it equals the placeholder.
+			expect(h.session.resize(80, 24, 8, 16)).toBe(true);
+			expect(h.core().sent(1, FrameKind.Resize).map((f) => decodeResize(f.payload))).toEqual([{ cols: 80, rows: 24 }]);
+			h.event('size', { cols: 80, rows: 24 }, 11);
+			expect(h.events.filter((e) => e.startsWith('grid'))).toEqual(['grid 191x42', 'grid 80x24']);
+		});
+	});
+
+	describe('a program that finishes', () => {
+		it('lets the stream drain to the core’s CLOSE before it ends, so the last screen is shown', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			// The events channel is ahead of the attach stream's queued output.
+			h.event('finished', { reason: 'exited', exit_code: 0, signal: null, finished_ms: 1 }, 11);
+			expect(h.events).not.toContain('exit');
+			expect(h.core().sent(1, FrameKind.Close)).toEqual([]);
+			h.core().write(h.core().frame(1, FrameKind.Data, 'last words\r\n'));
+			h.core().write(h.core().frame(1, FrameKind.Close, JSON.stringify({ reason: 'exited', exit_code: 0, signal: null })));
+			expect(h.frames.at(-1)?.text).toBe('last words\r\n');
+			expect(h.events.slice(-2)).toEqual(['closed the program exited with code 0', 'exit']);
+			expect(h.core().sent(1, FrameKind.Close)).toEqual([]);
+			expect(h.pending.size).toBe(0);
+		});
+
+		it('ends anyway when the CLOSE does not come in time', async () => {
+			const h = harness();
+			h.session.start();
+			await settle();
+			h.event('finished', { reason: 'exited', exit_code: 2, signal: null, finished_ms: 1 }, 11);
+			expect(h.fire(FINISH_DRAIN_MS)).toBe(1);
+			expect(h.events.slice(-2)).toEqual(['closed the program exited with code 2', 'exit']);
+			expect(h.core().sent(1, FrameKind.Close)).toHaveLength(1);
+		});
+	});
+
+	it('sends focus as FOCUS frames, gaining it taking the size', async () => {
+		const h = harness();
+		h.session.start();
+		await settle();
+		expect(h.session.focus(true)).toBe(true);
+		expect(h.session.focus(false)).toBe(true);
+		expect(h.core().sent(1, FrameKind.Focus).map((f) => [...f.payload])).toEqual([[1], [0]]);
+		const o = harness('observe');
+		o.session.start();
+		await settle();
+		expect(o.session.focus(true)).toBe(false);
+		expect(o.core().sent(1, FrameKind.Focus)).toEqual([]);
 	});
 
 	describe('herdr.seen', () => {

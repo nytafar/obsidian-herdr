@@ -54,6 +54,12 @@ export interface TerminalSessionOptions {
 	takeover?: boolean;
 	cols: number;
 	rows: number;
+	/**
+	 * `cols`/`rows` are a placeholder: the tab's host had no box to measure.
+	 * herdr's bridge ignores it (herdr renders per viewer); a herdr-core
+	 * session does not take the shared terminal's size with it.
+	 */
+	provisionalSize?: boolean;
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
 	/** How long `release()` waits for a clean exit before SIGTERM. */

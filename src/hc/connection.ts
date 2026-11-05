@@ -21,6 +21,11 @@
  *   paint is therefore never lost (§3, surprises 1).
  * - **Ending.** stdin EOF half-closes the core socket; the process exiting
  *   rejects every pending call and ends every channel.
+ * - **Silence.** A `hello` with no answer, or a call given a timeout that
+ *   passes, aborts the connection: the link is wedged (an ssh that never got
+ *   through, a reply lost in a login banner), and ending it is what sends the
+ *   caller down its ordinary dead-process path. Text a login shell prints
+ *   before the reply is skipped, also when it shares the reply's line.
  *
  * No Obsidian import, and the process is injected ({@link HcSpawn}), so the
  * whole protocol is tested against a fake core.
@@ -39,6 +44,33 @@ const STDERR_TAIL_BYTES = 4096;
 const EARLY_BYTES_PER_CHANNEL = 8 * 1024 * 1024;
 /** After stdin EOF, how long the child gets before it is killed. */
 const CLOSE_GRACE_MS = 1000;
+/**
+ * How long `hello` may take: ssh's own `ConnectTimeout` (10 s) plus a core
+ * that `hc connect` has to start first.
+ */
+export const HELLO_TIMEOUT_MS = 20_000;
+/** Where on a plain line the reply may start, after a banner's leftovers. */
+const MAX_REPLY_STARTS = 32;
+
+/** Timers the connection's own deadlines run on; injectable for tests. */
+export interface HcTimers {
+	setTimeout(callback: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+}
+
+const defaultTimers: HcTimers = {
+	setTimeout: (callback, ms) => setTimer(callback, ms),
+	clearTimeout: (handle) => clearTimer(handle as ReturnType<typeof setTimer>),
+};
+
+/** A call (or the handshake) that got no answer in time; the connection is aborted. */
+export class HcTimeoutError extends Error {
+	readonly kind = 'timeout';
+	constructor(readonly method: string, ms: number) {
+		super(`herdr-core did not answer ${method} within ${Math.round(ms / 1000)} s`);
+		this.name = 'HcTimeoutError';
+	}
+}
 
 /** The child process, as far as the connection needs it. */
 export interface HcProcess {
@@ -159,6 +191,15 @@ export interface HcConnectionOptions {
 	onNotification?: (method: string, params: unknown) => void;
 	/** The process ended; `error` says why when it was not asked to. */
 	onExit?: (error: Error | null) => void;
+	/** {@link HELLO_TIMEOUT_MS} by default. */
+	helloTimeoutMs?: number;
+	timers?: HcTimers;
+}
+
+/** Per-call options. */
+export interface HcRequestOptions {
+	/** No answer within this long aborts the whole connection ({@link HcTimeoutError}). */
+	timeoutMs?: number;
 }
 
 /** One JSON-RPC message, as far as routing it goes. */
@@ -253,8 +294,12 @@ export class HcConnection {
 	private helloResult: HcHello | null = null;
 	private mismatchResult: HcMismatch | null = null;
 	private closeTimer: ReturnType<typeof setTimer> | null = null;
+	private readonly timers: HcTimers;
+	/** Deadlines of calls still waiting, by id. */
+	private readonly deadlines = new Map<number, unknown>();
 
 	constructor(private readonly options: HcConnectionOptions) {
+		this.timers = options.timers ?? defaultTimers;
 		this.decoder = new FrameDecoder({
 			line: (text) => this.onLine(text),
 			frame: (frame) => this.onFrame(frame),
@@ -298,6 +343,16 @@ export class HcConnection {
 	 * refuses framing. A generation mismatch resolves, with {@link mismatch} set.
 	 */
 	async open(): Promise<HcHello> {
+		const timeout = this.options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
+		const deadline = this.timers.setTimeout(() => this.abort(new HcTimeoutError('hello', timeout)), timeout);
+		try {
+			return await this.handshake();
+		} finally {
+			this.timers.clearTimeout(deadline);
+		}
+	}
+
+	private async handshake(): Promise<HcHello> {
 		let result: unknown;
 		try {
 			result = await this.plainHello({ generation: HC_GENERATION, framed: true });
@@ -320,7 +375,7 @@ export class HcConnection {
 	}
 
 	/** One JSON-RPC call on channel 0. Rejects with {@link HcError} on an error reply. */
-	request<T>(method: string, params: unknown = {}): Promise<T> {
+	request<T>(method: string, params: unknown = {}, options: HcRequestOptions = {}): Promise<T> {
 		if (this.endedError !== undefined) {
 			return Promise.reject(this.endedError ?? new Error('herdr-core connection closed'));
 		}
@@ -331,6 +386,16 @@ export class HcConnection {
 		const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject });
+			const timeout = options.timeoutMs;
+			if (timeout !== undefined && timeout > 0) {
+				this.deadlines.set(
+					id,
+					this.timers.setTimeout(() => {
+						this.deadlines.delete(id);
+						this.abort(new HcTimeoutError(method, timeout));
+					}, timeout),
+				);
+			}
 			this.process.write(encodeFrame(0, FrameKind.Data, body));
 		});
 	}
@@ -399,7 +464,7 @@ export class HcConnection {
 	}
 
 	private onLine(text: string): void {
-		const message = this.parse(text);
+		const message = this.parsePlain(text);
 		if (!message) return;
 		// The framed hello's success is the last plain line: switch before the
 		// decoder reads the rest of this chunk.
@@ -441,6 +506,24 @@ export class HcConnection {
 		}
 	}
 
+	/**
+	 * A plain line before framing: the `hello` reply, or whatever a login
+	 * shell printed (a banner, a title escape). A banner without its own
+	 * newline shares the reply's line, so the reply is looked for at each
+	 * `{` from the left.
+	 */
+	private parsePlain(text: string): RpcMessage | null {
+		const whole = this.parse(text);
+		if (whole) return whole;
+		let at = text.indexOf('{', 1);
+		for (let tries = 0; at !== -1 && tries < MAX_REPLY_STARTS; tries++) {
+			const message = this.parse(text.slice(at));
+			if (message && (message.id !== undefined || message.method !== undefined)) return message;
+			at = text.indexOf('{', at + 1);
+		}
+		return null;
+	}
+
 	private parse(text: string): RpcMessage | null {
 		try {
 			const value: unknown = JSON.parse(text);
@@ -454,6 +537,7 @@ export class HcConnection {
 		if (typeof message.id === 'number' && this.pending.has(message.id)) {
 			const pending = this.pending.get(message.id);
 			this.pending.delete(message.id);
+			this.clearDeadline(message.id);
 			if (!pending) return;
 			if (message.error !== undefined && message.error !== null) {
 				pending.reject(new HcError(pending.method, message.error));
@@ -484,7 +568,16 @@ export class HcConnection {
 		exit?.(error);
 	}
 
+	private clearDeadline(id: number): void {
+		const deadline = this.deadlines.get(id);
+		if (deadline === undefined) return;
+		this.deadlines.delete(id);
+		this.timers.clearTimeout(deadline);
+	}
+
 	private rejectAll(error: Error): void {
+		for (const deadline of this.deadlines.values()) this.timers.clearTimeout(deadline);
+		this.deadlines.clear();
 		const pending = [...this.pending.values()];
 		this.pending.clear();
 		for (const entry of pending) entry.reject(error);

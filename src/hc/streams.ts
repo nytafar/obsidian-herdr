@@ -180,6 +180,8 @@ export interface AttachOptions {
 	resumed?: boolean;
 	/** Display facts (cell size in pixels, colours) for pixel and colour queries. */
 	display?: HcDisplay;
+	/** No reply within this long aborts the connection (`HcConnection.request`). */
+	timeoutMs?: number;
 }
 
 /** The core's `Display`: colours as `#rrggbb`, the cell as `[width, height]` pixels. */
@@ -240,7 +242,9 @@ export async function attachTerminal(
 	if (options.resizeNotifications) params.resize_notifications = true;
 	if (options.resumed) params.resumed = true;
 	if (options.display) params.display = options.display;
-	const result = await connection.request<Record<string, unknown>>('terminal.attach', params);
+	const result = await connection.request<Record<string, unknown>>('terminal.attach', params, {
+		timeoutMs: options.timeoutMs,
+	});
 	const channel = result?.channel;
 	if (typeof channel !== 'number') throw new Error('herdr-core answered terminal.attach without a channel');
 	const automaticInput = result.automatic_input === true && connection.hasFeature('automatic_input');

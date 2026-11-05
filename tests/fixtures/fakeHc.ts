@@ -4,7 +4,7 @@
  * stdout the test writes, in whatever chunks it likes.
  */
 import { encodeFrame, FrameDecoder, FrameKind, type Frame } from '../../src/hc/frames';
-import type { HcProcess, HcSpawn } from '../../src/hc/connection';
+import type { HcProcess, HcSpawn, HcTimers } from '../../src/hc/connection';
 
 export type Handler = (params: Record<string, unknown>, core: FakeCore, id: number) => unknown;
 
@@ -37,6 +37,8 @@ export class FakeCore {
 	manual = false;
 	/** Set to never answer the plain `hello`: a process that dies before talking. */
 	silent = false;
+	/** Printed right before the `hello` reply, as a login shell's banner would be. */
+	banner = '';
 	readonly pendingIds: { id: number; method: string }[] = [];
 	stdinEnded = false;
 	killed = false;
@@ -163,7 +165,7 @@ export class FakeCore {
 				error: { code: error.code, message: error.message, data: { kind: error.kind } },
 			});
 		}
-		this.write(Buffer.from(`${reply}\n`));
+		this.write(Buffer.from(`${this.banner}${reply}\n`));
 	}
 
 	private onFrame(frame: Frame): void {
@@ -222,3 +224,30 @@ export function fakeSpawner(setup?: (core: FakeCore) => void): { spawn: HcSpawn;
 
 /** Lets queued microtasks and immediates run. */
 export const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/** Timers a test fires by hand, by their delay. */
+export function manualTimers() {
+	const pending = new Map<number, { callback: () => void; ms: number }>();
+	let next = 1;
+	const timers: HcTimers = {
+		setTimeout: (callback, ms) => {
+			const id = next++;
+			pending.set(id, { callback, ms });
+			return id;
+		},
+		clearTimeout: (handle) => {
+			pending.delete(handle as number);
+		},
+	};
+	const fire = (ms: number): number => {
+		let fired = 0;
+		for (const [id, entry] of [...pending]) {
+			if (entry.ms !== ms) continue;
+			pending.delete(id);
+			entry.callback();
+			fired++;
+		}
+		return fired;
+	};
+	return { timers, fire, pending };
+}

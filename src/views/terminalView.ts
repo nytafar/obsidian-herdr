@@ -919,6 +919,16 @@ export class TerminalView extends ItemView {
 		this.registerDomEvent(this.hostEl, 'compositionend', () =>
 			this.terminal.setComposing(false),
 		);
+		// The keyboard focus, for a session that tells the program (herdr-core's
+		// FOCUS): ghostty-web reports none itself. Focus events bubble as these
+		// two; a focusout to somewhere still inside the host is no change, and
+		// one with no related target is the window losing the foreground.
+		const host = this.hostEl;
+		this.registerDomEvent(host, 'focusin', () => this.terminal.setFocused(true));
+		// No `instanceof Node`: a popout's nodes belong to another window.
+		this.registerDomEvent(host, 'focusout', (event) =>
+			this.terminal.setFocused(host.contains(event.relatedTarget as Node | null)),
+		);
 		// herdr-app's "looking" (docs/labels.md): the window in the foreground
 		// and the terminal on screen. Every window this leaf may live in is
 		// heard, since a leaf can move into a popout.
