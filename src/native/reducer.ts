@@ -510,7 +510,7 @@ const NOTICE_JOIN_MS = 1000;
 const NOTICE_MAX_CHARS = 4000;
 
 /** Terminal escape sequences and other controls, which a notice or a shell's output may carry. */
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- matching terminal control characters is the point
 const TERMINAL_CONTROLS = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 
 /** Text as the terminal showed it, without its escape codes, cut to a notice's length. */
