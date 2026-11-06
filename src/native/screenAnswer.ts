@@ -83,8 +83,15 @@ export type ScreenExpectation =
 	  }
 	| {
 			kind: 'permission';
-			/** The dangling call's id. */
-			toolUseId: string;
+			/**
+			 * The dangling call's id. Null when the card has none: a Write call
+			 * was seen missing from the transcript for over a minute while its
+			 * dialog was up, and a Bash call lags its dialog. The card then takes
+			 * the tool and its input from the screen, and the receipt waits for
+			 * a call to that tool with that input that the transcript did not
+			 * hold when the card was built (ADR-0009 §1).
+			 */
+			toolUseId: string | null;
 			/** The tool asking: `Bash`, `Write` or `Edit`; any other is refused. */
 			tool: string;
 			/** The call's input: Bash's `command`, Write's and Edit's `file_path`. */
@@ -144,8 +151,12 @@ export type ScreenAnswer =
 	| { kind: 'deny' }
 	/** A permission's "No", `tab`, the words, `enter`. */
 	| { kind: 'deny-with-feedback'; feedback: string }
-	/** Plan row 2 (`manual`, "Yes, manually approve edits") or row 1 (`auto`, "Yes, and use auto mode"). */
-	| { kind: 'approve-plan'; mode: 'manual' | 'auto' }
+	/**
+	 * Plan row 2 (`manual`, "Yes, manually approve edits") or row 1 (`auto`,
+	 * "Yes, and use auto mode"). `label`, when given, is the row's text as the
+	 * card showed it, which the screen must still show on that row.
+	 */
+	| { kind: 'approve-plan'; mode: 'manual' | 'auto'; label?: string }
 	/** Plan row 3, the words, `enter`: Claude keeps planning. */
 	| { kind: 'reject-plan'; feedback: string }
 	/** "Yes, I trust this folder". */
@@ -461,7 +472,7 @@ export function statusAgrees(expectation: ScreenExpectation, message: string | n
 	if (msg.startsWith('answer: ')) {
 		if (expectation.kind !== 'question') return false;
 		const rest = msg.slice('answer: '.length);
-		return expectation.questions.some((q) => rest.startsWith(q.question) || cutFrom(rest, q.question));
+		return expectation.questions.some((q) => bare(rest).startsWith(bare(q.question)) || cutFrom(rest, q.question));
 	}
 	if (msg === 'approve plan') return expectation.kind === 'plan';
 	const approve = /^approve (\S+?)(?::\s*([\s\S]*))?$/.exec(msg);
@@ -470,13 +481,22 @@ export function statusAgrees(expectation: ScreenExpectation, message: string | n
 	const detail = approve[2]?.trim() ?? '';
 	if (expectation.tool !== 'Bash' || !detail) return true;
 	const command = expectation.input.command;
-	return typeof command === 'string' && (detail === command.trim() || cutFrom(detail, command));
+	return typeof command === 'string' && (bare(detail) === bare(command) || cutFrom(detail, command));
 }
 
-/** Whether `shown` is `full` cut short (by an ellipsis or the line's end). */
+/**
+ * Whether `shown` is `full` cut short (by an ellipsis or the line's end).
+ * Whitespace is not compared: a request the card read off the screen has it
+ * only as the screen wrapped it.
+ */
 function cutFrom(shown: string, full: string): boolean {
-	const head = shown.replace(ELLIPSIS, '');
-	return head.length > 0 && full.trim().startsWith(head);
+	const head = bare(shown.replace(ELLIPSIS, ''));
+	return head.length > 0 && bare(full).startsWith(head);
+}
+
+/** Text without whitespace, for comparing a status message with a request. */
+function bare(text: string): string {
+	return text.replace(/\s+/g, '');
 }
 
 // --------------------------------------------------------------- the answer
@@ -922,7 +942,13 @@ function planStep(d: PlanDialog, answer: Extract<ScreenAnswer, { kind: 'approve-
 			until: (s) => s.dialog.kind === 'plan' && s.dialog.cursor === target,
 		};
 	}
-	if (answer.kind === 'approve-plan') return { type: 'final', key: 'enter' };
+	if (answer.kind === 'approve-plan') {
+		const label = answer.label?.trim() ?? '';
+		if (label && !wrappedEquals(d.options[target - 1]?.lines ?? [], label)) {
+			return refuse(`plan row ${target} does not read "${label}"`);
+		}
+		return { type: 'final', key: 'enter' };
+	}
 	const words = answer.feedback.trim();
 	const onRow = (s: Seen): s is Seen & { dialog: PlanDialog } => s.dialog.kind === 'plan' && s.dialog.cursor === 3;
 	if (d.feedback === null) {

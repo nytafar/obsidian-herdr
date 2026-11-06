@@ -201,6 +201,17 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		expect(watcher.snapshot('t1')).toMatchObject({ agentStatus: 'blocked', blockKind: 'question' });
 	});
 
+	it('passes Claude’s words for what it waits on while blocked, for the screen answer’s check (#166)', () => {
+		const { scope, send } = scopeWith(terminal('t1', { labels: label('s-1', 4242, PATH_1) }));
+		const watcher = hcSessionWatcher(scope);
+		const status = (state: string, msg?: string): void =>
+			send('status', 't1', { status: { state, app: 'claude-code', kind: 'permission', ...(msg ? { msg } : {}) }, records: {}, reported: true });
+		status('blocked', 'approve Bash: touch one.txt');
+		expect(watcher.snapshot('t1')?.blockMessage).toBe('approve Bash: touch one.txt');
+		status('working', 'thinking');
+		expect(watcher.snapshot('t1')?.blockMessage).toBeUndefined();
+	});
+
 	it('names the install command for a Claude without a label, and says when that changes', () => {
 		const { scope, send } = scopeWith(terminal('t1'), terminal('t2', { foreground: { name: 'bash', argv: [], cwd: CWD, pid: 7 }, status: null }));
 		const watcher = hcSessionWatcher(scope);

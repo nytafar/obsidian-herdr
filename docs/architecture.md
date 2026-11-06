@@ -1630,8 +1630,8 @@ and hc 0.1.18, in `oh-test-*` panes running `claude --permission-mode default`
 in `/tmp` folders. The measurements, key by key, are the finding
 `answering-on-screen` in the docs root; the proposed design is ADR-0009. The
 screens are recorded in `tests/fixtures/screens/claude-2.1.318/` with an
-index. Nothing in the plugin answers these dialogs yet except the trust
-prompt; these are the facts a build may rely on.
+index. The waiting card answers them on herdr and herdr-core (#166, below);
+these are the facts it relies on.
 
 - **What is in the transcript while a dialog is up.** `AskUserQuestion`:
   a dangling `tool_use` with the full `input.questions` (checked while the
@@ -1827,6 +1827,23 @@ prompt; these are the facts a build may rely on.
   drops a rule of that shape, a lowercase hyphenated title, only as the last
   line; anywhere else, or with another title, the screen stays `unknown`
   (fixtures `*-write-after-plan`).
+- **The waiting card, as built (#166).** On a herdr or herdr-core pane whose
+  agent's format reads its screen, a blocked card reads the screen once per
+  block (`src/native/screenCard.ts`, `WaitingCardView`): which dialog is up
+  decides the card, whatever the runtime's status said (herdr cannot tell a
+  question from plan approval; the screen can). The request is the dangling
+  call when the screen matches it, else the one the screen shows (a question
+  with one tab, a Bash command, a Write or Edit file), then
+  `ScreenAnswerer.inspect` and `withShown`; that read is what the card shows
+  and what every answer must find again. Labels are the screen's; permission
+  row 2 is offered unless it switches to auto mode, plan rows 1 and 2 carry
+  their labels into the answer. The plan file (#148) is shown as Markdown only
+  when its letters and digits are the screen's plan lines; otherwise the card
+  shows the screen's lines. hc's status `msg` reaches the card as
+  `PaneSnapshot.blockMessage`. A press runs through one driver per runtime
+  and agent, shared by every tab (`ScreenAnswerers`); its receipt is the
+  session model's transcript: the card's call by id, else a call the
+  transcript did not hold when the card was built with the same request.
 
 ## Model, effort, permission mode and context
 

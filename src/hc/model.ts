@@ -49,6 +49,13 @@ export interface HcStatus {
 	 * otherwise; anything else is kept as sent.
 	 */
 	kind?: string;
+	/**
+	 * What the program says it waits for, in words (OSC 7501 `msg`): Claude's
+	 * `answer: <question> (A · B)`, `approve Bash: <command>`, `approve plan`
+	 * (measured on hc 0.1.18, `docs/architecture.md`, "Answering Claude's
+	 * dialogs from the screen"). Absent when it said none.
+	 */
+	msg?: string;
 }
 
 /** The Terminal record fields the plugin reads. */
@@ -109,7 +116,8 @@ export function parseStatus(value: unknown): HcStatus | null {
 	const source = record(value);
 	if (!source || typeof source.state !== 'string') return null;
 	const kind = str(source.kind);
-	return { state: source.state, app: str(source.app), ...(kind ? { kind } : {}) };
+	const msg = str(source.msg);
+	return { state: source.state, app: str(source.app), ...(kind ? { kind } : {}), ...(msg ? { msg } : {}) };
 }
 
 /** A Terminal record, or null when it has no address. */

@@ -252,6 +252,8 @@ export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherO
 				...(session ? { agent: SESSION_LABEL_AGENT, transcriptPath: session.transcriptPath } : {}),
 				agentStatus: status,
 				...(blockKind ? { blockKind } : {}),
+				// Claude's words for what it waits on (ADR-0009 §1), while blocked.
+				...(status === 'blocked' && terminal?.status?.msg ? { blockMessage: terminal.status.msg } : {}),
 			};
 		},
 		onSession(handler): Unsubscribe {

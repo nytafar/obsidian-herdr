@@ -112,6 +112,9 @@ import {
 import type { PaneState } from '../herdr/scope';
 import type { PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
 import { agentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
+import { ScreenAnswerer } from '../native/screenAnswer';
+import type { ScreenAnswering } from '../native/screenAnswerers';
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
@@ -802,6 +805,34 @@ export class TerminalView extends ItemView {
 		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
 	}
 
+	/**
+	 * Reading and answering this pane's dialog on its screen (ADR-0009), or
+	 * null for a kind with no screen (the `claude` kind) or an agent whose
+	 * format reads none. The driver is the plugin's one for this runtime and
+	 * agent, so every tab on the pane shares its one-answer guard, and it
+	 * reads the runtime's client per call.
+	 */
+	private screenAnswering(): ScreenAnswering | null {
+		const endpointId = this.terminal.identity.endpointId;
+		const kind = this.kind();
+		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
+		const agent = this.paneSnapshot()?.agent;
+		const format = agent ? agentFormat(agent) : defaultAgentFormat();
+		const parse = format?.screenDialog;
+		if (!screen || !format || !parse) return null;
+		const answerer = this.plugin.screenAnswerers.answerer(
+			`${endpointId}\n${kind.kind}\n${format.agent}`,
+			() => new ScreenAnswerer({ screen, parse }),
+		);
+		return {
+			answerer,
+			screen,
+			parse,
+			statusMessage: () => this.paneSnapshot()?.blockMessage ?? null,
+			cwd: () => this.paneCwd(),
+		};
+	}
+
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
 	private kind(): RuntimeKindAdapter {
 		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
@@ -852,6 +883,9 @@ export class TerminalView extends ItemView {
 						},
 					}
 				: {}),
+			// The waiting card's answers on the pane's screen (ADR-0009), for a
+			// kind with one and an agent whose dialogs its format reads.
+			screen: () => this.screenAnswering(),
 			// The session bar's pickers (#161), for a kind that can change the
 			// model, effort and mode; asked of the kind as it is now.
 			sessionSettings: () => this.kind().sessionSettings?.(nativeClient) ?? null,

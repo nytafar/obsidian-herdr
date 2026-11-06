@@ -77,6 +77,13 @@ export interface PaneSnapshot {
 	/** The kind of block, while `blocked` and only when the runtime knows it. */
 	blockKind?: BlockKind;
 	/**
+	 * What the agent says it waits for, in its own words, while `blocked`, for
+	 * a runtime that passes them on (herdr-core's status `msg`). The screen
+	 * answer driver checks it against the request before every key
+	 * (ADR-0009 §1). Absent where the runtime says none.
+	 */
+	blockMessage?: string;
+	/**
 	 * The dialog the runtime itself is waiting on, while `blocked`, for a kind
 	 * that owns its agents' dialogs (the `claude` kind, ADR-0007): the waiting
 	 * card shows it and answers it. Absent everywhere else.

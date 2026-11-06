@@ -110,6 +110,7 @@ import {
 } from './getStarted/flow';
 import { GetStartedModal } from './getStarted/card';
 import { AgentCatalogs } from './agents/catalogs';
+import { ScreenAnswerers } from './native/screenAnswerers';
 import { defaultMachineProbesHost, MachineProbes } from './agents/machines';
 import { migrateDefaultAgents, normalizeIdList, normalizeUserProfiles } from './agents/catalog';
 
@@ -467,6 +468,8 @@ export default class HerdrPlugin extends Plugin {
 		const endpoint = this.endpointFor(endpointId);
 		return endpoint ? this.kindOf(endpoint.runtime.kind).capabilities.sharedPins : false;
 	}
+	/** One screen answer driver per runtime and agent, shared by every tab (ADR-0009 §5). */
+	readonly screenAnswerers = new ScreenAnswerers();
 	/**
 	 * The native view's session models (#93, ADR-0003), one per runtime and
 	 * pane while a view watches it, each over its own runtime's watcher and
