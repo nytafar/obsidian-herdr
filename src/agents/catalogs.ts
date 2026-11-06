@@ -37,6 +37,7 @@ import {
 	type AgentProbe,
 	type CatalogEntry,
 } from './catalog';
+import { machineKeyOf } from './machines';
 
 /** How long a start may wait on a probe before it says that it is waiting. */
 export const PROBE_WAIT_NOTICE_MS = 400;
@@ -144,6 +145,18 @@ export class AgentCatalogs {
 			return;
 		}
 		if (slot.done && slot.landed?.found === null) void this.probe(connection, true);
+	}
+
+	/**
+	 * The published connection's probe when it runs on this machine (a key of
+	 * `machines.ts`) and its kind probes, shared with the catalog's own; null
+	 * otherwise. The settings tab's per-machine lines read it first.
+	 */
+	liveProbeOn(machineKey: string): Promise<AgentProbe> | null {
+		const connection = this.host.connection();
+		if (!connection || machineKeyOf(connection.endpoint.runtime) !== machineKey) return null;
+		if (programsToProbe(connection.endpoint.runtime.kind, this.host.settings()).length === 0) return null;
+		return this.probe(connection);
 	}
 
 	/** The newest probe that landed for the published connection, or null. */

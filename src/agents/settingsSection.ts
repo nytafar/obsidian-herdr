@@ -9,13 +9,29 @@
  * at once with what is known and draws again once a probe lands. Typing in a
  * user entry's form probes nothing; the tab drawing again (Done, Check
  * again, reopening it) brings the probe up to the entries as they are then.
+ *
+ * Each row also says which machines, across every configured runtime, have
+ * its program (`machines.ts`): drawing the section asks each machine once
+ * per opening of the tab, "Check again" asks again, and a row's line changes
+ * in place as each machine answers. A built-in the active runtime's catalog
+ * left out but another machine has is listed too, greyed: it is not in this
+ * runtime's menu.
  */
 
 import { Setting } from 'obsidian';
 import type { HerdrSettings, SettingsCallbacks } from '../settings';
 import { activeRuntimeOf, runtimeDisplayName, RUNTIME_KIND_LABELS, type RuntimeConfig } from '../runtimes';
 import {
+	foundOnAny,
+	machineFailures,
+	machineLine,
+	machinesOf,
+	type Machine,
+	type MachineState,
+} from './machines';
+import {
 	BUILTIN_AGENTS,
+	builtinProfiles,
 	buildCatalog,
 	DEFAULT_AGENT_KIND,
 	kindIssue,
@@ -23,20 +39,37 @@ import {
 	newAgentProfileId,
 	parseArgs,
 	programOf,
+	programsToProbe,
 	profileKinds,
+	UNVERIFIED_PREFIX,
 	userProfile,
 	type CatalogEntry,
 	type UserAgentProfile,
 } from './catalog';
 
-/** One entry's line under its name: what it runs, and what is known of it. */
-export function entryDescription(entry: CatalogEntry, runtime: Pick<RuntimeConfig, 'target' | 'host'>): string {
+/**
+ * One entry's line under its name: what it runs, and what is known of it.
+ * With `machines`, the line of every machine ({@link machineLine}) says where
+ * it was found instead of the active runtime's probe, whose failure the
+ * section then says once rather than on every row.
+ */
+export function entryDescription(
+	entry: CatalogEntry,
+	runtime: Pick<RuntimeConfig, 'target' | 'host'>,
+	machines?: string,
+): string {
 	const { profile } = entry;
 	const parts: string[] = [];
 	parts.push(profile.template ? 'hc template.' : `Runs ${[profile.command, ...profile.args].join(' ')}.`);
-	if (entry.found === true) parts.push(`Found ${machinePhrase(runtime)}.`);
-	if (entry.reason) parts.push(sentence(entry.reason));
-	else if (entry.found === null && profile.source !== 'template') parts.push('Not checked yet.');
+	if (machines !== undefined) {
+		if (machines) parts.push(machines);
+		if (entry.found === false) parts.push('It may still start.');
+		else if (entry.reason && !entry.reason.startsWith(UNVERIFIED_PREFIX)) parts.push(sentence(entry.reason));
+	} else {
+		if (entry.found === true) parts.push(`Found ${machinePhrase(runtime)}.`);
+		if (entry.reason) parts.push(sentence(entry.reason));
+		else if (entry.found === null && profile.source !== 'template') parts.push('Not checked yet.');
+	}
 	if (entry.isDefault) parts.push('Default.');
 	if (entry.hidden) parts.push('Hidden from the menu.');
 	if (profile.native) parts.push('Has the native view.');
@@ -111,19 +144,80 @@ export function buildAgentCatalogSettings(
 	const probe = agents?.probe(runtime.id) ?? null;
 	const catalog = buildCatalog({ runtime, settings, probe });
 
-	new Setting(containerEl)
+	// Every machine of every runtime, each asked once per opening of the tab.
+	const probes = agents?.machines?.() ?? null;
+	const machines: Machine[] = probes ? machinesOf(settings.runtimes, settings.activeRuntime) : [];
+	const programs = programsToProbe('herdr-core', settings);
+	const isCurrent = probes?.beginDraw() ?? (() => false);
+	const pending = probes?.probeAll(machines, programs) ?? [];
+	const statesNow = (): Map<string, MachineState> => probes?.states(machines) ?? new Map<string, MachineState>();
+	const states = statesNow();
+	const lineFor = (entry: CatalogEntry, current: ReadonlyMap<string, MachineState>): string | undefined =>
+		probes && entry.profile.source !== 'template' && programs.includes(entry.profile.command)
+			? machineLine(entry.profile.command, machines, current)
+			: undefined;
+	const inCatalog = new Set(catalog.map((entry) => entry.profile.id));
+	/** Built-ins this runtime's catalog left out that another machine has. */
+	const elsewhere = (current: ReadonlyMap<string, MachineState>): CatalogEntry[] =>
+		builtinProfiles()
+			.filter((profile) => !inCatalog.has(profile.id) && foundOnAny(profile.command, machines, current))
+			.map((profile) => ({
+				profile,
+				available: false,
+				reason: null,
+				found: null,
+				hidden: settings.hiddenAgents.includes(profile.id),
+				isDefault: false,
+			}));
+
+	const baseDesc = `What the + button offers on ${runtimeDisplayName(runtime)} (${RUNTIME_KIND_LABELS[runtime.kind]}): a left click starts the default, a right click lists them all. Agent CLIs not installed ${machinePhrase(runtime)} are left out; your own entries always show. Each row says which of your runtimes' machines have it, checked once each time settings open.`;
+	const headerDesc = (current: ReadonlyMap<string, MachineState>): string => {
+		const failures = machineFailures(machines, current);
+		return failures ? `${baseDesc} ${failures}` : baseDesc;
+	};
+	const drawn: { row: Setting; entry: CatalogEntry; extra: boolean }[] = [];
+	const describe = (entry: CatalogEntry, extra: boolean, current: ReadonlyMap<string, MachineState>): string => {
+		const text = entryDescription(entry, runtime, lineFor(entry, current));
+		return extra ? `${text} Not in the menu on ${runtimeDisplayName(runtime)}.` : text;
+	};
+
+	const header = new Setting(containerEl)
 		.setName('Agent CLIs')
-		.setDesc(
-			`What the + button offers on ${runtimeDisplayName(runtime)} (${RUNTIME_KIND_LABELS[runtime.kind]}): a left click starts the default, a right click lists them all. Agent CLIs not installed ${machinePhrase(runtime)} are left out; your own entries always show. Checked once per connection.`,
-		)
+		.setDesc(headerDesc(states))
 		.addButton((button) =>
 			button
 				.setButtonText('Check again')
 				.setDisabled(!agents)
 				.onClick(async () => {
-					if (await agents?.refresh(runtime.id, true)) callbacks.redisplay();
+					const landed = agents?.refresh(runtime.id, true);
+					if (probes) watch(probes.probeAll(machines, programs, true));
+					if (await landed) callbacks.redisplay();
 				}),
 		);
+
+	// A machine that answered changes its rows in place; one that shows a
+	// built-in not drawn yet draws the tab again, once.
+	const drawnExtras = elsewhere(states)
+		.map((entry) => entry.profile.id)
+		.join('\n');
+	let redrawn = false;
+	const update = (): void => {
+		if (redrawn || !isCurrent()) return;
+		const current = statesNow();
+		const extras = elsewhere(current)
+			.map((entry) => entry.profile.id)
+			.join('\n');
+		if (extras !== drawnExtras) {
+			redrawn = true;
+			callbacks.redisplay();
+			return;
+		}
+		header.setDesc(headerDesc(current));
+		for (const { row, entry, extra } of drawn) row.setDesc(describe(entry, extra, current));
+	};
+	function watch(landing: readonly Promise<unknown>[]): void {
+		for (const one of landing) void one.then(update);
+	}
 
 	const hidden = new Set(settings.hiddenAgents);
 	const setHidden = async (id: string, hide: boolean): Promise<void> => {
@@ -135,9 +229,14 @@ export function buildAgentCatalogSettings(
 		callbacks.redisplay();
 	};
 
-	for (const entry of catalog) {
+	const rows = [
+		...catalog.map((entry) => ({ entry, extra: false })),
+		...elsewhere(states).map((entry) => ({ entry, extra: true })),
+	];
+	for (const { entry, extra } of rows) {
 		const { profile } = entry;
-		const row = new Setting(containerEl).setName(profile.name).setDesc(entryDescription(entry, runtime));
+		const row = new Setting(containerEl).setName(profile.name).setDesc(describe(entry, extra, states));
+		drawn.push({ row, entry, extra });
 		row.setClass('herdr-agent-profile');
 		if (!entry.available) row.setClass('herdr-agent-unavailable');
 		row.addExtraButton((button) =>
@@ -204,6 +303,7 @@ export function buildAgentCatalogSettings(
 			if (landed) callbacks.redisplay();
 		});
 	}
+	watch(pending);
 }
 
 /** Takes a user entry out, with every runtime's default that named it. */

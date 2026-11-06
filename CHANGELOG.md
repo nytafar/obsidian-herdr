@@ -127,6 +127,14 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   own shell there, the one agents start in. On herdr, kinds the server's version does not
   accept are left out. Entries can be hidden from the menu, and **Check
   again** looks again after an install.
+- **Agent CLIs on every machine** (#125): each agent CLI row in
+  **Settings → Herdr → Agents** says which machines of your configured
+  runtimes have it ("Found on this machine and lasse@mac. Not found on
+  xl."), not only the active runtime's. Machines other than the active
+  runtime's are checked when the section draws, once per opening of the
+  settings and in parallel, and again on **Check again**; a machine that
+  cannot be checked is named once. The active runtime's catalog still decides
+  the menu and the default.
 
 ### Changed
 

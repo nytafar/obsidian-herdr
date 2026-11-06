@@ -108,6 +108,7 @@ import {
 } from './getStarted/flow';
 import { GetStartedModal } from './getStarted/card';
 import { AgentCatalogs } from './agents/catalogs';
+import { defaultMachineProbesHost, MachineProbes } from './agents/machines';
 import { migrateDefaultAgents, normalizeIdList, normalizeUserProfiles } from './agents/catalog';
 
 /** Delay after a connection setting changes before reconnecting (typing). */
@@ -251,6 +252,19 @@ export default class HerdrPlugin extends Plugin {
 			new Notice(message);
 		},
 	});
+	/**
+	 * Fresh per-machine agent probes for one opening of the settings tab
+	 * (#125), reading the published connection's probe for its own machine.
+	 */
+	newMachineProbes(): MachineProbes {
+		return new MachineProbes(
+			defaultMachineProbesHost({
+				live: (machine) => this.agentCatalogs.liveProbeOn(machine.key),
+				extraPath: () => this.settings.extraPath,
+				vaultPath: () => this.vaultPath(),
+			}),
+		);
+	}
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */

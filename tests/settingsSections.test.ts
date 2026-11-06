@@ -41,6 +41,8 @@ import {
 	type SettingsCallbacks,
 } from '../src/settings';
 import { defaultLocalRuntime, newRuntime } from '../src/runtimes';
+import type { AgentProbe } from '../src/agents/catalog';
+import { MachineProbes } from '../src/agents/machines';
 
 /** A fresh, mutable copy of the defaults plus whatever a case overrides. */
 function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
@@ -500,6 +502,93 @@ describe('agents section', () => {
 		await Promise.resolve();
 		expect(asked).toHaveLength(2);
 		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
+	});
+
+	it('probes each machine of every runtime once per opening, and updates rows in place as each lands', async () => {
+		const settings = settingsOf();
+		const mac = { ...newRuntime('herdr', 'ssh', ['local']), id: 'mac', host: 'lasse@mac' };
+		const macHc = { ...newRuntime('herdr-core', 'ssh', ['local', 'mac']), id: 'mac-hc', host: 'lasse@mac' };
+		const xl = { ...newRuntime('herdr', 'ssh', ['local', 'mac', 'mac-hc']), id: 'xl', host: 'xl' };
+		settings.runtimes = [...settings.runtimes, mac, macHc, xl];
+		settings.activeRuntime = 'mac';
+
+		const asked: string[] = [];
+		const answers = new Map<string, (probe: AgentProbe) => void>();
+		const probes = new MachineProbes({
+			live: () => null,
+			local: () => {
+				asked.push('local');
+				return new Promise((resolve) => answers.set('local', resolve));
+			},
+			ssh: (machine) => {
+				asked.push(machine.host);
+				return new Promise((resolve) => answers.set(machine.host, resolve));
+			},
+		});
+		const { calls, callbacks } = recorder();
+		callbacks.agents = {
+			probe: () => ({ found: new Set(['claude', 'codex']), herdrVersion: '0.9.5' }),
+			refresh: async () => false,
+			editing: () => null,
+			edit: () => undefined,
+			machines: () => probes,
+		};
+		const el = settingsContainer();
+		buildAgentsSection(el, settings, callbacks);
+		buildAgentsSection(settingsContainer(), settings, callbacks);
+		expect(asked).toEqual(['local', 'lasse@mac', 'xl']);
+		expect(settingNamed(el, 'Codex').desc).toBe('Runs codex. Checking this machine, lasse@mac and xl…');
+
+		// A drawing after the first is the current one: draw it again to follow it.
+		const current = settingsContainer();
+		buildAgentsSection(current, settings, callbacks);
+		answers.get('lasse@mac')?.({ found: new Set(['claude', 'codex']) });
+		answers.get('local')?.({ found: new Set(['claude']) });
+		answers.get('xl')?.({ found: null, error: 'ssh xl did not answer' });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(asked).toHaveLength(3);
+		expect(calls).not.toContain('redisplay');
+		expect(settingNamed(current, 'Codex').desc).toBe('Runs codex. Found on lasse@mac. Not found on this machine.');
+		expect(settingNamed(current, 'Claude Code').desc).toBe(
+			'Runs claude. Found on this machine and lasse@mac. Default. Has the native view.',
+		);
+		expect(settingNamed(current, 'Agent CLIs').desc).toContain('Could not check xl: ssh xl did not answer.');
+		expect(settingNamed(el, 'Codex').desc).toBe('Runs codex. Checking this machine, lasse@mac and xl…');
+
+		// Check again asks every machine once more.
+		await control(current, 'Agent CLIs', ButtonComponent, 'button').click();
+		expect(asked).toEqual(['local', 'lasse@mac', 'xl', 'local', 'lasse@mac', 'xl']);
+	});
+
+	it('lists a built-in only another machine has, greyed, drawing the tab again once it is known', async () => {
+		const settings = settingsOf();
+		settings.runtimes = [...settings.runtimes, { ...newRuntime('herdr', 'ssh', ['local']), id: 'mac', host: 'lasse@mac' }];
+		settings.activeRuntime = 'mac';
+		const probes = new MachineProbes({
+			live: () => null,
+			local: async () => ({ found: new Set(['claude', 'gemini']) }),
+			ssh: async () => ({ found: new Set(['claude']) }),
+		});
+		const { calls, callbacks } = recorder();
+		callbacks.agents = {
+			probe: () => ({ found: new Set(['claude']), herdrVersion: '0.9.5' }),
+			refresh: async () => false,
+			editing: () => null,
+			edit: () => undefined,
+			machines: () => probes,
+		};
+		buildAgentsSection(settingsContainer(), settings, callbacks);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
+
+		const el = settingsContainer();
+		buildAgentsSection(el, settings, callbacks);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
+		const gemini = settingNamed(el, 'Gemini');
+		expect(gemini.desc).toBe('Runs gemini. Found on this machine. Not found on lasse@mac. Not in the menu on herdr on lasse@mac.');
+		expect(gemini.classes).toContain('herdr-agent-unavailable');
 	});
 
 	it('hides an entry from the menu, and adds a user entry with its form open', async () => {

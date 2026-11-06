@@ -1,5 +1,6 @@
 import type { StoredClaudeSession } from './claude/agents';
 import type { AgentProbe, UserAgentProfile } from './agents/catalog';
+import type { MachineProbes } from './agents/machines';
 import { buildAgentCatalogSettings, buildDefaultAgentSetting } from './agents/settingsSection';
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
@@ -740,6 +741,11 @@ export interface SettingsCallbacks {
 		refresh: (runtimeId: string, again?: boolean) => Promise<boolean>;
 		editing: () => string | null;
 		edit: (id: string | null) => void;
+		/**
+		 * The per-machine probes of this opening of the tab: which machines,
+		 * across every configured runtime, each agent CLI was found on.
+		 */
+		machines?: () => MachineProbes;
 	};
 }
 
@@ -1652,6 +1658,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private editingAgent: string | null = null;
 	/** The status block of the last display, redrawn when the registry changes. */
 	private statusEl: HTMLElement | null = null;
+	/** Which machines have which agent CLIs, probed once per opening of the tab (issue #125). */
+	private machines: MachineProbes | null = null;
 
 	constructor(app: App, plugin: HerdrPlugin, renderStatus: RenderStatus) {
 		super(app, plugin);
@@ -1703,6 +1711,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 					this.editingAgent = id;
 					this.display();
 				},
+				machines: () => (this.machines ??= plugin.newMachineProbes()),
 			},
 		};
 	}
@@ -1718,5 +1727,12 @@ export class HerdrSettingTab extends PluginSettingTab {
 		this.renderStatus(this.statusEl);
 
 		for (const section of SETTINGS_SECTIONS) section(containerEl, settings, callbacks);
+	}
+
+	/** Closing the tab ends its machine probes: the next opening asks again. */
+	hide(): void {
+		this.machines?.dispose();
+		this.machines = null;
+		super.hide();
 	}
 }
