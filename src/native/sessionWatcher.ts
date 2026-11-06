@@ -106,11 +106,12 @@ export interface SessionWatcher {
 	onMembership(handler: (paneId: string) => void): Unsubscribe;
 	/**
 	 * Why this pane cannot be shown in the native view although its runtime
-	 * can, or null when it can or the runtime does not know the pane. Only a
-	 * kind whose session needs something on the pane's side says anything
-	 * here: herdr-core, whose session is the Claude hook's label (ADR-0006),
-	 * so a terminal without one stays a terminal and names the install
-	 * command. herdr's watcher leaves it out.
+	 * can, or null when it can or the runtime does not know the pane. A pane
+	 * running another agent than Claude says so on herdr and herdr-core
+	 * (`./agentSupport.ts`, #155); the `claude` kind runs only Claude and
+	 * leaves this out. herdr-core says more, since its session is the Claude
+	 * hook's label (ADR-0006): a terminal without one stays a terminal and
+	 * names the install command.
 	 */
 	unavailable?(paneId: string): string | null;
 	/**

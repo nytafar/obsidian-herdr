@@ -316,10 +316,61 @@ view sets `capabilities.nativeView` and supplies `RuntimeKindAdapter.native`, a
 herdr's watcher is `src/herdr/sessionWatcher.ts`: cwd and status from the
 scope, `agent_session` from the raw `PaneInfo`, and rotation read off
 `pane.updated` one microtask after the client's dispatch, so the scope has
-ingested the update first. It reports no transcript path and no block kind; the
-model derives the path from cwd and session, and the waiting card guesses the
-block from the transcript. herdr-core's watcher and sources are in
-"herdr-core: the native view" below.
+ingested the update first. It reports no block kind, and the waiting card
+guesses the block from the transcript. On a local herdr it works out the
+transcript path from the pane's Claude process (next section); until that is
+known, and over SSH, the model derives the path from cwd and session under
+`~/.claude`. herdr-core's watcher and sources are in "herdr-core: the native
+view" below.
+
+### A pane's Claude process: config dir and real cwd (issue #132)
+
+Claude files a session under its configuration folder (`CLAUDE_CONFIG_DIR`,
+else `~/.claude`) and the real cwd: a session started in a symlinked folder is
+filed under the link's target (measured 2026-11-06, the `claude` kind's table
+below). What herdr 0.9.5 gives towards that, verified 2026-11-06 against the
+running server and the herdr source (`herdrdev/herdr` master):
+
+- **No transcript path.** The Claude hook (integration v10, installed here)
+  sends `agent_session_path` (the hook's `transcript_path`) with every
+  `pane.report_agent_session`, and herdr drops it: `session_ref_from_report`
+  (`src/agent_resume.rs`) keeps a path only for `pi` and `omp`, and every
+  other agent's `agent_session` is `{"kind":"id","value":<uuid>}`. All 36
+  `agent_session` values in `pane list` on this machine were `kind: "id"`.
+  `AgentSessionInfo.kind` can be `"path"`, but not for Claude.
+- **The pane's `cwd` is the shell's report.** `Pane::cwd` (`src/pane.rs`)
+  returns the cwd the shell last reported in its prompt (an OSC sequence) when
+  there is one, and only otherwise the shell process's cwd read from the OS.
+  A shell reports its logical `$PWD`, so a pane started in a link can report
+  the link. `foreground_cwd` (`Pane::foreground_cwd`) is the foreground
+  group leader's cwd read from the OS. Read from the source, not measured in
+  a symlinked pane: no pane here sits in a link, and none was made.
+- **The pid and a resolved cwd, from `pane.process_info`** (present in 0.9.1
+  and 0.9.5): `{shell_pid, foreground_process_group_id, tty?,
+  foreground_processes: [{pid, name, argv, argv0?, cmdline, cwd}]}`. For a
+  Claude pane the list holds `claude` (name `claude`, pid equal to the
+  foreground group id) and its MCP servers. The process `cwd` is read from the
+  OS (`/proc/<pid>/cwd` on Linux), which is the resolved path.
+- **No environment.** Neither `pane.get`, `pane.list` nor `pane.process_info`
+  carries one. On Linux `/proc/<pid>/environ` of the same user's Claude is
+  readable (59 variables for pane `w1:p1A`'s Claude, `HERDR_PANE_ID` among
+  them). No Claude on this machine had `CLAUDE_CONFIG_DIR` set when measured.
+
+So for a local herdr (`src/herdr/paneClaude.ts`): `pane.process_info`, the
+process called `claude` (by name or program file name; else the foreground
+group's leader), its `cwd` as the real cwd, and its `CLAUDE_CONFIG_DIR` from
+`/proc/<pid>/environ` (Linux) or `ps -wwE -o command= -p <pid>` (macOS, parsed
+as Ovis does); a relative value is taken from Claude's cwd. No process: the
+pane's `cwd` through `realpath` here. No environment read: `~/.claude`. An
+answer is kept per pane and agent session, 30 s when the environment was read
+and 2 s when anything fell back, and refreshed on that pane's updates only
+while a session model follows it. The watcher pushes the path as soon as it is
+known, and every later `pane.updated` carries it, so the model's dedupe holds.
+The `/` list's user scope and plugins come from the same configuration folder.
+
+**herdr over SSH is unchanged:** its panes have no transcript adapter and stay
+terminals (ADR-0002), and nothing here reads a remote process. Its prompt box
+is not offered either, so the `/` list question does not arise.
 
 Session models are keyed by runtime id and pane id (`SessionModelRegistry`).
 Each model asks for its own runtime's watcher and source on every connection
@@ -1271,3 +1322,118 @@ scratch pane created with `tab create` and `agent start`.
   one-question single-select dialog submits on the digit. Details and the
   probe in the docs root, `findings/native-view-session-chrome.md` and
   `findings/native-view-control-channels.md`.
+
+## A second agent: Codex
+
+Measured on 2026-11-06 for issue #136, against herdr 0.9.5 and Codex 0.163.0
+(the standalone TUI at `~/.local/bin/codex`), 0.166.0 (the shared app-server
+daemon) and 0.167.0 (the mise install), in a scratch herdr tab on
+`/tmp/oh-codex-live` with one-word prompts. The discussion, Ovis's
+cross-check and what the agent-neutral model needs are in the docs root,
+`findings/agent-codex.md`. Scrubbed recordings are in `tests/fixtures/codex/`,
+and `tests/codexFixtures.test.ts` pins the facts below that rest on them.
+
+- **Which agent a pane runs.** herdr names it in `PaneInfo.agent`
+  (`"codex"`), and the session it reports names it again in
+  `agent_session.agent`, with `source: "herdr:codex"`. herdr-core has no
+  field for it: the plugin's `agentKindOf` (`src/hc/model.ts`) reads
+  `status.app`, then the foreground program (a Codex TUI runs as a native
+  process named `codex`), then the `obsidian-herdr.agent` label. The `claude`
+  kind runs only Claude. Until #155 no code path read the pane's agent before
+  it offered the native view, so a Codex pane on herdr was offered a view that
+  derived a Claude transcript path from Codex's thread id. Now herdr's and
+  herdr-core's session watchers refuse a pane whose agent is not Claude
+  (`src/native/agentSupport.ts`), through the pane-reason path, and the pane
+  stays a terminal that names its agent.
+- **The session is a thread id, and the transcript is a rollout file.**
+  `~/.codex/sessions/YYYY/MM/DD/rollout-<local start time>-<thread id>.jsonl`
+  (`$CODEX_HOME` moves `~/.codex`). It is created at the first prompt, not at
+  start, and the thread id ends its name, so a known id finds its file by
+  name. Codex's store `state_5.sqlite` holds the same path in
+  `threads.rollout_path`, with `source` (`cli`, `vscode`, `exec`); a reader
+  with `immutable=1` saw none of the day's threads, which were still in the
+  WAL.
+- **herdr reports a Codex session only when the TUI runs without the shared
+  daemon.** herdr's Codex integration is a `SessionStart` hook
+  (`~/.codex/hooks.json`, `herdr-agent-state.sh`) that sends
+  `pane.report_agent_session` with the thread id (`kind: "id"`, never the
+  path) to the pane named by `HERDR_PANE_ID` in its own environment. By
+  default the Codex TUI is a client of one app-server daemon per user
+  (`codex app-server`, here started on 2026-11-04 from herdr pane `wS:p3`),
+  and the hook runs in the daemon, with the daemon's environment. Measured:
+  a TUI in `w14:p8` ran a turn, `w14:p8` got no `agent_session`, and `wS:p3`,
+  a pane in another workspace with no agent, got the new thread's id. The daemon,
+  not the TUI, held the rollout open (`/proc/<pid>/fd`). Started with
+  `--no-daemon`, the same pane got `agent_session` at its first prompt, and
+  `/new` rotated it to the next thread's id at that thread's first prompt,
+  as `/clear` does for Claude. Quitting a daemon TUI prints "Disconnected
+  from this task. Any running work continues." and `codex resume <id>`.
+- **The record format.** Every line is `{timestamp, ordinal, type,
+  payload}`, `ordinal` counting 0, 1, 2, … in the file. Types: `session_meta`
+  (first line: `id`, `cwd`, `originator: "codex-tui"`, `cli_version` of the
+  process that writes, which is the daemon's version under the daemon,
+  `source`), `turn_context` (per turn: `model`, `effort`, `summary`,
+  `approval_policy`, `sandbox_policy`, `collaboration_mode`), `world_state`,
+  `token_usage_record`, `compacted`, `response_item` (what the model saw and
+  said) and `event_msg` (lifecycle). A turn opens with `event_msg/task_started`
+  and closes with `task_complete` (`last_agent_message`, `duration_ms`) or
+  `turn_aborted` (`reason: "interrupted"`).
+- **Every prompt and every reply is written twice,** within a few
+  milliseconds: as a `response_item` `message` and as an
+  `event_msg/item_completed` item (`UserMessage` with a `client_id`,
+  `AgentMessage` with `phase` `commentary` or `final_answer`). The
+  `response_item` user messages also carry the AGENTS.md text and the
+  environment context; only the ones whose
+  `internal_chat_message_metadata_passthrough.content_item_kinds` is
+  `["user.text"]`, or the `UserMessage` items, are prompts. No
+  `event_msg/user_message` or `agent_message` was written by 0.163.0–0.167.0.
+- **Tool calls are scripts, and no record flags a failure.** The model calls
+  one code-mode tool, `exec` (`response_item/custom_tool_call`, its `input` a
+  JavaScript cell calling `tools.exec_command(…)` and others), or `wait` on a
+  yielded cell (`function_call`); outputs pair by `call_id`. The call's own
+  `status` is `completed` even when it was refused. The outcome is text: a
+  completed script's output opens `Script completed`, and a command inside it
+  that failed shows only as `"exit_code":1` in the JSON block after; a
+  yielded one says `Script running with cell ID <n>`; a call the user
+  declined is answered by the plain string `aborted by user after <s>s` and
+  the turn ends `turn_aborted`. A `CommandExecution` item (`status`
+  `completed`/`failed`, `exit_code`, `command`) is written only for a command
+  that outlives its script (a yielded cell) and for review runs, not for one a
+  script ran to the end. Reasoning items carry no text here: reasoning
+  summaries are off (`turn_context.summary: "none"`).
+- **Approvals.** With `-a on-request`, a command the sandbox refused was
+  retried with `sandbox_permissions: "require_escalated"` and a
+  `justification` in the cell's input; that `custom_tool_call` is written
+  before the dialog and stays unanswered while herdr shows the agent
+  `blocked`, as a Claude permission leaves a dangling `tool_use`. The dialog
+  is on screen only: "1. Yes, proceed (y)", "2. Yes, and don't ask again for
+  commands that start with `…` (p)", "3. No, and tell Codex what to do
+  differently (esc)", Enter confirms the highlighted first. `esc` declined.
+  Under this machine's default policy (`granular`, `sandbox_approval: false`)
+  Codex asks nothing and the model reports the refusal itself.
+- **Steering.** A prompt herdr delivers while a turn runs joins that turn: a
+  second `UserMessage` under the running turn's id, with no new
+  `task_started`, and the reply answers both. herdr types the prompt into the
+  composer and presses Enter, so a draft left there is sent in front of it
+  (a `/` left by a key press turned `/new` into the text `//new`).
+- **Slash commands** sent with `agent prompt` run: `/compact`, `/new`.
+  `/compact` is a turn of its own with no prompt: `task_started`, a
+  `compacted` record whose `message` is empty and whose summary is opaque, a
+  `ContextCompaction` item, and `task_complete` with
+  `last_agent_message: null`. The TUI's `/` list is compiled in (`/model`,
+  `/fast`, `/presets`, `/permissions`, `/review`, …); no file lists it.
+- **Model, effort and usage** are in the rollout: `turn_context.model` and
+  `effort` per turn, `event_msg/token_count` with `total_token_usage`,
+  `last_token_usage` and `model_context_window`.
+- **Spawned directly**, Codex has two machine interfaces besides the TUI.
+  `codex exec --json` prints a stream of its own (`thread.started`,
+  `turn.started`, `item.completed` with snake-case item types,
+  `turn.completed` with usage) and writes a rollout too (`source: "exec"`).
+  `codex app-server` speaks JSON-RPC over stdio (`codex app-server
+  generate-json-schema` prints it): `thread/start|resume`, `turn/start`,
+  `turn/steer`, `turn/interrupt`, `thread/compact/start`, `model/list`;
+  approvals and questions arrive as server requests
+  (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+  `item/tool/requestUserInput`); its `ThreadItem` statuses include
+  `declined`, and `TurnStatus` is `completed|interrupted|failed|inProgress`.
+  The app-server was read from its schema, not run.

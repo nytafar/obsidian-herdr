@@ -434,6 +434,28 @@ timestamps, types and the tags the reducer reads are kept as recorded.
   two answered prompts, a Restore to before the first, and the prompt that
   forks the session.
 
+## Smoking tool groups and the to-do list (#127, #128, #143)
+
+What a redraw costs and which disclosure is open are unit tested on the DOM
+harness (`tests/turnRenderer.test.ts`, `tests/toolGroupHeader.test.ts`,
+`tests/todoList.test.ts`). What needs Obsidian is the browser's own `<details>`,
+the layout of a narrow header and the feel of it while Claude writes.
+
+1. With an agent working in a native tab, open the tool group it is filling and
+   a thought above it: both stay open as lines arrive, and selecting text in
+   the earlier prose is not lost to a redraw.
+2. The running group is open by itself and titled "Working…"; once Claude
+   writes prose after it, or the turn ends, it folds and reads "Worked".
+   A group you clicked into, or opened or closed yourself, stays as you left it.
+   A permission prompt titles the group "Needs you".
+3. Make a call fail (a `Bash` command that exits non-zero): the folded header
+   says "1 failed" in the error colour, and narrowing the sidebar cuts the
+   counts with an ellipsis before it ever cuts that.
+4. Ask for a task long enough that Claude keeps a to-do list: each update shows
+   as a checklist where it was made, the earlier ones fold, and the strip above
+   the prompt box says "To-do · 1 of 3 done · <what it is doing>" and opens to
+   the whole list. It goes away once every item is done.
+
 ## Smoking live updates and session following (#94)
 
 The tail is tested against a real temp file and the following against fake

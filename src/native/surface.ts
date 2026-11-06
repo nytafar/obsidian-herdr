@@ -19,7 +19,9 @@
 import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
 import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
-import type { ToolGroupPresentation } from './toolCalls';
+import { latestTodoList, turnActivity, type ToolGroupPresentation } from './toolCalls';
+import { TodoChip } from './todoList';
+import type { Turn } from './reducer';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import type { WaitingResponder } from './pendingRequest';
@@ -32,6 +34,7 @@ import type {
 	SessionModels,
 	SessionModelView,
 } from './sessionModel';
+import { FoldMemory } from './foldMemory';
 import { ScrollFollower } from './scrollFollower';
 import { TurnRenderer } from './turnRenderer';
 import { WaitingCardView } from './waitingCardView';
@@ -140,12 +143,23 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private follower: ScrollFollower | null = null;
 	/** The empty line and the status line; null while detached. */
 	private lines: SessionLines | null = null;
+	/** The current to-do list under the turns (#143); null while detached. */
+	private todo: TodoChip | null = null;
 	/** The waiting card (#99), kept across attaches for its answer guards. */
 	private readonly waiting: WaitingCardView;
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
+	/**
+	 * What the reader opened and closed in the turns (#127). Here, not in the
+	 * turn renderer: that is rebuilt on every attach and its turns on every
+	 * full draw, and a reader's choice must outlive both. Not in the session
+	 * model either, which every tab on the pane shares.
+	 */
+	private readonly folds = new FoldMemory();
+	/** The turn last drawn as the latest, which settles when another arrives (#128). */
+	private activeTurnId: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -197,8 +211,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			vaultPath: this.options.vaultPath,
 			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
 			resolveUri: (uri) => this.resolveUri(uri),
+			folds: this.folds,
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
+		this.todo = new TodoChip(root);
 		this.lines = new SessionLines(root);
 		this.rootEl = root;
 		this.component.load();
@@ -237,6 +253,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.rootEl = null;
 		this.turns = null;
 		this.lines = null;
+		this.todo = null;
 	}
 
 	/**
@@ -264,6 +281,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// Another pane is another session: let the old model go and start over.
 		// The new one is pinned to the identity's runtime, never the published one.
 		this.unbind();
+		this.folds.clear();
 		this.bind();
 	}
 
@@ -355,10 +373,19 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			// What a rewind left behind goes first (#131): a turn the new branch
 			// opens is drawn after the ones that stay.
 			for (const id of change.removedTurnIds ?? []) this.turns?.remove(id);
-			for (const id of change.changedTurnIds) {
+			// The latest turn too, whatever moved: its tool groups say whether the
+			// agent is working or waiting in them (#128), and the status moves
+			// without a line. And the turn that was latest, which has settled.
+			const ids = new Set(change.changedTurnIds);
+			const latest = turns.at(-1)?.id;
+			if (latest) ids.add(latest);
+			if (this.activeTurnId && this.activeTurnId !== latest) ids.add(this.activeTurnId);
+			for (const id of ids) {
 				const turn = turns.find((candidate) => candidate.id === id);
-				if (turn) this.turns?.render(turn);
+				if (turn) this.renderTurn(turn, turn.id === latest);
 			}
+			this.activeTurnId = latest ?? null;
+			this.todo?.update(latestTodoList(turns));
 			this.updateEmpty();
 			this.follower?.settle();
 		}
@@ -368,10 +395,23 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	private renderAll(): void {
 		this.clearTurns();
-		for (const turn of this.model?.state.turns ?? []) this.turns?.render(turn);
+		const turns = this.model?.state.turns ?? [];
+		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
+		this.activeTurnId = turns.at(-1)?.id ?? null;
+		this.todo?.update(latestTodoList(turns));
 		this.updateEmpty();
 		this.updateStatus();
 		this.follower?.settle();
+	}
+
+	/**
+	 * Draws one turn. Only the session's latest turn shows what the agent is
+	 * doing (#128): herdr's status is the pane's, and every turn before the
+	 * latest has finished, whatever its calls still say.
+	 */
+	private renderTurn(turn: Turn, latest: boolean): void {
+		const activity = latest ? turnActivity(this.model?.agentStatus ?? 'unknown') : null;
+		this.turns?.render(turn, activity);
 	}
 
 	/** Drops every turn element and stops watching the one being written. */

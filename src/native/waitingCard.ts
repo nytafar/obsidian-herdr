@@ -34,7 +34,7 @@
  * answered automatically; a guessed one still gets the button.
  */
 
-import type { PendingRequest } from './pendingRequest';
+import type { PendingQuestionOption, PendingRequest } from './pendingRequest';
 import type { ToolEntry, Turn } from './reducer';
 import type { BlockKind } from './sessionWatcher';
 import { toolDetail } from './toolCalls';
@@ -54,8 +54,11 @@ export interface WaitingCardModel {
 	title: string;
 	/** The question, the plan or the tool's one-line detail; empty for none. */
 	body: string;
-	/** The answers `AskUserQuestion` offered; empty for every other kind. */
-	options: string[];
+	/**
+	 * The answers `AskUserQuestion` offered, each with the description Claude
+	 * gave it (empty for none); empty for every other kind.
+	 */
+	options: PendingQuestionOption[];
 	/**
 	 * The dangling `tool_use` this block is about, empty when none dangles — as
 	 * it always is at startup, which is the one kind that gets answered. It is
@@ -127,7 +130,7 @@ export function requestCard(request: PendingRequest, vaultPath: string): Waiting
 			kind: 'question',
 			title: 'Claude asked a question',
 			body: first?.question ?? '',
-			options: first?.options.map((option) => option.label) ?? [],
+			options: first?.options.map((option) => ({ ...option })) ?? [],
 			toolUseId: request.toolUseId,
 			reported: true,
 			request,
@@ -269,17 +272,38 @@ export function waitingCard(input: {
  * answered anyway. The card's job is to say what the block is, not to be the
  * dialog.
  */
-function firstQuestion(entry: ToolEntry): { question: string; options: string[] } {
+function firstQuestion(entry: ToolEntry): { question: string; options: PendingQuestionOption[] } {
 	const first = firstOf(entry.input.questions);
 	if (!first || typeof first !== 'object') return { question: '', options: [] };
 	const asked: unknown = (first as { question?: unknown }).question;
 	const offered: unknown = (first as { options?: unknown }).options;
-	const options = (Array.isArray(offered) ? (offered as unknown[]) : [])
-		.map((option) =>
-			option && typeof option === 'object' ? (option as { label?: unknown }).label : null,
-		)
-		.filter((label): label is string => typeof label === 'string' && label !== '');
+	const options: PendingQuestionOption[] = [];
+	for (const option of Array.isArray(offered) ? (offered as unknown[]) : []) {
+		if (!option || typeof option !== 'object') continue;
+		const { label, description } = option as { label?: unknown; description?: unknown };
+		if (typeof label !== 'string' || label === '') continue;
+		options.push({ label, description: typeof description === 'string' ? description.trim() : '' });
+	}
 	return { question: typeof asked === 'string' ? asked.trim() : '', options };
+}
+
+/** Claude's own mark on the option it recommends: a suffix on the label. */
+const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
+
+/**
+ * An option's label as the card shows it, and whether Claude recommended it.
+ *
+ * Claude marks its pick by writing "(Recommended)" after the label, which
+ * the card draws as a tag instead (after Ovis's `optionName`,
+ * `src/lib/promptText.ts`, MIT). Only the shown text changes: an answer is
+ * always sent under the label exactly as Claude wrote it, suffix included,
+ * because that is the option it offered. A label that is nothing but the
+ * suffix keeps it, so no option is ever drawn blank.
+ */
+export function optionName(label: string): { text: string; recommended: boolean } {
+	const text = label.replace(RECOMMENDED_SUFFIX, '');
+	if (text === label || text.trim() === '') return { text: label, recommended: false };
+	return { text, recommended: true };
 }
 
 /** The first element of a value that is a list, and null for anything else. */
@@ -291,4 +315,32 @@ function firstOf(value: unknown): unknown {
 function textField(entry: ToolEntry, field: string): string {
 	const value = entry.input[field];
 	return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Whether a keystroke in a typed answer sends it: Enter, unless an input
+ * method is composing with it. WebKit can deliver the Enter that commits an
+ * IME candidate after `compositionend`, as key code 229, so that one is the
+ * input method's too (as Ovis's `PromptCard.tsx` reads it, MIT).
+ */
+export function isTypedAnswerKey(event: { key: string; isComposing?: boolean; keyCode?: number }): boolean {
+	return event.key === 'Enter' && event.isComposing !== true && event.keyCode !== 229;
+}
+
+/**
+ * One question's answer as it is sent: the options picked, in the order Claude
+ * offered them and under their labels exactly as written, then the user's
+ * typed answer, joined with ", " as Claude's own dialog joins a multiple
+ * choice. For a single choice the card keeps only one of the two. Empty when
+ * nothing is given.
+ */
+export function questionAnswer(
+	offered: readonly PendingQuestionOption[],
+	picked: ReadonlySet<string>,
+	typed: string,
+): string {
+	const parts = offered.map((option) => option.label).filter((label) => picked.has(label));
+	const own = typed.trim();
+	if (own) parts.push(own);
+	return parts.join(', ');
 }

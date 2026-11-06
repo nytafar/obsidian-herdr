@@ -97,7 +97,13 @@ export type WaitingAnswer =
 	| { type: 'allow-session' }
 	| { type: 'allow-project' }
 	| { type: 'deny' }
-	/** Answers keyed by question text; a multi-select answer joins its labels. */
+	/**
+	 * Answers keyed by question text. Each is an option's label as Claude wrote
+	 * it, the user's own typed words (the dialog's "Other", #141), or, for a
+	 * multiple choice, the labels and then the typed words joined with ", ". A
+	 * kind with a responder delivers the text as it is; the `claude` kind's
+	 * `can_use_tool` answer does (measured on Claude Code 2.1.318).
+	 */
 	| { type: 'answer'; answers: Record<string, string> }
 	| { type: 'dismiss' }
 	| { type: 'approve-plan' }

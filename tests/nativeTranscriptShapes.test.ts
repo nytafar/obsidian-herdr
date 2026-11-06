@@ -14,6 +14,8 @@ import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
 import { TocPanel } from '../src/native/tocView';
+import { TurnRenderer } from '../src/native/turnRenderer';
+import { FoldMemory } from '../src/native/foldMemory';
 import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
 import type {
 	BlockKind,
@@ -217,5 +219,27 @@ describe('turns a rewind dropped (#131)', () => {
 		model.push([turn('u3', 'cherry')], { changedTurnIds: ['u3'], removedTurnIds: ['u1', 'u2'], reset: false });
 
 		expect(toc.rows()).toEqual(['cherry']);
+	});
+});
+
+describe('a dropped turn in the renderer (#131)', () => {
+	it('forgets what the reader opened in it', () => {
+		const { el, host } = hostEl();
+		const folds = new FoldMemory();
+		const renderer = new TurnRenderer(host, {
+			presentation: () => 'highlight',
+			vaultPath: () => '/vault',
+			renderMarkdown: () => Promise.resolve(),
+			resolveUri: () => null,
+			folds,
+		});
+		renderer.render(turn('u1', 'apple', [{ kind: 'thinking', messageId: 'm1', text: 'weighing' }]));
+		folds.turn('u1').open.set('thinking:m1', true);
+
+		renderer.remove('u1');
+
+		expect(el.findAll('herdr-native-turn')).toEqual([]);
+		expect(folds.turn('u1').open.size).toBe(0);
+		expect(renderer.size).toBe(0);
 	});
 });

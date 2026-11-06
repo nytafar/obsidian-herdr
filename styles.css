@@ -728,6 +728,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	font-weight: var(--font-semibold);
 }
 
+/*
+ * The title bar, with the fold button at its end (#142). Folded, the card is
+ * this bar alone, one line, so a long plan stops covering a narrow pane.
+ */
+.herdr-native-waiting-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-head .herdr-native-waiting-title {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-waiting.is-folded .herdr-native-waiting-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-waiting-fold {
+	flex: 0 0 auto;
+}
+
+.herdr-native-waiting-content.herdr-is-hidden {
+	display: none;
+}
+
+/* "Sending your answer…", and why an answer did not get through (#142). */
+.herdr-native-waiting-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+/*
+ * A live region with nothing to say: clipped out of sight, never
+ * `display: none`, so a screen reader still has it when its words come (#142).
+ * Scoped to the view so it outranks the readable-width sizer it also carries.
+ */
+.herdr-native-view .herdr-native-visually-hidden {
+	block-size: 1px;
+	clip-path: inset(50%);
+	inline-size: 1px;
+	margin: 0;
+	overflow: hidden;
+	padding: 0;
+	position: absolute;
+	white-space: nowrap;
+}
+
 /* The question, the plan or the tool's detail line, as it was written. */
 .herdr-native-waiting-body {
 	color: var(--text-muted);
@@ -740,6 +798,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 /* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
 .herdr-native-waiting-option {
 	color: var(--text-muted);
+	display: flex;
+	flex-direction: column;
 	font-size: var(--font-ui-small);
 	margin-top: var(--size-4-1);
 	padding-left: var(--size-4-3);
@@ -794,6 +854,72 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	color: var(--text-on-accent);
 }
 
+/*
+ * A question's options (#141): one per row, as wide as the card, the label on
+ * its first line and Claude's description under it, so neither depends on a
+ * tooltip. A button's own fixed height and centring would cut the second line.
+ */
+.herdr-native-waiting-choices {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice {
+	align-items: flex-start;
+	display: flex;
+	flex-direction: column;
+	height: auto;
+	padding-block: var(--size-4-1);
+	text-align: start;
+	white-space: normal;
+}
+
+.herdr-native-waiting-choice-line {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice-description {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.herdr-native-waiting-choice.is-selected .herdr-native-waiting-choice-description {
+	color: inherit;
+}
+
+/* Claude's own pick, which it marks "(Recommended)" in the label. */
+.herdr-native-waiting-tag {
+	border: 1px solid currentcolor;
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-smaller);
+	padding-inline: var(--size-4-1);
+}
+
+/* The dialog's "Other": the user's own answer, and Send beside it for a single question. */
+.herdr-native-waiting-other {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-other-input {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* Where a question the view cannot answer is answered. */
+.herdr-native-waiting-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
 .herdr-native-waiting-grant {
 	align-items: center;
 	display: flex;
@@ -838,8 +964,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 /*
  * The tool group (#95): one summary line that expands to a row per call. A
- * `details` element, so the browser owns the open state and a turn redrawn
- * while Claude writes does not close what the reader opened.
+ * `details` element, whose open state the turn renderer keeps by the group's
+ * name across redraws (#127).
  */
 .herdr-native-tools,
 .herdr-native-thinking {
@@ -852,6 +978,151 @@ svg.svg-icon[class*='herdr-kind-'] text {
 .herdr-native-thinking-summary {
 	color: var(--text-faint);
 	cursor: var(--cursor);
+}
+
+/*
+ * The group's header (#128): where it stands, the counts, the failures. The
+ * summary keeps its own display so the disclosure marker stays; the line in
+ * it is the flex row, as wide as what is left beside the marker. The counts
+ * give way first and are cut with an ellipsis; the title and the failures
+ * never shrink, so a narrow sidebar still says that a call failed.
+ */
+.herdr-native-tools-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-tools-title,
+.herdr-native-tools-separator,
+.herdr-native-tools-failed {
+	flex: 0 0 auto;
+}
+
+.herdr-native-tools-counts {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.herdr-native-tools.is-live .herdr-native-tools-title {
+	color: var(--text-muted);
+}
+
+.herdr-native-tools.is-waiting .herdr-native-tools-title {
+	color: var(--text-accent);
+}
+
+.herdr-native-tools-failed,
+.herdr-native-tool.is-error {
+	color: var(--text-error);
+}
+
+/*
+ * The agent's to-do list (#143): an update where the turn made it, and the
+ * chip with the current list between the turns and the prompt box. One row per
+ * item; the glyph says its state to the eye and a hidden span to a screen
+ * reader.
+ */
+.herdr-native-todo {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+}
+
+.herdr-native-todo-summary {
+	color: var(--text-faint);
+	cursor: var(--cursor);
+}
+
+.herdr-native-checklist {
+	list-style: none;
+	margin: var(--size-4-1) 0 0;
+	padding-left: var(--size-4-4);
+}
+
+.herdr-native-checklist-item {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-checklist-glyph {
+	flex: 0 0 1em;
+	text-align: center;
+}
+
+.herdr-native-checklist-item.is-completed {
+	color: var(--text-faint);
+}
+
+.herdr-native-checklist-item.is-completed .herdr-native-checklist-text {
+	text-decoration: line-through;
+}
+
+.herdr-native-checklist-item.is-in-progress {
+	color: var(--text-normal);
+}
+
+.herdr-native-checklist-item.is-in-progress .herdr-native-checklist-glyph {
+	color: var(--text-accent);
+}
+
+.herdr-native-sr-only {
+	clip-path: inset(50%);
+	height: 1px;
+	overflow: hidden;
+	position: absolute;
+	white-space: nowrap;
+	width: 1px;
+}
+
+.herdr-native-plan {
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+	order: 3;
+	padding: var(--size-4-1) 0;
+}
+
+.herdr-native-plan.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-plan-summary {
+	cursor: var(--cursor);
+}
+
+.herdr-native-plan-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-plan-title,
+.herdr-native-plan-separator,
+.herdr-native-plan-progress {
+	flex: 0 0 auto;
+}
+
+.herdr-native-plan-current {
+	color: var(--text-normal);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Opened, the list scrolls inside the strip rather than pushing the turns away. */
+.herdr-native-plan-body {
+	max-height: 30vh;
+	overflow-y: auto;
 }
 
 .herdr-native-tool {

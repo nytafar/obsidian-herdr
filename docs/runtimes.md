@@ -168,7 +168,12 @@ which folder an agent starts in, which note a terminal opens beside. The remote
 host therefore needs a copy of this vault at **Remote vault path**, kept in sync
 by whatever you already use, such as Obsidian Sync, Self-hosted LiveSync,
 Syncthing or a git remote. The plugin does not sync anything itself. Tested with
-a mirrored vault on 2026-09-06; it works.
+a mirrored vault on 2026-09-06; it works. The same holds for herdr-core over
+SSH: its **Remote vault path** must point at a synced copy too.
+
+For an always-on vault on Android, there is
+[livesync-native](https://github.com/nytafar/livesync-native), our native client
+for Self-hosted LiveSync, coming to other platforms.
 
 ### Fields
 

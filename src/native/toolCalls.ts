@@ -28,9 +28,11 @@ import {
 	type SteerEntry,
 	type ToolEntry,
 	type ToolStatus,
+	type Turn,
 	type TurnEntry,
 } from './reducer';
 import { trimTrailingSlashes } from '../paths';
+import type { AgentStatus } from '../herdr/types.gen';
 
 /**
  * The kinds a tool call is shown as. Claude Code's tool names change between
@@ -111,6 +113,15 @@ const TOOL_PHRASES: Readonly<Record<ToolKind, ToolPhrase>> = {
  * so the parts read as one sentence however they are ordered.
  */
 export function toolGroupSummary(tools: readonly ToolEntry[]): string {
+	const line = toolGroupCounts(tools);
+	return line ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : '';
+}
+
+/**
+ * The counts by kind as they read after a title, all lower case: "read 4
+ * files, ran 2 commands". Empty for a group with no calls.
+ */
+export function toolGroupCounts(tools: readonly ToolEntry[]): string {
 	const counts = new Map<ToolKind, number>();
 	for (const entry of tools) {
 		const kind = toolKind(entry.name);
@@ -121,8 +132,97 @@ export function toolGroupSummary(tools: readonly ToolEntry[]): string {
 		const phrase = TOOL_PHRASES[kind];
 		parts.push(`${phrase.verb} ${count} ${count === 1 ? phrase.one : phrase.many}`);
 	}
-	const line = parts.join(', ');
-	return line ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : '';
+	return parts.join(', ');
+}
+
+/**
+ * What the agent is doing in a turn, as far as that turn's tool groups care
+ * (#128): `working` or `blocked` for the session's latest turn while herdr's
+ * status says so, and nothing for every other turn, which has finished
+ * whatever its calls still say. A call left pending in an old turn is one the
+ * agent was interrupted in, not one it is still making.
+ */
+export type TurnActivity = 'working' | 'blocked';
+
+/** The activity a turn shows for an agent status, or null when it shows none. */
+export function turnActivity(status: AgentStatus): TurnActivity | null {
+	return status === 'working' || status === 'blocked' ? status : null;
+}
+
+/**
+ * Where a tool group stands (#128): `live` while the agent is making its
+ * calls, `waiting` while it is blocked on the reader in them, `settled` once
+ * the work moved on or the turn ended.
+ */
+export type ToolGroupState = 'live' | 'waiting' | 'settled';
+
+/**
+ * Where a group stands, from its turn's activity and whether it is the
+ * turn's open run (`openRun`, {@link openRunIndex}): the run the next call
+ * would join. That run is the one working, or the one the agent is blocked
+ * in. A group further up is settled, unless a call in it has not come back —
+ * a background subagent still at work — which keeps it live, never waiting:
+ * the block is in the open run.
+ */
+export function toolGroupState(
+	tools: readonly ToolEntry[],
+	activity: TurnActivity | null,
+	openRun: boolean,
+): ToolGroupState {
+	if (!activity) return 'settled';
+	if (openRun) return activity === 'blocked' ? 'waiting' : 'live';
+	const unanswered = tools.some((entry) => entry.status === 'pending' || entry.status === 'running');
+	return unanswered ? 'live' : 'settled';
+}
+
+/**
+ * The index of the turn's open run among its items, or -1: the last group,
+ * when nothing that ends a run comes after it. A call that escaped the group
+ * (a vault change, a source) does not end it (`turnItems`), so it does not
+ * end it here either; anything else does.
+ */
+export function openRunIndex(items: readonly TurnItem[]): number {
+	for (let index = items.length - 1; index >= 0; index--) {
+		const kind = items[index]?.kind;
+		if (kind === 'group') return index;
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo') return -1;
+	}
+	return -1;
+}
+
+/** What a group's header says, in the three parts it is drawn in. */
+export interface ToolGroupHeader {
+	/** "Working…", "Needs you" or "Worked". */
+	title: string;
+	/** The counts by kind ({@link toolGroupCounts}); may be cut short on screen. */
+	counts: string;
+	/**
+	 * "2 failed", or null when nothing did. Its own part so a narrow view that
+	 * cuts the counts short never cuts this: a failure is what a glance at a
+	 * folded group must not miss. Ovis's `workFailed` (devswha/ovis, MIT).
+	 */
+	failed: string | null;
+}
+
+/** A group's header for where it stands (#128). */
+export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupState): ToolGroupHeader {
+	const title = state === 'live' ? 'Working…' : state === 'waiting' ? 'Needs you' : 'Worked';
+	const failures = tools.filter((entry) => entry.status === 'error').length;
+	return {
+		title,
+		counts: toolGroupCounts(tools),
+		failed: failures > 0 ? `${failures} failed` : null,
+	};
+}
+
+/**
+ * Whether a group starts open, until the reader opens or closes it (#128):
+ * open while it runs or waits on the reader, who may need what is in it to
+ * answer, and folded once it settles, so a finished turn reads as its prose.
+ * The reader's own choice always wins (`./foldMemory.ts`).
+ */
+export function toolGroupStartsOpen(state: ToolGroupState): boolean {
+	return state !== 'settled';
 }
 
 /**
@@ -144,10 +244,87 @@ const CHANGE_KINDS: readonly ToolKind[] = ['write', 'edit'];
 /** The kinds shown as a source. */
 const SOURCE_KINDS: readonly ToolKind[] = ['websearch', 'webfetch'];
 
-/** Whether this call renders on its own instead of inside the group. */
+/**
+ * Whether this call renders on its own instead of inside the group: a vault
+ * change, a source, and a to-do list update (#143), which is where a long
+ * turn has got to.
+ */
 export function escapesToolGroup(kind: ToolKind, presentation: ToolGroupPresentation): boolean {
 	if (presentation === 'collapse') return false;
-	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind);
+	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind) || kind === 'todo';
+}
+
+/** Where one item of the agent's to-do list stands, as `TodoWrite` says it. */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/** One item of the agent's to-do list. */
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	/** What the item says while it is being done ("Writing the tests"), if given. */
+	activeForm: string | null;
+}
+
+/**
+ * The to-do list a `TodoWrite` call left, or null when it is not one or its
+ * list cannot be read (#143).
+ *
+ * Claude Code sends the whole list on every update, as `todos: [{ content,
+ * status, activeForm }]`, so the input is the list as it stands. An item with
+ * no words makes the list unreadable rather than shorter, as Ovis reads it
+ * (devswha/ovis, MIT, `src/lib/todos.ts`); a status this build does not know
+ * reads as pending.
+ */
+export function todoList(entry: ToolEntry): TodoItem[] | null {
+	if (toolKind(entry.name) !== 'todo') return null;
+	const todos = entry.input.todos;
+	if (!Array.isArray(todos)) return null;
+	const items: TodoItem[] = [];
+	for (const todo of todos as unknown[]) {
+		if (typeof todo !== 'object' || todo === null) return null;
+		const { content, status, activeForm } = todo as Record<string, unknown>;
+		if (typeof content !== 'string' || !content.trim()) return null;
+		items.push({
+			content: content.trim(),
+			status: status === 'completed' || status === 'in_progress' ? status : 'pending',
+			activeForm: typeof activeForm === 'string' && activeForm.trim() ? activeForm.trim() : null,
+		});
+	}
+	return items;
+}
+
+/** How far a list has got: done of total, and the item being worked on. */
+export interface TodoProgress {
+	done: number;
+	total: number;
+	/** The first item in progress, else null. */
+	current: TodoItem | null;
+}
+
+export function todoProgress(items: readonly TodoItem[]): TodoProgress {
+	return {
+		done: items.filter((item) => item.status === 'completed').length,
+		total: items.length,
+		current: items.find((item) => item.status === 'in_progress') ?? null,
+	};
+}
+
+/**
+ * The session's current to-do list: the one the latest readable `TodoWrite`
+ * left, or null when the agent has kept none (#143). Read from the end, so a
+ * session that keeps a list finds it at once.
+ */
+export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
+	for (let t = turns.length - 1; t >= 0; t--) {
+		const entries = turns[t]?.entries ?? [];
+		for (let e = entries.length - 1; e >= 0; e--) {
+			const entry = entries[e];
+			if (entry?.kind !== 'tool') continue;
+			const list = todoList(entry);
+			if (list) return list;
+		}
+	}
+	return null;
 }
 
 /**
@@ -340,6 +517,8 @@ export type TurnItem =
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
 	| { kind: 'report'; entry: ToolEntry }
+	/** A to-do list update (#143); `latest` for the turn's last one. */
+	| { kind: 'todo'; entry: ToolEntry; latest: boolean }
 	| MarkItem;
 
 /**
@@ -420,7 +599,8 @@ export function turnItems(
 		}
 		const kind = toolKind(entry.name);
 		if (escapesToolGroup(kind, presentation)) {
-			items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
+			if (kind === 'todo') items.push({ kind: 'todo', entry, latest: false });
+			else items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
 			continue;
 		}
 		if (!group) {
@@ -435,6 +615,14 @@ export function turnItems(
 			items.push({ kind: 'report', entry });
 			group = null;
 		}
+	}
+	// The turn's last list is the one shown open; every update before it folds
+	// (#143).
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item?.kind !== 'todo') continue;
+		item.latest = true;
+		break;
 	}
 	return items;
 }

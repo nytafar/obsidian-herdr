@@ -222,6 +222,37 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		expect(moved.slice(1).sort()).toEqual(['t1', 't2']);
 	});
 
+	it('names another agent than Claude, and leaves a terminal with no agent as it was (#155)', () => {
+		const CODEX = 'this pane runs Codex, and the native view reads only Claude';
+		const codexForeground = { name: 'codex', argv: ['codex'], cwd: CWD, pid: 900 };
+		const { scope, send } = scopeWith(
+			// The Codex TUI as hc sees it: a native process named codex, no status app.
+			terminal('t1', { foreground: codexForeground, status: null }),
+			// Started by the plugin as Codex through a wrapper: only the label says so.
+			terminal('t2', { foreground: { name: 'wrap', argv: ['wrap'], cwd: CWD, pid: 901 }, status: null, labels: { 'obsidian-herdr.agent': 'codex' } }),
+			terminal('t3', { foreground: { name: 'bash', argv: ['bash'], cwd: CWD, pid: 7 }, status: null }),
+		);
+		const watcher = hcSessionWatcher(scope);
+		expect(watcher.unavailable?.('t1')).toBe(CODEX);
+		expect(watcher.unavailable?.('t2')).toBe(CODEX);
+		expect(paneViewAvailability('native', { remote: false, kindReason: watcher.unavailable?.('t1') ?? null })).toEqual({
+			available: false,
+			reason: CODEX,
+		});
+		// No agent yet: the same answer as before #155.
+		expect(watcher.unavailable?.('t3')).toBe(NATIVE_NO_CLAUDE_REASON);
+
+		// Codex reporting itself by status app, and then Claude taking over.
+		const moved: string[] = [];
+		watcher.onAvailability?.((paneId) => moved.push(paneId));
+		send('status', 't3', { status: { state: 'idle', app: 'codex' }, records: {}, reported: true });
+		expect(watcher.unavailable?.('t3')).toBe(CODEX);
+		send('status', 't1', { status: { state: 'idle', app: 'claude-code' }, records: {}, reported: true });
+		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 4242 });
+		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		expect(moved).toEqual(['t3', 't1']);
+	});
+
 	it('marks a terminal read in a native view seen, under herdr-app’s rules', async () => {
 		const { scope, send } = scopeWith(
 			terminal('t1', { turn: 2, labels: { ...label('s-1', 4242, PATH_1), 'herdr.seen': '1' }, status: { state: 'done', app: 'claude-code' } }),
