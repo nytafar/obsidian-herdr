@@ -141,6 +141,11 @@ export interface AgentProbe {
 	templates?: readonly HcTemplate[];
 	/** Why the probe could not run, when `found` is null. */
 	error?: string | null;
+	/**
+	 * The programs this probe was asked about. A program outside it (a user
+	 * entry added since) is unverified, not missing. Absent: every program.
+	 */
+	checked?: ReadonlySet<string>;
 }
 
 /** One line of the menu, or of the settings list. */
@@ -373,16 +378,27 @@ export interface BuildCatalogInput {
  *   does not accept. Without a probe every built-in the kind can start is in,
  *   unverified.
  * - A user entry is always in: greyed with the reason when its kind cannot
- *   start it or its program was not found.
+ *   start it. One whose program was not found stays startable, with the
+ *   reason: the probe looks where the runtime's shells look, but a user who
+ *   added the entry knows better than a PATH that came out different.
+ * - A program the probe was not asked about (an entry added since) is
+ *   unverified, like everything before the first probe.
  * - The default is the runtime's stored choice while it is available, else
- *   the first available entry that is not hidden.
+ *   the first available entry that is not hidden and was not missed by the
+ *   probe, else the first available one that is not hidden.
  */
 export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 	const { runtime, settings, probe } = input;
 	const kind = runtime.kind;
 	const hidden = new Set(settings.hiddenAgents);
 	const where = machinePhrase(runtime);
-	const found = probe?.found ?? null;
+	const probed = probe?.found ?? null;
+	const checked = probe?.checked ?? null;
+	/** Whether the probe found the program; null while it is unverified. */
+	const lookup = (program: string): boolean | null => {
+		if (probed === null || (checked !== null && !checked.has(program))) return null;
+		return probed.has(program);
+	};
 	const unverified = probe?.error ? `could not check what is installed: ${probe.error}` : null;
 	const entries: CatalogEntry[] = [];
 	const push = (profile: AgentProfile, available: boolean, reason: string | null, wasFound: boolean | null): void => {
@@ -396,11 +412,9 @@ export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 			continue;
 		}
 		if (kind === 'herdr' && probe && !herdrAcceptsKind(profile.agent, probe.herdrVersion)) continue;
-		if (found === null) {
-			push(profile, true, unverified, null);
-			continue;
-		}
-		if (found.has(profile.command)) push(profile, true, null, true);
+		const wasFound = lookup(profile.command);
+		if (wasFound === null) push(profile, true, probed === null ? unverified : null, null);
+		else if (wasFound) push(profile, true, null, true);
 	}
 
 	if (kind === 'herdr-core') {
@@ -422,17 +436,16 @@ export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 			push(profile, false, `this herdr (${probe.herdrVersion ?? 'unknown version'}) cannot start ${profile.agent}`, null);
 			continue;
 		}
-		if (found === null) {
-			push(profile, true, unverified, null);
-			continue;
-		}
-		if (found.has(profile.command)) push(profile, true, null, true);
-		else push(profile, false, `${profile.command} not found ${where}`, false);
+		const wasFound = lookup(profile.command);
+		if (wasFound === null) push(profile, true, probed === null ? unverified : null, null);
+		else if (wasFound) push(profile, true, null, true);
+		else push(profile, true, `${profile.command} was not found ${where}; it may still start`, false);
 	}
 
 	const wanted = settings.defaultAgents[runtime.id];
 	const chosen =
 		entries.find((entry) => entry.profile.id === wanted && entry.available) ??
+		entries.find((entry) => entry.available && !entry.hidden && entry.found !== false) ??
 		entries.find((entry) => entry.available && !entry.hidden);
 	if (!chosen) return entries;
 	chosen.isDefault = true;
@@ -465,7 +478,8 @@ export function launchOf(profile: AgentProfile): AgentLaunch {
  * The per-runtime defaults from a stored `data.json`: its own
  * `defaultAgents`, or, for a file from before #125, its one global
  * `defaultAgentKind` given to every herdr and herdr-core runtime, so a user
- * who chose codex still gets codex. `claude`, the old default that every
+ * who chose codex still gets codex; a newer build's runtime kept aside
+ * (`foreign`) is given it too, so it has it once that build reads it. `claude`, the old default that every
  * saved file holds, is not written: Claude leads every catalog it is
  * installed in, so the fallback starts it anyway, and an explicit default
  * would keep starting it after the user hid it. `migrated` asks for one
@@ -473,7 +487,7 @@ export function launchOf(profile: AgentProfile): AgentLaunch {
  */
 export function migrateDefaultAgents(
 	stored: unknown,
-	runtimes: readonly Pick<RuntimeConfig, 'id' | 'kind'>[],
+	runtimes: readonly { id: string; kind: string }[],
 ): { defaultAgents: Record<string, string>; migrated: boolean } {
 	const record = (typeof stored === 'object' && stored !== null ? stored : {}) as Record<string, unknown>;
 	const defaultAgents = normalizeDefaultAgents(record.defaultAgents);

@@ -8,8 +8,12 @@
  *   once for the whole list and only when the fixed directories missed one.
  *   Filesystem checks otherwise; nothing else is spawned.
  * - **An SSH host:** one `ssh -T <host> sh -c '<script>' sh <program>…`, in
- *   the shape of `remoteHerdrCommand`: the non-interactive PATH first, then
- *   the same three directories on the remote host.
+ *   the shape of `remoteHerdrCommand`. The script first asks the user's own
+ *   shell there (`$SHELL -l -i -c 'printenv PATH'`) for its PATH, because
+ *   that is where agents start: herdr runs them in an interactive pane
+ *   shell, herdr-core in `"$SHELL" -ic` (`hc/actions.ts`). An nvm, bun or
+ *   npm-global install is on that PATH and not on the non-interactive one.
+ *   Then the non-interactive PATH, then the same three directories there.
  * - **herdr-core over SSH:** the same script in one `machine.exec` over the
  *   runtime's own connection, and hc's `templates.list`.
  *
@@ -18,6 +22,15 @@
  * login shell might expand never has to be matched back. It holds no single
  * quote or backslash, so a fish or nu login shell reads the quoted script the
  * way `sh` does (the same rule as `remoteHerdrCommand`).
+ *
+ * The user's shell is asked with `printenv PATH`, an external program in
+ * every shell, so bash, zsh, fish and nu all answer in the colon form
+ * without the script quoting a `$` for them. Its stdin is `/dev/null`, its
+ * stderr dropped (an interactive shell without a terminal complains about
+ * job control), only its last line kept (an rc file may print), and only a
+ * line starting with `/` used. It runs under `timeout` where the machine has
+ * one; where it has none, a shell that hangs runs into the probe's own
+ * timeout, which is a failed, unverified probe rather than a wrong answer.
  */
 
 import { join } from 'node:path';
@@ -33,6 +46,9 @@ export const HC_PROBE_TIMEOUT_S = 15;
 
 /** The probe, as `sh -c` runs it with the programs as `$1…`. */
 export const PROBE_SCRIPT =
+	'x=; if [ -n "${SHELL:-}" ]; then t=; command -v timeout >/dev/null 2>&1 && t="timeout 10"; ' +
+	'x=$($t "$SHELL" -l -i -c "printenv PATH" </dev/null 2>/dev/null | tail -n 1); fi; ' +
+	'case $x in /*) PATH=$x:$PATH ;; esac; ' +
 	'i=0; for p in "$@"; do i=$((i+1)); f=; ' +
 	'case $p in ' +
 	'"~/"*) f=$HOME/${p#??} ;; ' +

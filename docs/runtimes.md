@@ -63,15 +63,19 @@ vault root: a **left click** starts the active runtime's default agent, a
 default first and checked. **Start agent here** in a folder's menus and the
 command palette starts the default too.
 
-The catalog is per runtime, worked out when the runtime connects and kept
-for that connection, never looked up per start:
+The catalog is per runtime, worked out once the runtime's connection is up
+(after its first answer, so herdr's version and hc's handshake are known)
+and kept for that connection, never looked up per start or per repaint:
 
 - **What is installed.** On this machine, the same search as for the herdr
   binary: Homebrew, `/usr/local/bin`, `~/.local/bin`, the extra PATH entries,
   then your login shell's PATH. On an SSH herdr runtime, one
-  `ssh -T <host> sh -c '…'` that looks on the non-interactive PATH, then in
-  the same three directories there. On an SSH herdr-core runtime, one
-  `machine.exec` over its connection. Only the agent CLIs found are listed.
+  `ssh -T <host> sh -c '…'` that asks your own shell there for its PATH
+  (`$SHELL -l -i -c 'printenv PATH'`, the shell agents start in, so nvm,
+  bun and npm-global installs count), then looks on that PATH, the
+  non-interactive one, and the same three directories. On an SSH herdr-core
+  runtime, the same script in one `machine.exec` over its connection. Only
+  the built-in agent CLIs found are listed.
 - **herdr** starts an agent kind with `agent.start`, which runs that kind's
   own program; kinds the server's version does not accept are left out
   (`muse` needs 0.9.0, `letta` 0.9.1).
@@ -81,12 +85,16 @@ for that connection, never looked up per start:
 - **Your own entries** (Settings → Herdr → Agents → **Add agent CLI**) show
   on every runtime: a wrapper, another command, or an agent with extra
   arguments. One that cannot start on the active runtime is greyed with the
-  reason: its command was not found there, or herdr cannot start a command of
-  your own (herdr-core can), or the runtime is Claude, run by Obsidian.
+  reason: herdr cannot start a command of your own (herdr-core can), or the
+  runtime is Claude, run by Obsidian. One whose command was not found is
+  marked "not found" and still starts, in case the check looked on another
+  PATH than the one it runs on.
 - **Hidden** entries (the eye in settings) stay out of the menu.
 
 The **default** is per runtime, set in the runtime's form (**Default agent**),
-and falls back to the first installed entry. Upgrading keeps the old
+and falls back to the first installed entry. A left click right after
+connecting starts a default of the runtime's own at once; finding the first
+installed one waits for the check, and says so when that takes a moment. Upgrading keeps the old
 **Default agent kind**: every herdr and herdr-core runtime starts with it as
 its default (Claude, the old default, needs none: it leads the catalog
 wherever it is installed). If nothing is found, + says so instead of starting anything.

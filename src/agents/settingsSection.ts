@@ -6,7 +6,9 @@
  *
  * The decisions are `catalog.ts`'s; this file draws them. The probe is the
  * plugin's (`SettingsCallbacks.agents`), read from its cache: the list draws
- * at once with what is known and draws again once a probe lands.
+ * at once with what is known and draws again once a probe lands. Typing in a
+ * user entry's form probes nothing; the tab drawing again (Done, Check
+ * again, reopening it) brings the probe up to the entries as they are then.
  */
 
 import { Setting } from 'obsidian';
@@ -119,7 +121,7 @@ export function buildAgentCatalogSettings(
 				.setButtonText('Check again')
 				.setDisabled(!agents)
 				.onClick(async () => {
-					if (await agents?.check(true)) callbacks.redisplay();
+					if (await agents?.refresh(runtime.id, true)) callbacks.redisplay();
 				}),
 		);
 
@@ -194,9 +196,11 @@ export function buildAgentCatalogSettings(
 	const editing = settings.agentProfiles.find((entry) => entry.id === agents?.editing());
 	if (editing) buildUserProfileForm(containerEl, editing, callbacks);
 
-	// Not probed on this connection yet: ask, and draw again once it lands.
-	if (agents && probe === null) {
-		void agents.check().then((landed) => {
+	// Not probed for these entries on this runtime's connection yet: ask,
+	// and draw again once, when it lands. Nothing to ask (the probe is up to
+	// date, or the published connection is another runtime's) draws nothing.
+	if (agents) {
+		void agents.refresh(runtime.id).then((landed) => {
 			if (landed) callbacks.redisplay();
 		});
 	}

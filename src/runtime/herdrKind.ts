@@ -188,14 +188,15 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		createActions: (actionHost) => new HerdrActions(actionHost),
 		// The agent catalog's probe (issue #125): this machine's binary search,
 		// or one `ssh` to the host; herdr's version gates the kinds it accepts.
+		// The catalog asks once the first ping answered, so the version is
+		// known; it is read after the probe, as the connection has it then.
 		probeAgents: async (connection, programs) => {
 			const runtime = connection.endpoint.runtime;
-			const herdrVersion = connection.client.serverVersion;
 			const probe =
 				runtime.target === 'ssh'
 					? await probeOverSsh(runtime.host, programs, host.sshRun ?? sshDefaultDeps().run)
 					: await probeLocal(programs, { extraPath: host.extraPath() }, deps());
-			return { ...probe, herdrVersion };
+			return { ...probe, herdrVersion: connection.client.serverVersion };
 		},
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),

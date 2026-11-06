@@ -20,7 +20,7 @@
  * `removed` / `workspaceResolved` events, and even those are coalesced into one
  * repaint per frame.
  *
- * The toolbar under the rows holds three `clickable-icon` buttons (issues #41,
+ * The toolbar above the rows, in the view's `nav-header`, holds three `clickable-icon` buttons (issues #41,
  * #44): the sort and group-by menu, a quick settings menu, and, at the far
  * right, the + that starts the runtime's default agent at the vault root on a
  * left click and opens its agent catalog on a right click (issue #125,
@@ -174,6 +174,12 @@ export class AgentListView extends ItemView {
 	 * ones it cannot greyed with the reason.
 	 */
 	private async openStartMenu(event: MouseEvent): Promise<void> {
+		// Where the menu opens is read before the await: the event's
+		// `currentTarget` is null once its dispatch is over. The context-menu
+		// key reports no pointer, so the menu opens under the button then.
+		const keyboard = event.clientX === 0 && event.clientY === 0;
+		const rect = keyboard ? this.startButtonEl?.getBoundingClientRect() : null;
+		const position = rect ? { x: rect.left, y: rect.bottom } : { x: event.clientX, y: event.clientY };
 		const catalog = await this.plugin.agentCatalogs.catalog();
 		const menu = new Menu();
 		for (const item of startMenuItems(catalog)) {
@@ -185,14 +191,14 @@ export class AgentListView extends ItemView {
 				}
 			});
 		}
-		// The context-menu key reports no pointer; open under the button then.
-		const keyboard = event.clientX === 0 && event.clientY === 0;
-		const rect = keyboard ? (event.currentTarget as HTMLElement | null)?.getBoundingClientRect() : null;
-		menu.showAtPosition(rect ? { x: rect.left, y: rect.bottom } : { x: event.clientX, y: event.clientY });
+		menu.showAtPosition(position);
 		this.updateStartButtonLabel();
 	}
 
-	/** The + tooltip names the default once the catalog knows it. */
+	/**
+	 * The + tooltip names the default once the catalog knows it. From the
+	 * cache only: a probe that lands repaints the list, which calls this.
+	 */
 	private updateStartButtonLabel(): void {
 		const el = this.startButtonEl;
 		if (!el) return;
@@ -251,8 +257,6 @@ export class AgentListView extends ItemView {
 		if (start) {
 			start.toggleClass('herdr-hidden', !this.plugin.capabilities().startAgent);
 			this.updateStartButtonLabel();
-			// Again once the runtime's probe has landed, to name its default.
-			void this.plugin.agentCatalogs.catalog().then(() => this.updateStartButtonLabel());
 		}
 		const el = this.endpointToggleEl;
 		if (!el) return;

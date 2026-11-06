@@ -458,7 +458,7 @@ describe('agents section', () => {
 		const { callbacks } = recorder();
 		callbacks.agents = {
 			probe: () => ({ found: new Set(['claude']), herdrVersion: '0.9.5' }),
-			check: async () => true,
+			refresh: async () => false,
 			editing: () => null,
 			edit: () => undefined,
 		};
@@ -468,7 +468,38 @@ describe('agents section', () => {
 		const names = settingNames(el);
 		expect(names).toContain('Claude Code');
 		expect(names).not.toContain('Codex');
-		expect(settingNamed(el, 'Work codex').desc).toBe('Runs codex --profile work. Codex not found on this machine.');
+		expect(settingNamed(el, 'Work codex').desc).toBe(
+			'Runs codex --profile work. Codex was not found on this machine; it may still start.',
+		);
+	});
+
+	it('asks for a probe of the active runtime once per drawing, and draws again only when one landed', async () => {
+		const asked: string[] = [];
+		let landed = true;
+		const { calls, callbacks } = recorder();
+		callbacks.agents = {
+			probe: () => null,
+			refresh: (runtimeId) => {
+				asked.push(runtimeId);
+				return Promise.resolve(landed);
+			},
+			editing: () => null,
+			edit: () => undefined,
+		};
+		const settings = settingsOf();
+		buildAgentsSection(settingsContainer(), settings, callbacks);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(asked).toEqual([settings.activeRuntime]);
+		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
+
+		// Nothing new (up to date, or another runtime's connection): no redraw, no loop.
+		landed = false;
+		buildAgentsSection(settingsContainer(), settings, callbacks);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(asked).toHaveLength(2);
+		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
 	});
 
 	it('hides an entry from the menu, and adds a user entry with its form open', async () => {
@@ -477,7 +508,7 @@ describe('agents section', () => {
 		let editing: string | null = null;
 		callbacks.agents = {
 			probe: () => ({ found: new Set(['claude', 'codex']), herdrVersion: '0.9.5' }),
-			check: async () => true,
+			refresh: async () => false,
 			editing: () => editing,
 			edit: (id) => {
 				editing = id;

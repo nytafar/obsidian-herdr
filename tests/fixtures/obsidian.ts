@@ -267,7 +267,58 @@ export function parseLinktext(linktext: string): { path: string; subpath: string
 }
 export class TFolder extends TAbstractFile {}
 export class FileSystemAdapter {}
-export class Menu {}
+/**
+ * Records what a menu was given and where it opened (the + button's catalog
+ * menu, issue #125). `Menu.shown` holds every menu opened since a test reset it.
+ */
+export class Menu {
+	static shown: Menu[] = [];
+	readonly items: { title: string; disabled: boolean; checked: boolean }[] = [];
+	position: { x: number; y: number } | null = null;
+	addItem(build: (item: MenuItemStub) => void): this {
+		const item = new MenuItemStub();
+		build(item);
+		this.items.push({ title: item.title, disabled: item.disabled, checked: item.checked });
+		return this;
+	}
+	addSeparator(): this {
+		return this;
+	}
+	showAtPosition(position: { x: number; y: number }): void {
+		this.position = position;
+		Menu.shown.push(this);
+	}
+	showAtMouseEvent(event: { clientX?: number; clientY?: number }): void {
+		this.showAtPosition({ x: event.clientX ?? 0, y: event.clientY ?? 0 });
+	}
+}
+
+export class MenuItemStub {
+	title = '';
+	disabled = false;
+	checked = false;
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
+	setIcon(): this {
+		return this;
+	}
+	setChecked(checked: boolean): this {
+		this.checked = checked;
+		return this;
+	}
+	setDisabled(disabled: boolean): this {
+		this.disabled = disabled;
+		return this;
+	}
+	setIsLabel(): this {
+		return this;
+	}
+	onClick(): this {
+		return this;
+	}
+}
 
 /**
  * Stand-in for the `inputEl`/`selectEl`/`sliderEl` a real component exposes.

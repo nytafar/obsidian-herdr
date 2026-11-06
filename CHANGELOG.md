@@ -122,7 +122,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   `machine.exec` on herdr-core over SSH), plus hc's templates on herdr-core
   and your own entries from **Settings → Herdr → Agents**: a wrapper, another
   command or extra arguments. An entry that cannot start on the runtime is
-  greyed with the reason. On herdr, kinds the server's version does not
+  greyed with the reason; one of your own whose command was not found is
+  marked so and still starts. On an SSH host the check uses the PATH of your
+  own shell there, the one agents start in. On herdr, kinds the server's version does not
   accept are left out. Entries can be hidden from the menu, and **Check
   again** looks again after an install.
 

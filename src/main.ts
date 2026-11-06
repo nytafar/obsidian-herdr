@@ -42,6 +42,7 @@ import { isPanePinned, pinnedPaneIds, togglePanePin } from './settings';
 import { resolveFolderPath, type ActionHost } from './actions';
 import {
 	activeRuntimeOf,
+	foreignRuntimeRefs,
 	migrateRuntimes,
 	runtimeById,
 	runtimeDisplayName,
@@ -159,15 +160,18 @@ export default class HerdrPlugin extends Plugin {
 				if (changed) this.refreshAgentList();
 			},
 			onReplaced: () => {
-				// The agent catalog's probe runs once per connection (#125).
-				const current = this.connection.current;
-				if (current) void this.agentCatalogs.probe(current);
 				// The caches belong to the connection that just went (#43, #81).
 				this.sessions.sync();
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
-			onPrimed: () => this.updateStatusBar(),
+			onPrimed: () => {
+				// The agent catalog's probe, once per connection and only once it
+				// is live (#125); again after a reconnect if the last one failed.
+				const current = this.connection.current;
+				if (current) this.agentCatalogs.connected(current);
+				this.updateStatusBar();
+			},
 		},
 	);
 	/**
@@ -242,6 +246,10 @@ export default class HerdrPlugin extends Plugin {
 		settings: () => this.settings,
 		probe: (connection, programs) =>
 			this.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
+		changed: () => this.refreshAgentList(),
+		notice: (message) => {
+			new Notice(message);
+		},
 	});
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
@@ -583,7 +591,7 @@ export default class HerdrPlugin extends Plugin {
 		const runtimes = migrateRuntimes(stored);
 		this.foreignRuntimes = runtimes.foreign;
 		// One `defaultAgentKind` became a default per runtime (#125).
-		const agents = migrateDefaultAgents(stored, runtimes.runtimes);
+		const agents = migrateDefaultAgents(stored, [...runtimes.runtimes, ...foreignRuntimeRefs(runtimes.foreign)]);
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			// Minus the keys this build has no setting for, so nothing a past

@@ -309,6 +309,22 @@ function foreignId(value: unknown): string | null {
 }
 
 /**
+ * The id and kind of each runtime kept aside in `foreign`, for what is
+ * stored per runtime id beside it (the default agent, issue #125). An
+ * unreadable kind is an empty string.
+ */
+export function foreignRuntimeRefs(foreign: readonly unknown[]): { id: string; kind: string }[] {
+	const refs: { id: string; kind: string }[] = [];
+	for (const entry of foreign) {
+		const id = foreignId(entry);
+		if (id === null) continue;
+		const kind = (entry as Record<string, unknown>).kind;
+		refs.push({ id, kind: typeof kind === 'string' ? kind : '' });
+	}
+	return refs;
+}
+
+/**
  * The pre-registry remote profile as a runtime, or null when it has no host.
  * The old load merged the stored block over these defaults before deriving
  * the id, so a file that never stored a socket still derived it from this.

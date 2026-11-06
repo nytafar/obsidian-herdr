@@ -136,6 +136,11 @@ export class FakeElement {
 		this.attrs[name] = value;
 	}
 
+	/** The DOM's own name for {@link setAttr}; the list's toolbar uses it. */
+	setAttribute(name: string, value: string): void {
+		this.setAttr(name, value);
+	}
+
 	/**
 	 * Drops an attribute. The prompt box uses it on `style` to give an emptied
 	 * box its auto-grown height back, the height a drag on the resizer wrote

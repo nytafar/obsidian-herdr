@@ -496,9 +496,12 @@ a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
 `tests/agentCatalog.test.ts` covers the merge (`buildCatalog`), the defaults
 and the `defaultAgentKind` migration, the + menu's items, the probe commands
 and their parsing, the per-connection cache (`AgentCatalogs`), each kind's
-`probeAgents` and starting an entry. Every runner, filesystem and requester
-is a fake: no test invokes ssh or starts an agent CLI. To smoke it inside
-Obsidian:
+`probeAgents`, the probe in the order a connect really runs (published
+before its first ping answers), and starting an entry.
+`tests/agentListView.test.ts` mounts the list on the DOM fixture: building
+the toolbar and repainting start no probe, and the context-menu key opens
+the catalog under the +. Every runner, filesystem and requester is a fake:
+no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
 
 1. Left-click the + at the far right of the agent list's toolbar: the
    runtime's default agent starts at the vault root, and the notice names it.
@@ -506,5 +509,6 @@ Obsidian:
    runtime's machine (`command -v claude codex …` there), the default
    checked. Switch runtimes and right-click again: the list follows.
 3. Add an agent CLI in Settings → Herdr → Agents with a command that does
-   not exist: it shows greyed in the menu with "not found on …". Install it
-   and press **Check again**: it turns available without a reconnect.
+   not exist and press **Done**: it shows in the menu as "(not found)", and
+   its settings row says "was not found on …". Install it and press **Check
+   again**: the mark goes without a reconnect.

@@ -736,7 +736,8 @@ export interface SettingsCallbacks {
 	 */
 	agents?: {
 		probe: (runtimeId: string) => AgentProbe | null;
-		check: (again?: boolean) => Promise<boolean>;
+		/** Probes this runtime if it is the published one and is not up to date; true once a new probe landed. */
+		refresh: (runtimeId: string, again?: boolean) => Promise<boolean>;
 		editing: () => string | null;
 		edit: (id: string | null) => void;
 	};
@@ -1696,7 +1697,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			},
 			agents: {
 				probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
-				check: (again) => plugin.agentCatalogs.check(again),
+				refresh: (runtimeId, again) => plugin.agentCatalogs.refresh(runtimeId, again),
 				editing: () => this.editingAgent,
 				edit: (id) => {
 					this.editingAgent = id;

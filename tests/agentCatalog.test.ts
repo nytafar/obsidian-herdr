@@ -32,14 +32,14 @@ import {
 	probeOverSsh,
 	sshProbeArgs,
 } from '../src/agents/probe';
-import { AgentCatalogs } from '../src/agents/catalogs';
+import { AgentCatalogs, PROBE_WAIT_NOTICE_MS } from '../src/agents/catalogs';
 import { startButtonLabel, startMenuItems } from '../src/views/startMenu';
 import { agentLaunchLine, HcActions } from '../src/hc/actions';
 import { HerdrActions, type ActionHost } from '../src/actions';
 import { createHerdrKind } from '../src/runtime/herdrKind';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
-import { endpointOf, type Connection } from '../src/connection';
-import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
+import { ConnectionCoordinator, endpointOf, type Connection } from '../src/connection';
+import { defaultLocalRuntime, foreignRuntimeRefs, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import type { DiscoveryDeps } from '../src/herdr/binary';
 import type { RunCommand } from '../src/herdr/ssh';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
@@ -64,6 +64,9 @@ const CLAUDE: RuntimeConfig = { ...newRuntime('claude', 'local', []), id: 'cl' }
 function probe(found: string[], extra: Partial<AgentProbe> = {}): AgentProbe {
 	return { found: new Set(found), herdrVersion: '0.9.5', ...extra };
 }
+
+/** Lets every microtask queued so far run. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const ids = (entries: { profile: { id: string } }[]): string[] => entries.map((entry) => entry.profile.id);
 
@@ -129,7 +132,12 @@ describe('buildCatalog', () => {
 		});
 		const herdr = buildCatalog({ runtime: SSH_HERDR, settings, probe: probe(['claude']) });
 		const byId = new Map(herdr.map((entry) => [entry.profile.id, entry]));
-		expect(byId.get('user-a')).toMatchObject({ available: false, found: false, reason: 'codex not found on lasse@xl' });
+		// Not found is not unstartable: the probe may have looked on another PATH.
+		expect(byId.get('user-a')).toMatchObject({
+			available: true,
+			found: false,
+			reason: 'codex was not found on lasse@xl; it may still start',
+		});
 		expect(byId.get('user-b')?.reason).toContain('clear the command');
 		expect(byId.get('user-c')?.reason).toBe('not a plain argument: a b');
 
@@ -165,6 +173,25 @@ describe('buildCatalog', () => {
 		expect(defaultEntry(other)?.profile.id).toBe('claude');
 
 		expect(defaultEntry(buildCatalog({ runtime: LOCAL_HERDR, settings: settingsOf(), probe: probe([]) }))).toBeNull();
+	});
+
+	it('falls back to a found entry before a user entry the probe missed, and starts that one only when nothing was found', () => {
+		const settings = settingsOf({ agentProfiles: [user({ id: 'user-a', name: 'Mine', agent: 'codex' })] });
+		const both = buildCatalog({ runtime: SSH_HERDR, settings, probe: probe(['claude']) });
+		expect(defaultEntry(both)?.profile.id).toBe('claude');
+		const nothing = buildCatalog({ runtime: SSH_HERDR, settings, probe: probe([]) });
+		expect(defaultEntry(nothing)?.profile.id).toBe('user-a');
+		const chosen = buildCatalog({ runtime: SSH_HERDR, settings: { ...settings, defaultAgents: { xl: 'user-a' } }, probe: probe(['claude']) });
+		expect(defaultEntry(chosen)?.profile.id).toBe('user-a');
+	});
+
+	it('treats a program the probe was not asked about as unverified, not missing', () => {
+		const settings = settingsOf({ agentProfiles: [user({ id: 'user-a', name: 'New', agent: 'claude', command: '/opt/new' })] });
+		const landed = probe(['claude'], { checked: new Set(['claude', 'codex']) });
+		const entry = buildCatalog({ runtime: SSH_HC, settings, probe: landed }).find((e) => e.profile.id === 'user-a');
+		expect(entry).toMatchObject({ available: true, found: null, reason: null });
+		const all = probe(['claude'], { checked: new Set(programsToProbe('herdr-core', settingsOf())) });
+		expect(ids(buildCatalog({ runtime: SSH_HC, settings: settingsOf(), probe: all }))).toEqual(['claude']);
 	});
 });
 
@@ -228,6 +255,19 @@ describe('migrateDefaultAgents', () => {
 		});
 	});
 
+	it('gives it to a newer build’s runtime kept aside too, by its id', () => {
+		const foreign = foreignRuntimeRefs([
+			{ id: 'future', kind: 'herdr-cloud', target: 'local' },
+			{ id: 'ok', kind: 'herdr', target: 'local' },
+			'junk',
+		]);
+		expect(foreign).toEqual([{ id: 'future', kind: 'herdr-cloud' }]);
+		expect(migrateDefaultAgents({ defaultAgentKind: 'codex' }, [LOCAL_HERDR, ...foreign]).defaultAgents).toEqual({
+			local: 'codex',
+			future: 'codex',
+		});
+	});
+
 	it('writes no default for the old default, claude, but still drops the key', () => {
 		expect(migrateDefaultAgents({ defaultAgentKind: 'claude' }, runtimes)).toEqual({ defaultAgents: {}, migrated: true });
 	});
@@ -264,13 +304,24 @@ describe('the + menu', () => {
 	it('checks the default, greys what cannot start with the reason, and leaves out hidden entries', () => {
 		const catalog = buildCatalog({
 			runtime: LOCAL_HERDR,
-			settings: settingsOf({ hiddenAgents: ['codex'], agentProfiles: [user({ name: 'Gone', command: '' , agent: 'amp' })] }),
+			settings: settingsOf({
+				hiddenAgents: ['codex'],
+				agentProfiles: [
+					user({ name: 'Gone', command: '', agent: 'amp' }),
+					user({ id: 'user-b', name: 'Wrapper', command: '~/bin/w' }),
+				],
+			}),
 			probe: probe(['claude', 'codex']),
 		});
 		const items = startMenuItems(catalog);
-		expect(items.map((item) => item.title)).toEqual(['Claude Code', 'Gone (amp not found on this machine)']);
+		expect(items.map((item) => item.title)).toEqual([
+			'Claude Code',
+			'Gone (not found)',
+			'Wrapper (herdr starts codex with its own program; clear the command to use it here)',
+		]);
 		expect(items[0]).toMatchObject({ checked: true, disabled: false, launch: { kind: 'claude', label: 'Claude Code' } });
-		expect(items[1]).toMatchObject({ checked: false, disabled: true, launch: null });
+		expect(items[1]).toMatchObject({ checked: false, disabled: false, launch: { kind: 'amp', label: 'Gone' } });
+		expect(items[2]).toMatchObject({ checked: false, disabled: true, launch: null });
 		expect(startButtonLabel(catalog)).toBe('Start Claude Code in the vault. Right-click to choose another.');
 	});
 
@@ -365,7 +416,7 @@ describe('the probe commands', () => {
 });
 
 /** A published connection as far as the catalog reads one. */
-function connectionOf(runtime: RuntimeConfig, client: unknown = {}): Connection {
+function connectionOf(runtime: RuntimeConfig, client: unknown = { ping: () => Promise.resolve() }): Connection {
 	return { endpoint: endpointOf(runtime), client } as unknown as Connection;
 }
 
@@ -399,7 +450,7 @@ describe('AgentCatalogs', () => {
 		current.connection = connectionOf(LOCAL_HERDR);
 		await subject.catalog();
 		expect(count()).toBe(2);
-		await subject.check(true);
+		expect(await subject.refresh('local', true)).toBe(true);
 		expect(count()).toBe(3);
 	});
 
@@ -408,19 +459,129 @@ describe('AgentCatalogs', () => {
 		const { subject, settings, count } = catalogs(current);
 		await subject.catalog();
 		settings.agentProfiles = [user({ command: '/opt/x' })];
+		// What landed serves at once; the new list is probed behind it, once.
+		expect(ids(await subject.catalog())).toContain('codex');
 		await subject.catalog();
+		await settle();
+		expect(count()).toBe(2);
 		await subject.catalog();
 		expect(count()).toBe(2);
+	});
+
+	it('keeps one probe per connection, not one per program list it was ever asked for', async () => {
+		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
+		const { subject, settings, count } = catalogs(current);
+		await subject.refresh('local');
+		// Typing a command, one keystroke at a time, probes nothing by itself.
+		for (const command of ['/', '/o', '/op', '/opt']) {
+			settings.agentProfiles = [user({ command })];
+			subject.cachedCatalog();
+			subject.cachedProbeFor('local');
+		}
+		expect(count()).toBe(1);
+		expect(await subject.refresh('local')).toBe(true);
+		expect(count()).toBe(2);
+		expect(await subject.refresh('local')).toBe(false);
+		expect(count()).toBe(2);
+		// Back to an earlier list is a new probe too: earlier lists are not kept.
+		settings.agentProfiles = [];
+		expect(await subject.refresh('local')).toBe(true);
+		expect(count()).toBe(3);
+	});
+
+	it('does not draw the settings again for another runtime’s connection, and so never loops', async () => {
+		const current = { connection: connectionOf(SSH_HERDR) as Connection | null };
+		const { subject, count } = catalogs(current);
+		expect(await subject.refresh('local')).toBe(false);
+		expect(subject.cachedProbeFor('local')).toBeNull();
+		expect(count()).toBe(0);
+		expect(await subject.refresh('xl')).toBe(true);
+		expect(await subject.refresh('xl')).toBe(false);
+		expect(count()).toBe(1);
+	});
+
+	it('tells the host once a probe of the published connection landed', async () => {
+		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
+		let changed = 0;
+		const subject = new AgentCatalogs({
+			connection: () => current.connection,
+			endpoint: () => endpointOf(LOCAL_HERDR),
+			settings: () => settingsOf(),
+			probe: () => Promise.resolve(probe(['codex'])),
+			changed: () => changed++,
+		});
+		const connection = current.connection;
+		if (!connection) throw new Error('no connection');
+		subject.connected(connection);
+		subject.connected(connection);
+		await settle();
+		expect(changed).toBe(1);
+		expect(ids(subject.cachedCatalog())).toEqual(['codex']);
+	});
+
+	it('probes again on a reconnect edge only when what landed was a failure', async () => {
+		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
+		let fail = true;
+		const { subject, count } = catalogs(current, () => (fail ? { found: null, error: 'down' } : probe(['codex'])));
+		const connection = current.connection;
+		if (!connection) throw new Error('no connection');
+		subject.connected(connection);
+		await settle();
+		expect(count()).toBe(1);
+		fail = false;
+		subject.connected(connection);
+		await settle();
+		expect(count()).toBe(2);
+		subject.connected(connection);
+		await settle();
+		expect(count()).toBe(2);
+		expect(ids(subject.cachedCatalog())).toEqual(['codex']);
+	});
+
+	it('starts the default at once when it is known, and waits, saying so, only for the first installed', async () => {
+		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
+		const notices: string[] = [];
+		let answer: (value: AgentProbe) => void = () => undefined;
+		let probes = 0;
+		const settings = settingsOf();
+		const subject = new AgentCatalogs({
+			connection: () => current.connection,
+			endpoint: () => endpointOf(LOCAL_HERDR),
+			settings: () => settings,
+			probe: () => {
+				probes++;
+				return new Promise<AgentProbe>((resolve) => {
+					answer = resolve;
+				});
+			},
+			notice: (message) => notices.push(message),
+		});
+		// A default of the runtime's own goes without waiting for the probe.
+		settings.defaultAgents = { local: 'muse' };
+		expect(await subject.defaultLaunch()).toEqual({ kind: 'muse', label: 'Muse' });
+		expect(probes).toBe(0);
+
+		// "First installed" waits, and says so when that takes a moment.
+		settings.defaultAgents = {};
+		const launch = subject.defaultLaunch();
+		await new Promise((resolve) => setTimeout(resolve, PROBE_WAIT_NOTICE_MS + 50));
+		expect(notices).toEqual(['Herdr: checking which agent CLIs are installed on this machine…']);
+		answer(probe(['codex']));
+		expect(await launch).toEqual({ kind: 'codex', label: 'Codex' });
+		// Landed: at once from now on, and no second notice.
+		expect(await subject.defaultLaunch()).toEqual({ kind: 'codex', label: 'Codex' });
+		expect(notices).toHaveLength(1);
+		expect(probes).toBe(1);
 	});
 
 	it('has no probe without a connection, and serves the probe only to its runtime', async () => {
 		const current = { connection: null as Connection | null };
 		const { subject, count } = catalogs(current);
-		expect(await subject.check()).toBe(false);
+		expect(await subject.refresh('local')).toBe(false);
 		expect((await subject.catalog()).length).toBeGreaterThan(20);
 		expect(count()).toBe(0);
 		current.connection = connectionOf(LOCAL_HERDR);
-		await subject.check();
+		await subject.refresh('local');
 		expect(subject.cachedProbeFor('local')).not.toBeNull();
 		expect(subject.cachedProbeFor('xl')).toBeNull();
 	});
@@ -432,6 +593,175 @@ describe('AgentCatalogs', () => {
 		});
 		const catalog = await subject.catalog();
 		expect(catalog[0]?.reason).toBe('could not check what is installed: boom');
+	});
+});
+
+/**
+ * The order the coordinator really runs a connect in (src/connection.ts):
+ * the connection is published (`onReplaced`) before its first ping answers,
+ * the stream's `connected` edge then primes it (`onPrimed`). The client here
+ * acts like the real ones before that ping: herdr's has no server version,
+ * herdr-core's rejects every request with "not connected to herdr-core".
+ */
+describe('the probe in the order a connect really runs', () => {
+	class OrderClient {
+		live = false;
+		readonly handlers = new Map<string, (() => void)[]>();
+		private answer: () => void = () => undefined;
+		private readonly pinged = new Promise<void>((resolve) => {
+			this.answer = resolve;
+		});
+		constructor(private readonly answers: (method: string) => unknown) {}
+		get serverVersion(): string | null {
+			return this.live ? '0.9.5' : null;
+		}
+		/** What the test does when the server answers the first round trip. */
+		answerPing(): void {
+			this.live = true;
+			this.answer();
+		}
+		ping(): Promise<unknown> {
+			return this.pinged;
+		}
+		request<T>(method: string): Promise<T> {
+			if (!this.live) return Promise.reject(new Error('not connected to herdr-core'));
+			return Promise.resolve(this.answers(method) as T);
+		}
+		on(type: string, handler: () => void): void {
+			this.handlers.set(type, [...(this.handlers.get(type) ?? []), handler]);
+		}
+		emit(type: string): void {
+			for (const handler of this.handlers.get(type) ?? []) handler();
+		}
+		setSocketPath(): void {}
+		dispose(): void {}
+	}
+
+	const emptyScope = {
+		workspaceId: null,
+		workspaceLabel: null,
+		method: 'none',
+		size: 0,
+		list: () => [],
+		get: () => undefined,
+		on: () => () => undefined,
+		forget: () => undefined,
+		refresh: () => Promise.resolve(),
+		agentNames: () => new Set<string>(),
+	};
+
+	function connecting(
+		runtime: RuntimeConfig,
+		kindProbe: (connection: Connection, programs: readonly string[]) => Promise<AgentProbe> | null,
+		answers: (method: string) => unknown = () => ({}),
+		settings: AgentCatalogSettings = settingsOf(),
+	) {
+		const clients: OrderClient[] = [];
+		const asked: { version: string | null; live: boolean }[] = [];
+		let catalogs: AgentCatalogs | null = null;
+		const coordinator: ConnectionCoordinator<OrderClient, never, never> = new ConnectionCoordinator<OrderClient, never, never>({
+			endpoint: () => endpointOf(runtime),
+			driver: () => ({
+				discover: () => Promise.resolve({ binary: null, status: null, identity: null, socketPath: '/x.sock', error: null }),
+				discoveryIssue: () => null,
+				createTunnel: () => null,
+				createClient: () => {
+					const client = new OrderClient(answers);
+					clients.push(client);
+					return client;
+				},
+				createScope: () => emptyScope as never,
+				prime: () => Promise.resolve(),
+				start: (client) => client.emit('connected'),
+			}),
+			notice: () => undefined,
+			setError: () => undefined,
+			// As main.ts: nothing is probed at publish, the `connected` edge probes.
+			onReplaced: () => undefined,
+			onPrimed: () => {
+				const current = coordinator.current;
+				if (current) catalogs?.connected(current);
+			},
+		});
+		catalogs = new AgentCatalogs({
+			connection: () => coordinator.current,
+			endpoint: () => endpointOf(runtime),
+			settings: () => settings,
+			probe: (connection, programs) => {
+				const client = connection.client as unknown as OrderClient;
+				asked.push({ version: client.serverVersion, live: client.live });
+				return kindProbe(connection, programs);
+			},
+		});
+		return { coordinator, catalogs, clients, asked };
+	}
+
+	const herdrKind = createHerdrKind({
+		extraPath: () => '',
+		vaultPath: () => '/vault',
+		discoveryDeps: {
+			isExecutable: (path) => ['/usr/local/bin/claude', '/usr/local/bin/muse'].includes(path),
+			run: () => Promise.resolve({ stdout: '', stderr: '', code: 1 }),
+			env: {},
+			home: HOME,
+		},
+		sshRun: () => Promise.reject(new Error('no ssh in tests')),
+		onProtocolMismatch: () => undefined,
+		onUnsupportedMethod: () => undefined,
+		isPublished: () => true,
+	});
+
+	it('herdr: a menu opened right at publish still gets the server version, and muse stays the default', async () => {
+		const settings = settingsOf({ defaultAgents: { local: 'muse' } });
+		const h = connecting(LOCAL_HERDR, (c, p) => herdrKind.probeAgents?.(c as never, p) ?? null, undefined, settings);
+		const connect = h.coordinator.connect();
+		await settle();
+		// Published, not pinged yet: someone opens the + menu now.
+		expect(h.coordinator.current).not.toBeNull();
+		const menu = h.catalogs.catalog();
+		await settle();
+		expect(h.asked).toEqual([]);
+		h.clients[0]?.answerPing();
+		await connect;
+		await settle();
+		const catalog = await menu;
+		expect(h.asked).toEqual([{ version: '0.9.5', live: true }]);
+		expect(h.catalogs.cachedProbe()?.herdrVersion).toBe('0.9.5');
+		expect(ids(catalog)).toEqual(['muse', 'claude']);
+		expect(await h.catalogs.defaultLaunch()).toEqual({ kind: 'muse', label: 'Muse' });
+	});
+
+	it('herdr-core: the connected edge probes once it is live, so templates and the probe come through', async () => {
+		const coreKind = createHerdrCoreKind({
+			extraPath: () => '',
+			spawnEnv: () => ({}),
+			vaultPath: () => '/vault',
+			vaultName: () => 'vault',
+			onMismatch: () => undefined,
+			currentScope: () => null,
+		});
+		const h = connecting(
+			SSH_HC,
+			(c, p) => coreKind.probeAgents?.(c as never, p) ?? null,
+			(method) =>
+				method === 'templates.list'
+					? { templates: [{ name: 'rev' }] }
+					: { code: 0, stdout: Buffer.from('2\nok').toString('base64') },
+		);
+		const connect = h.coordinator.connect();
+		await settle();
+		// Even asked at publish, as 2fcdb7c did, it waits for hc's `hello`.
+		h.catalogs.connected(h.coordinator.current as unknown as Connection);
+		await settle();
+		expect(h.asked).toEqual([]);
+		h.clients[0]?.answerPing();
+		await connect;
+		await settle();
+		expect(h.asked).toEqual([{ version: '0.9.5', live: true }]);
+		const probed = h.catalogs.cachedProbe();
+		expect(probed?.error).toBeUndefined();
+		expect(probed?.templates).toEqual([{ name: 'rev' }]);
+		expect(ids(h.catalogs.cachedCatalog())).toEqual(['codex', 'template:rev']);
 	});
 });
 

@@ -140,7 +140,10 @@ kiro, droid, amp, grok, hermes, kilo, qodercli, qwen and maki; 0.9.0 adds
 `muse`; 0.9.1 adds `letta`; 0.9.5 is the same as 0.9.1. The agent catalog
 (`src/agents/catalog.ts`, issue #125) records the release a kind arrived in
 and leaves it out of a herdr runtime's + menu on an older or unknown server
-version. herdr calls the kind its "canonical executable": `agent.start` runs
+version. The version is the one the connection's first `ping` answered, and
+the plugin publishes a connection before that ping returns, so the catalog's
+probe waits for it (`src/agents/catalogs.ts`); herdr-core's client likewise
+refuses every request until its `hello`. herdr calls the kind its "canonical executable": `agent.start` runs
 that program in the pane and passes `args` after it, so herdr cannot start a
 user's own wrapper; herdr-core's `terminal.run` can.
 

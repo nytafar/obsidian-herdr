@@ -2,7 +2,8 @@
  * The + button's right-click menu (issue #125): the active runtime's agent
  * catalog, the default first and checked, each entry starting that agent at
  * the vault root. An entry that cannot start there is shown greyed with the
- * reason rather than left out. Pure, so the view only draws what this says;
+ * reason rather than left out; a user entry whose program the probe did not
+ * find is marked so and still starts. Pure, so the view only draws what this says;
  * tested in `tests/agentCatalog.test.ts`.
  */
 
@@ -33,7 +34,9 @@ export function startMenuItems(catalog: readonly CatalogEntry[]): StartMenuItem[
 				launch: null,
 			};
 		}
-		return { title: profile.name, icon, checked: entry.isDefault, disabled: false, launch: launchOf(profile) };
+		// A user entry the probe missed still starts: the probe can be wrong.
+		const title = entry.found === false ? `${profile.name} (not found)` : profile.name;
+		return { title, icon, checked: entry.isDefault, disabled: false, launch: launchOf(profile) };
 	});
 	if (items.length > 0) return items;
 	return [{ title: 'No agent CLI found', icon: 'bot', checked: false, disabled: true, launch: null }];
