@@ -1314,7 +1314,8 @@ scratch pane created with `tab create` and `agent start`.
   the `AskUserQuestion` `tool_use` line is written only once the question is
   answered, together with its `tool_result`, whose `toolUseResult.answers`
   holds the choices. A Write or Bash permission and `ExitPlanMode` are still
-  dangling `tool_use` lines written before their dialog. So a `blocked` agent
+  dangling `tool_use` lines written before their dialog (`ExitPlanMode` no
+  longer is on 2.1.286, next item). So a `blocked` agent
   with no dangling call, past startup, is showing a question, and the
   question's text and options are only on screen (`pane.read`). The dialog
   takes keys: a digit selects an answer (toggles one, on a multi-select), and
@@ -1322,6 +1323,45 @@ scratch pane created with `tab create` and `agent start`.
   one-question single-select dialog submits on the digit. Details and the
   probe in the docs root, `findings/native-view-session-chrome.md` and
   `findings/native-view-control-channels.md`.
+- **Plan approval and the plan file (issue #148).** Read 2026-11-06 from
+  this machine's transcripts. On Claude Code 2.1.286 `ExitPlanMode` is no
+  longer dangling: in session `363fde6f` the call (timestamped at the
+  dialog) is written after the `queue-operation` lines of the wait, together
+  with its `tool_result`, so the transcript at the block ends on the landed
+  `Write` of the plan file. The 2.1.266 probe (`/tmp/herdr-perm-FJK7`) still
+  wrote it dangling. So a blocked agent with no dangling call may be at a
+  question or at plan approval. What the transcript does give:
+  - **The slug.** Once Claude names one, every message and attachment line
+    carries a top-level `"slug"` (lowercase words and hyphens, e.g.
+    `wondrous-roaming-charm`; one began with words from the prompt,
+    `use-the-askuserquestion-tool-cozy-liskov`). 30 local transcripts have
+    one, most of them sessions that never planned, so a slug is not plan
+    mode. Each held a single slug; a slug change is handled by taking the
+    last.
+  - **The plan file** is `<config dir>/plans/<slug>.md`, written with
+    `Write` before the dialog. The plan-mode reminder names it ("create your
+    plan at /home/lasse/.claude/plans/wondrous-roaming-charm.md"), and the
+    `plan_mode` and `plan_mode_exit` attachments carry it as `planFilePath`
+    with `planExists`. Only the two plans of this machine's `~/.claude/plans`
+    exist, both matching their session's slug. Claude's `plansDirectory`
+    setting, unset here, would move it; that is not followed.
+  - **Plan mode.** The `plan_mode` attachment on entering (after an
+    `EnterPlanMode` call, or after a prompt sent in plan mode, whose user
+    line carries `"permissionMode":"plan"`), `plan_mode_exit` on leaving
+    after approval, and the `permission-mode` lines Claude writes at each
+    flush with the mode then. A rejected plan leaves the mode at `plan`.
+
+  The session model (`src/native/planFile.ts`) follows the last slug and the
+  last word on the mode from the lines it reads, and while the pane is
+  `blocked` in plan mode, on no runtime request and no kind other than
+  `permission`, reads the plan file three levels above the transcript
+  (`CLAUDE_CONFIG_DIR` included, #132) through the transcript's own source:
+  a slug of any other shape is never read. The card shows it as Markdown
+  when no call dangles. herdr names no block kind, so a question asked in
+  plan mode after a plan was written shows that plan; the card says to
+  answer in the terminal either way. herdr over SSH has no transcript source
+  and reads nothing; herdr-core over SSH reads the file with `file.read` on
+  its own machine, as it reads the transcript.
 
 ## A second agent: Codex
 

@@ -185,6 +185,13 @@ export function waitingCard(input: {
 	vaultPath: string;
 	/** The runtime's own pending request, which wins over everything else. */
 	request?: PendingRequest | null;
+	/**
+	 * The plan from Claude's plan file, while the session is in plan mode
+	 * (#148); null or absent otherwise. `ExitPlanMode` reaches the transcript
+	 * only with its answer, so a block in plan mode with no call dangling is
+	 * taken to be plan approval when there is a plan to show.
+	 */
+	plan?: string | null;
 }): WaitingCardModel {
 	if (input.request) return requestCard(input.request, input.vaultPath);
 	const kind = input.blockKind ?? null;
@@ -228,13 +235,29 @@ export function waitingCard(input: {
 			request: null,
 		};
 	}
+	const planFile = input.plan?.trim() ?? '';
 	if (tool?.name === EXIT_PLAN_MODE) {
 		return {
 			kind: 'plan',
 			title: 'Claude is ready to code',
-			body: textField(tool, 'plan'),
+			body: textField(tool, 'plan') || planFile,
 			options: [],
 			toolUseId: tool.id,
+			reported,
+			request: null,
+		};
+	}
+	if (!tool && planFile) {
+		// Plan approval as Claude writes it now: no call dangles, and the plan is
+		// the file it wrote before asking (#148). A question asked in plan mode
+		// looks the same to a runtime that names no kind (herdr); the card says
+		// where either is answered.
+		return {
+			kind: 'plan',
+			title: 'Claude is ready to code',
+			body: planFile,
+			options: [],
+			toolUseId: '',
 			reported,
 			request: null,
 		};

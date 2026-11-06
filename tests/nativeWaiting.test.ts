@@ -23,7 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
-import { QUESTION_IN_TERMINAL } from '../src/native/waitingCardView';
+import { PLAN_IN_TERMINAL, QUESTION_IN_TERMINAL } from '../src/native/waitingCardView';
 import {
 	emptyTranscript,
 	type ToolEntry,
@@ -50,6 +50,8 @@ class FakeModel implements SessionModelView {
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	blockKind: BlockKind | null = null;
+	/** The plan file's text, as the real model reads it while blocked in plan mode (#148). */
+	plan: string | null = null;
 	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	/** The pane's one claim on the block it is in, as the real model holds it. */
@@ -324,11 +326,49 @@ describe('waiting card: which kind (#99)', () => {
 		model.setStatus('blocked');
 
 		expect(title(el)).toBe('Claude is ready to code');
-		expect(el.find('herdr-native-waiting-body').textContent).toBe(
+		// Markdown, as the plan file's is (#148).
+		expect(MarkdownRenderer.calls.at(-1)?.markdown).toBe(
 			'Create `d.txt` in /tmp/herdr-perm-FJK7 with the Write tool.',
 		);
+		expect(MarkdownRenderer.calls.at(-1)?.el).toBe(el.find('herdr-native-waiting-plan'));
 		// Enter here switches the session to auto mode, a lasting side effect.
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+	});
+
+	it('shows the plan from Claude\'s plan file when ExitPlanMode is not in the transcript yet (#148)', async () => {
+		// Claude Code 2.1.286 writes the call only with its answer: the newest
+		// call is the Write of the plan file, landed, and the model has read it.
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([
+			turn('u1', 'Plan the ledger', [
+				tool('toolu_01Wr', 'Write', { file_path: '/home/lasse/.claude/plans/wondrous-roaming-charm.md' }, 'File created'),
+			]),
+		]);
+		model.setStatus('blocked');
+		// Blocked before the file was read: no plan yet, the generic card.
+		expect(title(el)).toBe('Claude is waiting for permission');
+
+		model.plan = '# Agent-first ledger\n\n1. Schema\n';
+		model.setStatus('blocked');
+		expect(title(el)).toBe('Claude is ready to code');
+		expect(MarkdownRenderer.calls.at(-1)?.markdown).toBe('# Agent-first ledger\n\n1. Schema');
+		expect(MarkdownRenderer.calls.at(-1)?.el).toBe(el.find('herdr-native-waiting-plan'));
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(PLAN_IN_TERMINAL);
+		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+	});
+
+	it('keeps a dangling call and a named question ahead of the plan file (#148)', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.plan = 'An older plan';
+		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'ls' })])]);
+		model.setStatus('blocked', 'permission');
+		expect(title(el)).toBe('Claude wants to use Bash');
+
+		model.push([turn('u1', 'Ask', [tool('toolu_01Rd', 'Read', {}, 'ok')])]);
+		model.setStatus('blocked', 'question');
+		expect(title(el)).toBe('Claude asked a question');
 	});
 
 	it('names no tool when the newest call landed and an older one never did', async () => {
