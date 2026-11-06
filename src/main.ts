@@ -79,6 +79,7 @@ import {
 	parseTerminalState,
 	stateMatchesPane,
 	switchRenderModeCommand,
+	nativeViewCommand,
 } from './views/terminalView';
 import { spawnEnv, type TerminalSetting } from './views/paneTerminal';
 import {
@@ -1230,6 +1231,20 @@ export default class HerdrPlugin extends Plugin {
 			name: 'Switch render mode',
 			checkCallback: (checking) => switchRenderModeCommand(this.app, checking),
 		});
+		// The native view's own commands (#145): only while it is the active
+		// view, and no default hotkeys.
+		for (const [id, name] of [
+			['focus-prompt', 'Focus prompt box'],
+			['next-turn', 'Go to next turn'],
+			['previous-turn', 'Go to previous turn'],
+			['find', 'Find in conversation'],
+		] as const) {
+			this.addCommand({
+				id: id === 'find' ? 'find-in-conversation' : id,
+				name,
+				checkCallback: (checking) => nativeViewCommand(this.app, id, checking),
+			});
+		}
 		// Any count, one included: picking the active runtime reconnects it.
 		this.addCommand({
 			id: 'switch-runtime',

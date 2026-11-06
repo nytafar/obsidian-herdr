@@ -414,6 +414,38 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		expect(handle.model.readProblem).toBeNull();
 	});
 
+	it('reads the file again on a fresh tail when asked to try again (#146)', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		source.tails[0]?.problem('over the limit');
+		expect(handle.model.readProblem).toBe('over the limit');
+		changes.length = 0;
+
+		handle.model.retryRead();
+
+		expect(source.tails).toHaveLength(2);
+		expect(source.tails[0]?.closed).toBe(true);
+		expect(source.openTails).toHaveLength(1);
+		expect(source.openTails[0]?.path).toBe(PATH_1);
+		expect(handle.model.readProblem).toBeNull();
+		// The file again from its start: the view draws it whole.
+		expect(changes[0]).toEqual({ changedTurnIds: [], reset: true });
+		expect(handle.model.state.turns).toHaveLength(1);
+	});
+
+	it('leaves a model whose runtime is not connected alone on a retry', () => {
+		const { registry, source, publish } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		publish(null);
+		const open = source.openTails.length;
+
+		handle.model.retryRead();
+
+		expect(source.openTails).toHaveLength(open);
+	});
+
 	it('starts tailing when a fresh Claude’s session id appears', () => {
 		const { registry, source, watcher } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]), {
 			...PANE,

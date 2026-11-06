@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
-import { isAtBottom } from '../src/native/scrollFollower';
+import { isAtBottom, JUMP_TO_LATEST, NEW_MESSAGES } from '../src/native/scrollFollower';
 import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
 import type {
 	BlockKind,
@@ -355,6 +355,109 @@ describe('NativePaneSurface: what a scroll costs (#101)', () => {
 
 		expect(MarkdownRenderer.calls).toHaveLength(drawn);
 		expect(el.findAll('herdr-native-turn')).toHaveLength(2);
+	});
+
+	it('touches the jump button only on the scroll that leaves or reaches the end (#149)', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		const jump = el.find('herdr-native-jump');
+		let writes = 0;
+		const toggle = jump.toggleClass.bind(jump);
+		jump.toggleClass = (classes, value) => {
+			writes++;
+			toggle(classes, value);
+		};
+
+		for (const position of [500, 300, 100, 0]) {
+			turnsEl(el).scrollTop = position;
+			turnsEl(el).dispatch('scroll');
+		}
+
+		// Once, on leaving the end: the hidden class and the "new" class.
+		expect(writes).toBe(2);
+	});
+});
+
+describe('NativePaneSurface: the jump back to the end (#149)', () => {
+	function jumpOf(el: FakeElement): FakeElement {
+		return el.find('herdr-native-jump');
+	}
+
+	it('is hidden while following, and offers the way back once the reader scrolls up', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		expect(jumpOf(el).hasClass('herdr-is-hidden')).toBe(true);
+
+		turnsEl(el).scrollTop = 200;
+		turnsEl(el).dispatch('scroll');
+
+		expect(jumpOf(el).hasClass('herdr-is-hidden')).toBe(false);
+		expect(jumpOf(el).getAttribute('aria-label')).toBe(JUMP_TO_LATEST);
+		expect(jumpOf(el).hasClass('is-new')).toBe(false);
+	});
+
+	it('says there are new messages once a turn is written while the reader is away', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		turnsEl(el).scrollTop = 200;
+		turnsEl(el).dispatch('scroll');
+
+		// A status change alone writes nothing new.
+		model.push([turn('u1', 'first')], { changedTurnIds: [], reset: false });
+		expect(jumpOf(el).hasClass('is-new')).toBe(false);
+
+		laidOut(el, 1400);
+		model.push([turn('u1', 'first'), turn('u2', 'next')], { changedTurnIds: ['u2'], reset: false });
+
+		expect(jumpOf(el).hasClass('is-new')).toBe(true);
+		expect(jumpOf(el).getAttribute('aria-label')).toBe(NEW_MESSAGES);
+		expect(jumpOf(el).textContent).toContain(NEW_MESSAGES);
+		expect(turnsEl(el).scrollTop).toBe(200);
+	});
+
+	it('takes the reader to the end and follows again when pressed', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		turnsEl(el).scrollTop = 200;
+		turnsEl(el).dispatch('scroll');
+		laidOut(el, 1400);
+		model.push([turn('u1', 'first'), turn('u2', 'next')], { changedTurnIds: ['u2'], reset: false });
+
+		jumpOf(el).dispatch('click');
+
+		expect(turnsEl(el).scrollTop).toBe(1000);
+		expect(jumpOf(el).hasClass('herdr-is-hidden')).toBe(true);
+		// Following again: the next turn is pinned to as well.
+		laidOut(el, 1800);
+		model.push([turn('u1', 'first'), turn('u2', 'next'), turn('u3', 'more')], {
+			changedTurnIds: ['u3'],
+			reset: false,
+		});
+		expect(turnsEl(el).scrollTop).toBe(1400);
+	});
+
+	it('hides again when the reader scrolls back to the end themselves', async () => {
+		const model = new FakeModel();
+		model.state = { ...model.state, turns: [turn('u1', 'first')] };
+		const { el } = await surfaceOn(model);
+		await settle();
+		turnsEl(el).scrollTop = 200;
+		turnsEl(el).dispatch('scroll');
+		model.push([turn('u1', 'first')], { changedTurnIds: ['u1'], reset: false });
+
+		turnsEl(el).scrollTop = 600;
+		turnsEl(el).dispatch('scroll');
+
+		expect(jumpOf(el).hasClass('herdr-is-hidden')).toBe(true);
+		expect(jumpOf(el).hasClass('is-new')).toBe(false);
 	});
 });
 

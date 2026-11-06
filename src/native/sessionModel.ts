@@ -81,6 +81,12 @@ export interface SessionModelView {
 	 * so a fake need not say it; a missing value is no problem.
 	 */
 	readonly readProblem?: string | null;
+	/**
+	 * Reads the transcript again from its start, on a fresh tail, which is what
+	 * the read-problem line's "Try again" does (#146). Optional so a fake need
+	 * not have it; a model without one offers no retry.
+	 */
+	retryRead?(): void;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	/**
@@ -308,6 +314,24 @@ export class SessionModel implements SessionModelView {
 	on(listener: (change: SessionChange) => void): Unsubscribe {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/**
+	 * Drops the tail and its problem and follows the pane again from scratch:
+	 * the source and the watcher as they are now, the file from its start
+	 * (#146). A tail with limits of its own (herdr-core) also looks again on
+	 * its own poll; this is the reader not wanting to wait for it.
+	 */
+	retryRead(): void {
+		// Not connected: nothing would reopen it, and a local tail that still
+		// follows would be lost for nothing.
+		if (!this.watcher) return;
+		const hadProblem = this.problem !== null;
+		this.closeStream();
+		this.rebind();
+		// A source that is gone reopens nothing and says nothing; the problem
+		// line it cleared is still news to the view.
+		if (hadProblem && !this.stream) this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	/** Closes the tail and drops every subscriber, here and in the runtime. */

@@ -39,6 +39,7 @@ import {
 	scopeLabel,
 	type CatalogEntry,
 	type CommandCatalogSource,
+	type CommandUsage,
 } from './commandCatalog';
 import { mentionFor, vaultFileAbsolutePath } from './promptMentions';
 
@@ -113,6 +114,14 @@ export interface PromptSuggestOptions {
 	 * vault path), or '' when it has none: where a mentioned file is opened.
 	 */
 	vaultPath: () => string;
+	/**
+	 * How often each command has been picked (#149), read on every `/`, so the
+	 * commands a user reaches for are offered first. Left out, nothing is ranked
+	 * by use.
+	 */
+	usage?: () => CommandUsage;
+	/** A command was picked from the popover; the caller counts and keeps it. */
+	onCommandUsed?: (name: string) => void;
 }
 
 /** The popover the prompt box shows while a `/` or an `@` is being typed. */
@@ -175,7 +184,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		if (!trigger) return [];
 		if (trigger.kind === 'command') {
 			const offer = (entries: CatalogEntry[]): PromptSuggestion[] =>
-				matchCommands(entries, trigger.query).map((entry) => ({ kind: 'command' as const, entry }));
+				matchCommands(entries, trigger.query, this.options.usage?.()).map((entry) => ({ kind: 'command' as const, entry }));
 			const entries = this.catalogSource().catalog(this.options.cwd(), this.options.paneId?.());
 			return Array.isArray(entries) ? offer(entries) : entries.then(offer);
 		}
@@ -205,6 +214,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		// the popover is gone, and the next enter is the prompt box's (#103).
 		this.close();
 		if (!trigger) return;
+		if (suggestion.kind === 'command') this.options.onCommandUsed?.(suggestion.entry.name);
 		const cursor = this.textEl.selectionStart ?? this.textEl.value.length;
 		const replacement =
 			suggestion.kind === 'command' ? `/${suggestion.entry.name}` : this.mention(suggestion.file);
