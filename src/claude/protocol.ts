@@ -25,12 +25,12 @@
  * never sent.
  */
 
-import type {
-	PendingGrant,
-	PendingProjectGrant,
-	PendingQuestion,
-	PendingRequest,
-	WaitingAnswer,
+import {
+	questionsFromInput,
+	type PendingGrant,
+	type PendingProjectGrant,
+	type PendingRequest,
+	type WaitingAnswer,
 } from '../native/pendingRequest';
 import type { ClaudePermissionMode } from '../runtimes';
 import type { PromptImage } from '../native/promptImages';
@@ -526,25 +526,6 @@ function grant(updates: PermissionUpdate[]): PendingGrant | null {
 	return updates.length > 0 ? { lines: updates.map(describeUpdate) } : null;
 }
 
-function questionsOf(input: Record<string, unknown>): PendingQuestion[] {
-	const list = Array.isArray(input.questions) ? (input.questions as unknown[]) : [];
-	const questions: PendingQuestion[] = [];
-	for (const entry of list) {
-		const question = record(entry);
-		if (!question || typeof question.question !== 'string') continue;
-		const options = (Array.isArray(question.options) ? (question.options as unknown[]) : [])
-			.map(record)
-			.filter((option): option is Record<string, unknown> => option !== null && typeof option.label === 'string')
-			.map((option) => ({ label: text(option.label), description: text(option.description) }));
-		questions.push({
-			question: question.question,
-			header: text(question.header),
-			options,
-			multiSelect: question.multiSelect === true,
-		});
-	}
-	return questions;
-}
 
 /**
  * A `can_use_tool` request as the waiting card shows it. `settings` is where
@@ -571,7 +552,7 @@ export function pendingRequestOf(request: ToolPermissionRequest, settings: Local
 		toolUseId: request.toolUseId,
 		input: request.input,
 		reason,
-		questions: kind === 'question' ? questionsOf(request.input) : [],
+		questions: kind === 'question' ? questionsFromInput(request.input) : [],
 		plan: kind === 'plan' ? text(request.input.plan).trim() : '',
 		// Questions and plans are the user's to answer; "remember" makes no sense.
 		session: kind === 'permission' ? grant(sessionSuggestions(request)) : null,

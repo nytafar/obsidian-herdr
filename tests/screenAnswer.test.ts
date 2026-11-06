@@ -127,7 +127,7 @@ function receiptOf(sim: FakeClaudeScreen, expectation: ScreenExpectation): SimRe
 				? sim.receiptFor(expectation.toolUseId)
 				: sim.receiptForQuestions(expectation.questions.map((q) => q.question));
 		case 'permission':
-			return sim.receiptFor(expectation.toolUseId);
+			return sim.receiptFor(expectation.toolUseId ?? '');
 		case 'plan':
 			return sim.receiptForPlan(expectation.slug);
 		case 'trust':
@@ -930,5 +930,36 @@ describe('answer driver: a card with no tool_use_id', () => {
 		const s = setup(questionDialog([DRINK], 'toolu_written_on_answer'), { received: () => TEA_RECEIVED });
 		const out = await answer(s, askedWithoutId(DRINK), COFFEE);
 		expect(out).toMatchObject({ kind: 'misfire', expected: 'Which drink do you want? → Coffee' });
+	});
+});
+
+describe('answer driver: what the card read off the screen (#166)', () => {
+	it('approves a plan only on the row that still reads as the card showed it', async () => {
+		const s = setup(planDialog('tidy-unicorn'));
+		const out = await answer(s, PLAN, { kind: 'approve-plan', mode: 'manual', label: 'Yes, and use auto mode' });
+		expect(out).toMatchObject({ kind: 'refused', reason: 'mismatch' });
+		expect(s.sim.keys).toEqual(['down']);
+		const ok = setup(planDialog('tidy-unicorn'));
+		expect(await answer(ok, PLAN, { kind: 'approve-plan', mode: 'manual', label: 'Yes, manually approve edits' })).toMatchObject({
+			kind: 'answered',
+		});
+	});
+
+	it('answers a permission with no call, judged by the receipt the card supplies', async () => {
+		const s = setup(bashDialog('touch one.txt', 'toolu_written_later'));
+		const expectation: ScreenExpectation = { ...bash('touch one.txt'), toolUseId: null } as ScreenExpectation;
+		const out = await answer(s, expectation, { kind: 'allow' }, { receipt: s.sim.receiptFor('toolu_written_later') });
+		expect(out.kind).toBe('answered');
+	});
+
+	it('compares the runtime’s word without whitespace: the card’s text may be the screen’s', () => {
+		const wrapped: ScreenExpectation = {
+			kind: 'question',
+			toolUseId: null,
+			questions: [{ ...DRINK, question: 'Which drink do you w ant?' }],
+		};
+		expect(statusAgrees(wrapped, 'answer: Which drink do you want? (Tea · Coffee · Water)')).toBe(true);
+		expect(statusAgrees(bash('touch  one.txt'), 'approve Bash: touch one.txt')).toBe(true);
+		expect(statusAgrees(bash('touch two.txt'), 'approve Bash: touch one.txt')).toBe(false);
 	});
 });

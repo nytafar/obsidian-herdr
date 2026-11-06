@@ -1222,6 +1222,22 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/*
+ * What a herdr or herdr-core dialog shows, as the terminal drew it (ADR-0009):
+ * a command, a file's content, or a plan whose file says something else.
+ */
+.herdr-native-waiting-screen {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+	max-height: 16em;
+	overflow: auto;
+	padding: var(--size-4-2);
+	white-space: pre-wrap;
+}
+
 /* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
 .herdr-native-waiting-option {
 	color: var(--text-muted);

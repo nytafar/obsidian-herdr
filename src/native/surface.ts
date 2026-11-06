@@ -31,6 +31,7 @@ import { SessionBar } from './sessionBar';
 import type { SessionSettingsSender } from './sessionSettings';
 import type { ContextUsageReader } from './contextBreakdown';
 import type { WaitingResponder } from './pendingRequest';
+import type { ScreenAnswering } from './screenAnswerers';
 import { linkVaultUris } from './noteLinks';
 import { resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
@@ -70,6 +71,13 @@ export interface NativePaneSurfaceOptions {
 	 * such a card is described like any other block.
 	 */
 	responder?: WaitingResponder;
+	/**
+	 * How the waiting card reads the pane's dialog off its screen and answers
+	 * it with keys (ADR-0009): herdr and herdr-core, read per block. Null, or
+	 * left out, for a kind with no screen (the `claude` kind answers through
+	 * {@link responder}).
+	 */
+	screen?: () => ScreenAnswering | null;
 	/**
 	 * How the session bar's pickers change the model, effort and mode (#161),
 	 * read per draw: the tab's runtime may change under it. Null, or left
@@ -214,6 +222,12 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			paneId: () => this.identity.paneId,
 			keySender: options.keySender,
 			responder: options.responder,
+			screen: options.screen,
+			// A misfire's "Show in the conversation" (ADR-0009 §4).
+			revealTurn: (turnId) => {
+				const turnEl = this.turns?.turnEl(turnId);
+				if (turnEl) this.follower?.scrollTo(turnEl);
+			},
 			autoTrustFolders: options.autoTrustFolders,
 			openInTerminal: () => this.options.openInTerminal(),
 			vaultPath: options.vaultPath,

@@ -112,6 +112,11 @@ import {
 import type { PaneState } from '../herdr/scope';
 import type { PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
 import { agentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
+import { ScreenAnswerer } from '../native/screenAnswer';
+import type { ScreenAnswering } from '../native/screenAnswerers';
+import { TrustWatch } from '../native/trustWatch';
+
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
@@ -140,6 +145,9 @@ import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { linkSourcePath } from '../native/noteLinks';
+
+/** How often a tab looks for its pane's trust prompt while the agent has no session (#167). */
+const TRUST_WATCH_MS = 1000;
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -581,6 +589,19 @@ export class TerminalView extends ItemView {
 	private visibility: VisibilityTracker | null = null;
 	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
+	/**
+	 * "Trust new folders automatically" for this tab's pane (#167): looks at
+	 * the screen while the pane's agent has no session yet, whichever surface
+	 * the tab shows, since an hc terminal at the prompt has no native view.
+	 */
+	private readonly trustWatch = new TrustWatch({
+		enabled: () => this.plugin.settings.nativeAutoTrustFolders === true,
+		pane: () => this.paneSnapshot(),
+		answering: () => this.screenAnswering(),
+		claim: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
+		release: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
+		notify: (message) => new Notice(message),
+	});
 	/** Pending `updateHeader` frame, so a burst of `changed` retitles once (#36). */
 	private pendingHeader = 0;
 	/**
@@ -802,6 +823,40 @@ export class TerminalView extends ItemView {
 		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
 	}
 
+	/**
+	 * Reading and answering this pane's dialog on its screen (ADR-0009), or
+	 * null for a kind with no screen (the `claude` kind) or an agent whose
+	 * format reads none. The driver is the plugin's one for this runtime and
+	 * agent, so every tab on the pane shares its one-answer guard, and it
+	 * reads the runtime's client per call.
+	 */
+	private screenAnswering(): ScreenAnswering | null {
+		const endpointId = this.terminal.identity.endpointId;
+		const kind = this.kind();
+		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
+		const agent = this.paneSnapshot()?.agent;
+		const format = agent ? agentFormat(agent) : defaultAgentFormat();
+		const parse = format?.screenDialog;
+		if (!screen || !format || !parse) return null;
+		const answerer = this.plugin.screenAnswerers.answerer(
+			`${endpointId}\n${kind.kind}\n${format.agent}`,
+			() => new ScreenAnswerer({ screen, parse }),
+		);
+		return {
+			answerer,
+			screen,
+			parse,
+			statusMessage: () => this.paneSnapshot()?.blockMessage ?? null,
+			cwd: () => this.paneCwd(),
+		};
+	}
+
+	/** This tab's pane, plugin-wide, for the trust prompt's one claim (#167). */
+	private trustKey(): string {
+		const { endpointId, paneId } = this.terminal.identity;
+		return `${endpointId}\n${paneId}`;
+	}
+
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
 	private kind(): RuntimeKindAdapter {
 		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
@@ -852,6 +907,9 @@ export class TerminalView extends ItemView {
 						},
 					}
 				: {}),
+			// The waiting card's answers on the pane's screen (ADR-0009), for a
+			// kind with one and an agent whose dialogs its format reads.
+			screen: () => this.screenAnswering(),
 			// The session bar's pickers (#161), for a kind that can change the
 			// model, effort and mode; asked of the kind as it is now.
 			sessionSettings: () => this.kind().sessionSettings?.(nativeClient) ?? null,
@@ -1106,6 +1164,7 @@ export class TerminalView extends ItemView {
 		this.bindWindow(window);
 		this.bindWindow(this.containerEl.win);
 		this.registerEvent(this.app.workspace.on('window-open', (_workspaceWindow, win) => this.bindWindow(win)));
+		this.registerInterval(this.containerEl.win.setInterval(() => this.trustWatch.tick(), TRUST_WATCH_MS));
 		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {

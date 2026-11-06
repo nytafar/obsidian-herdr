@@ -1666,8 +1666,8 @@ and hc 0.1.18, in `oh-test-*` panes running `claude --permission-mode default`
 in `/tmp` folders. The measurements, key by key, are the finding
 `answering-on-screen` in the docs root; the proposed design is ADR-0009. The
 screens are recorded in `tests/fixtures/screens/claude-2.1.318/` with an
-index. Nothing in the plugin answers these dialogs yet except the trust
-prompt; these are the facts a build may rely on.
+index. The waiting card answers them on herdr and herdr-core (#166, below);
+these are the facts it relies on.
 
 - **What is in the transcript while a dialog is up.** `AskUserQuestion`:
   a dangling `tool_use` with the full `input.questions` (checked while the
@@ -1863,6 +1863,65 @@ prompt; these are the facts a build may rely on.
   drops a rule of that shape, a lowercase hyphenated title, only as the last
   line; anywhere else, or with another title, the screen stays `unknown`
   (fixtures `*-write-after-plan`).
+- **The waiting card, as built (#166).** On a herdr or herdr-core pane whose
+  agent's format reads its screen, a blocked card reads the screen once per
+  block (`src/native/screenCard.ts`, `WaitingCardView`): which dialog is up
+  decides the card, whatever the runtime's status said (herdr cannot tell a
+  question from plan approval; the screen can). The request is the dangling
+  call when the screen matches it, else the one the screen shows (a question
+  with one tab, a Bash command, a Write or Edit file), then
+  `ScreenAnswerer.inspect` and `withShown`; that read is what the card shows
+  and what every answer must find again. Labels are the screen's; permission
+  row 2 is offered unless it switches to auto mode, plan rows 1 and 2 carry
+  their labels into the answer. The plan file (#148) is shown as Markdown only
+  when its letters and digits are the screen's plan lines; otherwise the card
+  shows the screen's lines. hc's status `msg` reaches the card as
+  `PaneSnapshot.blockMessage`. A press runs through one driver per runtime
+  and agent, shared by every tab (`ScreenAnswerers`); its receipt is the
+  session model's transcript: the card's call by id, else a call the
+  transcript did not hold when the card was built with the same request.
+- **The trust prompt's folder, measured 2026-11-06** (Claude Code 2.1.318,
+  herdr 0.9.5, hc 0.1.18): the prompt names the folder absolute, never with
+  `~` (a folder in the home directory read `/home/lasse/oh-test-…`), and with
+  symlinks resolved (started in `/var/tmp/oh-test-…-link`, a link to
+  `…-real`, it named `…-real`). hc's `terminal.get` gave that resolved path as
+  `foreground.cwd` (its `cwd` kept the link), and herdr's `pane.get` gave it
+  as `cwd`. `/tmp` itself is trusted on this machine (no prompt there), so
+  trust checks run in `/var/tmp`.
+- **On hc Claude draws the trust prompt twice.** Read every 200 ms from start,
+  the prompt showed about 0.3 s after `terminal.run`; a `down` sent at once
+  showed (`❯ Yes, I trust this folder`) and 0.2 s later the prompt was drawn
+  again with the cursor back on `❯ No, exit`, where it stayed. A `down` sent
+  0.3, 0.6, 1 or 2 s after the prompt showed stayed. An `enter` meant for
+  "Yes" can land on "No, exit", which exits Claude, so the trust answer waits
+  until the prompt has been read on reads at least 1.5 s apart.
+- **Trust through the driver, as built (#167).** "Trust new folders
+  automatically" is the tab's (`src/native/trustWatch.ts`): while the pane
+  has no session and is `blocked` (herdr) or reports nothing (hc), the tab
+  reads its screen once a second, at most 60 times per start, and answers
+  `down` `enter` through the shared driver when `inspect` found the prompt
+  for the pane's folder, exactly, as above; one answer per pane start,
+  claimed across tabs (`ScreenAnswerers.claimTrust`). The receipt is the
+  session starting (a session, or `idle`, `working`, `done`); a key that did
+  not take is a notice, never a second press. The waiting card's trust button
+  is offered only once its read found the prompt for the pane's folder.
+- **Run live through the card's own code (#166, #167), 2026-11-06**, herdr
+  0.9.5 and hc 0.1.18, Claude Code 2.1.318 (haiku), the native surface and
+  its waiting card driven by a session model read from the real transcript:
+  a single-choice question (`Coffee`), a multi-select with two ticks and
+  `Mango, Ripe 2` through "Send answers" (herdr read off the screen, no call;
+  hc from the dangling call), Bash allow once, Bash deny with words (Claude
+  asked again with `mkdir`), a stale card (the model held while the terminal
+  moved on to another Bash request) refused with nothing pressed, plan reject
+  with words, the replanned plan approved with manual edits, and the Write
+  that followed allowed with no call in the transcript (found by its file);
+  every outcome `answered` against the transcript. The plan file was shown
+  as Markdown on both (its words were the screen's). Trust: unasked on both
+  runtimes (about 2.5 s after start on hc, 4 s on herdr), a watch given
+  another folder than the prompt's pressed nothing over five reads, and the
+  herdr card's button trusted a fresh folder. Unlike the spike, the dangling
+  `AskUserQuestion` was there in both hc questions and missing in both herdr
+  ones.
 
 ## Model, effort, permission mode and context
 

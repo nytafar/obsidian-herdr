@@ -7,11 +7,13 @@
  * decides the one thing in the native view that presses a key in someone's
  * session, namely whether the workspace trust prompt is what is on screen.
  *
- * **Only the trust prompt is answered from here.** Tool permissions are
+ * **Only the trust prompt is answered unasked.** Tool permissions are
  * Claude's own, decided by its permission mode, and a plugin that pressed
  * "Yes" for them would be answering a question it was never asked; questions
- * and plan approval are the user's. Those three kinds exist so the card can
- * say what the block is, and the terminal is where they are answered.
+ * and plan approval are the user's. This model says what the block is; on
+ * herdr and herdr-core the card then reads the dialog off the screen and
+ * offers the user's own answers as keys (ADR-0009, `./screenCard.ts`), and
+ * elsewhere the terminal is where they are answered.
  *
  * **The runtime's word first.** A runtime that reports what kind of block it
  * is (herdr-core's `permission`, `question` and `auth`, ADR-0006) is believed,
