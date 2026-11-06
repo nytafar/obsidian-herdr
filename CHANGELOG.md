@@ -116,8 +116,25 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a
   fresh snapshot.
+- **Agent catalog** (#125): the + button and its menu list the agent CLIs
+  installed on the active runtime's machine, checked once per connection
+  (this machine's binary search, one `ssh` to an SSH herdr host, one
+  `machine.exec` on herdr-core over SSH), plus hc's templates on herdr-core
+  and your own entries from **Settings → Herdr → Agents**: a wrapper, another
+  command or extra arguments. An entry that cannot start on the runtime is
+  greyed with the reason. On herdr, kinds the server's version does not
+  accept are left out. Entries can be hidden from the menu, and **Check
+  again** looks again after an install.
 
 ### Changed
+
+- **The + button** sits at the far right of the agent list's toolbar. A left
+  click starts the runtime's default agent at the vault root, a right click
+  opens the agent catalog. The default is per runtime (**Default agent** in
+  the runtime's form) and falls back to the first installed entry; if nothing
+  is found, + says so instead of starting anything.
+- **Default agent kind** is gone: it migrates to every herdr and herdr-core
+  runtime's own default on first load, so the agent you chose keeps starting.
 
 - The remote profile and the global socket, binary and workspace settings
   have moved into runtimes. They migrate on first load, and pins and saved

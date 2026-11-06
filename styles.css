@@ -48,6 +48,12 @@
 	display: none;
 }
 
+/* An agent CLI that cannot start on the active runtime (issue #125): greyed
+   in the settings list, its reason in the description. */
+.herdr-agent-unavailable .setting-item-name {
+	color: var(--text-faint);
+}
+
 /* Terminal tab header (issue #105). The view toggle is dimmed and inert on a
    remote endpoint, where the native view is unavailable (ADR-0002), rather
    than missing; the observe/control eye applies to a terminal only, so it is

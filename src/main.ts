@@ -106,6 +106,8 @@ import {
 	type GetStartedHost,
 } from './getStarted/flow';
 import { GetStartedModal } from './getStarted/card';
+import { AgentCatalogs } from './agents/catalogs';
+import { migrateDefaultAgents, normalizeIdList, normalizeUserProfiles } from './agents/catalog';
 
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
@@ -157,6 +159,9 @@ export default class HerdrPlugin extends Plugin {
 				if (changed) this.refreshAgentList();
 			},
 			onReplaced: () => {
+				// The agent catalog's probe runs once per connection (#125).
+				const current = this.connection.current;
+				if (current) void this.agentCatalogs.probe(current);
 				// The caches belong to the connection that just went (#43, #81).
 				this.sessions.sync();
 				for (const listener of [...this.scopeListeners]) listener();
@@ -227,6 +232,17 @@ export default class HerdrPlugin extends Plugin {
 	 * runtime connects, and the `Get started` command's modal.
 	 */
 	readonly getStarted = new GetStartedFlow(this.getStartedHost());
+	/**
+	 * The agent catalog of the runtime the list points at (issue #125), its
+	 * probe cached per connection and run by the runtime's kind.
+	 */
+	readonly agentCatalogs = new AgentCatalogs({
+		connection: () => this.connection.current,
+		endpoint: () => this.endpoint,
+		settings: () => this.settings,
+		probe: (connection, programs) =>
+			this.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
+	});
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */
@@ -566,6 +582,8 @@ export default class HerdrPlugin extends Plugin {
 		// in the old shape is migrated, ids and all, and written back once.
 		const runtimes = migrateRuntimes(stored);
 		this.foreignRuntimes = runtimes.foreign;
+		// One `defaultAgentKind` became a default per runtime (#125).
+		const agents = migrateDefaultAgents(stored, runtimes.runtimes);
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			// Minus the keys this build has no setting for, so nothing a past
@@ -592,8 +610,11 @@ export default class HerdrPlugin extends Plugin {
 			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
 			// A file from before ADR-0007 has none, which is an empty map.
 			claudeSessions: normalizeClaudeSessions(stored?.claudeSessions),
+			agentProfiles: normalizeUserProfiles(stored?.agentProfiles),
+			hiddenAgents: normalizeIdList(stored?.hiddenAgents),
+			defaultAgents: agents.defaultAgents,
 		};
-		if (renderMode.migrated || runtimes.migrated) await this.saveSettings();
+		if (renderMode.migrated || runtimes.migrated || agents.migrated) await this.saveSettings();
 	}
 
 	async saveSettings() {
@@ -1144,6 +1165,7 @@ export default class HerdrPlugin extends Plugin {
 					window.setTimeout(resolve, ms);
 				}),
 			now: () => Date.now(),
+			defaultAgent: () => this.agentCatalogs.defaultLaunch(),
 		};
 	}
 

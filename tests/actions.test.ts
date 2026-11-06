@@ -22,6 +22,7 @@ import {
 	type RuntimeConfig,
 } from '../src/runtimes';
 import type { PaneInfo } from '../src/herdr/types.gen';
+import type { StartAgentOptions } from '../src/runtime/kind';
 
 const VAULT = '/Users/lasse/Vaults/hvelv';
 
@@ -35,7 +36,9 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 			blocked: { notice: true, os: true },
 			done: { notice: true, os: false },
 		},
-		defaultAgentKind: 'claude',
+		agentProfiles: [],
+		hiddenAgents: [],
+		defaultAgents: {},
 		agentNamePattern: '{folder}',
 		terminalFontFamily: '',
 		terminalTheme: 'obsidian',
@@ -102,6 +105,8 @@ function fake(options: {
 	responses?: Record<string, unknown>;
 	/** Agent panes the scope would report, for the split choice (issue #29). */
 	agentPanes?: AgentPaneSummary[];
+	/** The runtime's default agent from its catalog (issue #125); absent is Claude. */
+	defaultAgent?: StartAgentOptions | null;
 } = {}): Fake {
 	const calls: { method: string; params: unknown }[] = [];
 	const generations: number[] = [];
@@ -151,6 +156,7 @@ function fake(options: {
 			clock.now += ms;
 		},
 		now: () => clock.now,
+		...(options.defaultAgent !== undefined ? { defaultAgent: async () => options.defaultAgent ?? null } : {}),
 	};
 	return {
 		host,
@@ -429,7 +435,8 @@ describe('HerdrActions.startAgentHere', () => {
 
 	it('does not open the terminal when the setting is off', async () => {
 		const f = fake({
-			settings: settings({ openTerminalAfterStart: false, defaultAgentKind: 'codex' }),
+			settings: settings({ openTerminalAfterStart: false }),
+			defaultAgent: { kind: 'codex', label: 'Codex' },
 			responses: {
 				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
 				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
@@ -835,7 +842,7 @@ describe('renameAgent (issue #35)', () => {
 describe('startAgentHere with a kind and arguments (graduation, ADR-0007)', () => {
 	it('passes the kind and the arguments to agent.start', async () => {
 		const f = fake({
-			settings: settings({ defaultAgentKind: 'codex' }),
+			defaultAgent: { kind: 'codex' },
 			responses: {
 				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
 				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },

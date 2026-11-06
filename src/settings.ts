@@ -1,4 +1,6 @@
 import type { StoredClaudeSession } from './claude/agents';
+import type { AgentProbe, UserAgentProfile } from './agents/catalog';
+import { buildAgentCatalogSettings, buildDefaultAgentSetting } from './agents/settingsSection';
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
 import { ConfirmModal } from './views/modals';
@@ -64,7 +66,11 @@ import {
 	type TerminalThemeName,
 } from './views/renderer/themes';
 
-/** Agent kinds herdr can start. Source of truth is `agent.start --help`. */
+/**
+ * The agent kinds the plugin draws a mark for (`views/kindIcons.ts`). What
+ * herdr can start, and what the + menu offers, is the agent catalog's
+ * (`agents/catalog.ts`, issue #125).
+ */
 export const AGENT_KINDS = [
 	'claude',
 	'codex',
@@ -189,8 +195,20 @@ export interface NotificationSettings {
  */
 export interface HerdrSettings extends RuntimeSettings {
 	notifications: NotificationSettings;
-	/** Agent kind used by "Herdr: start agent here". */
-	defaultAgentKind: AgentKind;
+	/**
+	 * The user's own agent CLIs (issue #125): a wrapper, another command,
+	 * extra arguments. The built-ins and hc's templates are not stored.
+	 */
+	agentProfiles: UserAgentProfile[];
+	/** Catalog entries the user hid from the + menu, by profile id. */
+	hiddenAgents: string[];
+	/**
+	 * Each runtime's default agent, by runtime id, as a profile id. A runtime
+	 * without one, or whose choice cannot start there, starts the first
+	 * installed entry of its catalog. Replaces the global `defaultAgentKind`
+	 * ({@link migrateDefaultAgents}).
+	 */
+	defaultAgents: Record<string, string>;
 	/** Name pattern for started agents. Supports `{folder}`, `{vault}`, `{n}`. */
 	agentNamePattern: string;
 	/** Terminal font family. Empty follows the Obsidian monospace font. */
@@ -415,7 +433,9 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 		blocked: { notice: true, os: true },
 		done: { notice: true, os: false },
 	},
-	defaultAgentKind: 'claude',
+	agentProfiles: [],
+	hiddenAgents: [],
+	defaultAgents: {},
 	agentNamePattern: '{folder}',
 	terminalFontFamily: '',
 	terminalTheme: DEFAULT_TERMINAL_THEME,
@@ -453,6 +473,10 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
  * `socketPath`, `herdrBinary`, `workspaceId` and `remote` were the local herdr
  * and the one remote profile before the runtime registry (ADR-0004).
  * `migrateRuntimes` reads them into `runtimes` first; then they go.
+ *
+ * `defaultAgentKind` was one agent kind for every runtime before the agent
+ * catalog (issue #125); `migrateDefaultAgents` reads it into each runtime's
+ * default first.
  */
 export const REMOVED_SETTING_KEYS: readonly string[] = [
 	'nativeAutoAcceptPermissions',
@@ -460,6 +484,7 @@ export const REMOVED_SETTING_KEYS: readonly string[] = [
 	'herdrBinary',
 	'workspaceId',
 	'remote',
+	'defaultAgentKind',
 ];
 
 /**
@@ -703,6 +728,18 @@ export interface SettingsCallbacks {
 		status: () => Promise<{ text: string; warning: boolean } | null>;
 		review: (onDone: () => void) => void;
 	};
+	/**
+	 * The agent catalog (issue #125): the probe that landed for this runtime's
+	 * published connection (null when none did, or it is not the connected
+	 * one), a probe of the published connection (true once one landed), and
+	 * which user entry's form is open.
+	 */
+	agents?: {
+		probe: (runtimeId: string) => AgentProbe | null;
+		check: (again?: boolean) => Promise<boolean>;
+		editing: () => string | null;
+		edit: (id: string | null) => void;
+	};
 }
 
 /**
@@ -824,7 +861,7 @@ export function buildRuntimesSection(
 		);
 
 	const editing = settings.runtimes.find((runtime) => runtime.id === callbacks.editingRuntime());
-	if (editing) buildRuntimeForm(containerEl, editing, editing.id === active.id, callbacks);
+	if (editing) buildRuntimeForm(containerEl, editing, editing.id === active.id, callbacks, settings);
 }
 
 /** The fields of one runtime, for its kind and target. */
@@ -833,6 +870,7 @@ function buildRuntimeForm(
 	runtime: RuntimeConfig,
 	isActive: boolean,
 	callbacks: SettingsCallbacks,
+	settings: HerdrSettings,
 ): void {
 	new Setting(containerEl).setName(`Edit ${runtimeDisplayName(runtime)}`).setHeading();
 
@@ -1007,6 +1045,9 @@ function buildRuntimeForm(
 	);
 
 	if (!herdr) buildSessionHookSetting(containerEl, isActive, callbacks);
+	// The catalog's default for this runtime (issue #125); Claude run by
+	// Obsidian has Claude only, so it has no choice to make.
+	buildDefaultAgentSetting(containerEl, runtime, settings, callbacks);
 
 	problems = new Setting(containerEl).setName('Problems').setClass('herdr-runtime-problems');
 	check();
@@ -1179,18 +1220,7 @@ export function buildAgentsSection(
 ): void {
 	new Setting(containerEl).setName('Agents').setHeading();
 
-	new Setting(containerEl)
-		.setName('Default agent kind')
-		.setDesc('Agent that folder actions start.')
-		.addDropdown((dropdown) => {
-			for (const kind of AGENT_KINDS) {
-				dropdown.addOption(kind, kind);
-			}
-			dropdown.setValue(settings.defaultAgentKind).onChange(async (value) => {
-				settings.defaultAgentKind = value as AgentKind;
-				await callbacks.save();
-			});
-		});
+	buildAgentCatalogSettings(containerEl, settings, callbacks);
 
 	new Setting(containerEl)
 		.setName('Agent name pattern')
@@ -1617,6 +1647,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private readonly renderStatus: RenderStatus;
 	/** The runtime whose form is open; survives the redisplays its fields cause. */
 	private editing: string | null = null;
+	/** The user agent CLI whose form is open (issue #125). */
+	private editingAgent: string | null = null;
 	/** The status block of the last display, redrawn when the registry changes. */
 	private statusEl: HTMLElement | null = null;
 
@@ -1661,6 +1693,15 @@ export class HerdrSettingTab extends PluginSettingTab {
 			sessionHook: {
 				status: () => plugin.sessionHookStatus(),
 				review: (onDone) => plugin.openSessionHook(onDone),
+			},
+			agents: {
+				probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
+				check: (again) => plugin.agentCatalogs.check(again),
+				editing: () => this.editingAgent,
+				edit: (id) => {
+					this.editingAgent = id;
+					this.display();
+				},
 			},
 		};
 	}

@@ -23,7 +23,6 @@ import {
 	ToggleComponent,
 } from './fixtures/obsidian';
 import {
-	AGENT_KINDS,
 	buildAgentListSection,
 	buildAgentsSection,
 	buildConnectionSection,
@@ -268,6 +267,7 @@ describe('runtimes section (ADR-0004)', () => {
 			'Remote herdr binary',
 			'Remote vault path',
 			'Workspace ID',
+			'Default agent',
 			'Problems',
 			'',
 		]);
@@ -290,6 +290,7 @@ describe('runtimes section (ADR-0004)', () => {
 			'Socket path',
 			'Herdr binary',
 			'Workspace ID',
+			'Default agent',
 			'Problems',
 			'',
 		]);
@@ -439,12 +440,79 @@ describe('notifications section', () => {
 });
 
 describe('agents section', () => {
-	it('offers every agent kind herdr can start', () => {
+	it('lists the active runtime’s agent CLIs, unverified before a probe, and the add button', () => {
 		const el = settingsContainer();
 		buildAgentsSection(el, settingsOf(), recorder().callbacks);
 
-		expect(dropdownOf(el, 'Default agent kind').optionValues()).toEqual([...AGENT_KINDS]);
-		expect(dropdownOf(el, 'Default agent kind').value).toBe('claude');
+		const names = settingNames(el);
+		expect(names.slice(1, 4)).toEqual(['Agent CLIs', 'Claude Code', 'Codex']);
+		expect(names).toContain('Add agent CLI');
+		expect(settingNamed(el, 'Claude Code').desc).toBe('Runs claude. Not checked yet. Default. Has the native view.');
+		expect(rowButton(el, 'Codex', 'Hide from the menu').icon).toBe('eye');
+	});
+
+	it('shows only what the probe found, and a user entry it did not find with the reason', () => {
+		const settings = settingsOf({
+			agentProfiles: [{ id: 'user-a', name: 'Work codex', agent: 'codex', command: '', args: ['--profile', 'work'] }],
+		});
+		const { callbacks } = recorder();
+		callbacks.agents = {
+			probe: () => ({ found: new Set(['claude']), herdrVersion: '0.9.5' }),
+			check: async () => true,
+			editing: () => null,
+			edit: () => undefined,
+		};
+		const el = settingsContainer();
+		buildAgentsSection(el, settings, callbacks);
+
+		const names = settingNames(el);
+		expect(names).toContain('Claude Code');
+		expect(names).not.toContain('Codex');
+		expect(settingNamed(el, 'Work codex').desc).toBe('Runs codex --profile work. Codex not found on this machine.');
+	});
+
+	it('hides an entry from the menu, and adds a user entry with its form open', async () => {
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		let editing: string | null = null;
+		callbacks.agents = {
+			probe: () => ({ found: new Set(['claude', 'codex']), herdrVersion: '0.9.5' }),
+			check: async () => true,
+			editing: () => editing,
+			edit: (id) => {
+				editing = id;
+				calls.push(`editAgent:${id}`);
+			},
+		};
+		const el = settingsContainer();
+		buildAgentsSection(el, settings, callbacks);
+
+		await rowButton(el, 'Codex', 'Hide from the menu').click();
+		expect(settings.hiddenAgents).toEqual(['codex']);
+		await control(el, 'Add agent CLI', ButtonComponent, 'button').click();
+		expect(settings.agentProfiles).toHaveLength(1);
+		expect(calls).toEqual(['save', 'refreshAgentList', 'redisplay', 'save', 'refreshAgentList', `editAgent:${editing}`]);
+
+		const form = settingsContainer();
+		buildAgentsSection(form, settings, callbacks);
+		await textOf(form, 'Arguments').change('--model  sonnet');
+		await textOf(form, 'Command').change('~/bin/my-claude');
+		expect(settings.agentProfiles[0]).toMatchObject({ command: '~/bin/my-claude', args: ['--model', 'sonnet'] });
+		expect(settingNamed(form, 'Where it starts').desc).toContain('Starts on herdr-core (hc).');
+	});
+
+	it('sets a runtime’s default in its form, and clears it with first installed', async () => {
+		const settings = settingsOf();
+		const { callbacks } = recorder({ editing: 'local' });
+		const el = settingsContainer();
+		buildRuntimesSection(el, settings, callbacks);
+
+		const dropdown = dropdownOf(el, 'Default agent');
+		expect(dropdown.optionValues().slice(0, 3)).toEqual(['', 'claude', 'codex']);
+		await dropdown.change('codex');
+		expect(settings.defaultAgents).toEqual({ local: 'codex' });
+		await dropdown.change('');
+		expect(settings.defaultAgents).toEqual({});
 	});
 
 	it('hides the panes-per-tab cap unless agents share a tab', () => {
@@ -483,13 +551,11 @@ describe('agents section', () => {
 		await sliderOf(el, 'Panes per herdr tab').change(99);
 		await textOf(el, 'Agent name pattern').change('{vault}-{n}');
 		await toggleOf(el, 'Open terminal after starting an agent').change(false);
-		await dropdownOf(el, 'Default agent kind').change('codex');
 
 		expect(settings.panesPerTab).toBe(MAX_PANES_PER_TAB);
 		expect(settings.agentNamePattern).toBe('{vault}-{n}');
 		expect(settings.openTerminalAfterStart).toBe(false);
-		expect(settings.defaultAgentKind).toBe('codex');
-		expect(calls).toEqual(['save', 'save', 'save', 'save']);
+		expect(calls).toEqual(['save', 'save', 'save']);
 	});
 });
 
@@ -800,8 +866,10 @@ describe('the tab as a whole', () => {
 		for (const section of SETTINGS_SECTIONS) section(el, settingsOf(), recorder().callbacks);
 
 		// Allowed second-and-later words: lower case, or an acronym (ID, PATH).
-		const exceptions = new Set(['ID', 'PATH']);
-		for (const { name } of builtSettings(el)) {
+		const exceptions = new Set(['ID', 'PATH', 'CLI', 'CLIs']);
+		for (const { name, classes } of builtSettings(el)) {
+			// An agent CLI's row is its product name (Claude Code), not a label.
+			if (classes.includes('herdr-agent-profile')) continue;
 			for (const word of name.split(' ').slice(1)) {
 				const bare = word.replace(/[^A-Za-z]/g, '');
 				if (!bare || exceptions.has(bare)) continue;

@@ -34,7 +34,8 @@ import { defaultDeps, discoverHerdr, expandHome, type DiscoveryDeps } from '../h
 import { HerdrClient, type ProtocolMismatch } from '../herdr/client';
 import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from '../herdr/scope';
 import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
-import { SshTunnel, terminalArgvPrefix } from '../herdr/ssh';
+import { defaultDeps as sshDefaultDeps, SshTunnel, terminalArgvPrefix, type RunCommand } from '../herdr/ssh';
+import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { herdrSessionWatcher } from '../herdr/sessionWatcher';
@@ -49,6 +50,8 @@ export interface HerdrKindHost {
 	vaultPath(): string;
 	/** Injected in tests; the real filesystem, PATH and processes otherwise. */
 	discoveryDeps?: DiscoveryDeps;
+	/** Runs the agent probe's `ssh` (issue #125); injected in tests, never spawned there. */
+	sshRun?: RunCommand;
 	onProtocolMismatch(mismatch: ProtocolMismatch): void;
 	onUnsupportedMethod(method: string): void;
 	/**
@@ -183,6 +186,17 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 			});
 		},
 		createActions: (actionHost) => new HerdrActions(actionHost),
+		// The agent catalog's probe (issue #125): this machine's binary search,
+		// or one `ssh` to the host; herdr's version gates the kinds it accepts.
+		probeAgents: async (connection, programs) => {
+			const runtime = connection.endpoint.runtime;
+			const herdrVersion = connection.client.serverVersion;
+			const probe =
+				runtime.target === 'ssh'
+					? await probeOverSsh(runtime.host, programs, host.sshRun ?? sshDefaultDeps().run)
+					: await probeLocal(programs, { extraPath: host.extraPath() }, deps());
+			return { ...probe, herdrVersion };
+		},
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),
 		// One `tab.list` cache per connection (issue #43), over its own client

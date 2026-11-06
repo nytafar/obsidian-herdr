@@ -55,6 +55,45 @@ it first shows, and again on **Check again**. It offers (ADR-0008):
 The plugin itself never downloads or installs anything: the installer runs
 only where you see it, in a terminal tab or as a tool call you allow.
 
+## Starting agents: the + button and the agent catalog
+
+The **+** at the far right of the agent list's toolbar starts an agent at the
+vault root: a **left click** starts the active runtime's default agent, a
+**right click** (or the context-menu key) opens its **agent catalog**, the
+default first and checked. **Start agent here** in a folder's menus and the
+command palette starts the default too.
+
+The catalog is per runtime, worked out when the runtime connects and kept
+for that connection, never looked up per start:
+
+- **What is installed.** On this machine, the same search as for the herdr
+  binary: Homebrew, `/usr/local/bin`, `~/.local/bin`, the extra PATH entries,
+  then your login shell's PATH. On an SSH herdr runtime, one
+  `ssh -T <host> sh -c '…'` that looks on the non-interactive PATH, then in
+  the same three directories there. On an SSH herdr-core runtime, one
+  `machine.exec` over its connection. Only the agent CLIs found are listed.
+- **herdr** starts an agent kind with `agent.start`, which runs that kind's
+  own program; kinds the server's version does not accept are left out
+  (`muse` needs 0.9.0, `letta` 0.9.1).
+- **herdr-core** also lists hc's own templates (`~/.config/herdr-core/templates`
+  on its machine), started as hc runs them.
+- **Claude, run by Obsidian** offers Claude Code only.
+- **Your own entries** (Settings → Herdr → Agents → **Add agent CLI**) show
+  on every runtime: a wrapper, another command, or an agent with extra
+  arguments. One that cannot start on the active runtime is greyed with the
+  reason: its command was not found there, or herdr cannot start a command of
+  your own (herdr-core can), or the runtime is Claude, run by Obsidian.
+- **Hidden** entries (the eye in settings) stay out of the menu.
+
+The **default** is per runtime, set in the runtime's form (**Default agent**),
+and falls back to the first installed entry. Upgrading keeps the old
+**Default agent kind**: every herdr and herdr-core runtime starts with it as
+its default (Claude, the old default, needs none: it leads the catalog
+wherever it is installed). If nothing is found, + says so instead of starting anything.
+
+**Check again** in the Agents settings looks again after you install an agent
+CLI, without reconnecting.
+
 ## Adding, editing and removing
 
 - **Add runtime** creates a herdr runtime over SSH and opens its form. Change
@@ -210,8 +249,10 @@ the same way as for herdr.
   "done" here either.
 - Pins are the shared `herdr.pinned` label: pinning in Obsidian pins in
   herdr-app and on the phone, and the other way round.
-- **Start agent here** runs the default agent in the folder, in your own shell,
-  labelled for herdr-app's space when one matched. **Terminate agent** kills
+- **Start agent here** runs the runtime's default agent in the folder, in
+  your own shell, labelled for herdr-app's space when one matched; the +
+  menu also lists hc's templates (see
+  [Starting agents](#starting-agents-the--button-and-the-agent-catalog)). **Terminate agent** kills
   and removes the terminal.
 - The connection comes back on its own after the core restarts or the SSH
   line drops.
@@ -325,8 +366,9 @@ run and how many are stopped.
 
 ### What works
 
-- **Start agent here** from a folder's menu, the command, or the plus in the
-  agent list starts one in that folder. Its process starts at once, so the
+- **Start agent here** from a folder's menu, the command, or the + in the
+  agent list starts one in that folder (the catalog here is Claude Code
+  alone). Its process starts at once, so the
   first prompt does not wait for it, and its tab opens in the native view.
 - **The agent list** shows every session the plugin started in this vault.
   Running ones show their live status from Claude's own stream: working,

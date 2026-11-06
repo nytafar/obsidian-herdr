@@ -23,6 +23,7 @@ editing, removing and switching, and for every field.
 | Herdr binary / Remote herdr binary | An override for discovery, empty to search: locally Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH; over SSH the remote PATH, then Homebrew, /usr/local/bin and ~/.local/bin on the remote host. |
 | SSH host, Remote vault path | SSH targets only. The vault path is required for folder actions. |
 | Workspace ID / Space | Pins the workspace (herdr) or space (herdr-core). Empty resolves by the vault folder's name, then by working directories inside the vault. |
+| Default agent | herdr and herdr-core only. What the + button and **Start agent here** start on this runtime. **First installed** (the default) is the first agent CLI of its catalog found on its machine; a choice it cannot start falls back to it. |
 | Problems | What the runtime still lacks, or "None.". |
 
 The agent list's toolbar switches runtimes once there are two or more, and
@@ -47,7 +48,8 @@ status bar names the active one.
 
 | Setting | Meaning |
 |---|---|
-| Default agent kind | What **Start agent here** starts: claude, codex, gemini, opencode, pi, cursor, amp, copilot, kimi, droid or grok. |
+| Agent CLIs | The active runtime's agent catalog: the agent CLIs found on its machine, then your own entries. A row says what it runs and whether it was found; the eye hides it from the + menu. **Check again** looks again on the same connection, after you install one; otherwise each connection checks once. See [runtimes.md](runtimes.md#starting-agents-the--button-and-the-agent-catalog). |
+| Add agent CLI | Your own entry: **Name**, **Agent** (which agent it is: what herdr starts and detects, and the row's mark), **Command** (empty runs the agent's own program; a name or a path, `~/` is the home of the machine it runs on) and **Arguments** (plain words, separated by spaces). **Where it starts** names the runtime kinds that can start it, and why the others cannot. A user entry shows on every runtime, greyed with the reason where its command was not found. |
 | Agent name pattern | Name for started agents. `{folder}`, `{vault}` and `{n}` are replaced; `{n}` counts past names already taken anywhere in herdr. |
 | Open terminal after starting an agent | Opens the new agent's terminal tab at once. |
 | Share a herdr tab between agents in the same folder | On: a second agent in a folder splits that folder's herdr tab. Off: every agent gets its own tab, matching how herdr is navigated. |

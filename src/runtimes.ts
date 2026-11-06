@@ -597,6 +597,7 @@ export function removeRuntime(
 	settings: RuntimeSettings & {
 		pinnedPanes: Record<string, string[]>;
 		claudeSessions?: Record<string, unknown>;
+		defaultAgents?: Record<string, string>;
 	},
 	id: string,
 ): { removed: boolean; activeChanged: boolean } {
@@ -615,6 +616,11 @@ export function removeRuntime(
 	if (settings.claudeSessions && id in settings.claudeSessions) {
 		settings.claudeSessions = { ...settings.claudeSessions };
 		delete settings.claudeSessions[id];
+	}
+	// Its default agent (issue #125) can never apply to another runtime.
+	if (settings.defaultAgents && id in settings.defaultAgents) {
+		settings.defaultAgents = { ...settings.defaultAgents };
+		delete settings.defaultAgents[id];
 	}
 	if (settings.activeRuntime !== id) return { removed: true, activeChanged: false };
 	const [first] = settings.runtimes as [RuntimeConfig, ...RuntimeConfig[]];

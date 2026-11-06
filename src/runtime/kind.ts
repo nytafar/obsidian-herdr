@@ -43,6 +43,7 @@ import type { CommandCatalogSource } from '../native/commandCatalog';
 import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
 import type { TabLabels } from '../tabLabels';
+import type { AgentProbe } from '../agents/catalog';
 
 /**
  * What a runtime of a kind can do, as the UI asks it. herdr has all of it;
@@ -259,12 +260,24 @@ export interface GraduationRelease {
 	permissionMode?: string;
 }
 
-/** The agent `startAgentHere` starts, when it is not the default one. */
+/**
+ * The agent `startAgentHere` starts, when it is not the runtime's default
+ * (`agents/catalog.ts`'s `launchOf` builds one per catalog entry).
+ */
 export interface StartAgentOptions {
-	/** The agent kind (`claude`), instead of the settings' default. */
+	/** herdr's agent kind (`claude`), instead of the runtime's default. */
 	kind?: string;
+	/**
+	 * The program to run instead of the kind's own (a user's wrapper). Only
+	 * herdr-core can: herdr's `agent.start` runs the kind's own program.
+	 */
+	command?: string;
 	/** Arguments after the agent's program, e.g. `['--resume', '<id>']`. */
 	args?: readonly string[];
+	/** An hc template to run instead of a program (herdr-core only). */
+	template?: string;
+	/** What the notice calls the agent; the kind when absent. */
+	label?: string;
 }
 
 /**
@@ -337,6 +350,13 @@ export interface RuntimeKindAdapter<
 	paneViewChosen?(endpoint: Endpoint, paneId: string, view: 'native' | 'terminal'): void;
 	/** Folder and row actions over the plugin's action host. */
 	createActions(host: ActionHost): RuntimeActions;
+	/**
+	 * Which of these programs exist on the machine this connection's agents
+	 * run on, for the agent catalog (issue #125): asked once per connection
+	 * (`agents/catalogs.ts`). Absent for a kind whose catalog needs no probe
+	 * (the `claude` kind starts Claude only). Never expected to reject.
+	 */
+	probeAgents?(connection: Connection<C, S, T>, programs: readonly string[]): Promise<AgentProbe>;
 	/** The native view's prompt box, over the client of the tab's runtime. */
 	promptSender(client: () => PromptClient | null): PromptSender;
 	/** The waiting card's key presses, over the same client. */

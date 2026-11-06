@@ -132,6 +132,18 @@ that needs a newer build gates on `HerdrClient.supportsVersion("0.9.2")`
 counts as the release it names, and an unknown version gates off. A protocol
 mismatch still only warns.
 
+**Agent kinds per release.** `agent.start`'s `kind` is checked against a
+fixed list, the `--kind` possible values of `herdr agent start --help`. Read
+from the release binaries on 2026-11-06: 0.8.2 accepts pi, claude, codex,
+gemini, cursor, devin, agy, cline, omp, mastracode, opencode, copilot, kimi,
+kiro, droid, amp, grok, hermes, kilo, qodercli, qwen and maki; 0.9.0 adds
+`muse`; 0.9.1 adds `letta`; 0.9.5 is the same as 0.9.1. The agent catalog
+(`src/agents/catalog.ts`, issue #125) records the release a kind arrived in
+and leaves it out of a herdr runtime's + menu on an older or unknown server
+version. herdr calls the kind its "canonical executable": `agent.start` runs
+that program in the pane and passes `args` after it, so herdr cannot start a
+user's own wrapper; herdr-core's `terminal.run` can.
+
 The 0.9.5 pong, verbatim from the running server:
 `{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"live_handoff":true,"detached_server_daemon":true,"endpoint_protocol_generation":1,"surface_interest":true,"health_check":true,"ssh_agent_registration":true}}`.
 

@@ -29,11 +29,14 @@ the workspace filtering happens on the plugin side.
 
 ## Supported agent CLIs
 
-The plugin starts and recognises every agent kind herdr 0.8 can start: **Claude
+The plugin starts and recognises every agent kind herdr can start: **Claude
 Code**, **Codex**, **Gemini CLI**, **OpenCode**, **Pi**, **Cursor**, **Amp**,
-**GitHub Copilot CLI**, **Kimi**, **Droid** and **Grok**. Each has an icon in the
-list; a kind the plugin does not know yet gets a neutral one. Anything herdr can
-attach to also shows up, whatever started it.
+**GitHub Copilot CLI**, **Kimi**, **Droid**, **Grok** and the rest of herdr's
+list. The + button offers the ones installed on the active runtime's machine,
+plus your own entries (a wrapper, extra arguments) from the settings; see
+[docs/runtimes.md](docs/runtimes.md#starting-agents-the--button-and-the-agent-catalog).
+Each has an icon in the list; a kind the plugin does not know yet gets a
+neutral one. Anything herdr can attach to also shows up, whatever started it.
 
 ## Requirements
 
@@ -143,8 +146,10 @@ Colours follow Obsidian or one of eight built-in palettes. Two terminal engines
 are available; see [docs/settings.md](docs/settings.md) for when to switch.
 
 **Starting agents.** Hover a folder in the file explorer for the herdr button, or
-right-click it: **Start agent here** creates the pane and starts an agent of the
-default kind, named from the pattern in settings. A second agent in the same
+right-click it: **Start agent here** creates the pane and starts the runtime's
+default agent, named from the pattern in settings. The **+** at the far right
+of the agent list's toolbar does the same at the vault root on a left click;
+a right click lists every agent CLI installed on the runtime's machine. A second agent in the same
 folder splits that folder's herdr tab rather than opening another, up to a cap;
 turn **Share a herdr tab** off to give every agent its own tab, the way herdr is
 navigated. The same actions are in the command palette for the active note's

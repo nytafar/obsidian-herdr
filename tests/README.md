@@ -490,3 +490,21 @@ a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
    resolved the file rather than treating the text as prose.
 6. `/` in the middle of a prompt, and `@` glued to the end of a word, offer
    nothing: neither is a trigger there.
+
+## The agent catalog and the + button (#125)
+
+`tests/agentCatalog.test.ts` covers the merge (`buildCatalog`), the defaults
+and the `defaultAgentKind` migration, the + menu's items, the probe commands
+and their parsing, the per-connection cache (`AgentCatalogs`), each kind's
+`probeAgents` and starting an entry. Every runner, filesystem and requester
+is a fake: no test invokes ssh or starts an agent CLI. To smoke it inside
+Obsidian:
+
+1. Left-click the + at the far right of the agent list's toolbar: the
+   runtime's default agent starts at the vault root, and the notice names it.
+2. Right-click it: the menu lists only the agent CLIs installed on the
+   runtime's machine (`command -v claude codex …` there), the default
+   checked. Switch runtimes and right-click again: the list follows.
+3. Add an agent CLI in Settings → Herdr → Agents with a command that does
+   not exist: it shows greyed in the menu with "not found on …". Install it
+   and press **Check again**: it turns available without a reconnect.

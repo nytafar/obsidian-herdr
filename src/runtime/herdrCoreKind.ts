@@ -32,7 +32,8 @@
  */
 
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
-import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
+import { defaultDeps, expandHome, resolveHerdrBinary, type DiscoveryDeps, type DiscoveryResult } from '../herdr/binary';
+import { probeLocal, probeOverHc, readHcTemplates } from '../agents/probe';
 import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
@@ -67,6 +68,8 @@ export interface HerdrCoreKindHost {
 	currentScope(): ConnectionScope | null;
 	/** Injected in tests; the real child process otherwise. */
 	spawn?: HcSpawn;
+	/** The agent probe's filesystem and login shell on a local runtime (issue #125); injected in tests. */
+	discoveryDeps?: DiscoveryDeps;
 	timers?: HcTimers;
 }
 
@@ -288,6 +291,20 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 				const scope = host.currentScope();
 				return scope instanceof HcScope ? scope : null;
 			}),
+		// The agent catalog's probe (issue #125): this machine's binary search
+		// on a local runtime, one `machine.exec` over the connection on an SSH
+		// one, and hc's templates either way.
+		probeAgents: async (connection, programs) => {
+			const client = connection.client;
+			const requester = { request: <T,>(method: string, params: unknown) => client.request<T>(method, params) };
+			const [probe, templates] = await Promise.all([
+				connection.endpoint.runtime.target === 'ssh'
+					? probeOverHc(requester, programs)
+					: probeLocal(programs, { extraPath: host.extraPath() }, host.discoveryDeps ?? defaultDeps()),
+				readHcTemplates(requester),
+			]);
+			return { ...probe, templates };
+		},
 		promptSender: (client) => hcPromptSender(client),
 		keySender: (client) => hcKeySender(client),
 		createTabLabels: (connection) => new HcTabLabels(connection.scope),

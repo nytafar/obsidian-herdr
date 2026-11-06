@@ -123,6 +123,36 @@ export interface ActionHost {
 	sleep(ms: number): Promise<void>;
 	/** Clock, injected for the pane wait timeout. */
 	now(): number;
+	/**
+	 * The runtime's default agent from its catalog (issue #125), or null when
+	 * nothing in the catalog can start there. Absent: Claude.
+	 */
+	defaultAgent?(): Promise<StartAgentOptions | null>;
+}
+
+/** What "Start agent here" falls back to without a catalog: herdr's `claude`. */
+export const FALLBACK_AGENT_KIND = 'claude';
+
+/**
+ * The agent a start goes ahead with: the options given, else the runtime's
+ * default. Null, with a notice, when the catalog has nothing that can start.
+ */
+export async function agentToStart(
+	host: Pick<ActionHost, 'defaultAgent' | 'notice' | 'runtime'>,
+	options: StartAgentOptions | undefined,
+): Promise<StartAgentOptions | null> {
+	if (options) return options;
+	if (!host.defaultAgent) return { kind: FALLBACK_AGENT_KIND };
+	const chosen = await host.defaultAgent();
+	if (chosen) return chosen;
+	const where = host.runtime().target === 'ssh' ? `on ${host.runtime().host}` : 'on this machine';
+	host.notice(`Herdr: no agent CLI was found ${where}. Add one under Settings → Herdr → Agents.`);
+	return null;
+}
+
+/** What a started agent's notice calls it. */
+export function agentLabel(options: StartAgentOptions): string {
+	return options.label?.trim() || options.kind || FALLBACK_AGENT_KIND;
 }
 
 /** Joins path segments with `/` and collapses `.`, `..` and duplicate slashes. */
@@ -427,6 +457,15 @@ export class HerdrActions {
 	async startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<StartedAgent | null> {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
+		const agent = await agentToStart(this.host, options);
+		if (!agent) return null;
+		// `agent.start` runs the kind's own program; a wrapper needs herdr-core.
+		if (agent.command || agent.template) {
+			this.host.notice(
+				`Herdr: herdr starts ${agent.kind ?? 'an agent'} with its own program, so "${agentLabel(agent)}" cannot start here.`,
+			);
+			return null;
+		}
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 
@@ -465,8 +504,8 @@ export class HerdrActions {
 			return null;
 		}
 
-		const kind = options?.kind ?? settings.defaultAgentKind;
-		const args = options?.args && options.args.length > 0 ? { args: [...options.args] } : {};
+		const kind = agent.kind ?? FALLBACK_AGENT_KIND;
+		const args = agent.args && agent.args.length > 0 ? { args: [...agent.args] } : {};
 		const taken = this.host.takenAgentNames();
 		let name = buildAgentName(settings.agentNamePattern || '{folder}', {
 			folder: label,
@@ -478,7 +517,7 @@ export class HerdrActions {
 		for (;;) {
 			try {
 				await this.host.request('agent.start', { name, kind, pane_id: paneId, ...args });
-				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
+				this.host.notice(`Herdr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
 				// The folder is this pane's cwd, and the scope cannot know that yet:
 				// it admits a pane on `pane.agent_detected` plus a `pane.list`, both
 				// still in flight here (issue #28).

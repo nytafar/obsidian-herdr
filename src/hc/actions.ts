@@ -16,7 +16,16 @@
  * the herdr actions use.
  */
 
-import { buildAgentName, folderName, type ActionHost, type Requester } from '../actions';
+import {
+	agentLabel,
+	agentToStart,
+	buildAgentName,
+	FALLBACK_AGENT_KIND,
+	folderName,
+	type ActionHost,
+	type Requester,
+} from '../actions';
+import { argIssue, commandIssue, programOf } from '../agents/catalog';
 import { remoteVaultPathIssue } from '../runtimes';
 import type { RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import {
@@ -27,11 +36,6 @@ import {
 } from '../native/promptSender';
 import { HcError } from './connection';
 import { LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
-
-/** The program an agent kind runs as, where it differs from the kind. */
-const AGENT_COMMANDS: Record<string, string> = {
-	cursor: 'cursor-agent',
-};
 
 /** How long `terminal.rm` is retried while a killed terminal is still `live`. */
 export const RM_RETRY_MS = 2000;
@@ -44,15 +48,20 @@ const RM_POLL_MS = 100;
  * herdr pane. The line itself is run by `sh -c` (`terminal.run` `line`); the
  * inner command is plain enough for bash, zsh and fish alike.
  *
- * `args` follow the program (graduation's `--resume <id>`, ADR-0007). They
- * are written into a single-quoted shell line, so only plain words are taken:
- * letters, digits and `._=/:-`, nothing a shell would read twice.
+ * `args` follow the program (graduation's `--resume <id>`, ADR-0007, or a
+ * catalog entry's own, issue #125). They are written into a single-quoted
+ * shell line, so only plain words are taken: letters, digits and
+ * `._=/:@+,-`, nothing a shell would read twice. `command` is a catalog
+ * entry's own program instead of the kind's: a name or a path, `~/` allowed
+ * at the front, which bash, zsh and fish all expand.
  */
-export function agentLaunchLine(kind: string, args: readonly string[] = []): string {
-	const program = AGENT_COMMANDS[kind] ?? kind;
-	if (!/^[a-z0-9][a-z0-9._-]*$/.test(program)) throw new Error(`not an agent program: ${program}`);
+export function agentLaunchLine(kind: string, args: readonly string[] = [], own?: string): string {
+	const program = own?.trim() || programOf(kind);
+	const programIssue = commandIssue(program);
+	if (programIssue) throw new Error(programIssue);
 	for (const arg of args) {
-		if (!/^[A-Za-z0-9._=/:-]+$/.test(arg)) throw new Error(`not a plain argument: ${arg}`);
+		const issue = argIssue(arg);
+		if (issue) throw new Error(issue);
 	}
 	const command = [program, ...args].join(' ');
 	return `SHELL="\${SHELL:-/bin/sh}"; export SHELL; exec "$SHELL" -ic '${command}; exec "$SHELL" -i'`;
@@ -132,9 +141,11 @@ export class HcActions implements RuntimeActions {
 			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
 			return null;
 		}
+		const agent = await agentToStart(this.host, options);
+		if (!agent) return null;
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
-		const kind = options?.kind ?? settings.defaultAgentKind;
+		const kind = agent.kind ?? FALLBACK_AGENT_KIND;
 		const labels: Record<string, string> = { [LABEL_SEEN]: '0' };
 		const space = this.scope()?.space;
 		if (space) labels[LABEL_SPACE] = space.id;
@@ -148,19 +159,20 @@ export class HcActions implements RuntimeActions {
 				),
 			);
 		let name = nameFor();
-		let line: string;
+		// A template runs as hc's own argv; everything else in the user's shell.
+		let run: { line: string } | { argv: string[] };
 		try {
-			line = agentLaunchLine(kind, options?.args);
+			run = agent.template ? { argv: [agent.template] } : { line: agentLaunchLine(kind, agent.args, agent.command) };
 		} catch (error) {
 			this.host.notice(`Herdr: could not start an agent. ${describe(error)}`);
 			return null;
 		}
 		for (let attempt = 0; ; attempt++) {
 			try {
-				const result = await send<unknown>('terminal.run', { line, cwd: folderAbsPath, name, labels });
+				const result = await send<unknown>('terminal.run', { ...run, cwd: folderAbsPath, name, labels });
 				const paneId = parseTerminal(result)?.address ?? '';
 				if (!paneId) throw new Error('herdr-core answered without a terminal address');
-				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
+				this.host.notice(`Herdr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
 				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
 				return { paneId, name, kind };
 			} catch (error) {

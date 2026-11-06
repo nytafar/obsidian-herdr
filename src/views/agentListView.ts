@@ -21,8 +21,10 @@
  * repaint per frame.
  *
  * The toolbar under the rows holds three `clickable-icon` buttons (issues #41,
- * #44): the sort and group-by menu, "start agent in the vault", and a quick
- * settings menu. What the two menus contain is `listMenu.ts` and
+ * #44): the sort and group-by menu, a quick settings menu, and, at the far
+ * right, the + that starts the runtime's default agent at the vault root on a
+ * left click and opens its agent catalog on a right click (issue #125,
+ * `startMenu.ts`). What the two menus contain is `listMenu.ts` and
  * `quickSettings.ts`, both pure and tested; choosing an entry writes the same
  * settings the settings tab writes and repaints every open list. A fourth
  * button switches the runtime the list shows (issue #54, ADR-0004): hidden
@@ -58,6 +60,7 @@ import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
+import { startButtonLabel, startMenuItems } from './startMenu';
 import { getStartedActionOf, renderGetStartedCard, runGetStartedAction } from '../getStarted/card';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
@@ -144,15 +147,56 @@ export class AgentListView extends ItemView {
 		this.toolbarButton(bar, 'arrow-down-up', 'Sort and group', (event) =>
 			this.openListMenu(event),
 		);
-		this.startButtonEl = this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
-			// The same flow as the folder menu, at the vault root: it honours the
-			// share-a-tab setting (issue #29) and reports its own failures.
-			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
-		});
-		this.startButtonEl.addClass('herdr-start-agent-button');
 		this.toolbarButton(bar, 'settings-2', 'Quick settings', (event) =>
 			this.openQuickSettings(event),
 		);
+		// Far right (issue #125): a left click starts the runtime's default
+		// agent at the vault root, through the same flow as the folder menu
+		// (it honours the share-a-tab setting, issue #29, and reports its own
+		// failures); a right click lists the runtime's agent catalog.
+		const start = this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
+			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
+		});
+		start.addClass('herdr-start-agent-button');
+		this.registerDomEvent(start, 'contextmenu', (event) => {
+			// Ours, not the row menu's delegated listener on the container.
+			event.preventDefault();
+			event.stopPropagation();
+			void this.openStartMenu(event);
+		});
+		this.startButtonEl = start;
+		this.updateEndpointToggle();
+	}
+
+	/**
+	 * The + button's catalog menu (issue #125), once the runtime's probe has
+	 * landed: every agent CLI the runtime can start, the default checked, the
+	 * ones it cannot greyed with the reason.
+	 */
+	private async openStartMenu(event: MouseEvent): Promise<void> {
+		const catalog = await this.plugin.agentCatalogs.catalog();
+		const menu = new Menu();
+		for (const item of startMenuItems(catalog)) {
+			menu.addItem((entry) => {
+				entry.setTitle(item.title).setIcon(item.icon).setChecked(item.checked).setDisabled(item.disabled);
+				const launch = item.launch;
+				if (launch) {
+					entry.onClick(() => void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath(), launch));
+				}
+			});
+		}
+		// The context-menu key reports no pointer; open under the button then.
+		const keyboard = event.clientX === 0 && event.clientY === 0;
+		const rect = keyboard ? (event.currentTarget as HTMLElement | null)?.getBoundingClientRect() : null;
+		menu.showAtPosition(rect ? { x: rect.left, y: rect.bottom } : { x: event.clientX, y: event.clientY });
+		this.updateStartButtonLabel();
+	}
+
+	/** The + tooltip names the default once the catalog knows it. */
+	private updateStartButtonLabel(): void {
+		const el = this.startButtonEl;
+		if (!el) return;
+		setTooltip(el, startButtonLabel(this.plugin.agentCatalogs.cachedCatalog()));
 	}
 
 	/** One `clickable-icon` button in the toolbar, labelled for pointer and reader. */
@@ -204,7 +248,12 @@ export class AgentListView extends ItemView {
 	 */
 	private updateEndpointToggle(): void {
 		const start = this.startButtonEl;
-		if (start) start.toggleClass('herdr-hidden', !this.plugin.capabilities().startAgent);
+		if (start) {
+			start.toggleClass('herdr-hidden', !this.plugin.capabilities().startAgent);
+			this.updateStartButtonLabel();
+			// Again once the runtime's probe has landed, to name its default.
+			void this.plugin.agentCatalogs.catalog().then(() => this.updateStartButtonLabel());
+		}
 		const el = this.endpointToggleEl;
 		if (!el) return;
 		const switcher = runtimeSwitcher(this.plugin.settings);

@@ -111,6 +111,8 @@ function harness(options: {
 	const plugin = Object.create(HerdrPlugin.prototype) as Record<string, unknown>;
 	plugin.app = { workspace, vault: { adapter, getName: () => 'hvelv' } };
 	plugin.settings = { ...DEFAULT_SETTINGS, ...options.settings };
+	// Built by a field initialiser, which `Object.create` skips (issue #125).
+	plugin.agentCatalogs = { defaultLaunch: async () => ({ kind: 'claude' }) };
 	plugin.connection = {
 		current: {
 			endpoint: endpointOf(defaultLocalRuntime()),
