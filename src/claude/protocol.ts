@@ -86,6 +86,26 @@ export function claudeArgv(options: ClaudeArgvOptions): string[] {
 }
 
 /**
+ * The argv of an agent's TUI, for the terminal view (ADR-0007's D2): the
+ * interactive `claude`, continuing the same session, in the runtime's
+ * permission mode passed explicitly (without it the TUI comes up in the
+ * user's own default, auto on the spike's machine).
+ */
+export function claudeTuiArgv(options: ClaudeArgvOptions): string[] {
+	if (!SESSION_ID_RE.test(options.sessionId)) {
+		throw new Error(`not a session id: ${options.sessionId}`);
+	}
+	return [
+		options.binary,
+		'--permission-mode',
+		options.permissionMode,
+		options.resume ? '--resume' : '--session-id',
+		options.sessionId,
+		...(options.extraArgs ?? []),
+	];
+}
+
+/**
  * The one way a line reaches Claude's stdin: one JSON object, stringified,
  * plus a newline. Refuses anything else, so a bug here throws in the plugin
  * instead of killing the agent.

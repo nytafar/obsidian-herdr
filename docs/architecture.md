@@ -752,9 +752,11 @@ with the remote path forced (read-only, from a script outside the repo):
 
 ## Claude run by Obsidian: the `claude` kind
 
-ADR-0007's simple mode, D1: Claude Code processes the plugin starts itself,
-over plain child-process pipes, with no multiplexer, no pty and no native
-code. Every protocol fact below is from the finding `direct-claude-spike`
+ADR-0007's simple mode: Claude Code processes the plugin starts itself,
+over plain child-process pipes, with no multiplexer and no native code. D1
+is the headless process and the native view; D2 adds the terminal view and
+shell tabs on a pty from `script(1)`, ADR-0007's recorded exception to "not a
+PTY", for this kind only (below). Every protocol fact below is from the finding `direct-claude-spike`
 (Claude Code 2.1.318, measured 2026-11-06) and was checked again live against
 the same build on 2026-11-06 (start, prompt, a Write allowed and denied, an
 `AskUserQuestion`, interrupt, stop idle, stop while blocked and mid-turn,
@@ -876,10 +878,10 @@ surface answers it through the kind's optional `responder` with a
 `updatedInput` is never altered beyond the answers (the model is not told of
 a change), `userSettings` and `projectSettings` suggestions are never sent,
 and no request times out. The prompt sender has an optional `interrupt`, and
-the prompt box shows **Stop** for a sender that has one. The kind's
-`terminalUnavailable` is set, and `PaneWhere.terminalReason` makes a tab on it
-show the native view whatever its stored view or the default says; D2 adds
-the terminal through `script(1)`.
+the prompt box shows **Stop** for a sender that has one. On Windows the kind's
+`terminalUnavailable` is set ("not available on Windows, which has no
+script(1)"), and `PaneWhere.terminalReason` makes a tab there show the native
+view whatever its stored view or the default says; elsewhere both are null.
 
 **Where a project rule is written** (`src/claude/projectRoot.ts`). Claude Code
 canonicalises `localSettings` to the repository, so the file is
@@ -919,6 +921,84 @@ shell line; every mode is one).
 The row is forgotten once the agent runs there, so one conversation is never
 resumed in two places. SSH runtimes are not offered: the transcript is this
 machine's.
+
+**The terminal view** (D2; `src/claude/pty.ts`, `sharedPty.ts`,
+`terminalSession.ts`, `viewSwitch.ts`). Measured on this machine (Linux,
+util-linux `script` 2.42.4, Claude Code 2.1.318, haiku) on 2026-11-06, with
+the plugin's own code driving real processes and `@xterm/headless` as the
+renderer:
+
+- **Spawn.** `/bin/sh -c WATCHDOG oh-pty script -qfec <line> /dev/null`, four
+  pipes, its own process group. The watchdog keeps the real stdin on fd 4
+  (an asynchronous list in a non-interactive shell gets `/dev/null`),
+  starts `script` on it without fd 3, and a subshell `cat`s fd 3, which the
+  plugin never writes, and sends `script` SIGTERM at EOF. `script` itself
+  ignores stdin EOF. The line is `stty rows R cols C; SHELL=<user's>; export
+  SHELL; exec claude --permission-mode <mode> (--resume|--session-id) <id>`,
+  every word single-quoted; `script` gets `SHELL=/bin/sh` so that line is
+  parsed by a known shell, and the TUI gets `TERM=xterm-256color`,
+  `COLORTERM=truecolor`, no `TERM_PROGRAM`. The permission mode is always
+  passed: without it the TUI comes up in the user's own default.
+- **The TUI** draws in the alternate screen (`CSI ? 1049 h`), sends the OSC
+  7501 probe `ESC ] 7501 ; ? ST` within a second, and asks `CSI ? u` (kitty
+  keyboard) and `CSI c` (DA1). It also works with nobody answering those.
+  Once the plugin answers the probe (as herdr-core does), Claude reports
+  `state=idle` at start, `working` and `done` around a turn, and `clear`
+  three times on exit; that is the row's status in TUI mode
+  (`programStatus.ts`), and a `working` marks the session started. A blocked
+  TUI is answered in the terminal: there is no `can_use_tool` in TUI mode,
+  and the card offers "Open in terminal". An unprompted TUI writes no
+  transcript, so a later `--session-id` of the same id still works. Its
+  startup refusals are the stream's words on the pty, coloured, exit 1:
+  `Error: Session ID … is already in use.` and `No conversation found with
+  session ID: …`; the same fallback applies.
+- **Resize** from outside: the slave is `/proc/<script's child>/fd/0`
+  (`/dev/pts/97`), and `stty -F <slave> rows 40 cols 132` gave SIGWINCH: the
+  TUI redrew the whole screen (a `CSI 2 J`) at 132 columns, and `stty -F …
+  size` read `40 132`. A same-size `stty` sends no SIGWINCH, so a forced
+  repaint passes through one row less first. Resizes wait for the first
+  output byte, so the line's own `stty` cannot undo them.
+- **Stop**: SIGTERM to the TUI ended it in 0.79 s (exit 143, a `state=clear`),
+  measured again as 0.76 s for Stop and 0.79 s for unload with a TUI and a
+  shell running; then fd 3 closed (`script` prints "Session terminated,
+  killing shell...", gives its child 2 s, kills it: 2.0 s); then SIGKILL to
+  the group. A shell gets SIGHUP first, since an interactive shell ignores
+  SIGTERM. After Stop, unload, or the shell's last tab closing, `ps` showed
+  no watchdog, `script`, `claude` or shell left.
+- **Plugin killed**: with a TUI and a shell running, SIGKILL of the plugin's
+  process left nothing 1 s later: the TUI, `script`, both watchdogs and
+  `cat`s, the shell's `bash` and Claude's MCP server child were all gone.
+  `setpriv --pdeathsig` is not used: Linux only.
+- **One process per agent** (`viewSwitch.ts`). A terminal that attaches asks
+  for the TUI, a tab switched to native or a native prompt for the headless
+  process; the switch happens only between turns, and waits otherwise (the
+  tab says why). Measured: headless to TUI 0.86 s to the TUI's spawn and
+  3.2–3.4 s to its first full paint with `--resume` (Claude's own startup);
+  TUI to headless 0.80 s. A native turn, then a TUI turn, then a native
+  question about both answered "HERON PELICAN": the conversation carried
+  across both switches.
+- **Reattach.** The TUI belongs to the agent, not to the tab. A tab's session
+  only attaches and detaches; a reopened tab got the same TUI pid and
+  repainted from a replay of the raw output (`replay.ts`): at most 1 MiB, cut
+  at a line end, with the DEC modes and kitty keyboard flags in effect where
+  the kept bytes start put back first, and a SIGWINCH when anything was
+  dropped. Claude's output for a few turns was under 5 KB. Several tabs can
+  show one TUI; the last controller to resize or type owns the grid, the
+  others get `grid`, and one tab answers the program's queries.
+- **Not seen in TUI mode:** a `/clear` typed there (no stream, no `init`):
+  the row keeps the session from before it.
+- **macOS**: written, not verified: BSD `script -q /dev/null /bin/sh -c
+  <line>`, the slave from `ps -A -o pid=,ppid=,tty=,comm=` (`ttys004` →
+  `/dev/ttys004`), `stty -f`. **Windows**: no terminal view, no shells.
+
+**Shell tabs** (`src/claude/shells.ts`, ADR-0008). A pane id `sh-…` that no
+scope lists: a plain `$SHELL` (else `/bin/sh`) on the same pty, started when
+its first tab attaches. An initial command runs first through `/bin/sh -c`,
+printed in bold before it runs, then the shell starts. It survives a hidden
+or closed tab, and ends a second after its last tab is gone
+(`HerdrPlugin.terminalTabReleased`, deferred so a tab moved to another
+window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
+`echo typed-$((40+2))` printed `typed-42`. Shells are not stored.
 
 ## The settings tab
 

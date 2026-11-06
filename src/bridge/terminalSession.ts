@@ -122,6 +122,13 @@ export interface TerminalSessionEventMap {
 	 * Never emitted by herdr's bridge, whose process ends with its session.
 	 */
 	reopened: [];
+	/**
+	 * Why the session is not attached yet though nothing failed, or null once
+	 * it is: a `claude` agent's terminal waits for the agent's turn to end
+	 * before its process switches to the TUI (ADR-0007's D2). Never emitted
+	 * by herdr's bridge or herdr-core's attach.
+	 */
+	waiting: [reason: string | null];
 }
 
 type Listener<K extends keyof TerminalSessionEventMap> = (

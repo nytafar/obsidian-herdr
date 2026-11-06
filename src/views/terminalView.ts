@@ -754,6 +754,9 @@ export class TerminalView extends ItemView {
 		// A kind that runs but has no terminal of its own (ADR-0007) says so; a
 		// kind this build cannot run at all keeps its terminal, which says why.
 		const terminalReason = kind.unavailable === null ? kind.terminalUnavailable : null;
+		// A pane that is no agent (a `claude` shell tab) has nothing to show natively.
+		const paneReason = paneId ? (kind.paneNativeReason?.(paneId) ?? null) : null;
+		if (paneReason) return { remote: false, kindReason: paneReason, terminalReason };
 		const block = nativeViewBlock(kind, endpoint);
 		if (block.remote || block.kindReason || !paneId) return { ...block, terminalReason };
 		return {
@@ -945,6 +948,11 @@ export class TerminalView extends ItemView {
 		const scope = paneId ? this.endpointSession()?.scope : null;
 		const pane = scope?.get(paneId);
 		if (pane) this.lastTitle = terminalTabTitle(pane, paneId, this.titleContext(pane));
+		// A pane no scope lists, whose kind names it (a `claude` shell tab).
+		if (!pane && paneId) {
+			const named = this.kind().paneTitle?.(paneId);
+			if (named) return named;
+		}
 		return this.lastTitle || terminalTabTitle(pane, paneId);
 	}
 
@@ -1125,7 +1133,12 @@ export class TerminalView extends ItemView {
 	 * is told when it is the one mounted.
 	 */
 	private async setIdentity(identity: PaneIdentity): Promise<void> {
+		const previous = this.terminal.identity;
 		await this.terminal.setIdentity(identity);
+		// Pointed at another pane: the one it showed may have no tab left.
+		if (previous.paneId && (previous.paneId !== identity.paneId || previous.endpointId !== identity.endpointId)) {
+			this.plugin.terminalTabReleased(previous.paneId, previous.endpointId);
+		}
 		const surface = this.surfaces.current;
 		if (surface && surface !== (this.terminal as PaneSurface)) await surface.setIdentity(identity);
 		await this.showSurface();
@@ -1137,6 +1150,8 @@ export class TerminalView extends ItemView {
 		this.visibility = null;
 		this.pendingEffects.clear();
 		await this.surfaces.release();
+		const { paneId, endpointId } = this.terminal.identity;
+		if (paneId) this.plugin.terminalTabReleased(paneId, endpointId);
 		this.hostEl = null;
 		this.statusEl = null;
 		this.toggleActionEl = null;
@@ -1541,6 +1556,11 @@ export class TerminalView extends ItemView {
 		// `view` effect is the vault default reaching tabs that follow it, and
 		// this tab has just stopped following it.
 		await this.showSurface();
+		// The kind may move the agent's process with the view (ADR-0007's D2):
+		// told after the swap, so a terminal has let go of the TUI first.
+		const { paneId, endpointId } = this.terminal.identity;
+		const endpoint = this.plugin.endpointFor(endpointId);
+		if (paneId && endpoint) this.kind().paneViewChosen?.(endpoint, paneId, this.view());
 	}
 
 	/**

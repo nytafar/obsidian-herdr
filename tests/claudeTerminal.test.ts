@@ -1,0 +1,585 @@
+/**
+ * The `claude` kind's terminal view and shell tabs (ADR-0007's D2,
+ * ADR-0008), end to end over the kind's own seams: the headless process is
+ * the fake `claude` over real pipes (`tests/fixtures/fake-claude.mjs`), the
+ * TUI and the shell run on a fake `script` pty (`tests/fixtures/fakePty.ts`)
+ * that behaves as Claude 2.1.318's TUI was measured to.
+ *
+ * Pinned here: the view-switch state machine, the TUI's argv (resume or
+ * session id, the permission mode, the cwd), one live process per agent,
+ * waiting for a running turn, status from OSC 7501, reattaching with a
+ * replay, stop and unload, the shell's argv and lifetime, and Windows.
+ */
+
+import { spawn as nodeSpawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ActionHost } from '../src/actions';
+import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
+import { AGENT_STOPPED, CLAUDE_QUIT, MOVED_TO_NATIVE, WAIT_FOR_RUNTIME, type StoredClaudeSession } from '../src/claude/agents';
+import type { ClaudeChild } from '../src/claude/process';
+import { PROGRAM_STATUS_REPLY } from '../src/claude/programStatus';
+import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
+import { SHELL_ENDED, SHELL_GONE, isShellId } from '../src/claude/shells';
+import { FRAME_BYTES } from '../src/claude/terminalSession';
+import { planViewSwitch, TUI_BUSY, WAIT_FOR_ANSWER, WAIT_FOR_STOP, WAIT_FOR_TURN } from '../src/claude/viewSwitch';
+import { endpointOf, type Connection } from '../src/connection';
+import type { DiscoveryResult } from '../src/herdr/binary';
+import { CLAUDE_TERMINAL_UNAVAILABLE, createClaudeKind, SHELL_NO_NATIVE, type ClaudeKind, type ClaudeKindHost } from '../src/runtime/claudeKind';
+import { DEFAULT_SETTINGS } from '../src/settings';
+import { newRuntime } from '../src/runtimes';
+import type { PaneSession } from '../src/views/paneTerminal';
+import { FakePty } from './fixtures/fakePty';
+
+const FAKE = resolve(__dirname, 'fixtures/fake-claude.mjs');
+
+let dirs: string[] = [];
+let kinds: ClaudeKind[] = [];
+
+beforeEach(() => {
+	dirs = [];
+	kinds = [];
+});
+
+afterEach(async () => {
+	await Promise.all(kinds.map((kind) => kind.dispose()));
+	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+async function waitFor(condition: () => boolean, what: string, ms = 5000): Promise<void> {
+	const deadline = Date.now() + ms;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+		await new Promise((done) => setTimeout(done, 5));
+	}
+}
+
+interface Harness {
+	kind: ClaudeKind;
+	client: ClaudeClient;
+	connection: Connection<ClaudeClient, ClaudeScope>;
+	pty: FakePty;
+	stored: Record<string, StoredClaudeSession[]>;
+	notices: string[];
+	runtimeId: string;
+	dir: string;
+	log: string;
+}
+
+function logged(log: string): Record<string, unknown>[] {
+	if (!existsSync(log)) return [];
+	return readFileSync(log, 'utf8')
+		.split('\n')
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** The stream processes the fake claude was started as. */
+function streamStarts(h: Harness): string[][] {
+	return logged(h.log)
+		.filter((entry) => 'argv' in entry)
+		.map((entry) => entry.argv as string[]);
+}
+
+function streamPrompts(h: Harness): string[] {
+	return logged(h.log)
+		.map((entry) => entry.stdin as { type?: string; message?: { content?: string } } | undefined)
+		.filter((message) => message?.type === 'user')
+		.map((message) => message?.message?.content ?? '');
+}
+
+interface HarnessOptions {
+	host?: Partial<ClaudeKindHost>;
+	/** Connect the runtime (configure the table) at once. */
+	connect?: boolean;
+	/** One stored row, {@link AGENT}, never started or started. */
+	row?: 'fresh' | 'started';
+}
+
+/** The stored row's id. */
+const AGENT = 'cl-00000001';
+const SESSION = '11111111-2222-4333-8444-555555555555';
+
+function harness(options: HarnessOptions = {}): Harness {
+	const host = options.host ?? {};
+	const connect = options.connect ?? true;
+	const dir = mkdtempSync(join(tmpdir(), 'oh-claude-term-'));
+	dirs.push(dir);
+	const log = join(dir, 'fake.log');
+	const stored: Record<string, StoredClaudeSession[]> = {};
+	const notices: string[] = [];
+	const pty = new FakePty({ tui: true });
+	const kind = createClaudeKind({
+		extraPath: () => '',
+		spawnEnv: () => ({ ...process.env, FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_HOME: dir, SHELL: '/usr/bin/zsh' }),
+		vaultPath: () => dir,
+		loadSessions: (runtimeId) => stored[runtimeId] ?? [],
+		saveSessions: (runtimeId, sessions) => {
+			stored[runtimeId] = sessions;
+		},
+		notice: (message) => notices.push(message),
+		spawn: (argv, options): ClaudeChild =>
+			nodeSpawn(process.execPath, [FAKE, ...argv.slice(1)], { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] }),
+		home: dir,
+		ptyPlatform: 'linux',
+		ptySpawn: pty.spawn,
+		ptyTools: pty.tools,
+		...host,
+	});
+	kinds.push(kind);
+	const runtime = newRuntime('claude', 'local', []);
+	if (options.row) {
+		stored[runtime.id] = [
+			{ id: AGENT, sessionId: SESSION, cwd: dir, name: 'a', ...(options.row === 'started' ? { started: true } : {}) },
+		];
+	}
+	const endpoint = endpointOf(runtime);
+	const driver = kind.connection;
+	if (!driver) throw new Error('no driver');
+	const found: DiscoveryResult = {
+		binary: { path: '/opt/fake/claude', source: 'setting' },
+		status: null,
+		identity: null,
+		socketPath: '',
+		error: null,
+	};
+	let client = null as unknown as ClaudeClient;
+	let scope = null as unknown as ClaudeScope;
+	if (connect) {
+		client = driver.createClient('', endpoint, found);
+		scope = driver.createScope(endpoint, client);
+		client.on('connected', () => void driver.prime(client, scope, () => false));
+		driver.start(client, scope);
+	}
+	const connection = { endpoint, client, scope } as unknown as Connection<ClaudeClient, ClaudeScope>;
+	return { kind, client, connection, pty, stored, notices, runtimeId: runtime.id, dir, log };
+}
+
+function actionHost(h: Harness, opened: string[] = []): ActionHost {
+	return {
+		settings: () => ({ ...DEFAULT_SETTINGS, openTerminalAfterStart: false }),
+		runtime: () => ({ ...h.connection.endpoint.runtime }),
+		workspaceId: () => h.dir,
+		request: (method, params) => h.client.request(method, params),
+		connection: () => (method, params) => h.client.request(method, params),
+		takenAgentNames: () => new Set(),
+		agentPanes: () => [],
+		vaultName: () => 'vault',
+		notice: (message) => h.notices.push(message),
+		openTerminal: async (paneId) => {
+			opened.push(paneId);
+		},
+		detachTerminalLeaves: () => undefined,
+		forgetPane: () => undefined,
+		sleep: () => Promise.resolve(),
+		now: () => Date.now(),
+	};
+}
+
+
+/** An agent started from the folder menu: its headless process runs, idle. */
+async function streamAgent(h: Harness): Promise<string> {
+	const result = (await h.kind.createActions(actionHost(h)).startAgentHere(h.dir)) as { paneId: string };
+	await waitFor(() => streamStarts(h).length === 1, 'the stream start');
+	return result.paneId;
+}
+
+interface Tab {
+	session: PaneSession;
+	frames: { text: string; meta: FrameMeta }[];
+	closed: string[];
+	waiting: (string | null)[];
+	grids: [number, number][];
+	screen(): string;
+}
+
+function openTab(h: Harness, paneId: string, options: Partial<TerminalSessionOptions> = {}): Tab {
+	const session = h.kind.createTerminalSession(
+		{ command: h.kind.terminalCommand(h.connection.endpoint), target: paneId, mode: 'control', cols: 100, rows: 30, ...options },
+		h.connection.endpoint,
+	);
+	const tab: Tab = {
+		session,
+		frames: [],
+		closed: [],
+		waiting: [],
+		grids: [],
+		screen: () => tab.frames.map((frame) => frame.text).join(''),
+	};
+	session.on('frame', (bytes, meta) => tab.frames.push({ text: new TextDecoder().decode(bytes), meta }));
+	session.on('closed', (reason) => tab.closed.push(reason));
+	session.on('waiting', (reason) => tab.waiting.push(reason));
+	session.on('grid', (cols, rows) => tab.grids.push([cols, rows]));
+	session.start();
+	return tab;
+}
+
+/** The command line `script` was given for a pty spawn. */
+function inner(argv: readonly string[]): string {
+	expect(argv.slice(0, 2)).toEqual(['/bin/sh', '-c']);
+	expect(argv.slice(3, 6)).toEqual(['oh-pty', 'script', '-qfec']);
+	return argv[6] ?? '';
+}
+
+/**
+ * Until its first report a TUI reads as idle; this waits for the probe's
+ * answer and the `idle` it brings (and for every TUI spawned so far).
+ */
+async function reported(h: Harness, count = 1): Promise<void> {
+	await waitFor(
+		() =>
+			h.pty.children.length >= count &&
+			h.pty.children.every((child) => child.exited || child.input.includes(PROGRAM_STATUS_REPLY)),
+		'the TUI to answer the probe',
+	);
+	await new Promise((done) => setTimeout(done, 15));
+}
+
+function agent(h: Harness, paneId: string) {
+	return h.kind.agents.get(h.runtimeId, paneId);
+}
+
+describe('the view switch, as a state machine', () => {
+	const base = { want: 'tui', mode: 'stream', status: 'idle', stopping: false, viewers: 1, queued: 0 } as const;
+
+	it('switches an idle headless agent to its TUI, and waits while a turn runs or a request waits', () => {
+		expect(planViewSwitch(base)).toEqual({ action: 'switch' });
+		expect(planViewSwitch({ ...base, status: 'done' })).toEqual({ action: 'switch' });
+		expect(planViewSwitch({ ...base, status: 'working' })).toEqual({ action: 'wait', reason: WAIT_FOR_TURN });
+		expect(planViewSwitch({ ...base, status: 'blocked' })).toEqual({ action: 'wait', reason: WAIT_FOR_ANSWER });
+		expect(planViewSwitch({ ...base, stopping: true })).toEqual({ action: 'wait', reason: WAIT_FOR_STOP });
+	});
+
+	it('starts a TUI for a stopped agent only when a tab waits for it', () => {
+		expect(planViewSwitch({ ...base, mode: 'stopped', status: 'stopped' })).toEqual({ action: 'start-tui' });
+		expect(planViewSwitch({ ...base, mode: 'stopped', status: 'stopped', viewers: 0 })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...base, viewers: 0 })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...base, mode: 'tui' })).toEqual({ action: 'stay' });
+	});
+
+	it('moves an idle TUI back to a headless process, never a busy one', () => {
+		const native = { ...base, want: 'stream', mode: 'tui', viewers: 0 } as const;
+		expect(planViewSwitch(native)).toEqual({ action: 'switch' });
+		expect(planViewSwitch({ ...native, status: 'working' })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...native, status: 'blocked' })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...native, mode: 'stream' })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...native, mode: 'stopped', status: 'stopped' })).toEqual({ action: 'stay' });
+		expect(planViewSwitch({ ...native, mode: 'stopped', status: 'stopped', queued: 1 })).toEqual({ action: 'start-stream' });
+	});
+});
+
+describe('an agent in its terminal view', () => {
+	it('starts the TUI of a stopped agent in its cwd, with its session and permission mode, under the watchdog', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		const child = h.pty.last;
+		expect(child.cwd).toBe(h.dir);
+		expect(inner(child.argv)).toBe(
+			"stty rows 30 cols 100 2>/dev/null; SHELL='/usr/bin/zsh'; export SHELL; exec '/opt/fake/claude' '--permission-mode' 'manual' '--session-id' '11111111-2222-4333-8444-555555555555'",
+		);
+		expect(child.env.SHELL).toBe('/bin/sh');
+		expect(child.env.CLAUDECODE).toBeUndefined();
+		// The probe is answered, so Claude reports its status.
+		expect(child.input).toContain(PROGRAM_STATUS_REPLY);
+		expect(agent(h, paneId)?.mode).toBe('tui');
+		expect(tab.frames[0]?.meta).toMatchObject({ seq: 1, full: true });
+		expect(tab.screen()).toContain('Claude Code (fake)');
+		expect(streamStarts(h)).toEqual([]);
+	});
+
+	it('resumes a started session in the TUI', async () => {
+		const h = harness({ row: 'started' });
+		const paneId = AGENT;
+		openTab(h, paneId);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		expect(inner(h.pty.last.argv)).toContain("'--resume' '11111111-2222-4333-8444-555555555555'");
+	});
+
+	it('types into the TUI, follows its status, and a look clears done', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		const statuses: string[] = [];
+		h.kind.agents.on(() => statuses.push(agent(h, paneId)?.status ?? ''));
+		tab.session.input('hello\r');
+		await waitFor(() => agent(h, paneId)?.status === 'done', 'done');
+		expect(statuses).toContain('working');
+		expect(h.pty.last.input).toContain('hello\r');
+		// A turn means the session has its transcript: resumed from now on.
+		expect(h.stored[h.runtimeId]?.[0]?.started).toBe(true);
+		tab.session.setLooking?.(true);
+		expect(agent(h, paneId)?.status).toBe('idle');
+	});
+
+	it('switches an idle headless agent to its TUI with --resume once it had a turn, in about the stop time', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		await h.kind.promptSender(() => h.client).send(paneId, 'hi');
+		await waitFor(() => agent(h, paneId)?.status === 'done', 'the stream turn');
+		const before = Date.now();
+		const tab = openTab(h, paneId);
+		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the TUI');
+		expect(Date.now() - before).toBeLessThan(3000);
+		expect(tab.waiting[0]).toBe('starting Claude in the terminal');
+		expect(tab.waiting.at(-1)).toBeNull();
+		expect(inner(h.pty.last.argv)).toContain(`'--resume' '${agent(h, paneId)?.sessionId}'`);
+		expect(h.pty.children).toHaveLength(1);
+	});
+
+	it('waits for a running turn to end before it switches', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		await h.kind.promptSender(() => h.client).send(paneId, 'SLOW');
+		await waitFor(() => agent(h, paneId)?.status === 'working', 'working');
+		const tab = openTab(h, paneId);
+		await new Promise((done) => setTimeout(done, 100));
+		expect(tab.waiting).toEqual([WAIT_FOR_TURN]);
+		expect(h.pty.children).toHaveLength(0);
+		expect(agent(h, paneId)?.mode).toBe('stream');
+		await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the switch after the turn');
+	});
+
+	it('lets a tab waiting for a turn go when the native view prompts again', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		await h.kind.promptSender(() => h.client).send(paneId, 'SLOW');
+		await waitFor(() => agent(h, paneId)?.status === 'working', 'working');
+		const tab = openTab(h, paneId);
+		expect(tab.waiting).toEqual([WAIT_FOR_TURN]);
+		await h.kind.promptSender(() => h.client).send(paneId, 'more');
+		expect(tab.closed).toEqual([MOVED_TO_NATIVE]);
+		await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+		await new Promise((done) => setTimeout(done, 100));
+		expect(agent(h, paneId)?.mode).toBe('stream');
+		expect(h.pty.children).toHaveLength(0);
+	});
+
+	it('goes back to a headless process when its tab switches to the native view', async () => {
+		const h = harness({ row: 'started' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		await tab.session.dispose();
+		h.kind.paneViewChosen?.(h.connection.endpoint, paneId, 'native');
+		await waitFor(() => agent(h, paneId)?.mode === 'stream' && streamStarts(h).length === 1, 'the headless process');
+		expect(h.pty.kills[0]).toEqual([h.pty.last.pid + 2, 'SIGTERM']);
+		expect(h.pty.last.exited).toBe(true);
+		expect(streamStarts(h).at(-1)).toContain('--resume');
+	});
+
+	it('tells a tab still open that the agent moved to the native view', async () => {
+		const h = harness({ row: 'started' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		h.kind.agents.useNative(h.runtimeId, paneId);
+		await waitFor(() => tab.closed.length > 0, 'the close');
+		expect(tab.closed).toEqual([MOVED_TO_NATIVE]);
+	});
+
+	it('takes a native prompt to an idle TUI by switching first, and refuses one while it works', async () => {
+		const h = harness({ row: 'started' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		tab.session.input('SLOW\r');
+		await waitFor(() => agent(h, paneId)?.status === 'working', 'working');
+		await expect(h.kind.promptSender(() => h.client).send(paneId, 'nope')).rejects.toThrow(TUI_BUSY);
+		// Esc is Claude's own interrupt.
+		await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+		expect(h.pty.last.input.at(-1)).toBe('\x1b');
+		await waitFor(() => agent(h, paneId)?.status === 'idle', 'idle again');
+		await h.kind.promptSender(() => h.client).send(paneId, 'from native');
+		await waitFor(() => streamPrompts(h).includes('from native'), 'the prompt in the headless process');
+		expect(agent(h, paneId)?.mode).toBe('stream');
+		expect(tab.closed).toEqual([MOVED_TO_NATIVE]);
+	});
+
+	it('keeps the TUI when its tab closes, and repaints a reopened tab from the replay', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const first = openTab(h, paneId);
+		await reported(h);
+		first.session.input('remember me\r');
+		await waitFor(() => agent(h, paneId)?.status === 'done', 'done');
+		await first.session.dispose();
+		expect(h.pty.kills).toEqual([]);
+		const second = openTab(h, paneId);
+		expect(h.pty.children).toHaveLength(1);
+		expect(second.frames[0]?.meta.full).toBe(true);
+		expect(second.screen()).toContain('> remember me');
+		expect(second.screen()).toContain('Claude Code (fake)');
+	});
+
+	it('cuts a large replay into frames, the first one full', async () => {
+		const h = harness({ row: 'fresh', host: { replayLimit: 4 * FRAME_BYTES } });
+		const paneId = AGENT;
+		openTab(h, paneId);
+		await reported(h);
+		h.pty.last.emit(`${'x'.repeat(100)}\r\n`.repeat(2000));
+		const tab = openTab(h, paneId);
+		expect(tab.frames.length).toBeGreaterThan(1);
+		expect(tab.frames.map((frame) => frame.meta.full)).toEqual([true, ...tab.frames.slice(1).map(() => false)]);
+		expect(tab.frames.every((frame) => frame.text.length <= FRAME_BYTES)).toBe(true);
+	});
+
+	it('resizes the pty through stty on the slave, and tells another tab the grid', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const a = openTab(h, paneId);
+		const b = openTab(h, paneId);
+		await reported(h);
+		a.session.resize(132, 40);
+		await waitFor(() => h.pty.resizes.length > 0, 'the stty');
+		expect(h.pty.runs.at(-1)).toEqual(['stty', '-F', `/dev/pts/${h.pty.last.pid - 990}`, 'rows', '40', 'cols', '132']);
+		expect(b.grids.at(-1)).toEqual([132, 40]);
+		// An observer never types or resizes.
+		const observer = openTab(h, paneId, { mode: 'observe' });
+		expect(observer.session.input('x')).toBe(false);
+		expect(observer.session.resize(10, 10)).toBe(false);
+		expect(observer.grids.at(-1)).toEqual([132, 40]);
+	});
+
+	it('takes renderer replies from one tab only', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const a = openTab(h, paneId);
+		const b = openTab(h, paneId);
+		await reported(h);
+		expect(a.session.reply?.('\x1b[?62c')).toBe(false);
+		expect(b.session.reply?.('\x1b[?62c')).toBe(true);
+	});
+
+	it('stops the TUI on Stop, tells its tabs, and leaves the row stopped', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		await h.kind.createActions(actionHost(h)).closePane(paneId, h.connection.endpoint.id);
+		expect(agent(h, paneId)?.status).toBe('stopped');
+		expect(tab.closed).toEqual([AGENT_STOPPED]);
+		expect(h.pty.last.exited).toBe(true);
+		// Nothing starts again behind the stop.
+		await new Promise((done) => setTimeout(done, 50));
+		expect(h.pty.children).toHaveLength(1);
+		expect(streamStarts(h)).toEqual([]);
+	});
+
+	it('reports Claude quitting by itself, and a tab that reconnects resumes it', async () => {
+		const h = harness({ row: 'started' });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		await reported(h);
+		h.pty.last.exit(0);
+		expect(tab.closed).toEqual([CLAUDE_QUIT]);
+		expect(agent(h, paneId)?.status).toBe('stopped');
+		openTab(h, paneId);
+		await waitFor(() => h.pty.children.length === 2, 'a second TUI');
+	});
+
+	it('starts the TUI once more the other way when Claude refuses the session id', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		openTab(h, paneId);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		h.pty.last.emit('Error: Session ID 11111111-2222-4333-8444-555555555555 is already in use.\r\n');
+		h.pty.last.exit(1);
+		await waitFor(() => h.pty.children.length === 2, 'the retry');
+		expect(inner(h.pty.last.argv)).toContain("'--resume' '11111111-2222-4333-8444-555555555555'");
+		expect(h.stored[h.runtimeId]?.[0]?.started).toBe(true);
+	});
+
+	it('waits for its runtime to connect before it starts anything', async () => {
+		const h = harness({ row: 'started', connect: false });
+		const paneId = AGENT;
+		const tab = openTab(h, paneId);
+		expect(tab.waiting).toEqual([WAIT_FOR_RUNTIME]);
+		expect(h.pty.children).toHaveLength(0);
+		h.kind.agents.configure(h.runtimeId, { binary: '/opt/fake/claude', permissionMode: 'manual' });
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		expect(tab.waiting.at(-1)).toBeNull();
+	});
+
+	it('stops every TUI and shell on unload', async () => {
+		const h = harness({ row: 'fresh' });
+		const paneId = AGENT;
+		openTab(h, paneId);
+		const shell = h.kind.shells?.open(h.dir) ?? '';
+		await reported(h);
+		openTab(h, shell);
+		expect(h.pty.children).toHaveLength(2);
+		// A shell is no agent: its probe is never answered.
+		await new Promise((done) => setTimeout(done, 15));
+		expect(h.pty.children[1]?.input).toEqual([]);
+		await h.kind.dispose();
+		expect(h.pty.children.every((child) => child.exited)).toBe(true);
+	});
+});
+
+describe('shell tabs', () => {
+	it('opens a shell in the folder from the action, and runs the initial command first', async () => {
+		const h = harness();
+		const opened: string[] = [];
+		const actions = h.kind.createActions(actionHost(h, opened));
+		const paneId = (await actions.openShellHere?.(h.dir, "echo 'hi'")) ?? '';
+		expect(isShellId(paneId)).toBe(true);
+		expect(opened).toEqual([paneId]);
+		// Nothing runs until a tab attaches.
+		expect(h.pty.children).toHaveLength(0);
+		const tab = openTab(h, paneId);
+		expect(h.pty.last.cwd).toBe(h.dir);
+		expect(inner(h.pty.last.argv)).toBe(
+			"stty rows 30 cols 100 2>/dev/null; SHELL='/usr/bin/zsh'; export SHELL; /bin/sh -c 'printf '\\''\\033[1m$ %s\\033[0m\\n'\\'' '\\''echo '\\''\\'\\'''\\''hi'\\''\\'\\'''\\'''\\''; echo '\\''hi'\\'''; exec '/usr/bin/zsh'",
+		);
+		h.pty.last.emit('$ echo hi\r\nhi\r\n');
+		expect(tab.screen()).toContain('hi');
+		expect(h.kind.paneNativeReason?.(paneId)).toBe(SHELL_NO_NATIVE);
+		expect(h.kind.paneTitle?.(paneId)).toMatch(/^Shell: oh-claude-term-/);
+		// No row in the agent list.
+		expect(h.kind.agents.list(h.runtimeId)).toEqual([]);
+	});
+
+	it('outlives its tab until the last one is closed for good, then hangs up', async () => {
+		const h = harness();
+		const paneId = h.kind.shells?.open(h.dir) ?? '';
+		const tab = openTab(h, paneId);
+		await tab.session.dispose();
+		openTab(h, paneId);
+		expect(h.pty.children).toHaveLength(1);
+		h.kind.terminalReleased?.(h.connection.endpoint, paneId);
+		await waitFor(() => h.pty.last.exited, 'the shell to end');
+		expect(h.pty.kills[0]).toEqual([h.pty.last.pid + 2, 'SIGHUP']);
+		expect(() => openTab(h, paneId).session).not.toThrow();
+		expect(h.kind.shells?.has(paneId)).toBe(false);
+	});
+
+	it('says a restored tab’s shell is gone, and starts a new one after `exit` without the command', async () => {
+		const h = harness();
+		const gone = openTab(h, 'sh-zzzzzzzz');
+		expect(gone.closed).toEqual([SHELL_GONE]);
+		const paneId = h.kind.shells?.open(h.dir, 'echo once') ?? '';
+		const tab = openTab(h, paneId);
+		h.pty.last.exit(0);
+		expect(tab.closed).toEqual([SHELL_ENDED]);
+		openTab(h, paneId);
+		expect(h.pty.children).toHaveLength(2);
+		expect(inner(h.pty.last.argv)).not.toContain('echo once');
+	});
+});
+
+describe('on Windows', () => {
+	it('offers no terminal view and no shell, and says why', () => {
+		const h = harness({ host: { ptyPlatform: null } });
+		expect(h.kind.terminalUnavailable).toBe(CLAUDE_TERMINAL_UNAVAILABLE);
+		expect(CLAUDE_TERMINAL_UNAVAILABLE).toContain('Windows');
+		expect(h.kind.capabilities.shells).toBe(false);
+		expect(h.kind.shells).toBeNull();
+		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow();
+	});
+});

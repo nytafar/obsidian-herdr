@@ -263,6 +263,8 @@ export interface StatusInput {
 	exited: boolean;
 	/** Stderr lines seen since the last (re)start, newest last. */
 	stderr: readonly string[];
+	/** Why the session is not attached yet though nothing failed; null or absent when it is. */
+	waiting?: string | null;
 }
 
 export interface StatusLine {
@@ -296,6 +298,10 @@ export function statusLine(input: StatusInput): StatusLine {
 	}
 	if (input.exited) {
 		return { text: 'Bridge process exited. Reconnect to attach again.', warning: true, detail };
+	}
+	if (input.waiting) {
+		const reason = input.waiting;
+		return { text: `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`, warning: false, detail };
 	}
 	const verb = input.mode === 'observe' ? 'Observing (read-only)' : 'Controlling this pane';
 	return { text: `${verb} on ${input.endpoint}.`, warning: false, detail };
@@ -709,6 +715,8 @@ export class PaneTerminal {
 	private rendererMounted = false;
 	private session: PaneSession | null = null;
 	private closedReason: string | null = null;
+	/** Why the session is not attached yet though nothing failed (a `claude` agent's turn). */
+	private waitingReason: string | null = null;
 	private exited = false;
 	private stderr: string[] = [];
 	/** True while the renderer and the session are given up for a hidden leaf. */
@@ -819,6 +827,7 @@ export class PaneTerminal {
 			closedReason: this.closedReason,
 			exited: this.exited && this.closedReason === null,
 			stderr: this.stderr,
+			waiting: this.waitingReason,
 		});
 	}
 
@@ -1139,6 +1148,7 @@ export class PaneTerminal {
 		if (generation !== this.generation) return;
 
 		this.closedReason = null;
+		this.waitingReason = null;
 		this.exited = false;
 		this.stderr = [];
 		// Bytes from the previous session must never land in the new one's grid.
@@ -1235,6 +1245,12 @@ export class PaneTerminal {
 		session.on('closed', (reason: string) => {
 			if (this.session !== session) return;
 			this.closedReason = reason;
+			this.waitingReason = null;
+			this.host.onStatus(this.status());
+		});
+		session.on('waiting', (reason: string | null) => {
+			if (this.session !== session) return;
+			this.waitingReason = reason;
 			this.host.onStatus(this.status());
 		});
 		session.on('stderr', (line: string) => {

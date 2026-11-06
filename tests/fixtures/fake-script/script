@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stands in for util-linux `script -qfec <cmd> /dev/null` in the pty reaping
+# tests (ADR-0007's D2): runs the command line with /bin/sh and no pty. Like
+# the real one it ignores EOF on its stdin, so only a signal ends it, and on
+# SIGTERM it ends its child before it exits.
+cmd="$2"
+/bin/sh -c "$cmd" &
+c=$!
+trap 'kill -TERM $c 2>/dev/null; wait $c; exit 143' TERM
+wait $c

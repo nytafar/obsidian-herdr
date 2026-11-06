@@ -75,6 +75,11 @@ export interface RuntimeCapabilities {
 	 */
 	resumable: boolean;
 	/**
+	 * "Open shell here": a plain shell in a terminal tab, not an agent (the
+	 * `claude` kind's pty, ADR-0007's D2 and ADR-0008).
+	 */
+	shells: boolean;
+	/**
 	 * The native view, which follows the agent session the kind reports. A
 	 * kind that has it supplies {@link RuntimeKindAdapter.native}, which also
 	 * says on which targets its transcripts can be read (ADR-0002, ADR-0006).
@@ -91,6 +96,7 @@ export const HERDR_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	close: true,
 	sharedPins: false,
 	resumable: false,
+	shells: false,
 	nativeView: true,
 });
 
@@ -107,6 +113,7 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 	close: true,
 	sharedPins: true,
 	resumable: false,
+	shells: false,
 	nativeView: true,
 });
 
@@ -124,6 +131,7 @@ export const CLAUDE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze(
 	close: true,
 	sharedPins: false,
 	resumable: true,
+	shells: true,
 	nativeView: true,
 });
 
@@ -234,6 +242,13 @@ export interface RuntimeActions {
 	 * row has no conversation to continue.
 	 */
 	releaseForGraduation?(paneId: string): Promise<GraduationRelease | null>;
+	/**
+	 * A plain shell in the folder, in a terminal tab (the `claude` kind's
+	 * pty, ADR-0008); `command` runs first, in plain view. Resolves to the
+	 * shell's pane id, or null when it could not be opened. Only a kind with
+	 * {@link RuntimeCapabilities.shells}.
+	 */
+	openShellHere?(folderAbsPath: string, command?: string): Promise<string | null>;
 }
 
 /** A row handed to another runtime (ADR-0007). */
@@ -294,6 +309,25 @@ export interface RuntimeKindAdapter<
 	terminalCommand(endpoint: Endpoint): string[];
 	/** The bridge process for one terminal tab, from the argv above. */
 	createTerminalSession(options: TerminalSessionOptions, endpoint: Endpoint): PaneSession;
+	/**
+	 * Why a pane of this kind has no native view though the kind has one, or
+	 * null: a `claude` shell tab, which is no agent.
+	 */
+	paneNativeReason?(paneId: string): string | null;
+	/** A tab title for a pane no scope lists (a `claude` shell tab), or null. */
+	paneTitle?(paneId: string): string | null;
+	/**
+	 * The last terminal tab showing this pane closed. The `claude` kind ends a
+	 * shell then; an agent's TUI keeps running for the next tab.
+	 */
+	terminalReleased?(endpoint: Endpoint, paneId: string): void;
+	/**
+	 * A tab switched its pane to a view (ADR-0007's D2): the `claude` kind
+	 * moves an agent switched to the native view back to a headless process
+	 * once its turn is over. A switch to the terminal needs no call: the
+	 * terminal that attaches asks for the TUI itself.
+	 */
+	paneViewChosen?(endpoint: Endpoint, paneId: string, view: 'native' | 'terminal'): void;
 	/** Folder and row actions over the plugin's action host. */
 	createActions(host: ActionHost): RuntimeActions;
 	/** The native view's prompt box, over the client of the tab's runtime. */

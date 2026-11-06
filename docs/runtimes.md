@@ -250,8 +250,8 @@ ssh -T <host> hc connect   # should wait silently; Ctrl-D to leave
 
 The simple mode: the plugin starts Claude Code itself, as its own child
 process, with no herdr or hc to install. It is for getting started; the
-multiplexers are where agents outlive Obsidian, run on other machines, or get
-a terminal (ADR-0007).
+multiplexers are where agents outlive Obsidian or run on other machines
+(ADR-0007).
 
 ### Setting one up
 
@@ -285,12 +285,32 @@ run and how many are stopped.
   works in a symlinked folder and with `CLAUDE_CONFIG_DIR` set, since the row
   records that its session started rather than guessing where Claude put the
   file.
-- **The native view** is the only view: prompts, queued prompts, `/` commands
-  and **Stop** (which interrupts the running turn) go straight to the
-  process, and the waiting card answers permissions, questions and plans
-  itself ([native-view.md](native-view.md)). `/clear` is followed, and the
-  row keeps the new session, so a later resume reopens the conversation after
-  the clear.
+- **The native view**: prompts, queued prompts, `/` commands and **Stop**
+  (which interrupts the running turn) go straight to the process, and the
+  waiting card answers permissions, questions and plans itself
+  ([native-view.md](native-view.md)). `/clear` is followed, and the row keeps
+  the new session, so a later resume reopens the conversation after the
+  clear.
+- **The terminal view** (Linux; macOS written but not yet checked): the tab's
+  view switch shows Claude's own terminal interface, running as
+  `claude --resume <session> --permission-mode <mode>` in the agent's folder
+  on a real terminal that `script(1)` provides. You type in it as in any
+  terminal; a permission it asks for is answered there too. An agent runs
+  one process at a time, either the headless one the native view talks to or
+  this one, so switching the view moves the agent: its current process stops
+  and the other starts with the same conversation, about a second for the
+  switch and two or three more while Claude draws its screen. While the agent
+  is working, or waiting for an answer in the native view, the switch waits
+  for the turn to end and the tab says so. Closing the tab leaves Claude
+  running; opening the row again, in the same Obsidian session, shows the
+  same screen. The list shows its status as Claude reports it to the
+  terminal (working, done, blocked); a `/clear` typed in the terminal is not
+  seen, so a later resume reopens the conversation from before it.
+- **Open shell here** from a folder's menu or the command opens a plain shell
+  (your `SHELL`) in that folder, in a tab of its own. It is not an agent and
+  has no row. It lives while a tab shows it: hiding the tab keeps it, closing
+  its last tab ends it, and `exit` ends it until the tab reconnects, which
+  starts a new one in the same folder.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
   **Forget agent** removes a stopped row; Claude keeps its transcript in
@@ -305,13 +325,18 @@ run and how many are stopped.
 
 ### Limits
 
-- **No terminal view** in this version. The tab's view switch shows the
-  terminal disabled, with the reason; the terminal through `script(1)` comes
-  later.
+- **No terminal view or shell on Windows**, which has no `script(1)`: the
+  view switch shows the terminal disabled with that reason, and agents stay
+  in the native view.
 - **Agents end with Obsidian.** Closing Obsidian, unloading or reloading the
   plugin, or removing the runtime stops every agent in order: what is waiting
   for an answer is denied, a running turn is interrupted, then the process
-  gets end of input, then SIGTERM, then SIGKILL. Switching to another runtime
+  gets end of input, then SIGTERM, then SIGKILL. An agent in its terminal
+  view, and a shell, get their own signal first (SIGTERM for Claude, a hangup
+  for a shell), then `script` is ended, then everything is killed. Shells
+  are not kept across restarts: a restored shell tab says so. If Obsidian
+  crashes, or is killed, a watchdog beside every terminal ends it within a
+  second. Switching to another runtime
   does not stop them: their rows come back live when you switch back, and an
   agent left waiting on a permission waits for you.
 - **This machine only.** Over SSH, use herdr or herdr-core.
@@ -330,6 +355,9 @@ run and how many are stopped.
 
 ```bash
 which claude && claude --version
+script --version            # util-linux on Linux; BSD script on macOS
+# While a terminal view or shell tab is open, its processes:
+ps -eo pid,ppid,args | grep -E 'oh-pty|script -q' | grep -v grep
 ```
 
 ## Upgrading from the local/remote settings

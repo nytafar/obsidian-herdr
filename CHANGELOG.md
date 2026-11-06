@@ -71,8 +71,21 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   which hands the conversation to such a runtime with `claude --resume`, in
   the same permission mode. The permission mode is a runtime
   setting (default: ask, passed as Claude's documented `manual`). Agents end when Obsidian closes or the plugin
-  unloads. There is no terminal view for this kind yet. See
-  [docs/runtimes.md](docs/runtimes.md).
+  unloads. See [docs/runtimes.md](docs/runtimes.md).
+- **Terminal view for Claude, run by Obsidian** (Linux; macOS written but not
+  yet verified; not on Windows): the tab's view switch shows Claude's own
+  terminal interface, on a real terminal from `script(1)`, in the runtime's
+  permission mode. An agent runs one Claude at a time, so switching the view
+  moves it between the headless process and the terminal with
+  `claude --resume`, between turns only; while it works, the switch waits and
+  the tab says why. Permissions asked in the terminal are answered there,
+  and the agent list follows the status Claude reports to the terminal.
+  Closing the tab keeps Claude running, and opening it again in the same
+  session shows the same screen. Resizing reaches Claude. A watchdog beside
+  each terminal ends it within a second if Obsidian is killed.
+- **Open shell here** for Claude, run by Obsidian: a plain shell in a
+  folder, in a terminal tab of its own, from the folder menu or the command.
+  It lives while a tab shows it.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

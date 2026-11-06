@@ -610,11 +610,19 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.kind.agents.get(h.runtimeId, paneId)?.status).toBe('idle');
 	});
 
-	it('never reports trust, and has no terminal in this version', () => {
-		const h = harness();
-		expect(h.kind.terminalUnavailable).toContain('not available yet');
-		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow();
-		expect(h.kind.capabilities).toMatchObject({ tabs: false, splits: false, focus: false, rename: false, resumable: true, nativeView: true });
+	it('has the terminal view and shell tabs where a pty can be made (ADR-0007’s D2)', () => {
+		const h = harness({ host: { ptyPlatform: 'linux' } });
+		expect(h.kind.terminalUnavailable).toBeNull();
+		expect(h.kind.terminalCommand(h.connection.endpoint)).toEqual(['script']);
+		expect(h.kind.capabilities).toMatchObject({
+			tabs: false,
+			splits: false,
+			focus: false,
+			rename: false,
+			resumable: true,
+			shells: true,
+			nativeView: true,
+		});
 	});
 });
 

@@ -109,6 +109,9 @@ const RECONNECT_DEBOUNCE_MS = 800;
  */
 const PANE_REFRESH_MS = 2000;
 
+/** How long after a terminal tab closes its pane is checked for other tabs. */
+const RELEASE_CHECK_MS = 1000;
+
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
 	/**
@@ -516,8 +519,8 @@ export default class HerdrPlugin extends Plugin {
 		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
-		// The `claude` kind's agents are children of this plugin (ADR-0007):
-		// each one stops in the ADR's order, which runs on from here.
+		// The `claude` kind's agents and shells are children of this plugin
+		// (ADR-0007): each one stops in its own order, which runs on from here.
 		void this.claudeKind.dispose();
 		this.sessions.dispose();
 		this.sessionModels.dispose();
@@ -734,11 +737,11 @@ export default class HerdrPlugin extends Plugin {
 	 * filling the main area — while attaching to the same folder split beside the
 	 * note (issue #28).
 	 */
-	async openTerminal(paneId: string, cwd?: string): Promise<void> {
+	async openTerminal(paneId: string, cwd?: string, onEndpoint?: string): Promise<void> {
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
-		// is opened on and pinned to (issue #54).
-		const endpointId = this.endpoint.id;
+		// is opened on and pinned to (issue #54). A shell tab names its own.
+		const endpointId = onEndpoint ?? this.endpoint.id;
 		const existing = this.terminalLeaf(paneId, endpointId);
 		const open = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
 		const target = decideOpenTarget({
@@ -910,6 +913,56 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
+	 * A terminal tab closed, or was pointed at another pane: when no other tab
+	 * shows `paneId` on `endpointId`, its kind is told (a `claude` shell ends
+	 * with its last tab, ADR-0008; an agent's TUI keeps running).
+	 */
+	terminalTabReleased(paneId: string, endpointId: string): void {
+		const endpoint = this.endpointFor(endpointId);
+		if (!endpoint) return;
+		const kind = this.kindOf(endpoint.runtime.kind);
+		if (!kind.terminalReleased) return;
+		// Asked a moment later, when a closed leaf has left the workspace and a
+		// tab moved to another window has opened its view again there.
+		window.setTimeout(() => {
+			const shown = this.app.workspace
+				.getLeavesOfType(TERMINAL_VIEW_TYPE)
+				.some((leaf) => stateMatchesPane(leaf.getViewState().state, paneId, endpointId));
+			if (!shown) kind.terminalReleased?.(endpoint, paneId);
+		}, RELEASE_CHECK_MS);
+	}
+
+	/**
+	 * Opens a plain shell in a folder, in a terminal tab (ADR-0008, the action
+	 * D3's "Run in a terminal tab" calls). `command` runs first, in plain view,
+	 * and the shell starts after it. The shell belongs to a `claude` runtime:
+	 * `runtimeId` when given, else the active runtime when it is one, else the
+	 * first in the registry. Resolves to the shell's pane id, or null with a
+	 * notice when there is no such runtime or this machine has no pty.
+	 */
+	async openShellHere(folderAbsPath: string, options: { command?: string; runtimeId?: string } = {}): Promise<string | null> {
+		const runtimes = this.settings.runtimes.filter((runtime) => runtime.kind === 'claude');
+		const active = activeRuntimeOf(this.settings);
+		const runtime = options.runtimeId
+			? runtimes.find((candidate) => candidate.id === options.runtimeId)
+			: active.kind === 'claude'
+				? active
+				: runtimes.at(0);
+		const shells = this.claudeKind.shells;
+		if (!runtime || !shells) {
+			new Notice(
+				shells
+					? 'Herdr: a shell tab needs a "Claude, run by Obsidian" runtime. Add one in the settings.'
+					: 'Herdr: shell tabs are not available on this platform.',
+			);
+			return null;
+		}
+		const paneId = shells.open(folderAbsPath, options.command);
+		await this.openTerminal(paneId, folderAbsPath, endpointOf(runtime).id);
+		return paneId;
+	}
+
+	/**
 	 * Detaches every terminal leaf open for `paneId` on `endpointId` (issue #66).
 	 * Same endpoint-aware match as {@link terminalLeaf}, but over every matching
 	 * leaf instead of the first: a leaf pinned to another endpoint with the same
@@ -1033,6 +1086,7 @@ export default class HerdrPlugin extends Plugin {
 		this.addFolderCommand('start-agent-here', 'Start agent here', 'startAgent', (path) =>
 			this.actions.startAgentHere(path),
 		);
+		this.addFolderCommand('open-shell-here', 'Open shell here', 'shells', (path) => this.openShellHere(path));
 	}
 
 	/**
@@ -1085,6 +1139,7 @@ export default class HerdrPlugin extends Plugin {
 			if (can.startAgent) {
 				item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
 			}
+			if (can.shells) item('Herdr: open shell here', 'square-terminal', () => void this.openShellHere(path));
 		};
 
 		this.registerEvent(

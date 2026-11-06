@@ -39,6 +39,21 @@
  * `subtype` (auth and model errors are `success`); an interrupt's own
  * `aborted_*` result is not an error worth a notice.
  *
+ * **Terminal view** (ADR-0007's D2). An agent's process is headless or its
+ * TUI, never both: `claude --resume <id> --permission-mode <mode>` on a pty
+ * from `script(1)` under the fd-3 watchdog (`./pty.ts`), shared by every
+ * terminal tab that shows it (`./sharedPty.ts`). A terminal tab that
+ * attaches asks for the TUI; a tab switched to the native view, or a native
+ * prompt, asks for the headless process. The process changes only between
+ * turns (`./viewSwitch.ts`): the old one stops in its own stop order and the
+ * other starts with `--resume`, about a second either way. The TUI keeps
+ * running when its tabs close, and a reopened tab repaints from its replay
+ * buffer. Its status is what Claude reports with OSC 7501
+ * (`./programStatus.ts`), which the plugin turns on by answering Claude's
+ * probe; a blocked TUI is answered in the terminal, since there is no
+ * `can_use_tool` there. A `/clear` typed in the TUI is not seen: the row
+ * keeps the session from before it.
+ *
  * No Obsidian: everything outside the table comes through {@link ClaudeAgentsHost}.
  */
 
@@ -51,6 +66,7 @@ import { claudeTranscriptFile } from '../native/transcriptSource';
 import type { ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,
+	claudeTuiArgv,
 	controlError,
 	controlResponse,
 	pendingRequestOf,
@@ -61,7 +77,11 @@ import {
 	type ToolPermissionRequest,
 } from './protocol';
 import { ClaudeProcess, type ClaudeSpawn, type ClaudeTimers } from './process';
+import { PROGRAM_STATUS_REPLY, ProgramStatusScanner, type ProgramState, type ProgramStatusScan } from './programStatus';
 import type { LocalSettingsTarget } from './projectRoot';
+import type { PtyPlatform, PtySpawn, PtyTools } from './pty';
+import { SharedPty, type PtyAttachment, type PtyViewer } from './sharedPty';
+import { planViewSwitch, TUI_BUSY, type ClaudeProcessMode } from './viewSwitch';
 
 /** One stored row, as `data.json` keeps it under `claudeSessions[runtimeId]`. */
 export interface StoredClaudeSession {
@@ -149,6 +169,8 @@ export interface ClaudeAgentView {
 	started: boolean;
 	/** Where Claude writes the current session's transcript, on this machine. */
 	transcriptPath: string;
+	/** What runs: the headless process, the TUI of the terminal view, or nothing. */
+	mode: ClaudeProcessMode;
 }
 
 /** What changed about an agent, for the scope and the watcher. */
@@ -191,7 +213,38 @@ export interface ClaudeAgentsHost {
 	 * process start. Absent, no project grant is offered.
 	 */
 	localSettings?(cwd: string): LocalSettingsTarget | null;
+	/** How a TUI gets its pty (ADR-0007's D2); absent where there is none (Windows). */
+	pty?: ClaudePtyHost;
 }
+
+/** What starts a TUI on a pty. */
+export interface ClaudePtyHost {
+	platform: PtyPlatform;
+	spawn: PtySpawn;
+	tools: PtyTools;
+	/** The replay buffer's bound; `REPLAY_LIMIT_BYTES` by default. */
+	replayLimit?: number;
+}
+
+/** A terminal tab on an agent: attached to its TUI, or waiting for it. */
+interface AgentViewer {
+	viewer: PtyViewer;
+	/** The attachment to the running TUI; null while waiting. */
+	inner: PtyAttachment | null;
+	/** What the tab was last told while waiting, so it is told once. */
+	waiting: string | null;
+	/** A person is in front of the tab. */
+	looking: boolean;
+}
+
+/** What a tab says while its runtime has not found claude yet. */
+export const WAIT_FOR_RUNTIME = 'waiting for this Claude runtime to connect';
+/** What a tab says when the agent's process moves to the native view. */
+export const MOVED_TO_NATIVE = 'the agent moved to the native view; reconnect to bring it back here';
+/** What a tab says when the agent was stopped. */
+export const AGENT_STOPPED = 'the agent stopped; reconnect to resume it here';
+/** What a tab says when Claude itself quit (`/exit`). */
+export const CLAUDE_QUIT = 'Claude quit; reconnect to resume it here';
 
 interface AgentRecord {
 	stored: StoredClaudeSession;
@@ -218,16 +271,33 @@ interface AgentRecord {
 	pending: Map<string, ToolPermissionRequest>;
 	status: ClaudeAgentStatus;
 	statusSeq: number;
+	/** The TUI, while the agent runs in its terminal view. */
+	tui: SharedPty | null;
+	/** The TUI's last OSC 7501 state; null before its first report. */
+	tuiState: ProgramState | null;
+	/** While the TUI is blocked: on what, when it said. */
+	tuiBlock: BlockKind | null;
+	/** The current TUI reported a turn, so it took its session. */
+	tuiTurned: boolean;
+	/** Which process the agent should run: the last view that asked (`./viewSwitch.ts`). */
+	want: 'stream' | 'tui';
+	/** Terminal tabs on the agent. */
+	viewers: Set<AgentViewer>;
+	/** A switch is stopping the old process. */
+	switching: boolean;
+	/** Native prompts waiting for the headless process a switch starts. */
+	queued: string[];
+	/** Bumped by every stop, so a switch overtaken by one starts nothing. */
+	epoch: number;
 }
 
 type Listener = (runtimeId: string, agentId: string, change: ClaudeAgentChange) => void;
 
-/** What a record starts with besides its row and its process. */
-function freshRecord(): Pick<
-	AgentRecord,
-	'settings' | 'where' | 'reportedCwd' | 'spawnedWith' | 'initSeen' | 'unclaimed' | 'retried'
-> {
+/** A record for a row, with no process. */
+function newRecord(stored: StoredClaudeSession): AgentRecord {
 	return {
+		stored,
+		process: null,
 		settings: null,
 		where: null,
 		reportedCwd: '',
@@ -235,6 +305,20 @@ function freshRecord(): Pick<
 		initSeen: false,
 		unclaimed: [],
 		retried: false,
+		turns: 0,
+		finished: false,
+		pending: new Map(),
+		status: 'stopped',
+		statusSeq: 0,
+		tui: null,
+		tuiState: null,
+		tuiBlock: null,
+		tuiTurned: false,
+		want: 'stream',
+		viewers: new Set(),
+		switching: false,
+		queued: [],
+		epoch: 0,
 	};
 }
 
@@ -263,12 +347,18 @@ export class ClaudeAgents {
 	/** The same, for a request whose agent is stopping. */
 	private readonly stoppingViews = new WeakMap<ToolPermissionRequest, PendingRequest>();
 	private statusSeq = 0;
+	/** Records whose switch is being planned, so a status change inside it does not plan again. */
+	private readonly settling = new Set<AgentRecord>();
 
 	constructor(private readonly host: ClaudeAgentsHost) {}
 
 	/** How new processes of this runtime start; set by every connection to it. */
 	configure(runtimeId: string, setup: ClaudeRuntimeSetup): void {
 		this.setups.set(runtimeId, { ...setup });
+		// Terminal tabs that waited for the runtime can start now.
+		for (const record of this.runtimes.get(runtimeId)?.values() ?? []) {
+			if (record.viewers.size > 0) this.settle(runtimeId, record);
+		}
 	}
 
 	/** Every agent of a runtime, stored ones first loaded as stopped. */
@@ -300,16 +390,7 @@ export class ClaudeAgents {
 	start(runtimeId: string, cwd: string, name: string): ClaudeAgentView {
 		const table = this.table(runtimeId);
 		const id = this.host.newAgentId(new Set(table.keys()));
-		const record: AgentRecord = {
-			stored: { id, sessionId: this.host.newSessionId(), cwd, name },
-			process: null,
-			...freshRecord(),
-			turns: 0,
-			finished: false,
-			pending: new Map(),
-			status: 'stopped',
-			statusSeq: 0,
-		};
+		const record = newRecord({ id, sessionId: this.host.newSessionId(), cwd, name });
 		table.set(id, record);
 		this.persist(runtimeId);
 		this.emit(runtimeId, id, 'added');
@@ -320,13 +401,32 @@ export class ClaudeAgents {
 	/** Spawns a stopped agent's process again (`--resume`), with no prompt. */
 	resume(runtimeId: string, agentId: string): void {
 		const record = this.record(runtimeId, agentId);
-		if (!record.process) this.spawn(runtimeId, record);
+		if (!record.process && !record.tui && !record.switching) this.spawn(runtimeId, record);
 	}
 
-	/** Sends a prompt, resuming a stopped agent first. Throws a readable error. */
+	/**
+	 * Sends a prompt, resuming a stopped agent first. An agent in its terminal
+	 * view moves to a headless process once its TUI is idle, and gets the
+	 * prompt there. Throws a readable error.
+	 */
 	prompt(runtimeId: string, agentId: string, text: string): void {
 		const record = this.record(runtimeId, agentId);
+		if (record.tui || (record.switching && record.want === 'stream')) {
+			if (record.tui && !record.switching) {
+				// A stop, not a switch: as for a headless agent.
+				if (record.tui.isStopping) throw new Error('the agent is stopping');
+				const status = this.statusOf(record);
+				if (status === 'working' || status === 'blocked') throw new Error(TUI_BUSY);
+			} else if (record.want !== 'stream') {
+				throw new Error('the agent is stopping');
+			}
+			record.queued.push(text);
+			this.wantStream(record);
+			this.settle(runtimeId, record);
+			return;
+		}
 		if (record.process?.isStopping) throw new Error('the agent is stopping');
+		this.wantStream(record);
 		if (!record.process) this.spawn(runtimeId, record);
 		const process = record.process;
 		if (!process?.alive) throw new Error('the agent could not be started');
@@ -337,9 +437,13 @@ export class ClaudeAgents {
 		this.update(runtimeId, record);
 	}
 
-	/** The `interrupt` control request, while a turn runs. */
+	/** The `interrupt` control request, while a turn runs; Esc for a TUI, which is Claude's own key for it. */
 	interrupt(runtimeId: string, agentId: string): void {
 		const record = this.record(runtimeId, agentId);
+		if (record.tui?.alive) {
+			record.tui.write('\x1b');
+			return;
+		}
 		if (!record.process?.alive) throw new Error('the agent is not running');
 		record.process.interrupt();
 	}
@@ -368,15 +472,88 @@ export class ClaudeAgents {
 		this.update(runtimeId, record);
 	}
 
-	/** Stops the agent's process, in the ADR's order; the row stays, stopped. */
+	/**
+	 * Stops the agent's process, in the ADR's order (a TUI in its own); the
+	 * row stays, stopped, and its terminal tabs say so.
+	 */
 	async stop(runtimeId: string, agentId: string): Promise<void> {
 		const record = this.table(runtimeId).get(agentId);
-		const process = record?.process;
-		if (!record || !process) return;
-		const stopped = process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] });
+		if (!record) return;
+		record.epoch++;
+		record.want = 'stream';
+		record.queued = [];
+		// Tabs waiting for a switch get nothing now.
+		for (const entry of [...record.viewers]) {
+			if (entry.inner) continue;
+			record.viewers.delete(entry);
+			entry.viewer.closed(AGENT_STOPPED);
+		}
+		const stops: Promise<void>[] = [];
+		const process = record.process;
+		if (process) stops.push(process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] }));
+		if (record.tui) stops.push(record.tui.stop());
+		if (stops.length === 0) return;
 		// The waiting card says the agent is stopping until it has.
-		if (record.process === process) this.update(runtimeId, record);
-		await stopped;
+		this.update(runtimeId, record);
+		await Promise.all(stops);
+	}
+
+	/**
+	 * A terminal tab asks for the agent (ADR-0007's D2): its TUI, started now
+	 * when nothing runs, switched to when the headless process is idle, and
+	 * waited for while a turn runs. Throws when this machine has no pty.
+	 */
+	openTerminal(runtimeId: string, agentId: string, viewer: PtyViewer): PtyAttachment {
+		const record = this.record(runtimeId, agentId);
+		if (!this.host.pty) throw new Error('the terminal view is not available on this platform');
+		const entry: AgentViewer = { viewer, inner: null, waiting: null, looking: false };
+		record.viewers.add(entry);
+		record.want = 'tui';
+		if (record.tui?.alive && !record.tui.isStopping && !record.switching) this.attachViewer(record, entry);
+		const attachment: PtyAttachment = {
+			write: (data) => entry.inner?.write(data) ?? false,
+			resize: (cols, rows) => entry.inner?.resize(cols, rows) ?? false,
+			reply: (data) => entry.inner?.reply(data) ?? false,
+			repaint: () => entry.inner?.repaint(),
+			looking: (on) => {
+				if (entry.looking === on) return;
+				entry.looking = on;
+				if (on && record.tui && record.finished) {
+					record.finished = false;
+					this.update(runtimeId, record);
+				}
+			},
+			detach: () => {
+				entry.inner?.detach();
+				entry.inner = null;
+				if (!record.viewers.delete(entry)) return;
+				// Nobody waits for a TUI any more; one that runs keeps running.
+				if (record.viewers.size === 0 && !record.tui) record.want = 'stream';
+			},
+		};
+		this.settle(runtimeId, record);
+		return attachment;
+	}
+
+	/** A tab switched to the native view: the agent goes back to a headless process once its TUI is idle. */
+	useNative(runtimeId: string, agentId: string): void {
+		const record = this.table(runtimeId).get(agentId);
+		if (!record) return;
+		this.wantStream(record);
+		this.settle(runtimeId, record);
+	}
+
+	/**
+	 * A native view asked for the headless process: terminal tabs still
+	 * waiting for the TUI get nothing now, and say so.
+	 */
+	private wantStream(record: AgentRecord): void {
+		record.want = 'stream';
+		for (const entry of [...record.viewers]) {
+			if (entry.inner) continue;
+			record.viewers.delete(entry);
+			entry.viewer.closed(MOVED_TO_NATIVE);
+		}
 	}
 
 	/** Stops the agent if it runs and removes its row. The transcript stays. */
@@ -411,18 +588,7 @@ export class ClaudeAgents {
 		let table = this.runtimes.get(runtimeId);
 		if (!table) {
 			table = new Map();
-			for (const stored of this.host.load(runtimeId)) {
-				table.set(stored.id, {
-					stored: { ...stored },
-					process: null,
-					...freshRecord(),
-					turns: 0,
-					finished: false,
-					pending: new Map(),
-					status: 'stopped',
-					statusSeq: 0,
-				});
-			}
+			for (const stored of this.host.load(runtimeId)) table.set(stored.id, newRecord({ ...stored }));
 			this.runtimes.set(runtimeId, table);
 		}
 		return table;
@@ -619,7 +785,17 @@ export class ClaudeAgents {
 		this.update(runtimeId, record);
 	}
 
+	private modeOf(record: AgentRecord): ClaudeProcessMode {
+		if (record.tui?.alive) return 'tui';
+		return record.process?.alive ? 'stream' : 'stopped';
+	}
+
 	private statusOf(record: AgentRecord): ClaudeAgentStatus {
+		if (record.tui?.alive) {
+			if (record.tuiState === 'working') return 'working';
+			if (record.tuiState === 'blocked') return 'blocked';
+			return record.finished ? 'done' : 'idle';
+		}
 		if (!record.process?.alive) return 'stopped';
 		if (record.pending.size > 0) return 'blocked';
 		if (record.turns > 0) return 'working';
@@ -634,9 +810,236 @@ export class ClaudeAgents {
 			record.statusSeq = ++this.statusSeq;
 		}
 		this.emit(runtimeId, record.stored.id, 'status');
+		this.settle(runtimeId, record);
+	}
+
+	/** Moves the agent to the process its views want, when that may happen now (`./viewSwitch.ts`). */
+	private settle(runtimeId: string, record: AgentRecord): void {
+		if (record.switching || this.settling.has(record)) return;
+		// A forgotten row, or a removed runtime's, has nothing to start.
+		if (this.runtimes.get(runtimeId)?.get(record.stored.id) !== record) return;
+		this.settling.add(record);
+		try {
+			const step = planViewSwitch({
+				want: record.want,
+				mode: this.modeOf(record),
+				status: this.statusOf(record),
+				stopping: record.process?.isStopping === true || record.tui?.isStopping === true,
+				viewers: record.viewers.size,
+				queued: record.queued.length,
+			});
+			switch (step.action) {
+				case 'stay':
+					return;
+				case 'wait':
+					this.tellWaiting(record, step.reason);
+					return;
+				case 'start-tui':
+					// A tab restored before its runtime connected waits for it.
+					if (!this.setups.has(runtimeId)) this.tellWaiting(record, WAIT_FOR_RUNTIME);
+					else this.startTuiOrClose(runtimeId, record);
+					return;
+				case 'start-stream':
+					this.spawnStreamOrNotice(runtimeId, record);
+					return;
+				case 'switch':
+					void this.switchProcess(runtimeId, record);
+					return;
+			}
+		} finally {
+			this.settling.delete(record);
+		}
+	}
+
+	private tellWaiting(record: AgentRecord, reason: string): void {
+		for (const entry of record.viewers) {
+			if (entry.inner || entry.waiting === reason) continue;
+			entry.waiting = reason;
+			entry.viewer.waiting(reason);
+		}
+	}
+
+	/**
+	 * Stops what runs (it is idle: no interrupt, no pending request) and starts
+	 * what the views want once it has exited, unless a stop overtook it.
+	 */
+	private async switchProcess(runtimeId: string, record: AgentRecord): Promise<void> {
+		const epoch = record.epoch;
+		record.switching = true;
+		if (record.want === 'tui') this.tellWaiting(record, 'starting Claude in the terminal');
+		try {
+			if (record.tui) await record.tui.stop();
+			else if (record.process) await record.process.stop({ busy: false, pending: [] });
+		} finally {
+			record.switching = false;
+		}
+		if (record.epoch !== epoch || record.process || record.tui) {
+			this.update(runtimeId, record);
+			return;
+		}
+		if (record.want === 'tui' && record.viewers.size > 0) this.startTuiOrClose(runtimeId, record);
+		else if (record.want === 'stream') this.spawnStreamOrNotice(runtimeId, record);
+		else this.update(runtimeId, record);
+	}
+
+	private spawnStreamOrNotice(runtimeId: string, record: AgentRecord): void {
+		const queued = record.queued.splice(0);
+		try {
+			this.spawn(runtimeId, record, undefined, queued);
+		} catch (error) {
+			this.host.notice(
+				`Herdr: ${record.stored.name || 'Claude'} could not start: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			this.update(runtimeId, record);
+		}
+	}
+
+	private startTuiOrClose(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith']): void {
+		try {
+			this.spawnTui(runtimeId, record, how);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			record.want = 'stream';
+			for (const entry of [...record.viewers]) {
+				record.viewers.delete(entry);
+				entry.viewer.closed(reason);
+			}
+			this.update(runtimeId, record);
+		}
+	}
+
+	/** The grid the TUI starts at: the first tab that measured one, else 80x24. */
+	private tuiSize(record: AgentRecord): { cols: number; rows: number } {
+		const entries = [...record.viewers];
+		const sized =
+			entries.find((entry) => entry.viewer.control && entry.viewer.size()) ?? entries.find((entry) => entry.viewer.size());
+		return sized?.viewer.size() ?? { cols: 80, rows: 24 };
+	}
+
+	/**
+	 * Starts the agent's TUI, `--resume` once its session started, with the
+	 * runtime's permission mode, and attaches the tabs waiting for it. `how`
+	 * forces the way of starting, for the second attempt after a refusal.
+	 */
+	private spawnTui(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith']): void {
+		const setup = this.setups.get(runtimeId);
+		if (!setup) throw new Error('the runtime has not found claude yet');
+		const pty = this.host.pty;
+		if (!pty) throw new Error('the terminal view is not available on this platform');
+		const { cwd, sessionId } = record.stored;
+		record.where = null;
+		record.reportedCwd = '';
+		const resume = how
+			? how === 'resume'
+			: record.stored.started === true || this.host.exists(this.transcriptFile(runtimeId, record));
+		const program = claudeTuiArgv({
+			binary: setup.binary,
+			sessionId,
+			resume,
+			permissionMode: setup.permissionMode,
+			extraArgs: this.host.extraArgs?.(),
+		});
+		const size = this.tuiSize(record);
+		const scanner = new ProgramStatusScanner();
+		const tui: SharedPty = new SharedPty({
+			program,
+			cwd,
+			env: this.host.env(setup.binary),
+			cols: size.cols,
+			rows: size.rows,
+			platform: pty.platform,
+			stopSignal: 'SIGTERM',
+			spawn: pty.spawn,
+			tools: pty.tools,
+			timers: this.host.timers,
+			...(pty.replayLimit ? { replayLimit: pty.replayLimit } : {}),
+			onData: (bytes) => this.onTuiData(runtimeId, record, tui, scanner.push(bytes)),
+			onExit: (info) => this.onTuiExit(runtimeId, record, tui, info),
+		});
+		record.tui = tui;
+		record.tuiState = null;
+		record.tuiBlock = null;
+		record.tuiTurned = false;
+		record.spawnedWith = resume ? 'resume' : 'session-id';
+		record.retried = how !== undefined;
+		record.finished = false;
+		tui.start();
+		// A spawn that failed outright has already exited and closed the tabs.
+		if (record.tui !== tui) return;
+		for (const entry of record.viewers) this.attachViewer(record, entry);
+		this.update(runtimeId, record);
+	}
+
+	private attachViewer(record: AgentRecord, entry: AgentViewer): void {
+		const tui = record.tui;
+		if (!tui || entry.inner) return;
+		if (entry.waiting !== null) {
+			entry.waiting = null;
+			entry.viewer.waiting(null);
+		}
+		entry.inner = tui.attach(entry.viewer);
+	}
+
+	private onTuiData(runtimeId: string, record: AgentRecord, tui: SharedPty, scan: ProgramStatusScan): void {
+		if (record.tui !== tui) return;
+		// Claude reports its status only to a terminal that says it can read it.
+		if (scan.probe) tui.write(PROGRAM_STATUS_REPLY);
+		const report = scan.reports.at(-1);
+		if (!report) return;
+		if (scan.reports.some((each) => each.state === 'working')) {
+			record.tuiTurned = true;
+			this.markStarted(runtimeId, record);
+		}
+		record.tuiState = report.state;
+		record.tuiBlock = report.state === 'blocked' ? (report.kind ?? 'permission') : null;
+		if (report.state === 'working' || report.state === 'blocked') record.finished = false;
+		// "Done" lasts until a person looks; a tab looked at sees it at once.
+		if (report.state === 'done') record.finished = ![...record.viewers].some((entry) => entry.looking);
+		this.update(runtimeId, record);
+	}
+
+	private onTuiExit(
+		runtimeId: string,
+		record: AgentRecord,
+		tui: SharedPty,
+		info: { code: number | null; stopping: boolean; error: string },
+	): void {
+		if (record.tui !== tui) return;
+		record.tui = null;
+		record.tuiState = null;
+		record.tuiBlock = null;
+		record.finished = false;
+		const output = tui.outputText();
+		// Claude refused how it was started; once more the other way, for the tabs still there.
+		const fallback =
+			!info.stopping && !record.retried && !record.tuiTurned ? startupFallback(record.spawnedWith, output) : null;
+		if (fallback) {
+			if (fallback === 'resume') record.stored.started = true;
+			else delete record.stored.started;
+			this.persist(runtimeId);
+			for (const entry of record.viewers) entry.inner = null;
+			if (record.viewers.size > 0) {
+				this.startTuiOrClose(runtimeId, record, fallback);
+				return;
+			}
+		}
+		const reason = record.switching && record.want === 'stream' ? MOVED_TO_NATIVE : info.stopping ? AGENT_STOPPED : CLAUDE_QUIT;
+		const viewers = [...record.viewers];
+		record.viewers.clear();
+		for (const entry of viewers) {
+			entry.inner = null;
+			entry.viewer.closed(reason);
+		}
+		if (!record.switching) record.want = 'stream';
+		if (!info.stopping && !fallback && info.code !== 0) {
+			const last = output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? info.error;
+			this.host.notice(`Herdr: ${record.stored.name || 'Claude'} stopped: ${last.slice(0, 200)}`);
+		}
+		this.update(runtimeId, record);
 	}
 
 	private view(runtimeId: string, record: AgentRecord): ClaudeAgentView {
+		if (record.tui) return this.tuiView(runtimeId, record);
 		const first = record.pending.values().next();
 		let request: PendingRequest | null = null;
 		if (!first.done) {
@@ -657,6 +1060,22 @@ export class ClaudeAgents {
 			statusSeq: record.statusSeq,
 			started: record.stored.started === true,
 			transcriptPath: this.transcriptFile(runtimeId, record),
+			mode: this.modeOf(record),
+		};
+	}
+
+	/** An agent in its terminal view: the status Claude reported, no request (it is answered in the TUI). */
+	private tuiView(runtimeId: string, record: AgentRecord): ClaudeAgentView {
+		const status = this.statusOf(record);
+		return {
+			...record.stored,
+			status,
+			blockKind: status === 'blocked' ? (record.tuiBlock ?? 'permission') : null,
+			request: null,
+			statusSeq: record.statusSeq,
+			started: record.stored.started === true,
+			transcriptPath: this.transcriptFile(runtimeId, record),
+			mode: this.modeOf(record),
 		};
 	}
 

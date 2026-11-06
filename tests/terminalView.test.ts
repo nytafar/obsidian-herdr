@@ -647,6 +647,16 @@ describe('statusLine', () => {
 		);
 	});
 
+	it('says why a session waits, without a warning, until it closes (ADR-0007’s D2)', () => {
+		const live = { closedReason: null, exited: false, stderr: [] };
+		expect(
+			statusLine({ mode: 'control', endpoint: 'local', ...live, waiting: 'waiting for the agent to finish its turn' }),
+		).toEqual({ text: 'Waiting for the agent to finish its turn.', warning: false, detail: null });
+		expect(
+			statusLine({ mode: 'control', endpoint: 'local', ...live, closedReason: 'the agent stopped', waiting: 'x' }).text,
+		).toBe('Session closed: the agent stopped. Reconnect to attach again.');
+	});
+
 	it('renders the close reason and suggests a reconnect when one can help', () => {
 		const takenOver = statusLine({
 			mode: 'control',

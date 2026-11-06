@@ -193,14 +193,38 @@ built-in commands until it does; it never offers this machine's commands.
 
 ## On Claude run by Obsidian
 
-Agents of this runtime are Claude processes the plugin runs itself, and the
-native view is the only view they have; the view switch shows the terminal
-disabled, with the reason ([runtimes.md](runtimes.md)). The transcript is
-still the content, read from this machine's files as on herdr. The session,
-the status and the block come from Claude's own stream instead of a
-multiplexer: working from a prompt to the end of its turn, done when the turn
-ended (until you look at it), blocked while a card waits. A stopped agent's
-tab shows its conversation and keeps its prompt box: sending resumes it.
+Agents of this runtime are Claude processes the plugin runs itself
+([runtimes.md](runtimes.md)). The transcript is still the content, read from
+this machine's files as on herdr. The session, the status and the block come
+from Claude's own stream instead of a multiplexer: working from a prompt to
+the end of its turn, done when the turn ended (until you look at it), blocked
+while a card waits. A stopped agent's tab shows its conversation and keeps its
+prompt box: sending resumes it.
+
+**Switching to the terminal and back moves the agent.** An agent runs one
+Claude at a time: the headless one this view talks to, or Claude's own
+terminal interface in the terminal view. Switching the tab's view stops the
+one and starts the other on the same conversation (`--resume`), about a
+second for the switch, then a few more while Claude draws its screen.
+
+- **Only between turns.** While the agent works, or a card waits for your
+  answer, a switch to the terminal waits for the turn to end and the tab says
+  so; answer the card in the native view (switch back to it) and the switch
+  follows. A switch to native waits the same way for a turn running in the
+  terminal. Nothing is interrupted and nothing is asked.
+- **In the terminal view** everything is answered in the terminal, since
+  Claude asks there and not over its stream. The list shows the status Claude
+  reports to the terminal; a native view of the same agent shows a blocked
+  card with **Open in terminal**.
+- **A prompt from a native view** while the agent runs in its terminal moves
+  it back to the headless process first, if the terminal is idle, and is sent
+  there; while the terminal is busy it is refused with a notice. **Stop** in
+  the prompt box sends Esc to the terminal, Claude's own interrupt key.
+- **Closing the terminal tab** does not move the agent: Claude keeps running
+  there, and the tab opened again shows the same screen. Another tab still on
+  the terminal when the agent moves says so, and **Reconnect** brings it back.
+- On Windows there is no terminal view (no `script(1)`), and the view switch
+  shows the terminal disabled, with the reason.
 
 Hook output and banners in Claude's stream are never shown, since content
 comes from the transcript.

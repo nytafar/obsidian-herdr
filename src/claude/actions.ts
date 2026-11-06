@@ -11,6 +11,8 @@
  * - **Resume:** opening a stopped row spawns it with `--resume`.
  * - **Graduation:** the process stops and the row's cwd and session go to the
  *   runtime it continues on (`main.ts` runs that half).
+ * - **Open shell here:** a plain shell in the folder, in a terminal tab
+ *   (ADR-0008), with an optional command run first; not a row.
  * - New tab, split, rename and focus have no meaning without a multiplexer:
  *   the capabilities hide them, and a call that slips through says so.
  *
@@ -20,6 +22,7 @@
 import { buildAgentName, folderName, type ActionHost } from '../actions';
 import type { GraduationRelease, RuntimeActions } from '../runtime/kind';
 import type { ClaudeAgents } from './agents';
+import type { ClaudeShells } from './shells';
 
 function describe(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -48,6 +51,7 @@ export class ClaudeActions implements RuntimeActions {
 	constructor(
 		private readonly host: ActionHost,
 		private readonly agents: ClaudeAgents,
+		private readonly shells: ClaudeShells | null = null,
 	) {}
 
 	private get runtimeId(): string {
@@ -139,6 +143,18 @@ export class ClaudeActions implements RuntimeActions {
 		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
 		const permissionMode = this.agents.permissionMode(this.runtimeId);
 		return { cwd: after.cwd, sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) };
+	}
+
+	/**
+	 * A shell in the folder, its tab opened. `command` runs first, in plain
+	 * view (D3's installer). Resolves to the shell's pane id.
+	 */
+	async openShellHere(folderAbsPath: string, command?: string): Promise<string | null> {
+		const shells = this.shells;
+		if (!shells) return this.unsupported('a shell tab');
+		const paneId = shells.open(folderAbsPath, command);
+		await this.host.openTerminal(paneId, folderAbsPath);
+		return paneId;
 	}
 
 	private unsupported(what: string): null {

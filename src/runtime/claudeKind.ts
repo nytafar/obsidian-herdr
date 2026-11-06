@@ -15,10 +15,18 @@
  *   machine's transcript files, as for a local herdr (ADR-0003). Prompts and
  *   the interrupt go to the process's stdin, and the waiting card answers
  *   permissions, questions and plans with a `control_response`.
- * - **Terminal view.** None in this version: it needs `script(1)` (ADR-0007's
- *   D2), so the tab says why and stays native.
- * - **Lifecycle.** Unload stops every process (`dispose`). A runtime switch
- *   does not: the processes are the table's, and the rows come back live.
+ * - **Terminal view** (ADR-0007's D2, the recorded exception to "not a
+ *   PTY"): Claude's own TUI on a pty from `script(1)` under a POSIX `sh`
+ *   fd-3 watchdog (`../claude/pty.ts`), one process per agent, headless or
+ *   TUI, switched between turns (`../claude/viewSwitch.ts`). A tab is a
+ *   {@link ClaudeTerminalSession} attached to the agent's TUI, which outlives
+ *   the tab. Linux; macOS written but not verified; none on Windows.
+ * - **Shell tabs** (ADR-0008): a plain shell in a folder on the same pty, a
+ *   tab and not a row (`../claude/shells.ts`), with an optional command run
+ *   first.
+ * - **Lifecycle.** Unload stops every process and shell (`dispose`). A
+ *   runtime switch does not: the processes are the table's, and the rows
+ *   come back live.
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -31,6 +39,16 @@ import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/b
 import { ClaudeActions } from '../claude/actions';
 import { ClaudeAgents, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
+import {
+	defaultPtySpawn,
+	defaultPtyTools,
+	ptyPlatformOf,
+	type PtyPlatform,
+	type PtySpawn,
+	type PtyTools,
+} from '../claude/pty';
+import { ClaudeShells, isShellId } from '../claude/shells';
+import { ClaudeTerminalSession } from '../claude/terminalSession';
 import { ClaudeClient, ClaudeScope, NoTabLabels } from '../claude/scope';
 import { localSettingsTarget, nodeProjectRootEnv, type LocalSettingsTarget } from '../claude/projectRoot';
 import { claudeSessionWatcher } from '../claude/sessionWatcher';
@@ -41,8 +59,11 @@ import { CLAUDE_PERMISSION_MODE_LABELS, normalizePermissionMode } from '../runti
 import { clearTimer, setTimer } from '../timers';
 import { CLAUDE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
 
-/** Why a `claude` agent's tab has no terminal view in this version. */
-export const CLAUDE_TERMINAL_UNAVAILABLE = 'not available yet for Claude run by Obsidian';
+/** Why a `claude` tab has no terminal view on Windows: no `script(1)`, and ConPTY needs native code. */
+export const CLAUDE_TERMINAL_UNAVAILABLE = 'not available on Windows, which has no script(1)';
+
+/** Why a shell tab has no native view. */
+export const SHELL_NO_NATIVE = 'a shell has no agent session';
 
 /** What a local runtime says when no `claude` can be found. */
 const CLAUDE_NOT_FOUND =
@@ -128,11 +149,19 @@ export interface ClaudeKindHost {
 	localSettings?: (cwd: string) => LocalSettingsTarget | null;
 	/** Skips the login shell in discovery (tests). */
 	skipLoginShell?: boolean;
+	/** The pty's platform (null: none, Windows), spawn and tools; the real ones otherwise. */
+	ptyPlatform?: PtyPlatform | null;
+	ptySpawn?: PtySpawn;
+	ptyTools?: PtyTools;
+	/** The replay buffer's bound, for tests. */
+	replayLimit?: number;
 }
 
 export type ClaudeKind = RuntimeKindAdapter<ClaudeClient, ClaudeScope, ConnectionTunnel> & {
 	/** The agent table, for unload and for pruning removed runtimes. */
 	readonly agents: ClaudeAgents;
+	/** Shell tabs; null where there is no pty (Windows). */
+	readonly shells: ClaudeShells | null;
 	/** Stops every process: the plugin is unloading. */
 	dispose(): Promise<void>;
 };
@@ -152,6 +181,16 @@ export function newClaudeAgentId(taken: ReadonlySet<string>, random: () => numbe
 }
 
 export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
+	const platform = host.ptyPlatform === undefined ? ptyPlatformOf(process.platform) : host.ptyPlatform;
+	const timers = host.timers ?? DEFAULT_TIMERS;
+	const pty = platform
+		? {
+				platform,
+				spawn: host.ptySpawn ?? defaultPtySpawn,
+				tools: host.ptyTools ?? defaultPtyTools(platform),
+				...(host.replayLimit ? { replayLimit: host.replayLimit } : {}),
+			}
+		: null;
 	const agents = new ClaudeAgents({
 		load: (runtimeId) => host.loadSessions(runtimeId),
 		save: (runtimeId, sessions) => host.saveSessions(runtimeId, sessions),
@@ -168,23 +207,29 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		newSessionId: () => randomUUID(),
 		newAgentId: (taken) => newClaudeAgentId(taken),
 		spawn: host.spawn ?? defaultClaudeSpawn,
-		timers: host.timers ?? DEFAULT_TIMERS,
+		timers,
 		extraArgs: host.extraArgs,
 		home: host.home,
 		localSettings:
 			host.localSettings ??
 			((cwd) => localSettingsTarget(cwd, { ...nodeProjectRootEnv(), ...(host.home ? { home: host.home } : {}) })),
+		...(pty ? { pty } : {}),
 	});
+	// A shell is no Claude session either: the same inherited variables go.
+	const shells = pty ? new ClaudeShells({ ...pty, timers, env: () => claudeEnv(host.spawnEnv(), '') }) : null;
 	const localTranscripts = new LocalTranscriptSource();
 	const watchers = new WeakMap<ClaudeScope, SessionWatcher>();
 	const refuse = (): Error => new Error(`The terminal view is ${CLAUDE_TERMINAL_UNAVAILABLE}.`);
 	return {
 		kind: 'claude',
 		agents,
-		dispose: () => agents.stopAll(),
+		shells,
+		dispose: async () => {
+			await Promise.all([agents.stopAll(), shells?.stopAll()]);
+		},
 		unavailable: null,
-		terminalUnavailable: CLAUDE_TERMINAL_UNAVAILABLE,
-		capabilities: CLAUDE_CAPABILITIES,
+		terminalUnavailable: pty ? null : CLAUDE_TERMINAL_UNAVAILABLE,
+		capabilities: pty ? CLAUDE_CAPABILITIES : { ...CLAUDE_CAPABILITIES, shells: false },
 		nativeUnavailable: null,
 		native: {
 			transcriptAccess: () => 'local',
@@ -233,13 +278,36 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			},
 			start: (client) => client.start(),
 		},
+		// Nothing to find: the session attaches to a pty the plugin keeps, and
+		// the agent table knows the runtime's binary.
 		terminalCommand: () => {
-			throw refuse();
+			if (!pty) throw refuse();
+			return ['script'];
 		},
-		createTerminalSession: () => {
-			throw refuse();
+		createTerminalSession: (options, endpoint) => {
+			if (!pty) throw refuse();
+			const runtimeId = endpoint.runtime.id;
+			return new ClaudeTerminalSession(options, (target, viewer) => {
+				if (isShellId(target)) {
+					if (!shells) throw refuse();
+					return shells.attach(target, viewer);
+				}
+				return agents.openTerminal(runtimeId, target, viewer);
+			});
 		},
-		createActions: (actionHost) => new ClaudeActions(actionHost, agents),
+		paneNativeReason: (paneId) => (isShellId(paneId) ? SHELL_NO_NATIVE : null),
+		paneTitle: (paneId) => {
+			const cwd = isShellId(paneId) ? shells?.cwd(paneId) : null;
+			return cwd ? `Shell: ${nodePath.basename(cwd) || cwd}` : null;
+		},
+		terminalReleased: (_endpoint, paneId) => {
+			// An agent's TUI stays for the next tab; a shell has no other way back.
+			if (isShellId(paneId)) void shells?.close(paneId);
+		},
+		paneViewChosen: (endpoint, paneId, view) => {
+			if (view === 'native' && !isShellId(paneId)) agents.useNative(endpoint.runtime.id, paneId);
+		},
+		createActions: (actionHost) => new ClaudeActions(actionHost, agents, shells),
 		promptSender: (client) => ({
 			async send(paneId, text) {
 				const connected = client();
@@ -262,21 +330,28 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			},
 		}),
 		createTabLabels: () => new NoTabLabels(),
-		statusLines: (connection) => (connection ? claudeStatusLines(connection) : null),
+		statusLines: (connection) => (connection ? claudeStatusLines(connection, pty !== null) : null),
 	};
 }
 
 /** The settings tab's status for a `claude` runtime. */
-export function claudeStatusLines(connection: {
-	client: Pick<ClaudeClient, 'setup'>;
-	scope: Pick<ClaudeScope, 'size' | 'running'>;
-}): StatusLine[] {
+export function claudeStatusLines(
+	connection: {
+		client: Pick<ClaudeClient, 'setup'>;
+		scope: Pick<ClaudeScope, 'size' | 'running'>;
+	},
+	terminal = true,
+): StatusLine[] {
 	const { setup } = connection.client;
 	const { size, running } = connection.scope;
 	return [
 		{ text: `Claude: ${setup.binary}` },
 		{ text: `Permission mode: ${CLAUDE_PERMISSION_MODE_LABELS[setup.permissionMode]}` },
 		{ text: `Agents: ${running} running, ${size - running} stopped` },
-		{ text: `Terminal view: ${CLAUDE_TERMINAL_UNAVAILABLE}; agents open in the native view.` },
+		{
+			text: terminal
+				? "Terminal view: Claude's own TUI on a pty from script(1)."
+				: `Terminal view: ${CLAUDE_TERMINAL_UNAVAILABLE}; agents open in the native view.`,
+		},
 	];
 }
