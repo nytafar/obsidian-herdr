@@ -341,6 +341,8 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		promptSender: (client) => ({
 			// Images go as stream-json image blocks (#144); the TUI, when it
 			// is up, hands the prompt to the headless process like any other.
+			// A held row and Send now (#159) are the same line: a turn that
+			// runs takes it in at its next tool boundary, under its uuid (#158).
 			async send(paneId, text, images = []) {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);

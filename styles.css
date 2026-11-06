@@ -671,6 +671,71 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
+ * Queued prompts (#159): rows above the prompt box, and above the waiting
+ * card while that stands in for it. Same order, created before both, so they
+ * come first. The plugin's rows have Send now, Edit and Discard; what Claude
+ * holds itself is muted, with none.
+ */
+.herdr-native-queue {
+	display: flex;
+	flex: 0 0 auto;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	order: 4;
+	padding-top: var(--size-4-2);
+}
+
+.herdr-native-queue.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-queue-row {
+	align-items: center;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+}
+
+.herdr-native-queue-row.herdr-is-agent-held {
+	border-style: dashed;
+	color: var(--text-muted);
+}
+
+.herdr-native-queue-row.herdr-is-failed {
+	border-color: var(--text-error);
+}
+
+.herdr-native-queue-body {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-queue-text {
+	max-height: 4.5em;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+}
+
+.herdr-native-queue-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-native-queue-row.herdr-is-failed .herdr-native-queue-note {
+	color: var(--text-error);
+}
+
+.herdr-native-queue-actions {
+	display: flex;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+}
+
+/*
  * The session bar (#161): one slim row under the prompt box, and under the
  * waiting card while that hides the box, so the values stay in sight. The
  * pickers are buttons with the value and a chevron; the context readout sits
@@ -1851,6 +1916,16 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	}
 
 	.herdr-native-prompt-input {
+		flex-basis: 100%;
+	}
+
+	/* A queued row's buttons go under its text. */
+	.herdr-native-queue-row {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	.herdr-native-queue-body {
 		flex-basis: 100%;
 	}
 }

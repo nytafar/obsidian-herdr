@@ -20,13 +20,59 @@
 import type { AgentPromptParams, AgentSendKeysParams, PaneSendTextParams } from '../herdr/types.gen';
 import { imagePaste, localImageFiles, type ImageFiles, type PromptImage } from './promptImages';
 
+/**
+ * How a prompt is handed over (#159). Left out, it is typed as the prompt box
+ * always typed it.
+ *
+ * **Where a break-in "Send now" goes.** Send now passes {@link SEND_NOW}, and
+ * the agent takes the prompt in at its next tool boundary. A variant that
+ * breaks into a running tool is one more field here, `breakIn?: boolean`, set
+ * in {@link SEND_NOW}, and one branch per sender: herdr follows the prompt
+ * with `agent.send_keys ["ctrl+enter"]`, herdr-core with `terminal.keys
+ * ["ctrl+enter"]` (both move the running command to the background), and the
+ * `claude` kind writes `control_request {subtype: "interrupt", send_now:
+ * true, message_uuid}` after the line (which aborts it). Measured in the
+ * finding `queued-prompts`; not built.
+ */
+export interface PromptSendOptions {
+	/**
+	 * A row the plugin's queue holds, going out because the agent left
+	 * `working` (#159). A sender that can tell the agent started working
+	 * meanwhile refuses with {@link PromptHeldBack} and types nothing, so the
+	 * row stays for the next turn; one that cannot types it, and Claude queues
+	 * it as it always did.
+	 */
+	held?: boolean;
+}
+
+/** What Send now hands over with: at the agent's next tool boundary (#159). */
+export const SEND_NOW: PromptSendOptions = {};
+
+/**
+ * A held row was not typed because the agent is not ready for it: working
+ * again, or blocked. Not a failure: the queue keeps the row, says nothing, and
+ * tries again on the next transition out of `working` (#159).
+ */
+export class PromptHeldBack extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'PromptHeldBack';
+	}
+}
+
 /** What the prompt box needs; a remote adapter can satisfy the same shape. */
 export interface PromptSender {
 	/**
 	 * Delivers `text` to the pane's agent, with `images` attached when there
-	 * are any (#144); `text` may be empty then. Rejects with a readable message.
+	 * are any (#144); `text` may be empty then. Rejects with a readable message,
+	 * or with {@link PromptHeldBack} for a held row the agent is not ready for.
 	 */
-	send(paneId: string, text: string, images?: readonly PromptImage[]): Promise<void>;
+	send(
+		paneId: string,
+		text: string,
+		images?: readonly PromptImage[],
+		options?: PromptSendOptions,
+	): Promise<void>;
 	/**
 	 * Why images cannot go to this pane's agent, in words for the prompt box,
 	 * or null when they can (#144). A sender without it takes none
@@ -104,30 +150,52 @@ export function paneSendTextParams(paneId: string, text: string): PaneSendTextPa
  * picture with no words is sent with a bare Enter. Only a local herdr shows
  * the native view, so this machine is the agent's (measured 2026-11-06,
  * `docs/architecture.md`, "Images in prompts").
+ *
+ * A held row (#159) goes the same way: herdr has no idle guard, so a turn
+ * that started meanwhile gets it queued in Claude, as before the plugin held
+ * any. Only `agent_blocked` holds it back.
  */
 export function clientPromptSender(
 	client: () => PromptClient | null,
 	files: ImageFiles = localImageFiles(),
 ): PromptSender {
 	return {
-		async send(paneId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
+		async send(
+			paneId: string,
+			text: string,
+			images: readonly PromptImage[] = [],
+			options: PromptSendOptions = {},
+		): Promise<void> {
 			const connected = client();
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
-			if (!images.length) {
-				await connected.request('agent.prompt', agentPromptParams(paneId, text));
-				return;
-			}
-			const paths = await files.write(images);
 			try {
-				await connected.request('pane.send_text', paneSendTextParams(paneId, imagePaste(paths)));
-				if (text.trim()) await connected.request('agent.prompt', agentPromptParams(paneId, text));
-				else await connected.request('agent.send_keys', agentSendKeysParams(paneId, ['Enter']));
-			} finally {
-				files.release(paths);
+				if (!images.length) {
+					await connected.request('agent.prompt', agentPromptParams(paneId, text));
+					return;
+				}
+				const paths = await files.write(images);
+				try {
+					await connected.request('pane.send_text', paneSendTextParams(paneId, imagePaste(paths)));
+					if (text.trim()) await connected.request('agent.prompt', agentPromptParams(paneId, text));
+					else await connected.request('agent.send_keys', agentSendKeysParams(paneId, ['Enter']));
+				} finally {
+					files.release(paths);
+				}
+			} catch (error) {
+				if (options.held && errorCode(error) === 'agent_blocked') {
+					throw new PromptHeldBack(error instanceof Error ? error.message : String(error));
+				}
+				throw error;
 			}
 		},
 		imagesUnavailable: () => null,
 	};
+}
+
+/** A herdr error's code (`HerdrError.code`), read without importing the client. */
+function errorCode(error: unknown): string | null {
+	const code = (error as { code?: unknown } | null)?.code;
+	return typeof code === 'string' ? code : null;
 }
 
 /** The key sender's half of the same thing, over the same client. */

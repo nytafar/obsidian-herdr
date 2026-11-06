@@ -893,12 +893,15 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
+			// Prompts typed while the agent works wait in the plugin's queue (#159).
+			queues: this.plugin.promptQueues,
 			// Prompts go through the tab's own runtime, its kind's sender over its
 			// own client, and only while that runtime is the connected one and can
 			// show a native view at all (ADR-0002, ADR-0006); `--wait` is never
 			// asked for (#97, ADR-0003).
 			sender: {
-				send: (paneId, text, images) => this.kind().promptSender(nativeClient).send(paneId, text, images),
+				send: (paneId, text, images, options) =>
+					this.kind().promptSender(nativeClient).send(paneId, text, images, options),
 				// Whether images can go with a prompt (#144), asked of the kind as
 				// it is now: herdr-core's answer depends on the core's version.
 				imagesUnavailable: (paneId) => imagesUnavailable(this.kind().promptSender(nativeClient), paneId),

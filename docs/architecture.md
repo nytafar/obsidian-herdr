@@ -1625,6 +1625,61 @@ So Edit and Discard of a prompt already handed over exist only on the
 held by the plugin, sent when the agent leaves `working`, with Send now as
 the one act that hands a prompt over during a turn.
 
+- **hc's `if: "idle"` refuses a `done` terminal.** `terminal.send {if:
+  "idle"}` matches the program's own state exactly, and `if` takes only
+  `idle` or `working`. Claude reports `done` after a turn and stays `done`
+  until it is prompted again (20 s later still `done`), so a guarded send
+  right after a turn answered `status_mismatch` "t48 is done, not idle",
+  "nothing was typed" (measured 2026-11-06, hc 0.1.18, Claude Code 2.1.318).
+  The plugin's `idle` on herdr-core may be the program's `done` with the
+  turn seen (`hcAgentStatus`), so the guard is chosen from the program's
+  state, read with `terminal.get`, not from the view's.
+
+### Queued prompts, as built (#159)
+
+The plugin holds the queue for every kind (`src/native/promptQueue.ts`), and
+the native view draws it above the prompt box (`src/native/queueRows.ts`).
+
+- **Holding.** A prompt typed while the agent is `working`, or behind rows
+  already waiting, becomes a row and is not sent. Edit puts its text (before
+  any draft) and images back in the box; Discard drops it. Both are local.
+- **Delivery.** Oldest first, when the status is `idle` or `done`, one per
+  turn: a row handed over waits for the `working` its turn brings, and only
+  that turn's end lets the next one go. One that starts no turn (a local
+  `/command`) lets the next go after 10 s. `blocked` (a dialog, or Claude's
+  pickers, #169) and `unknown` send nothing, and the session bar suspends
+  the queue while it drives a picker. The sender is told the row is held
+  (`PromptSendOptions.held`):
+  - herdr: `agent.prompt` as always; `agent_blocked` keeps the row.
+  - herdr-core: `terminal.get` first; `working` or `blocked` keeps the row
+    with nothing typed; `idle` sends with `if: "idle"`, whose
+    `status_mismatch` keeps the row; `done` sends unguarded (above). A row
+    with images is never guarded, since its paste goes before the send.
+  - `claude`: the stdin line under its uuid, as any prompt (#158).
+  A refusal of that kind is silent and waits for the next transition; any
+  other failure stays on the row with its error and a notice, out of the
+  automatic order, and the rows behind it go from the next transition.
+- **Send now** hands the row over at once, mid-turn too, with
+  `SEND_NOW`: `agent.prompt`, `terminal.send` unguarded, or the stdin line.
+  Claude takes it in at its next tool boundary; it does not break into a
+  running tool. Disabled while `blocked`. A break-in variant is one field on
+  `PromptSendOptions` (`breakIn`) set in `SEND_NOW`, and one branch per
+  sender: `ctrl+enter` keys after the prompt on herdr and herdr-core, or the
+  `interrupt {send_now, message_uuid}` control request on the `claude` kind.
+- **Queued in Claude.** What Claude holds itself (typed in the terminal, or
+  sent now) is drawn from the parser's pending enqueues
+  (`ConversationState.pendingQueue`, #157) as "Queued in Claude.", with no
+  actions, while the agent is `working` or `blocked` only: at rest Claude's
+  queue has run, and an entry still pending is a record the parser could
+  not pair.
+- **Lifetime.** Per runtime and pane, in memory (`PromptQueues` in
+  `src/main.ts`). Rows outlive a view's detach and a reconnect; while a
+  queue has rows it holds the pane's session model, so they go out with no
+  view open. A rotation (`/clear`) keeps them, and so does a pane whose
+  agent has gone: they wait, and the user can edit or discard them. A plugin
+  reload drops them, as it drops the draft in the box: decided for #159,
+  since what was not sent is a draft.
+
 ## Turn times, and work Claude resumes on its own
 
 Measured 2026-11-06 for #139 with Claude Code 2.1.318 (`claude -p --model

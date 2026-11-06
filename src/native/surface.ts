@@ -11,6 +11,8 @@
  * - `./sessionLines.ts` holds the empty line and the status line;
  * - `./viewLinks.ts` opens and previews the links in the view (#114);
  * - `./promptBox.ts` is the prompt box under the transcript (#97);
+ * - `./queueRows.ts` draws the queued prompts above it (#159), held in the
+ *   plugin's `./promptQueue.ts`;
  * - `./sessionBar.ts` is the model, effort and mode pickers and the context
  *   readout under the prompt box (#161), whose click shows the context
  *   breakdown (#171).
@@ -26,6 +28,8 @@ import { subagentLabel, TodoIndex, turnActivity, type LatestTodo, type ToolGroup
 import { TodoChip } from './todoList';
 import { earlierTurnCount, type ToolEntry, type Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
+import type { PaneQueue, PromptQueueSource } from './promptQueue';
+import { QueueRows } from './queueRows';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
 import type { SessionSettingsSender, SettingQuestion } from './sessionSettings';
@@ -65,6 +69,11 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
+	/**
+	 * The plugin's queues (#159): a prompt typed while the agent works is held
+	 * in its pane's, and outlives this view. Left out, prompts go at once.
+	 */
+	queues?: PromptQueueSource;
 	/** How the waiting card's "Trust this folder" reaches the agent (#99). */
 	keySender: KeySender;
 	/**
@@ -198,6 +207,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private readonly waiting: WaitingCardView;
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
+	/** The queued prompts above the prompt box (#159); null while detached. */
+	private queueRows: QueueRows | null = null;
+	/** The pane's queue while bound, and how to stop listening to it. */
+	private queue: PaneQueue | null = null;
+	private queueOff: (() => void) | null = null;
 	/** The session bar under the prompt box (#161); null while detached. */
 	private sessionBar: SessionBar | null = null;
 	/** What the model does not hold, above the first turn (#152); null while detached. */
@@ -320,9 +334,17 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			hoverParent: this,
 			notify: (message) => this.notify(message),
 		});
+		// Above the box, and above the waiting card when that stands in for it.
+		this.queueRows = new QueueRows(root, {
+			queue: () => this.queue,
+			status: () => this.model?.agentStatus ?? 'unknown',
+			heldByAgent: () => this.model?.state.pendingQueue ?? [],
+			onEdit: (row) => this.promptBox?.restore(row.text, row.images),
+		});
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
 			sender: this.options.sender,
+			queue: () => this.queue,
 			onInput: this.options.onPromptInput,
 		});
 		this.promptBox.mount(root);
@@ -330,7 +352,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// bar stays, disabled (#161).
 		this.sessionBar = new SessionBar({
 			paneId: () => this.identity.paneId,
-			sender: () => this.options.sessionSettings?.() ?? null,
+			sender: () => this.heldWhilePicking(this.options.sessionSettings?.() ?? null),
 			contextUsage: () => this.options.contextUsage?.() ?? null,
 			// `/context` on herdr and herdr-core: the prompt's own path (#171).
 			sendCommand: (paneId, text) => this.options.sender.send(paneId, text),
@@ -349,6 +371,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.waiting.detach();
 		this.promptBox?.destroy();
 		this.promptBox = null;
+		this.queueRows?.destroy();
+		this.queueRows = null;
 		this.sessionBar?.destroy();
 		this.sessionBar = null;
 		this.follower?.dispose();
@@ -553,6 +577,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		if (this.identity.paneId) {
 			this.handle = this.options.models.acquire(this.identity.endpointId, this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
+			const queue = this.options.queues?.queue(this.identity.endpointId, this.identity.paneId) ?? null;
+			this.queue = queue;
+			this.queueOff = queue?.on(() => this.queueRows?.render()) ?? null;
 		}
 		this.holdSubagents();
 		this.renderAll();
@@ -561,6 +588,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	/** Gives the model back. Safe to call when nothing is held. */
 	private unbind(): void {
+		// The rows stay in the plugin's queue; only this view stops drawing them.
+		this.queueOff?.();
+		this.queueOff = null;
+		this.queue = null;
 		this.subagentHold?.();
 		this.subagentHold = null;
 		this.unsubscribe?.();
@@ -737,9 +768,35 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		if (!root) return;
 		const status = this.model?.agentStatus ?? 'unknown';
 		this.promptBox?.setStatus(status);
+		this.queueRows?.render();
 		this.waiting.update(root, status);
 		this.lines?.updateStatus(status);
 		this.updateSessionBar(status);
+	}
+
+	/**
+	 * The session bar's sender with the pane's queue held while a pick runs
+	 * (#159): Claude's pickers pass through `blocked` and back (#169), and no
+	 * queued row may be typed into one.
+	 */
+	private heldWhilePicking(sender: SessionSettingsSender | null): SessionSettingsSender | null {
+		const queue = this.queue;
+		if (!sender || !queue) return sender;
+		const held = <A extends unknown[]>(run: (...args: A) => Promise<void>) =>
+			async (...args: A): Promise<void> => {
+				const resume = queue.suspend();
+				try {
+					await run(...args);
+				} finally {
+					resume();
+				}
+			};
+		return {
+			...sender,
+			setModel: held(sender.setModel.bind(sender)),
+			setEffort: held(sender.setEffort.bind(sender)),
+			setMode: held(sender.setMode.bind(sender)),
+		};
 	}
 
 	/**

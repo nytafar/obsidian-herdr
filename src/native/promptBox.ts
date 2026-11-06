@@ -14,9 +14,11 @@
  * - `idle`, `done` — **Send**. A freshly started Claude with no session yet is
  *   `idle`, so the first prompt of a session goes out through this same path
  *   and the view starts tailing when herdr reports the new `agent_session`.
- * - `working` — **Queue**, enabled: herdr accepts a prompt mid-turn and Claude
- *   consumes it inside the running turn. Nothing is echoed here; the steer
- *   appears when its enqueue line arrives from the transcript.
+ * - `working` — **Queue**, enabled. With the plugin's queue (#159,
+ *   `./promptQueue.ts`) the prompt is held as a row above the box and goes
+ *   when the turn ends; without one it is handed over at once and Claude
+ *   consumes it inside the running turn. Behind rows already waiting, a
+ *   prompt is held whatever the status, so it never overtakes them.
  * - `blocked` — disabled. Only `blocked` refuses, with `agent_blocked`, and the
  *   waiting card is the way past it.
  * - `unknown` — disabled, and the box says why: there is no agent in this pane.
@@ -55,6 +57,7 @@
 import { Component, Notice } from 'obsidian';
 import { imagesUnavailable, type PromptSender } from './promptSender';
 import { imageFileProblem, MAX_PROMPT_IMAGES, type PromptImage } from './promptImages';
+import type { PaneQueue } from './promptQueue';
 import type { AgentStatus } from '../herdr/types.gen';
 
 /** What the box shows for one agent status. */
@@ -86,6 +89,11 @@ export interface PromptBoxOptions {
 	/** The pane to prompt, read per send: a tab can be pointed at another. */
 	paneId: () => string;
 	sender: PromptSender;
+	/**
+	 * The pane's queue (#159), read per send: a prompt it holds becomes a row
+	 * and is not sent from here. Left out, every prompt is sent at once.
+	 */
+	queue?: () => PaneQueue | null;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -478,6 +486,16 @@ export class PromptBox {
 		// A picture may go alone (#144); nothing at all is no prompt.
 		const images = this.images;
 		if (text.trim() === '' && !images.length) return;
+		const queue = this.options.queue?.() ?? null;
+		if (queue?.holds(this.status)) {
+			// Held, not sent (#159): the row is the copy now, so the box empties.
+			queue.add(text, images);
+			inputEl.value = '';
+			this.dropManualHeight();
+			this.images = [];
+			this.renderImages();
+			return;
+		}
 		this.sending = true;
 		this.render();
 		try {
@@ -502,6 +520,25 @@ export class PromptBox {
 			this.sending = false;
 			this.render();
 		}
+	}
+
+	/**
+	 * Puts a queued row back to be edited (#159): its text before whatever is
+	 * in the box already, which is never thrown away, and its images with the
+	 * ones waiting, up to the most a prompt takes.
+	 */
+	restore(text: string, images: readonly PromptImage[] = []): void {
+		const inputEl = this.inputEl;
+		if (!inputEl) return;
+		const draft = inputEl.value;
+		inputEl.value = draft.trim() === '' ? text : text === '' ? draft : `${text}\n${draft}`;
+		const room = MAX_PROMPT_IMAGES - this.images.length;
+		if (room < images.length) this.notify(`Gjetr: a prompt takes at most ${MAX_PROMPT_IMAGES} images.`);
+		if (images.length && room > 0) {
+			this.images = [...images.slice(0, room), ...this.images];
+			this.renderImages();
+		}
+		if (this.canFocus()) inputEl.focus();
 	}
 
 	/**

@@ -345,6 +345,12 @@ export interface ConversationState {
 	 * held. The session model sets it; a parser only folds through it.
 	 */
 	window?: TurnWindow;
+	/**
+	 * Prompts the agent itself holds, oldest first: Claude's queue enqueues
+	 * not yet spent (#157). The view shows them as queued in the agent (#159).
+	 * Absent for a format that reads no queue.
+	 */
+	readonly pendingQueue?: readonly string[];
 }
 
 /**

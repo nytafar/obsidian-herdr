@@ -89,6 +89,7 @@ import {
 	type NoteLeafCandidate,
 } from './terminalPlacement';
 import { SessionModelRegistry } from './native/sessionModel';
+import { PromptQueues } from './native/promptQueue';
 import type { SessionWatcher } from './native/sessionWatcher';
 import type { PromptClient } from './native/promptSender';
 import type { TranscriptSource } from './native/transcriptSource';
@@ -480,6 +481,18 @@ export default class HerdrPlugin extends Plugin {
 		source: (endpointId) => this.nativeTranscripts(endpointId),
 	});
 	/**
+	 * Prompts held while a pane's agent works (#159), per runtime and pane,
+	 * in memory: they outlive a view and a reconnect, not a reload.
+	 */
+	readonly promptQueues = new PromptQueues({
+		models: this.sessionModels,
+		sender: (endpointId) => {
+			const endpoint = this.endpointFor(endpointId);
+			return endpoint ? this.kindOf(endpoint.runtime.kind).promptSender(() => this.nativeClient(endpointId)) : null;
+		},
+		notify: (message) => new Notice(message),
+	});
+	/**
 	 * Tabs that swapped their surface where they stand (#100, #105). The table
 	 * of contents follows the active native view, and a swap inside one leaf
 	 * activates no leaf.
@@ -604,6 +617,7 @@ export default class HerdrPlugin extends Plugin {
 		// (ADR-0007): each one stops in its own order, which runs on from here.
 		void this.claudeKind.dispose();
 		this.sessions.dispose();
+		this.promptQueues.dispose();
 		this.sessionModels.dispose();
 		this.scopeListeners.clear();
 		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);

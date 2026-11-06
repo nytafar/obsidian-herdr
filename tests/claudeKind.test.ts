@@ -23,6 +23,7 @@ import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import type { WaitingAnswer } from '../src/native/pendingRequest';
+import { SEND_NOW } from '../src/native/promptSender';
 import { encodeProjectDir } from '../src/agents/claude/paths';
 import {
 	claudeEnv,
@@ -317,6 +318,22 @@ describe('the claude kind over a fake claude', () => {
 		await waitFor(() => status(h, paneId) === 'done', 'done');
 		// The interrupted turn's result answered only the first; the second ran as its own turn.
 		expect(statuses).toEqual(['working', 'done']);
+	});
+
+	it('writes a held row and a Send now as the same user line, each under its uuid (#159)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const sender = h.kind.promptSender(() => h.client);
+		await sender.send(paneId, 'held row', [], { held: true });
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		await sender.send(paneId, 'sent now', [], SEND_NOW);
+		await waitFor(() => stdin(h.log).filter((message) => message.type === 'user').length === 2, 'two lines');
+		const users = stdin(h.log).filter((message) => message.type === 'user');
+		expect(users.map((message) => JSON.stringify(message.message))).toEqual([
+			JSON.stringify({ role: 'user', content: 'held row' }),
+			JSON.stringify({ role: 'user', content: 'sent now' }),
+		]);
+		expect(users.every((message) => typeof message.uuid === 'string')).toBe(true);
 	});
 
 	it('sends a prompt’s images as image blocks after its text, and says images can go (#144)', async () => {

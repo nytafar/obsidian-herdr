@@ -33,8 +33,10 @@ import { remoteVaultPathIssue } from '../runtimes';
 import type { RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import {
 	NO_CONNECTION_MESSAGE,
+	PromptHeldBack,
 	type KeySender,
 	type PromptClient,
+	type PromptSendOptions,
 	type PromptSender,
 } from '../native/promptSender';
 import { imageExtension, imagePaste, type PromptImage } from '../native/promptImages';
@@ -296,13 +298,30 @@ export function hcImageName(image: PromptImage, index: number, now: number): str
  * attachments, and `terminal.send` then pastes the text and presses the Enter
  * that sends both — an empty text included (measured 2026-11-06, hc 0.1.18,
  * `docs/architecture.md`, "Images in prompts").
+ *
+ * A held row (#159) asks the core first: a terminal whose program says
+ * `working` or `blocked` gets nothing, and the row waits for the next turn
+ * ({@link PromptHeldBack}). An `idle` one is typed with `if: "idle"`, so a
+ * turn that starts in between is refused with `status_mismatch` and nothing
+ * typed. `if` takes only `idle` or `working`, and Claude stays `done` after a
+ * turn until it is prompted (hc 0.1.18 refuses a `done` terminal with "t48 is
+ * done, not idle", measured 2026-11-06), so a `done` one is typed with no
+ * guard, as herdr types every held row. Images are pasted before the send, so
+ * a held row with images is never guarded: a refusal would strand the paste
+ * in the input.
  */
 export function hcPromptSender(client: () => PromptClient | null, now: () => number = Date.now): PromptSender {
 	return {
-		async send(paneId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
+		async send(
+			paneId: string,
+			text: string,
+			images: readonly PromptImage[] = [],
+			options: PromptSendOptions = {},
+		): Promise<void> {
 			const connected = client();
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
 			try {
+				const guard = options.held ? await heldGuard(connected, paneId, images.length > 0) : {};
 				if (images.length) {
 					const reason = hcImagesUnavailable(connected);
 					const typer = imageClient(connected);
@@ -320,13 +339,34 @@ export function hcPromptSender(client: () => PromptClient | null, now: () => num
 					}
 					await typer.input(paneId, imagePaste(paths));
 				}
-				await connected.request('terminal.send', { terminal: paneId, text });
+				await connected.request('terminal.send', { terminal: paneId, text, ...guard });
 			} catch (error) {
+				if (error instanceof PromptHeldBack) throw error;
+				if (options.held && error instanceof HcError && HELD_BACK_KINDS.has(error.kind)) {
+					throw new PromptHeldBack(describe(error));
+				}
 				throw new Error(describe(error));
 			}
 		},
 		imagesUnavailable: () => hcImagesUnavailable(client()),
 	};
+}
+
+/** The refusals of `terminal.send` that mean "not now" to a held row (#159). */
+const HELD_BACK_KINDS: ReadonlySet<string> = new Set(['status_mismatch', 'blocked']);
+
+/** The program states a held row is not typed into (#159). */
+const NOT_READY: ReadonlySet<string> = new Set(['working', 'blocked']);
+
+/**
+ * What a held row's `terminal.send` carries (#159): `if: "idle"` when the
+ * program says `idle` and nothing was pasted before it, none otherwise; a
+ * program that is working or blocked holds the row back.
+ */
+async function heldGuard(client: PromptClient, paneId: string, pasted: boolean): Promise<{ if?: 'idle' }> {
+	const state = parseTerminal(await client.request<unknown>('terminal.get', { terminal: paneId }))?.status?.state;
+	if (state && NOT_READY.has(state)) throw new PromptHeldBack(`${paneId} is ${state}`);
+	return state === 'idle' && !pasted ? { if: 'idle' } : {};
 }
 
 /** Key presses over `terminal.keys`, in hc's key names. */
