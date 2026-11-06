@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-herdr",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"description": "Herdr agents and terminals inside Obsidian",
 	"main": "main.js",
 	"type": "module",

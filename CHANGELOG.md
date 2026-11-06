@@ -3,6 +3,31 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## 0.6.1 — 2026-11-06
+
+For the community directory's review.
+
+### Changed
+
+- **Description**: "Run persistent agents in your vault locally or remotely
+  using herdr or herdr-core."
+- **Release assets carry build provenance attestations**, so a download can be
+  checked against the workflow that built it from this repository.
+- **README** says what the plugin uses on your machine: the programs it starts,
+  the files it reads and writes outside the vault, the vault's file list, the
+  clipboard, and that it sends nothing over the network except SSH to your
+  hosts.
+
+### Fixed
+
+- Terminal underline and overline styles use `text-decoration-line` and
+  `text-decoration-style`, which every supported Obsidian build has; the dim
+  rule and the prompt box's height no longer need `!important` or a duplicate
+  declaration.
+- The connection and terminal modules time with Node's timers instead of
+  `globalThis`, and the element check uses Obsidian's cross-window
+  `instanceOf`.
+
 ## 0.6.0 — 2026-11-06
 
 ### Changed

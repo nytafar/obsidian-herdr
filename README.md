@@ -95,6 +95,25 @@ docs. **Settings → Gjetr** shows what the plugin found.
 - Touch an agent's config without asking: the Claude session hook is installed
   only after you agree.
 
+## What it uses on your machine
+
+The plugin is desktop only because agents run outside Obsidian:
+
+- **Programs**: it starts `herdr`, `hc`, `ssh`, `claude` and the agent CLIs you
+  pick as child processes, and asks your login shell for its `PATH` to find
+  them.
+- **Files outside the vault**: it reads herdr's socket and Claude Code's
+  session transcripts, checks which agent CLIs are installed, and keeps
+  short-lived SSH forwarding sockets in `/tmp`. Outside the vault it writes only
+  the Claude session hook and its entry in Claude's settings, after you agree.
+- **The vault's file list**: for `@` completion in the native view's prompt
+  box.
+- **The clipboard**: it writes to it when you press a copy button. It never
+  reads it.
+
+The plugin itself sends nothing over the network, except SSH to the hosts you
+add. The agents it starts reach whatever their own CLIs reach.
+
 ## Docs
 
 - [docs/usage.md](docs/usage.md): the list, terminals, the native view, starting
