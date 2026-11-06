@@ -46,7 +46,15 @@ interface Rendered {
 }
 
 /** A renderer on the harness, with every Markdown render recorded. */
-function rendererOn(options: { folds?: FoldMemory; presentation?: ToolGroupPresentation } = {}) {
+function rendererOn(
+	options: {
+		folds?: FoldMemory;
+		presentation?: ToolGroupPresentation;
+		resolveUri?: (uri: string) => string | null;
+		/** Markdown whose render never lands, as one still in flight. */
+		pending?: (markdown: string) => boolean;
+	} = {},
+) {
 	const { el, host } = hostEl();
 	const rendered: Rendered[] = [];
 	let presentation: ToolGroupPresentation = options.presentation ?? 'highlight';
@@ -56,9 +64,9 @@ function rendererOn(options: { folds?: FoldMemory; presentation?: ToolGroupPrese
 		renderMarkdown: (markdown, target, component) => {
 			rendered.push({ markdown, component: component as unknown as Component });
 			(target as unknown as FakeElement).appendText(markdown);
-			return Promise.resolve();
+			return options.pending?.(markdown) ? new Promise<void>(() => {}) : Promise.resolve();
 		},
-		resolveUri: () => null,
+		resolveUri: options.resolveUri ?? (() => null),
 		folds: options.folds,
 	});
 	return {
@@ -153,17 +161,63 @@ describe('TurnRenderer: drawing only what changed (#127)', () => {
 
 	it('marks the headings of prose it kept and prose it drew (#118)', async () => {
 		const { el, renderer } = rendererOn();
-		renderer.render(turn([text('m1', 'Top')]));
+		renderer.render(turn([text('m1', '## Kept')]));
 		// The stub writes text; give the kept block a heading as the real renderer would.
 		el.find('herdr-native-block').createEl('h2', { text: 'Kept' });
 
-		renderer.render(turn([text('m1', 'Top'), text('m2', 'More')]));
+		renderer.render(turn([text('m1', '## Kept'), text('m2', '## New')]));
 		el.findAll('herdr-native-block')[1]?.createEl('h2', { text: 'New' });
 		await Promise.resolve();
 		await Promise.resolve();
 
 		expect(renderer.headingEl('u1', 0, 2)?.textContent).toBe('Kept');
 		expect(renderer.headingEl('u1', 1, 2)?.textContent).toBe('New');
+	});
+
+	it('keeps the anchors of kept prose while a later block is still rendering', async () => {
+		// The last block's render has not landed: Claude is still writing it.
+		const { el, renderer } = rendererOn({ pending: (markdown) => markdown.startsWith('# Stream') });
+		renderer.render(turn([text('m1', '# Kept')]));
+		el.find('herdr-native-block').createEl('h1', { text: 'Kept' });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(renderer.headingEl('u1', 0, 1)?.textContent).toBe('Kept');
+
+		renderer.render(turn([text('m1', '# Kept'), text('m2', '# Streaming')]));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// The earlier heading is where it was; the one still rendering is not yet.
+		expect(renderer.headingEl('u1', 0, 2)?.textContent).toBe('Kept');
+		expect(renderer.headingEl('u1', 1, 2)).toBeUndefined();
+	});
+});
+
+describe('TurnRenderer: links resolved at draw time (#114, #127)', () => {
+	const URI = 'obsidian://open?vault=hvelv&file=Later';
+
+	it('draws a steer again once the note its link names exists', () => {
+		const notes = new Set<string>();
+		const { el, renderer } = rendererOn({ resolveUri: () => (notes.has('Later') ? 'Later.md' : null) });
+		const steered = turn([{ kind: 'steer', text: `See ${URI}` }]);
+		renderer.render(steered);
+		expect(el.find('herdr-native-steer').find('external-link').textContent).toBe(URI);
+
+		notes.add('Later');
+		renderer.render(turn([{ kind: 'steer', text: `See ${URI}` }]));
+
+		expect(el.find('herdr-native-steer').find('internal-link').textContent).toBe('Later.md');
+	});
+
+	it('draws the prompt again once the note its link names exists', () => {
+		const notes = new Set<string>();
+		const { el, renderer } = rendererOn({ resolveUri: () => (notes.has('Later') ? 'Later.md' : null) });
+		renderer.render({ id: 'u1', prompt: `See ${URI}`, entries: [], headings: [] });
+
+		notes.add('Later');
+		renderer.render({ id: 'u1', prompt: `See ${URI}`, entries: [], headings: [] });
+
+		expect(el.find('herdr-native-prompt').find('internal-link').textContent).toBe('Later.md');
 	});
 });
 

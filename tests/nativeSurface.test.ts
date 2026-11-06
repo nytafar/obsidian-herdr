@@ -12,6 +12,7 @@ import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { READ_FAILURE_LINE } from '../src/native/sessionLines';
 import { NativePaneSurface } from '../src/native/surface';
+import type { FoldMemory } from '../src/native/foldMemory';
 import {
 	emptyTranscript,
 	type ToolEntry,
@@ -1094,6 +1095,115 @@ describe('NativePaneSurface: the current to-do list (#143)', () => {
 			{ changedTurnIds: ['u2'], reset: false },
 		);
 		expect(plan.hasClass('herdr-is-hidden')).toBe(true);
+	});
+
+	it('opens only the session’s newest list in the turns, whichever turn holds it', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const todos = [{ content: 'Ship it', status: 'pending' }];
+		const open = (): boolean[] => el.findAll('herdr-native-todo').map((update) => update.open);
+		const first = turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos }, 'ok')]);
+		const quiet = turn('u2', 'Look', [tool('r1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.push([first, quiet], { changedTurnIds: ['u1', 'u2'], reset: false });
+		expect(open()).toEqual([true]);
+
+		// A later turn's list: the first turn is neither changed nor the one
+		// that was latest, and its list still folds.
+		const later = turn('u3', 'More', [tool('t2', 'TodoWrite', { todos }, 'ok')]);
+		model.push([first, quiet, later], { changedTurnIds: ['u3'], reset: false });
+		expect(open()).toEqual([false, true]);
+
+		// A rewind drops that turn: the first list is the newest again.
+		model.push([first, quiet], { changedTurnIds: [], removedTurnIds: ['u3'], reset: false });
+		expect(open()).toEqual([true]);
+	});
+
+	it('opens no finished turn’s list when the whole session is drawn', async () => {
+		const model = new FakeModel();
+		const todos = [{ content: 'Ship it', status: 'pending' }];
+		model.state = {
+			...model.state,
+			turns: [
+				turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos }, 'ok')]),
+				turn('u2', 'Next', [tool('t2', 'TodoWrite', { todos }, 'ok')]),
+			],
+		};
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		expect(el.findAll('herdr-native-todo').map((update) => update.open)).toEqual([false, true]);
+	});
+
+	it('reads the entries of no turn that did not change to find the list', async () => {
+		const model = new FakeModel();
+		const { surface, host } = surfaceOn(model);
+		await surface.attach(host);
+		// A long finished turn whose entries count their readers.
+		let reads = 0;
+		const entries = [tool('t1', 'TodoWrite', { todos: [{ content: 'Ship it', status: 'pending' }] }, 'ok')];
+		const old: Turn = { id: 'u1', prompt: 'Go', headings: [], entries: [] };
+		Object.defineProperty(old, 'entries', {
+			get: () => {
+				reads++;
+				return entries;
+			},
+		});
+		const latest = turn('u2', 'Next', [tool('r1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.push([old, latest], { changedTurnIds: ['u1', 'u2'], reset: false });
+		reads = 0;
+
+		// The status moves, then the latest turn grows: the old turn is unchanged.
+		model.agentStatus = 'working';
+		model.push([old, latest], { changedTurnIds: [], reset: false });
+		const grown = turn('u2', 'Next', [...latest.entries, tool('r2', 'Read', { file_path: '/y' }, 'ok')]);
+		model.push([old, grown], { changedTurnIds: ['u2'], reset: false });
+
+		expect(reads).toBe(0);
+	});
+});
+
+describe('NativePaneSurface: what the reader opened, bounded by the session (#127)', () => {
+	/** The surface's fold memory, which no view exposes. */
+	const foldsOf = (surface: NativePaneSurface): FoldMemory =>
+		(surface as unknown as { folds: FoldMemory }).folds;
+
+	/** The reader opening the first tool group on screen. */
+	function openGroup(el: FakeElement): void {
+		const details = el.find('herdr-native-tools');
+		details.open = !details.open;
+		details.dispatch('toggle');
+	}
+
+	it('lets go of a turn the model dropped while the tab was detached', async () => {
+		const model = new FakeModel();
+		const first = turn('u1', 'Go', [tool('t1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.state = { ...model.state, turns: [first] };
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		openGroup(el);
+		expect(foldsOf(surface).has('u1')).toBe(true);
+
+		await surface.detach();
+		// A rewind while nobody listened: the change never reached the renderer.
+		model.push([turn('u2', 'Again')], { changedTurnIds: ['u2'], removedTurnIds: ['u1'], reset: false });
+		await surface.attach(host);
+
+		expect(foldsOf(surface).has('u1')).toBe(false);
+	});
+
+	it('lets go of the turns a reset took away', async () => {
+		const model = new FakeModel();
+		const first = turn('u1', 'Go', [tool('t1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.state = { ...model.state, turns: [first] };
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		openGroup(el);
+
+		// `/clear`: another session, none of these turns.
+		model.push([turn('n1', 'Fresh')], { changedTurnIds: [], reset: true });
+
+		expect(foldsOf(surface).has('u1')).toBe(false);
 	});
 });
 

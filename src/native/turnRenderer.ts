@@ -31,6 +31,7 @@ import type {
 	ToolEntry,
 	Turn,
 } from './reducer';
+import { turnHeadings } from './reducer';
 import {
 	changedPath,
 	changeLine,
@@ -126,6 +127,19 @@ export function renderPrompt(
 }
 
 /**
+ * What {@link renderPrompt} draws a prompt from: its text and where each of
+ * its `obsidian://` URIs resolves now. A URI is resolved against the vault at
+ * draw time, so a link to a note created since is a different drawing of the
+ * same text.
+ */
+export function promptSignature(prompt: string, resolveUri: (uri: string) => string | null): string {
+	const resolved = promptSegments(prompt).flatMap((segment) =>
+		segment.kind === 'uri' ? [resolveUri(segment.uri)] : [],
+	);
+	return JSON.stringify([prompt, resolved]);
+}
+
+/**
  * The heading elements a rendered block can hold, as one selector (#118).
  * Obsidian's renderer builds ordinary `h1`-`h6` elements, so this is the whole
  * of what "a heading in the prose" means here.
@@ -154,6 +168,12 @@ export interface TurnRendererOptions {
 	 */
 	folds?: FoldMemory;
 	/**
+	 * The call that left the session's newest to-do list, the one update drawn
+	 * open (#143); read on every draw. Left out, a turn's own last update is
+	 * taken, as for a turn drawn with no session around it.
+	 */
+	latestTodoId?: () => string | null;
+	/**
 	 * Where the copy buttons put text and say they could not (#140): the
 	 * clipboard and a notice when left out.
 	 */
@@ -175,6 +195,10 @@ export interface ItemFacts {
 	activity: TurnActivity | null;
 	/** Whether this item is the turn's open run (`openRunIndex`, #128). */
 	openRun: boolean;
+	/** Whether this item is the session's newest to-do update (#143). */
+	latestTodo: boolean;
+	/** Where an `obsidian://` URI resolves in the vault now (#114). */
+	resolveUri: (uri: string) => string | null;
 }
 
 /** What a render function is handed for one item. */
@@ -201,6 +225,8 @@ export interface ItemDraw {
 	 * counts (#118). Nothing else in a turn is prose for that purpose.
 	 */
 	prose?: Promise<void>;
+	/** How many headings the reducer counts in that prose (`turnHeadings`). */
+	headingCount?: number;
 }
 
 /**
@@ -229,7 +255,7 @@ const ITEM_KINDS: ItemKinds = {
 		render: (item, context) => renderThinking(item.entry, context),
 	},
 	steer: {
-		signature: (item) => item.entry.text,
+		signature: (item, facts) => promptSignature(item.entry.text, facts.resolveUri),
 		// A steer is shown where it entered the running turn (CONTEXT.md).
 		render: (item, context) => {
 			const el = context.parent.createDiv({ cls: 'herdr-native-steer' });
@@ -261,8 +287,8 @@ const ITEM_KINDS: ItemKinds = {
 		render: (item, context) => renderSubagentReport(item.entry, context),
 	},
 	todo: {
-		signature: (item) => JSON.stringify([item.latest, todoList(item.entry)]),
-		render: (item, context) => renderTodo(item.entry, item.latest, context),
+		signature: (item, facts) => JSON.stringify([facts.latestTodo, todoList(item.entry)]),
+		render: (item, context) => renderTodo(item.entry, context.facts.latestTodo, context),
 	},
 	image: {
 		signature: (item) => item.entry.mediaType,
@@ -303,12 +329,22 @@ interface DrawnItem {
 	component: Component;
 	/** Its prose render (#118), or null when it is not prose. */
 	prose: Promise<void> | null;
+	/** How many headings the reducer counts in its prose (#118); 0 when it is not prose. */
+	headingCount: number;
+	/**
+	 * The heading elements its prose rendered, in document order, once that
+	 * render has landed; null until then.
+	 */
+	headings: HTMLElement[] | null;
 }
 
 /** One turn as it stands on screen. */
 interface DrawnTurn {
 	el: HTMLElement;
-	/** The prompt as last drawn, and its element; null for a turn without one. */
+	/**
+	 * The prompt's signature as last drawn (`promptSignature`, '' for none),
+	 * and its element; null for a turn without one.
+	 */
 	prompt: string;
 	promptEl: HTMLElement | null;
 	/** The prompt's copy button's listener and timer (#140); null without a prompt. */
@@ -324,11 +360,6 @@ interface DrawnTurn {
 	 * turn was drawn again must mark nothing: its elements may be gone.
 	 */
 	headingToken: symbol;
-	/**
-	 * The heading elements of the turn's prose, in the order the reducer counts
-	 * them, once that prose has rendered (#118). Empty until it has.
-	 */
-	headingEls: HTMLElement[];
 }
 
 /**
@@ -369,13 +400,28 @@ export class TurnRenderer {
 	 * should fall back to the turn (#118).
 	 *
 	 * Reducer headings (`headingCount` of them) and rendered headings pair by
-	 * position only while there are as many of one as of the other: a heading
-	 * the regex saw inside an indented code block, or one it missed, makes
-	 * every index after it a lie.
+	 * position, one prose block at a time, and only while the block has as many
+	 * of one as of the other: a heading the regex saw inside an indented code
+	 * block, or one it missed, makes every index after it in that block a lie.
+	 * A block whose render has not landed has no anchors yet, which leaves the
+	 * blocks before it — the kept prose of a turn Claude is still writing —
+	 * reachable.
 	 */
 	headingEl(turnId: string, index: number, headingCount: number | undefined): HTMLElement | undefined {
-		const els = this.turns.get(turnId)?.headingEls ?? [];
-		return els.length === headingCount ? els[index] : undefined;
+		const drawn = this.turns.get(turnId);
+		if (!drawn) return undefined;
+		const prose = [...drawn.items.values()].filter((item) => item.prose !== null);
+		const total = prose.reduce((count, item) => count + item.headingCount, 0);
+		if (total !== headingCount) return undefined;
+		let offset = 0;
+		for (const item of prose) {
+			if (index < offset + item.headingCount) {
+				const els = item.headings;
+				return els && els.length === item.headingCount ? els[index - offset] : undefined;
+			}
+			offset += item.headingCount;
+		}
+		return undefined;
 	}
 
 	/**
@@ -429,7 +475,6 @@ export class TurnRenderer {
 				replyActions: null,
 				items: new Map(),
 				headingToken: Symbol('draw'),
-				headingEls: [],
 			};
 			this.turns.set(turn.id, drawn);
 			// The turn Claude is writing is the one that grows under the view.
@@ -438,7 +483,8 @@ export class TurnRenderer {
 		const turnEl = drawn.el;
 		let changed = false;
 
-		if (turn.prompt !== drawn.prompt || (turn.prompt && !drawn.promptEl)) {
+		const prompt = turn.prompt ? promptSignature(turn.prompt, this.options.resolveUri) : '';
+		if (prompt !== drawn.prompt || (turn.prompt && !drawn.promptEl)) {
 			drawn.promptEl?.remove();
 			drawn.promptEl = null;
 			drawn.promptComponent?.unload();
@@ -450,7 +496,7 @@ export class TurnRenderer {
 				drawn.promptComponent.load();
 				copyPromptButton(drawn.promptEl, drawn.promptComponent, turn.prompt, this.options);
 			}
-			drawn.prompt = turn.prompt;
+			drawn.prompt = prompt;
 		}
 
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
@@ -471,10 +517,15 @@ export class TurnRenderer {
 
 		const vaultPath = this.options.vaultPath();
 		const openRun = openRunIndex(items);
-		const facts: ItemFacts[] = items.map((_, index) => ({
+		const latestTodo = this.options.latestTodoId
+			? this.options.latestTodoId()
+			: lastTodoId(items);
+		const facts: ItemFacts[] = items.map((item, index) => ({
 			vaultPath,
 			activity,
 			openRun: index === openRun,
+			latestTodo: item.kind === 'todo' && item.entry.id === latestTodo,
+			resolveUri: this.options.resolveUri,
 		}));
 		const signatures = items.map((item, index) => itemSignature(item, facts[index] as ItemFacts));
 		const kept = new Set<string>();
@@ -553,7 +604,21 @@ export class TurnRenderer {
 				});
 			},
 		});
-		return { kind: item.kind, signature, el: draw.el, component, prose: draw.prose ?? null };
+		const drawnItem: DrawnItem = {
+			kind: item.kind,
+			signature,
+			el: draw.el,
+			component,
+			prose: draw.prose ?? null,
+			headingCount: draw.headingCount ?? 0,
+			headings: null,
+		};
+		// Its anchors once its prose has rendered (#118), however the render ended.
+		const found = (): void => {
+			drawnItem.headings = draw.el ? Array.from(draw.el.querySelectorAll<HTMLElement>(HEADING_TAGS)) : [];
+		};
+		if (draw.prose) void draw.prose.then(found, found);
+		return drawnItem;
 	}
 
 	/**
@@ -598,39 +663,45 @@ export class TurnRenderer {
 	}
 
 	/**
-	 * Writes the anchors a heading click aims at (#118), once the turn's prose
-	 * has rendered: the turn's id and the heading's place in the turn, on every
-	 * `h1`-`h6` of its prose in document order.
+	 * Writes the anchors a heading click aims at (#118): the turn's id and the
+	 * heading's place in the turn, on every `h1`-`h6` of its prose, block by
+	 * block, each block's first heading numbered after the headings the reducer
+	 * counts in the blocks before it.
 	 *
 	 * Obsidian's rendered output carries nothing of this plugin's, and the
-	 * render is async, so this waits for every prose render the turn holds —
-	 * those already landed, and those this draw started. A turn drawn again
+	 * render is async: a block kept from the last draw is marked now, and the
+	 * rest once the renders this draw started have landed. A block still
+	 * rendering takes nothing from the blocks before it. A turn drawn again
 	 * since takes the mark over, which is what the token guards.
 	 */
 	private markHeadings(turnId: string, drawn: DrawnTurn): void {
 		const token = Symbol('draw');
 		drawn.headingToken = token;
-		drawn.headingEls = [];
 		const prose = [...drawn.items.values()].filter((item) => item.prose !== null);
-		const renders = prose.flatMap((item) => (item.prose ? [item.prose] : []));
 		const mark = (): void => {
 			if (drawn.headingToken !== token) return;
-			const found: HTMLElement[] = [];
+			let offset = 0;
 			for (const item of prose) {
-				if (item.el) found.push(...Array.from(item.el.querySelectorAll<HTMLElement>(HEADING_TAGS)));
+				item.headings?.forEach((headingEl, index) => {
+					headingEl.setAttr('data-herdr-turn', turnId);
+					headingEl.setAttr('data-herdr-heading', String(offset + index));
+				});
+				offset += item.headingCount;
 			}
-			found.forEach((headingEl, index) => {
-				headingEl.setAttr('data-herdr-turn', turnId);
-				headingEl.setAttr('data-herdr-heading', String(index));
-			});
-			drawn.headingEls = found;
 		};
-		if (prose.length === 0) {
-			mark();
-			return;
-		}
-		void Promise.allSettled(renders).then(mark);
+		mark();
+		const rendering = prose.flatMap((item) => (item.headings === null && item.prose ? [item.prose] : []));
+		if (rendering.length) void Promise.allSettled(rendering).then(mark);
 	}
+}
+
+/** The call of a turn's last to-do update, or null when it made none. */
+function lastTodoId(items: readonly TurnItem[]): string | null {
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item?.kind === 'todo') return item.entry.id;
+	}
+	return null;
 }
 
 /** A prompt's copy button (#140): the prompt as typed, links and all. */
@@ -655,7 +726,11 @@ function copyPromptButton(
  */
 function renderText(entry: TextEntry, context: ItemContext): ItemDraw {
 	const el = context.parent.createDiv({ cls: 'herdr-native-block' });
-	return { el, prose: context.options.renderMarkdown(entry.text, el, context.component) };
+	return {
+		el,
+		prose: context.options.renderMarkdown(entry.text, el, context.component),
+		headingCount: turnHeadings([entry]).length,
+	};
 }
 
 /**
@@ -758,9 +833,10 @@ function renderSubagentReport(entry: ToolEntry, context: ItemContext): ItemDraw 
 
 /**
  * A to-do list update, where the turn made it (#143): the list as a
- * checklist under a line that says how far it has got. The turn's latest
- * update starts open and every earlier one folded, so a long turn shows
- * where it has got to and keeps how it got there; the reader's choice wins.
+ * checklist under a line that says how far it has got. The session's newest
+ * update starts open and every earlier one folded, in this turn and in every
+ * finished one, so the view shows where the work has got to and keeps how it
+ * got there; the reader's choice wins.
  * A list that cannot be read is the line alone.
  */
 function renderTodo(entry: ToolEntry, latest: boolean, context: ItemContext): ItemDraw {

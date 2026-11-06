@@ -102,15 +102,15 @@ describe('todoProgress and latestTodoList', () => {
 });
 
 describe('turnItems: to-do list updates (#143)', () => {
-	it('draws each update where it was made, outside the group, and marks the turn’s last', () => {
+	it('draws each update where it was made, outside the group', () => {
 		const items = turnItems(
 			[read('r1'), todoWrite('t1', PLAN), read('r2'), todoWrite('t2', PLAN)],
 			'highlight',
 		);
-		expect(items.map((item) => (item.kind === 'todo' ? `todo:${item.latest}` : item.kind))).toEqual([
+		expect(items.map((item) => (item.kind === 'todo' ? `todo:${item.entry.id}` : item.kind))).toEqual([
 			'group',
-			'todo:false',
-			'todo:true',
+			'todo:t1',
+			'todo:t2',
 		]);
 		// An update does not end the run the group is in.
 		expect(openRunIndex(items)).toBe(0);

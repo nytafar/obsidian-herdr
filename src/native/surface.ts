@@ -19,7 +19,7 @@
 import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
 import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
-import { latestTodoList, turnActivity, type ToolGroupPresentation } from './toolCalls';
+import { TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
 import { TodoChip } from './todoList';
 import type { Turn } from './reducer';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
@@ -161,6 +161,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private readonly folds = new FoldMemory();
 	/** The turn last drawn as the latest, which settles when another arrives (#128). */
 	private activeTurnId: string | null = null;
+	/** Each turn's own to-do list, read once per change of that turn (#143). */
+	private readonly todos = new TodoIndex();
+	/** The session's newest to-do list as last drawn: its update is the open one. */
+	private latestTodo: LatestTodo | null = null;
 	/** Takes the last find's highlight off (#145); null when nothing is marked. */
 	private clearFindMark: (() => void) | null = null;
 
@@ -215,6 +219,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
 			resolveUri: (uri) => this.resolveUri(uri),
 			folds: this.folds,
+			latestTodoId: () => this.latestTodo?.entryId ?? null,
 			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
@@ -438,7 +443,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			const turns = this.model?.state.turns ?? [];
 			// What a rewind left behind goes first (#131): a turn the new branch
 			// opens is drawn after the ones that stay.
-			for (const id of change.removedTurnIds ?? []) this.turns?.remove(id);
+			for (const id of change.removedTurnIds ?? []) {
+				this.turns?.remove(id);
+				this.todos.forget(id);
+			}
 			// The latest turn too, whatever moved: its tool groups say whether the
 			// agent is working or waiting in them (#128), and the status moves
 			// without a line. And the turn that was latest, which has settled.
@@ -446,12 +454,20 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			const latest = turns.at(-1)?.id;
 			if (latest) ids.add(latest);
 			if (this.activeTurnId && this.activeTurnId !== latest) ids.add(this.activeTurnId);
+			// The turn whose to-do update was open and the one whose is now, when
+			// the newest list moved (#143): either may be a turn nothing else names.
+			const todo = this.todos.latest(turns);
+			if (todo?.entryId !== this.latestTodo?.entryId) {
+				if (this.latestTodo) ids.add(this.latestTodo.turnId);
+				if (todo) ids.add(todo.turnId);
+			}
+			this.latestTodo = todo;
 			for (const id of ids) {
 				const turn = turns.find((candidate) => candidate.id === id);
 				if (turn) this.renderTurn(turn, turn.id === latest);
 			}
 			this.activeTurnId = latest ?? null;
-			this.todo?.update(latestTodoList(turns));
+			this.todo?.update(todo?.items ?? null);
 			this.updateEmpty();
 			// Written while the reader is away from the end: the jump button
 			// says so (#149). A status change alone writes nothing.
@@ -465,9 +481,15 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private renderAll(): void {
 		this.clearTurns();
 		const turns = this.model?.state.turns ?? [];
+		// What the reader opened in turns the model no longer has — gone with a
+		// rotation, or dropped while this tab was detached and heard nothing —
+		// is never asked for again (#127).
+		this.folds.retain(turns.map((turn) => turn.id));
+		this.todos.clear();
+		this.latestTodo = this.todos.latest(turns);
 		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
 		this.activeTurnId = turns.at(-1)?.id ?? null;
-		this.todo?.update(latestTodoList(turns));
+		this.todo?.update(this.latestTodo?.items ?? null);
 		this.updateEmpty();
 		this.updateStatus();
 		this.follower?.settle();
