@@ -1628,6 +1628,26 @@ prompt; these are the facts a build may rely on.
   call and result. hc's `terminal.keys` replies at once with the status from
   before the key (`{status: "blocked", turn}`); `msg` names the next request
   1-3 s later, and `turn` advances on every status change.
+- **Screen access, as built (#164).** `ScreenAccess` (`src/native/screenAccess.ts`):
+  `read`, `press` one key, `type` text; the herdr and herdr-core kinds supply
+  it through `RuntimeKindAdapter.screen`, the `claude` kind has none. Keys
+  are one spelling for both runtimes: `up down left right tab shift+tab enter
+  esc ctrl+u` and the digits 1-9, never a letter. Measured 2026-11-06 (herdr
+  0.9.5, hc 0.1.18, `oh-test-screen*` in `/tmp`): herdr takes these
+  lowercase names (`pane.send_keys` into `cat -v` gave `^[[B ^[[A ^[[D ^[[C`,
+  `^[[Z` for `shift+tab`, `^[` for `esc`; `agent.send_keys ctrl+u` emptied
+  Claude's composer); `agent.send_keys` on a pane with no agent detected
+  answers `agent_not_found`; `pane.read` answers `{type: "pane_read", read:
+  {text, revision, …}}`. hc's `terminal.keys` gave the same bytes for the
+  same names. Typing `Mango, Ripe 2 — ✔` through the built code arrived
+  exactly on both (herdr `pane.send_text` into Claude's composer; hc the
+  resumed attach into `cat -v`), the hc terminal stayed 200x120 and the herdr
+  pane's viewport 62 rows. `HcClient.input` refuses, attaching nothing, when
+  `terminal.get` gives no `cols`/`rows`: on a core without AUTOMATIC_INPUT
+  the bytes go as DATA, which makes the attach the size leader at whatever
+  grid it named. Text with a line break or any C0, DEL or C1 character is
+  refused before anything is sent. Remote (herdr over SSH, hc on another
+  machine) is the same calls over the runtime's own client; not run live.
 
 ## Model, effort, permission mode and context
 

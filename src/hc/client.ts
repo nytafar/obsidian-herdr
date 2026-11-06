@@ -162,7 +162,9 @@ export class HcClient {
 	 * held for hc's quiet period) and as DATA on a core without it, then
 	 * CLOSE. Frames go out in order on the one pipe, so the input is in before
 	 * anything sent after this resolves (measured 2026-11-06, hc 0.1.18,
-	 * `docs/architecture.md`, "Images in prompts").
+	 * `docs/architecture.md`, "Images in prompts"). Rejects, sending nothing,
+	 * when `terminal.get` gives no size, so typing never changes the grid.
+	 * Also how a dialog answer types (#164, `hcScreenAccess`).
 	 */
 	async input(terminal: string, text: string): Promise<void> {
 		const connection = this.connection;
@@ -172,8 +174,11 @@ export class HcClient {
 		const record = await connection.request<{ cols?: unknown; rows?: unknown } | null>('terminal.get', {
 			terminal,
 		});
-		const cols = typeof record?.cols === 'number' && record.cols > 0 ? record.cols : 200;
-		const rows = typeof record?.rows === 'number' && record.rows > 0 ? record.rows : 120;
+		// Never a guessed grid: on a core without AUTOMATIC_INPUT the bytes go
+		// as DATA, which makes this attach the size leader at its cols/rows.
+		const cols = typeof record?.cols === 'number' && record.cols > 0 ? record.cols : null;
+		const rows = typeof record?.rows === 'number' && record.rows > 0 ? record.rows : null;
+		if (cols === null || rows === null) throw new Error('herdr-core did not say the terminal’s size');
 		const stream = await attachTerminal(
 			connection,
 			{ terminal, cols, rows, history: 0, resumed: true },

@@ -37,6 +37,7 @@ import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
 import { defaultDeps as sshDefaultDeps, SshTunnel, terminalArgvPrefix, type RunCommand } from '../herdr/ssh';
 import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
+import { herdrScreenAccess } from '../native/screenAccess';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { herdrSessionWatcher } from '../herdr/sessionWatcher';
 import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
@@ -239,6 +240,7 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		},
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),
+		screen: (client) => herdrScreenAccess(client),
 		// One `tab.list` cache per connection (issue #43), over its own client
 		// and scope.
 		createTabLabels: (connection, alive) => {
