@@ -36,6 +36,8 @@ import { newRuntime, type ClaudePermissionMode } from '../src/runtimes';
 import { normalizeClaudeSessions } from '../src/claude/agents';
 
 const FAKE = resolve(__dirname, 'fixtures/fake-claude.mjs');
+/** Any uuid the plugin names a prompt with (#158). */
+const A_UUID: unknown = expect.any(String);
 
 interface Harness {
 	kind: ClaudeKind;
@@ -252,7 +254,49 @@ describe('the claude kind over a fake claude', () => {
 		h.kind.native?.watcher(h.connection)?.looking?.(paneId, {}, true);
 		expect(status(h, paneId)).toBe('idle');
 		expect(statuses).toEqual(['working', 'done', 'idle']);
-		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' } });
+		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' }, uuid: A_UUID });
+	});
+
+	it('ends a turn that absorbed a steer as done: one result answers both prompts (#158)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const statuses: string[] = [];
+		h.kind.native?.watcher(h.connection)?.onStatus((_pane, value) => statuses.push(value));
+		await prompt(h, paneId, 'STEER');
+		await prompt(h, paneId, 'and check the other file too');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const [first, second] = stdin(h.log);
+		expect(first?.uuid).toEqual(expect.any(String));
+		expect(second?.uuid).toEqual(expect.any(String));
+		expect(second?.uuid).not.toBe(first?.uuid);
+		// The lifecycle ends that follow the result keep it done.
+		await new Promise((done) => setTimeout(done, 60));
+		expect(status(h, paneId)).toBe('done');
+		expect(statuses).toEqual(['working', 'done']);
+	});
+
+	it('does not hold an agent working for a queued prompt that was cancelled (#158)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		await prompt(h, paneId, 'STEER');
+		await prompt(h, paneId, 'DROPPED');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		await new Promise((done) => setTimeout(done, 60));
+		expect(status(h, paneId)).toBe('done');
+	});
+
+	it('stays working while a queued prompt waits for its own turn', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const statuses: string[] = [];
+		h.kind.native?.watcher(h.connection)?.onStatus((_pane, value) => statuses.push(value));
+		await prompt(h, paneId, 'SLOW');
+		await prompt(h, paneId, 'next');
+		await new Promise((done) => setTimeout(done, 60));
+		await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		// The interrupted turn's result answered only the first; the second ran as its own turn.
+		expect(statuses).toEqual(['working', 'done']);
 	});
 
 	it('sends a prompt’s images as image blocks after its text, and says images can go (#144)', async () => {
@@ -274,6 +318,7 @@ describe('the claude kind over a fake claude', () => {
 					{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
 				],
 			},
+			uuid: A_UUID,
 		});
 	});
 

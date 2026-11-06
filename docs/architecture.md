@@ -952,7 +952,7 @@ and, while it runs, its process. Status is the stream's:
 
 | Row | When |
 |---|---|
-| working | a prompt was written and its `result` has not come (one per message, queued ones too; not so when a queued one is absorbed into the running turn, which then answers both with one `result`: "Queued prompts" below) |
+| working | a prompt was written and Claude has not answered it: every prompt goes with its own `uuid`, and is answered by a `result` naming it in `user_message_uuids` (one `result` names a prompt and the queued one absorbed into its turn, "Queued prompts" below) or by its `command_lifecycle` ending (`completed`, `cancelled`, `discarded`, `refused`; a cancelled queued prompt gets no `result`); a `result` that names nothing answers the oldest (#158) |
 | blocked | a `can_use_tool` request waits; kind `question` for `AskUserQuestion`, `permission` for the rest; never `trust` |
 | done | the last turn's `result` came, until a native view of it is looked at or it is prompted; a turn that ends while a view is being looked at (its window focused and visible, the view drawn) is seen at once, counted per viewer as herdr-core's `herdr.seen` is |
 | idle | the process runs and nothing is pending |
@@ -1499,6 +1499,10 @@ probes are in the docs root, `findings/queued-prompts.md`.
   `msg_lifecycle_v1`. A user line carrying `uuid` gets `command_lifecycle`
   lines with `command_uuid` and `state` `queued`, `started`, `completed` or
   `cancelled`; a `result` names what it answers in `user_message_uuids`.
+  The CLI's schema (2.1.318) adds the terminal states `discarded` and
+  `refused`, gives exactly one terminal state per message, and sends the
+  stopped turn's `cancelled` lines after its `result`. The `claude` kind
+  sends every prompt with a uuid and follows these (#158).
   - A message absorbed into the running turn shares its `result`: prompts A
     and B gave one `result` with `user_message_uuids: [A, B]`, so results
     are not one per message.

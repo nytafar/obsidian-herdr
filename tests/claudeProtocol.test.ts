@@ -129,6 +129,11 @@ describe('the strict writer', () => {
 		expect(JSON.parse(line)).toEqual(userMessage('two\nlines'));
 	});
 
+	it('names a prompt by its uuid, with images too (#158)', () => {
+		expect(userMessage('hi', [], 'u-1')).toEqual({ type: 'user', message: { role: 'user', content: 'hi' }, uuid: 'u-1' });
+		expect(userMessage('', [{ mediaType: 'image/png', data: 'AA==', name: 'a.png' }], 'u-2')).toMatchObject({ uuid: 'u-2' });
+	});
+
 	it('refuses anything that is not one object', () => {
 		expect(() => encodeLine([])).toThrow();
 		expect(() => encodeLine(null as unknown as object)).toThrow();
@@ -173,6 +178,29 @@ describe('parseStreamLine', () => {
 			JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['Reached maximum number of turns (1)'], terminal_reason: 'max_turns' }),
 		);
 		expect(event).toMatchObject({ isError: true, message: 'Reached maximum number of turns (1)' });
+	});
+
+	it('reads the messages a result answers, and says when it names none (#158)', () => {
+		const answered = (line: object) => {
+			const event = parseStreamLine(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, ...line }));
+			return event?.type === 'result' ? event.answered : undefined;
+		};
+		// Measured on 2.1.318: one result for a prompt and the steer it absorbed.
+		expect(answered({ user_message_uuid: 'b', user_message_uuids: ['a', 'b'] })).toEqual(['a', 'b']);
+		expect(answered({ user_message_uuid: 'b' })).toEqual(['b']);
+		expect(answered({ user_message_uuids: [] })).toEqual([]);
+		expect(answered({})).toBeNull();
+	});
+
+	it('reads the end of a message’s lifecycle, and only the end', () => {
+		const line = (state: string) => JSON.stringify({ type: 'command_lifecycle', command_uuid: 'c', state, uuid: 'x', session_id: 's' });
+		for (const state of ['completed', 'cancelled', 'discarded', 'refused']) {
+			expect(parseStreamLine(line(state))).toEqual({ type: 'lifecycle', uuid: 'c', ended: true });
+		}
+		for (const state of ['queued', 'started', 'something new']) {
+			expect(parseStreamLine(line(state))).toEqual({ type: 'lifecycle', uuid: 'c', ended: false });
+		}
+		expect(parseStreamLine('{"type":"command_lifecycle","state":"completed"}')).toEqual({ type: 'other' });
 	});
 
 	it('reads can_use_tool, cancels, other control requests, and drops the rest', () => {

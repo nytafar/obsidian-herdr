@@ -130,14 +130,21 @@ export function encodeLine(message: object): string {
  * `image` block each, which `claude -p` in stream-json takes as they are
  * (measured 2026-11-06, Claude Code 2.1.318, `docs/architecture.md`, "Images
  * in prompts").
+ *
+ * `uuid` names the message to Claude (#158): it reports the message's fate
+ * under it in `command_lifecycle`, and every `result` lists the messages it
+ * answers in `user_message_uuids`, which is how a turn that absorbed a queued
+ * message is known to have answered both (`docs/architecture.md`, "Queued
+ * prompts").
  */
-export function userMessage(text: string, images: readonly PromptImage[] = []): object {
-	if (!images.length) return { type: 'user', message: { role: 'user', content: text } };
+export function userMessage(text: string, images: readonly PromptImage[] = [], uuid?: string): object {
+	const named = uuid ? { uuid } : {};
+	if (!images.length) return { type: 'user', message: { role: 'user', content: text }, ...named };
 	const content: object[] = text.trim() ? [{ type: 'text', text }] : [];
 	for (const image of images) {
 		content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
 	}
-	return { type: 'user', message: { role: 'user', content } };
+	return { type: 'user', message: { role: 'user', content }, ...named };
 }
 
 /** A control request from the plugin (`interrupt`). */
@@ -209,7 +216,20 @@ export type StreamEvent =
 			/** The text a result carries, or the first of `errors`; empty for none. */
 			message: string;
 			sessionId: string;
+			/**
+			 * The user messages this turn answered, by the uuid each was sent
+			 * with: `user_message_uuids`, else `user_message_uuid`. Null when
+			 * the result names none (an older Claude), which is not the same
+			 * as an empty list.
+			 */
+			answered: string[] | null;
 	  }
+	/**
+	 * `command_lifecycle`: the fate of a user message sent with a uuid. Only
+	 * its end matters here (`completed`, `cancelled`, `discarded` or
+	 * `refused`); `queued` and `started` are not ends.
+	 */
+	| { type: 'lifecycle'; uuid: string; ended: boolean }
 	| { type: 'permission'; request: ToolPermissionRequest }
 	/** Some other control request; it must be answered, with an error. */
 	| { type: 'control'; requestId: string; subtype: string }
@@ -272,7 +292,13 @@ export function parseStreamLine(line: string): StreamEvent | null {
 				terminalReason: text(message.terminal_reason),
 				message: text(message.result) || first || '',
 				sessionId: text(message.session_id),
+				answered: answeredUuids(message),
 			};
+		}
+		case 'command_lifecycle': {
+			const uuid = text(message.command_uuid);
+			if (!uuid) return { type: 'other' };
+			return { type: 'lifecycle', uuid, ended: LIFECYCLE_ENDS.has(text(message.state)) };
 		}
 		case 'control_request': {
 			const requestId = text(message.request_id);
@@ -295,6 +321,18 @@ export function parseStreamLine(line: string): StreamEvent | null {
 		default:
 			return { type: 'other' };
 	}
+}
+
+/** The terminal states of `command_lifecycle`: after one, the message is no longer Claude's to answer. */
+const LIFECYCLE_ENDS = new Set(['completed', 'cancelled', 'discarded', 'refused']);
+
+/** The uuids a `result` answers; null when it names none at all. */
+function answeredUuids(message: Record<string, unknown>): string[] | null {
+	if (Array.isArray(message.user_message_uuids)) {
+		return (message.user_message_uuids as unknown[]).filter((entry): entry is string => typeof entry === 'string');
+	}
+	const one = text(message.user_message_uuid);
+	return one ? [one] : null;
 }
 
 function toolRequest(requestId: string, request: Record<string, unknown>): ToolPermissionRequest {
