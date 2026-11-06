@@ -1,0 +1,45 @@
+  the lane' (description 'Crisp'), 'Banana', 'Cherry'. After my answer, reply with my
+  answer verbatim. Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which fruits would you like in the salad? (Green apples from the orchard behind the
+     old stone farmhouse at the end of the lane / Banana / Cherry)
+
+✻ Baked for 1s · done 6:03 PM
+
+❯ Use the AskUserQuestion tool now to ask me two single-choice questions in one call:
+  first 'Which cup size would you like for the coffee you are ordering this morning at
+  the station kiosk?' with header 'Size' and options Small, Large; second 'Which lid?'
+  with header 'Lid' and options Yes, No. After my answers, reply with them verbatim. Do
+  nothing else.
+
+● User declined to answer questions
+  ⎿  · Which cup size would you like for the coffee you are ordering this morning at the
+     station kiosk? (Small / Large)
+     · Which lid? (Yes / No)
+
+✻ Worked for 1s · done 6:03 PM
+
+❯ Run exactly this Bash command now and nothing else: touch
+  a-rather-long-file-name-for-wrapping-on-hc.txt
+  another-quite-long-file-name-to-wrap-on-hc.txt   Then reply ok.
+
+  Creating two empty files with the given names
+  ⎿  $ touch a-rather-long-file-name-for-wrapping-on-hc.txt
+     another-quite-long-file-name-to-wrap-on-hc.txt
+
+──────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create two empty files with the given names
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ touch a-rather-long-file-name-for-wrapping-on-hc.txt
+ │ another-quite-long-file-name-to-wrap-on-hc.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+   1. Yes
+   2. Yes, and always allow access to /tmp/oh-test-narrow-hc90 from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+ ❯ 4. No, and tell Claude what to do differently
+
+ Esc to cancel

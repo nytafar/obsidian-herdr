@@ -1,0 +1,40 @@
+  single-choice questions in one call: first 'Which cup
+  size would you like for the coffee you are ordering this
+  morning?' with header 'Size' and options Small, Large;
+  second 'Which lid?' with header 'Lid' and options Yes,
+  No. After my answers, reply with them verbatim. Do
+  nothing else.
+
+● User declined to answer questions
+  ⎿  · Which cup size would you like for the coffee you are
+     ordering this morning? (Small / Large)
+     · Which lid? (Yes / No)
+
+✻ Cooked for 1s · done 5:56 PM
+
+❯ Run exactly this Bash command now and nothing else: touch
+  a-rather-long-file-name-for-wrapping.txt
+  another-quite-long-file-name-to-wrap.txt   Then reply ok.
+
+● Creating two empty files with long names
+  ⎿  $ touch a-rather-long-file-name-for-wrapping.txt
+     another-quite-long-file-name-to-wrap.txt
+
+────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose
+ "switch to auto mode" below
+ Create two empty files with long names
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ touch a-rather-long-file-name-for-wrapping.txt
+ │ another-quite-long-file-name-to-wrap.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+   1. Yes
+   2. Yes, and always allow access to
+      /tmp/oh-test-narrow-herdr60 from this project
+   3. Yes, and switch to auto mode · auto mode handles these
+      prompts for you
+ ❯ 4. No, and tell Claude what to do differently
+
+ Esc to cancel

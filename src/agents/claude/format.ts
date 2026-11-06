@@ -3,7 +3,8 @@
  * view knows about Claude's sessions, behind the agent seam (`../format.ts`).
  *
  * The parser is `./transcript.ts`, the session's files `./paths.ts`, the plan
- * file `./planFile.ts` and the `/` list `./commands.ts`. What is here is the
+ * file `./planFile.ts`, the `/` list `./commands.ts` and its dialogs as the
+ * screen shows them `./screenDialog.ts`. What is here is the
  * rest: the dialogs Claude blocks on as tool calls (`AskUserQuestion`,
  * `ExitPlanMode`), its tool names and where a subagent's report is.
  */
@@ -14,6 +15,7 @@ import type { ToolEntry, ToolKind } from '../../native/conversation';
 import { builtinCatalog, LocalCommandCatalog } from './commands';
 import { subagentTranscript, transcriptPath } from './paths';
 import { PlanTracker, planFilePath } from './planFile';
+import { parseClaudeScreen } from './screenDialog';
 import {
 	CLAUDE_EFFORTS,
 	CLAUDE_MODES,
@@ -136,4 +138,5 @@ export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 	sessionInfo: (state) => state.info,
 	efforts: CLAUDE_EFFORTS,
 	modes: CLAUDE_MODES,
+	screenDialog: parseClaudeScreen,
 };

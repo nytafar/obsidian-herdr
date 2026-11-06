@@ -1648,6 +1648,38 @@ prompt; these are the facts a build may rely on.
   grid it named. Text with a line break or any C0, DEL or C1 character is
   refused before anything is sent. Remote (herdr over SSH, hc on another
   machine) is the same calls over the runtime's own client; not run live.
+- **Narrow screens (#163).** Measured 2026-11-06 at 60 and 90 columns
+  (herdr 0.9.5 pane held at size by a `terminal session control` client, hc
+  0.1.18 terminals started with `terminal.run {size}`; fixtures `*-60-*`,
+  `*-90-*`). Every part of every dialog wraps, by words, or mid-word in a
+  path (`…/a-ra` / `ther-long-name`, the plan file `~/.claude/pl` /
+  `ans/<slug>.md`). Continuation lines sit at the column the row's text
+  starts at: question options and typed answers at 5 (single) or 9
+  (multi-select, behind the box), **so a wrapped label and the description
+  under it share one indent** and only the request can say where one ends;
+  permission rows at 6, the amended `No, …` row at 10; plan row 3 at 8,
+  where its `shift+tab to approve with this feedback` line also sits. A
+  wrapped question, and a wrapped Bash command, get a `│ ` gutter; so does a
+  wrapped question on the review, though one at 60 columns wrapped without
+  it. The plan hint breaks after `·`, leaving the path on a line of its own.
+  `tab` on a permission's `No` shows the placeholder `No, and tell Claude
+  what to do differently` and the hint loses `· Tab to amend`; typed words
+  replace the placeholder after `No, `. **A torn repaint stays on screen:**
+  with a two-line typed answer on the multi-select's own-answer row, moving
+  down to `Submit` left `❯    Submitrden` (herdr at 90, hc at 60), the
+  answer's last line dropped and its end written after `Submit`; the same
+  step at the other two sizes drew cleanly. Reached through `right` instead,
+  the review is what states the answer. Write and Edit show the file
+  relative to the session's folder (`b.txt` for a `file_path` inside it).
+- **The parser, as built (#163).** `parseClaudeScreen`
+  (`src/agents/claude/screenDialog.ts`, behind `AgentFormat.screenDialog`)
+  reads a screen into `question`, `review`, `permission`, `plan`, `trust`
+  or `unknown` (`src/agents/screenDialog.ts`). A dialog is the region under
+  a `─` rule down to the last line; rules are tried from the bottom up and
+  only a region that is wholly one dialog counts, every line accounted for,
+  one cursor, rows numbered from 1. Text is kept per screen line and
+  compared with `wrappedEquals`, which allows a run of spaces and one line
+  break, or nothing, at each wrap point and nothing else.
 
 ## Model, effort, permission mode and context
 

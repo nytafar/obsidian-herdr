@@ -1,0 +1,40 @@
+
+
+❯ Use the AskUserQuestion tool now to ask me exactly one
+  multi-select question (multiSelect true): 'Which fruits
+  would you like in the salad?' with header 'Fruit' and
+  options 'Green apples from the orchard behind the old
+  stone farmhouse' (description 'Crisp'), 'Banana',
+  'Cherry'. After my answer, reply with my answer verbatim.
+  Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which fruits would you like in the salad? (Green
+     apples from the orchard behind the old stone farmhouse
+     / Banana / Cherry)
+
+✻ Crunched for 1s · done 5:55 PM
+
+❯ Use the AskUserQuestion tool now to ask me two
+  single-choice questions in one call: first 'Which cup
+  size would you like for the coffee you are ordering this
+  morning?' with header 'Size' and options Small, Large;
+  second 'Which lid?' with header 'Lid' and options Yes,
+  No. After my answers, reply with them verbatim. Do
+  nothing else.
+
+────────────────────────────────────────────────────────────
+←  ☒ Size  ☒ Lid  ✔ Submit  →
+
+Review your answers
+
+ ● Which cup size would you like for the coffee you are
+   ordering this morning?
+   → Large
+ ● Which lid?
+   → Yes
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
