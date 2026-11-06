@@ -37,7 +37,7 @@ import type { PlatformPath } from 'node:path';
 import type { ConnectionTunnel } from '../connection';
 import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
 import { ClaudeActions } from '../claude/actions';
-import { ClaudeAgents, type StoredClaudeSession } from '../claude/agents';
+import { ClaudeAgents, type ClaudeQuestion, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
 import {
 	defaultPtySpawn,
@@ -155,6 +155,11 @@ export interface ClaudeKindHost {
 	ptyTools?: PtyTools;
 	/** The replay buffer's bound, for tests. */
 	replayLimit?: number;
+	/**
+	 * Asks the user a yes-or-no question (a modal); absent, every answer is
+	 * no. Asked before a TUI that reports no status is stopped.
+	 */
+	confirm?: (question: ClaudeQuestion) => Promise<boolean>;
 }
 
 export type ClaudeKind = RuntimeKindAdapter<ClaudeClient, ClaudeScope, ConnectionTunnel> & {
@@ -214,6 +219,7 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			host.localSettings ??
 			((cwd) => localSettingsTarget(cwd, { ...nodeProjectRootEnv(), ...(host.home ? { home: host.home } : {}) })),
 		...(pty ? { pty } : {}),
+		...(host.confirm ? { confirm: host.confirm } : {}),
 	});
 	// A shell is no Claude session either: the same inherited variables go.
 	const shells = pty ? new ClaudeShells({ ...pty, timers, env: () => claudeEnv(host.spawnEnv(), '') }) : null;

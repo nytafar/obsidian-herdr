@@ -32,7 +32,10 @@ import type { ClaudeAgents, ClaudeAgentStatus, ClaudeAgentView, ClaudeRuntimeSet
 /** What the list calls the place the rows come from. */
 export const CLAUDE_SCOPE_LABEL = 'agents run by Obsidian';
 
-/** An agent status as the shared rows carry it: stopped is idle with a flag. */
+/**
+ * An agent status as the shared rows carry it: stopped is idle with a flag,
+ * and a TUI that has not reported its status is `unknown`.
+ */
 export function paneStatusOf(status: ClaudeAgentStatus): AgentStatus {
 	return status === 'stopped' ? 'idle' : status;
 }

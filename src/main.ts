@@ -62,7 +62,7 @@ import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
 import { normalizeClaudeSessions } from './claude/agents';
 import { graduationArgs } from './claude/actions';
 import type { GraduationTarget } from './views/rowMenu';
-import { RuntimeSuggestModal } from './views/modals';
+import { ConfirmModal, RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
@@ -184,6 +184,7 @@ export default class HerdrPlugin extends Plugin {
 		notice: (message) => {
 			new Notice(message);
 		},
+		confirm: (question) => new ConfirmModal(this.app, { ...question, warning: true }).ask(),
 	});
 	/**
 	 * One adapter per runtime kind (ADR-0004): everything that differs by kind

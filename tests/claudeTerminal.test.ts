@@ -25,6 +25,7 @@ import {
 	CLAUDE_QUIT,
 	MOVED_TO_NATIVE,
 	PLUGIN_UNLOADING,
+	PROMPT_NOT_SENT_KEPT,
 	PROMPT_NOT_SENT_STOPPED,
 	WAIT_FOR_RUNTIME,
 	type StoredClaudeSession,
@@ -109,6 +110,8 @@ interface HarnessOptions {
 	/** The runtime's permission mode, and the one the stored row pins, if any. */
 	runtimeMode?: ClaudePermissionMode;
 	rowMode?: ClaudePermissionMode;
+	/** The TUI slot runs a stand-in that never reports its status (no OSC 7501). */
+	silentTui?: boolean;
 }
 
 /** The stored row's id. */
@@ -123,7 +126,7 @@ function harness(options: HarnessOptions = {}): Harness {
 	const log = join(dir, 'fake.log');
 	const stored: Record<string, StoredClaudeSession[]> = {};
 	const notices: string[] = [];
-	const pty = new FakePty({ tui: true });
+	const pty = new FakePty({ tui: options.silentTui !== true });
 	const kind = createClaudeKind({
 		extraPath: () => '',
 		spawnEnv: () => ({ ...process.env, FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_HOME: dir, SHELL: '/usr/bin/zsh' }),
@@ -245,7 +248,7 @@ function inner(argv: readonly string[]): string {
 }
 
 /**
- * Until its first report a TUI reads as idle; this waits for the probe's
+ * Until its first report a TUI reads as unknown; this waits for the probe's
  * answer and the `idle` it brings (and for every TUI spawned so far).
  */
 async function reported(h: Harness, count = 1): Promise<void> {
@@ -288,6 +291,12 @@ describe('the view switch, as a state machine', () => {
 		expect(planViewSwitch({ ...native, mode: 'stream' })).toEqual({ action: 'stay' });
 		expect(planViewSwitch({ ...native, mode: 'stopped', status: 'stopped' })).toEqual({ action: 'stay' });
 		expect(planViewSwitch({ ...native, mode: 'stopped', status: 'stopped', queued: 1 })).toEqual({ action: 'start-stream' });
+	});
+
+	it('asks before it stops a TUI whose status is unknown', () => {
+		const native = { ...base, want: 'stream', mode: 'tui', viewers: 0 } as const;
+		expect(planViewSwitch({ ...native, status: 'unknown' })).toEqual({ action: 'confirm' });
+		expect(planViewSwitch({ ...native, status: 'unknown', stopping: true })).toEqual({ action: 'stay' });
 	});
 });
 
@@ -659,6 +668,98 @@ describe('switches and stops that race a tab (the D2 review)', () => {
 		await pause(50);
 		expect(h.pty.children).toHaveLength(0);
 		expect(streamStarts(h)).toEqual([]);
+	});
+});
+
+describe('a TUI that never reports its status', () => {
+	const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+	/** A harness whose confirmation answers `answer`, counting the questions. */
+	function asking(answer: boolean | null) {
+		const questions: string[] = [];
+		const h = harness({
+			row: 'started',
+			silentTui: true,
+			host:
+				answer === null
+					? {}
+					: {
+							confirm: (question) => {
+								questions.push(question.body);
+								return Promise.resolve(answer);
+							},
+						},
+		});
+		return { h, questions };
+	}
+
+	async function typedTui(h: Harness): Promise<Tab> {
+		const tab = openTab(h, AGENT);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		// Typed into, it may be mid-turn for all the plugin knows.
+		expect(tab.session.input('do something\r')).toBe(true);
+		return tab;
+	}
+
+	it('shows as unknown in the list, never idle', async () => {
+		const { h } = asking(true);
+		openTab(h, AGENT);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		await pause(20);
+		expect(agent(h, AGENT)?.status).toBe('unknown');
+		expect(h.connection.scope.get(AGENT)?.agentStatus).toBe('unknown');
+	});
+
+	it('asks before a native prompt stops it, and sends nothing when told no', async () => {
+		const { h, questions } = asking(false);
+		await typedTui(h);
+		await expect(h.kind.promptSender(() => h.client).send(AGENT, 'no')).rejects.toThrow(PROMPT_NOT_SENT_KEPT);
+		expect(questions).toHaveLength(1);
+		expect(questions[0]).toContain('2.1.295');
+		await pause(50);
+		expect(h.pty.last.exited).toBe(false);
+		expect(h.pty.kills).toEqual([]);
+		expect(streamStarts(h)).toEqual([]);
+		expect(agent(h, AGENT)?.mode).toBe('tui');
+		// Nothing is asked again behind the user's back.
+		expect(questions).toHaveLength(1);
+	});
+
+	it('stops it and delivers the native prompt once the user confirms', async () => {
+		const { h, questions } = asking(true);
+		const tab = await typedTui(h);
+		await h.kind.promptSender(() => h.client).send(AGENT, 'yes');
+		expect(questions).toHaveLength(1);
+		await waitFor(() => streamPrompts(h).includes('yes'), 'the prompt in the headless process');
+		expect(h.pty.last.exited).toBe(true);
+		expect(tab.closed).toEqual([MOVED_TO_NATIVE]);
+	});
+
+	it('asks before the native view takes it, and keeps it when told no', async () => {
+		const { h, questions } = asking(false);
+		await typedTui(h);
+		h.kind.paneViewChosen?.(h.connection.endpoint, AGENT, 'native');
+		await pause(50);
+		expect(questions).toHaveLength(1);
+		expect(h.pty.last.exited).toBe(false);
+		expect(agent(h, AGENT)?.mode).toBe('tui');
+	});
+
+	it('refuses a native prompt where nobody can be asked', async () => {
+		const { h } = asking(null);
+		await typedTui(h);
+		await expect(h.kind.promptSender(() => h.client).send(AGENT, 'no')).rejects.toThrow(PROMPT_NOT_SENT_KEPT);
+		await pause(50);
+		expect(h.pty.last.exited).toBe(false);
+	});
+
+	it('moves without asking while nothing was ever typed into it, since no turn can be running', async () => {
+		const { h, questions } = asking(false);
+		openTab(h, AGENT);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		await h.kind.promptSender(() => h.client).send(AGENT, 'fresh');
+		await waitFor(() => streamPrompts(h).includes('fresh'), 'the prompt');
+		expect(questions).toEqual([]);
 	});
 });
 

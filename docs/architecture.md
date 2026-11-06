@@ -948,7 +948,12 @@ renderer:
   Once the plugin answers the probe (as herdr-core does), Claude reports
   `state=idle` at start, `working` and `done` around a turn, and `clear`
   three times on exit; that is the row's status in TUI mode
-  (`programStatus.ts`), and a `working` marks the session started. A blocked
+  (`programStatus.ts`), and a `working` marks the session started. Before
+  its first report, and for good on a Claude older than 2.1.295, the row is
+  `unknown`, never idle: a switch to the headless process (a tab switched
+  to native, a native prompt) then asks the user before it stops the TUI,
+  unless no key was ever typed into it, since only typing starts a turn
+  there. A blocked
   TUI is answered in the terminal: there is no `can_use_tool` in TUI mode,
   and the card offers "Open in terminal". An unprompted TUI writes no
   transcript, so a later `--session-id` of the same id still works. Its

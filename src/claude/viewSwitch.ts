@@ -17,8 +17,10 @@
  * and the switch follows once the turn is over. A switch stops the old
  * process in its own stop order and starts the other with `--resume`.
  *
- * A TUI that never reported its status (no OSC 7501) counts as idle: nothing
- * better is known.
+ * A TUI that has not reported its status (no OSC 7501, which needs Claude
+ * Code 2.1.295 or later) may be mid-turn: it is stopped for the native view
+ * only once the user confirms (`confirm`). One nobody typed into is passed in
+ * as idle, since no turn can be running in it.
  */
 
 import type { ClaudeAgentStatus } from './agents';
@@ -50,7 +52,9 @@ export type ViewSwitchStep =
 	/** Nothing runs: start the TUI for the tabs waiting on it. */
 	| { action: 'start-tui' }
 	/** Nothing runs: start the headless process for the prompts waiting on it. */
-	| { action: 'start-stream' };
+	| { action: 'start-stream' }
+	/** The TUI's status is unknown: ask the user before it is stopped for the switch. */
+	| { action: 'confirm' };
 
 /** What a terminal tab says while the agent's turn is still running. */
 export const WAIT_FOR_TURN = 'waiting for the agent to finish its turn in the native view';
@@ -78,5 +82,6 @@ export function planViewSwitch(input: ViewSwitchInput): ViewSwitchStep {
 	if (input.mode === 'stream') return { action: 'stay' };
 	if (input.mode === 'stopped') return input.queued > 0 ? { action: 'start-stream' } : { action: 'stay' };
 	if (input.stopping || busy(input.status)) return { action: 'stay' };
+	if (input.status === 'unknown') return { action: 'confirm' };
 	return { action: 'switch' };
 }

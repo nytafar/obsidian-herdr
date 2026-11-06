@@ -348,7 +348,11 @@ run and how many are stopped.
   runs. Closing the tab leaves Claude
   running; opening the row again, in the same Obsidian session, shows the
   same screen. The list shows its status as Claude reports it to the
-  terminal (working, done, blocked); a `/clear` typed in the terminal is not
+  terminal (working, done, blocked), and **unknown** until it reports one;
+  a Claude older than 2.1.295 never does. Since such an agent may be in the
+  middle of a turn, moving it to the native view, or prompting it there,
+  asks you before it is stopped (unless nothing was ever typed into it), and
+  a prompt you decline to move it for is not sent. A `/clear` typed in the terminal is not
   seen, so a later resume reopens the conversation from before it.
 - **Open shell here** from a folder's menu or the command opens a plain shell
   (your `SHELL`) in that folder, in a tab of its own. It is not an agent and

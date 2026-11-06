@@ -85,7 +85,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   hold the agent while they end it, so nothing (a tab opening, a turn
   ending) starts it again behind them, and Continue in starts the session on
   the other runtime only once the process here is gone. Permissions asked in the terminal are answered there,
-  and the agent list follows the status Claude reports to the terminal.
+  and the agent list follows the status Claude reports to the terminal; a
+  terminal that reports none (Claude before 2.1.295) shows as unknown, and
+  moving it to the native view asks first, since a turn may be running.
   Closing the tab keeps Claude running, and opening it again in the same
   session shows the same screen. Resizing reaches Claude. A watchdog beside
   each terminal ends it within a second if Obsidian is killed.

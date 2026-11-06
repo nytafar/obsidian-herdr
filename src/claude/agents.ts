@@ -172,8 +172,11 @@ export function normalizeClaudeSessions(
 	return result;
 }
 
-/** An agent's status, as the scope and the watcher read it. */
-export type ClaudeAgentStatus = 'stopped' | 'idle' | 'working' | 'blocked' | 'done';
+/**
+ * An agent's status, as the scope and the watcher read it. `unknown` is a TUI
+ * that has not reported one (OSC 7501 needs Claude Code 2.1.295 or later).
+ */
+export type ClaudeAgentStatus = 'stopped' | 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
 /** One agent as the rest of the plugin sees it. Immutable snapshot. */
 export interface ClaudeAgentView {
@@ -238,6 +241,31 @@ export interface ClaudeAgentsHost {
 	localSettings?(cwd: string): LocalSettingsTarget | null;
 	/** How a TUI gets its pty (ADR-0007's D2); absent where there is none (Windows). */
 	pty?: ClaudePtyHost;
+	/**
+	 * Asks the user a yes-or-no question; true for yes. Absent, the answer is
+	 * no: nothing that needs one happens.
+	 */
+	confirm?(question: ClaudeQuestion): Promise<boolean>;
+}
+
+/** A question for the user, as a confirmation modal shows it. Sentence case. */
+export interface ClaudeQuestion {
+	title: string;
+	body: string;
+	/** The confirming button, which does something that cannot be undone. */
+	confirm: string;
+}
+
+/** What the user is asked before a TUI of unknown status is stopped for the native view. */
+export function unknownTuiQuestion(name: string): ClaudeQuestion {
+	return {
+		title: 'Stop Claude in the terminal?',
+		body:
+			`${name || 'This agent'} has not reported whether it is working in its terminal view ` +
+			'(that needs Claude Code 2.1.295 or later), so a turn may be running. ' +
+			'Moving it to the native view stops it, and cuts off a running turn.',
+		confirm: 'Stop and move',
+	};
 }
 
 /** What starts a TUI on a pty. */
@@ -276,6 +304,8 @@ export const AGENT_RELEASED = 'the agent is moving to another runtime';
 export const AGENT_FORGOTTEN = 'the agent was removed from the list';
 /** Said once the plugin is unloading: nothing starts any more. */
 export const PLUGIN_UNLOADING = 'the plugin is unloading';
+/** A native prompt to a TUI of unknown status, when the user kept it (or nobody could be asked). */
+export const PROMPT_NOT_SENT_KEPT = 'the prompt was not sent: the agent stayed in its terminal view';
 /** A native prompt waiting for a switch that a stop overtook. */
 export const PROMPT_NOT_SENT_STOPPED = 'the prompt was not sent: the agent was stopped first';
 
@@ -312,6 +342,10 @@ interface AgentRecord {
 	tuiBlock: BlockKind | null;
 	/** The current TUI reported a turn, so it took its session. */
 	tuiTurned: boolean;
+	/** A tab typed into the current TUI, so while it reports nothing it may be mid-turn. */
+	tuiTyped: boolean;
+	/** The TUI the user is being asked about stopping (unknown status); null when no question is open. */
+	asking: SharedPty | null;
 	/** Which process the agent should run: the last view that asked (`./viewSwitch.ts`). */
 	want: 'stream' | 'tui';
 	/** Terminal tabs on the agent. */
@@ -391,6 +425,8 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		tuiState: null,
 		tuiBlock: null,
 		tuiTurned: false,
+		tuiTyped: false,
+		asking: null,
 		want: 'stream',
 		viewers: new Set(),
 		switching: null,
@@ -699,7 +735,11 @@ export class ClaudeAgents {
 		else if (record.switching === 'stream') this.tellWaiting(record, WAIT_FOR_NATIVE_SWITCH);
 		else if (record.switching === 'tui') this.tellWaiting(record, STARTING_TUI);
 		const attachment: PtyAttachment = {
-			write: (data) => entry.inner?.write(data) ?? false,
+			write: (data) => {
+				const written = entry.inner?.write(data) ?? false;
+				if (written) record.tuiTyped = true;
+				return written;
+			},
 			resize: (cols, rows) => entry.inner?.resize(cols, rows) ?? false,
 			reply: (data) => entry.inner?.reply(data) ?? false,
 			repaint: () => entry.inner?.repaint(),
@@ -1010,6 +1050,8 @@ export class ClaudeAgents {
 		if (record.tui?.alive) {
 			if (record.tuiState === 'working') return 'working';
 			if (record.tuiState === 'blocked') return 'blocked';
+			// Never reported: not known to be idle, whatever it is doing.
+			if (record.tuiState === null) return 'unknown';
 			return record.finished ? 'done' : 'idle';
 		}
 		if (!record.process?.alive) return 'stopped';
@@ -1038,10 +1080,12 @@ export class ClaudeAgents {
 		if (record.hold || this.disposed) return;
 		this.settling.add(record);
 		try {
+			const status = this.statusOf(record);
 			const step = planViewSwitch({
 				want: record.want,
 				mode: this.modeOf(record),
-				status: this.statusOf(record),
+				// A TUI nobody typed into cannot be mid-turn, reported or not.
+				status: status === 'unknown' && !record.tuiTyped ? 'idle' : status,
 				stopping: record.process?.isStopping === true || record.tui?.isStopping === true,
 				viewers: record.viewers.size,
 				queued: record.queued.length,
@@ -1063,10 +1107,53 @@ export class ClaudeAgents {
 				case 'switch':
 					void this.switchProcess(runtimeId, record, record.want);
 					return;
+				case 'confirm':
+					this.askToStopTui(runtimeId, record);
+					return;
 			}
 		} finally {
 			this.settling.delete(record);
 		}
+	}
+
+	/**
+	 * A TUI of unknown status that a native view asked to leave: stopped only
+	 * once the user says so. No: the prompts waiting for it are rejected, and
+	 * the agent stays in its terminal view, so nothing asks again until a
+	 * native view does.
+	 */
+	private askToStopTui(runtimeId: string, record: AgentRecord): void {
+		const tui = record.tui;
+		if (!tui || record.asking === tui) return;
+		record.asking = tui;
+		const asked = this.host.confirm?.(unknownTuiQuestion(record.stored.name)) ?? Promise.resolve(false);
+		void asked
+			.catch(() => false)
+			.then((yes) => {
+				if (record.asking === tui) record.asking = null;
+				const status = this.statusOf(record);
+				const busy = status === 'working' || status === 'blocked';
+				const applies =
+					record.tui === tui &&
+					!tui.isStopping &&
+					!record.switching &&
+					!record.hold &&
+					!this.disposed &&
+					record.want === 'stream' &&
+					this.runtimes.get(runtimeId)?.get(record.stored.id) === record;
+				if (yes && applies && !busy) {
+					void this.switchProcess(runtimeId, record, 'stream');
+					return;
+				}
+				if (!yes) {
+					this.dropQueued(record, PROMPT_NOT_SENT_KEPT);
+					if (record.tui === tui) record.want = 'tui';
+				} else if (record.tui === tui && busy) {
+					// It reported a turn meanwhile: as for any busy TUI.
+					this.dropQueued(record, TUI_BUSY);
+				}
+				this.update(runtimeId, record);
+			});
 	}
 
 	private tellWaiting(record: AgentRecord, reason: string): void {
@@ -1205,6 +1292,7 @@ export class ClaudeAgents {
 		record.tuiState = null;
 		record.tuiBlock = null;
 		record.tuiTurned = false;
+		record.tuiTyped = false;
 		record.spawnedWith = resume ? 'resume' : 'session-id';
 		record.retried = how !== undefined;
 		record.finished = false;

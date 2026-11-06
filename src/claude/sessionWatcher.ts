@@ -13,7 +13,9 @@
  * symlinked folder or a moved configuration folder is still found.
  *
  * A stopped agent reads as `idle`, so its prompt box sends, and sending
- * resumes it. `trust` is never reported.
+ * resumes it. So does a TUI that has not reported its status (`unknown` in
+ * the agent list): a prompt to it asks the user before the TUI is stopped
+ * for it. `trust` is never reported.
  *
  * **Seen.** "Done" lasts until a person looks. A native view says when a
  * person is in front of it (`looking`, per viewer, as herdr-core's
@@ -45,7 +47,7 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 			cwd: agent.cwd,
 			agentSession: agent.sessionId,
 			transcriptPath: agent.transcriptPath,
-			agentStatus: paneStatusOf(agent.status),
+			agentStatus: agent.status === 'unknown' ? 'idle' : paneStatusOf(agent.status),
 		};
 		if (agent.blockKind) pane.blockKind = agent.blockKind;
 		if (agent.request) pane.request = agent.request;
