@@ -95,6 +95,31 @@ describe('a prompt sent as content blocks (#129)', () => {
 	});
 });
 
+describe('a plan approved with feedback (#129)', () => {
+	// Recorded on Claude Code 2.1.318: the ExitPlanMode answer is one `user`
+	// line of `[{tool_result}, {text: "<feedback>"}]`, with `toolUseResult` and
+	// `sourceToolAssistantUUID`, and no `isMeta`.
+	const lines = fixtureLines('plan-feedback');
+
+	it('keeps the work after the approval in the planning turn', () => {
+		const state = cold(lines);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Plan a one-step change and ask me to approve it.']);
+		const names = state.turns[0]?.entries.flatMap((entry) => (entry.kind === 'tool' ? [entry.name] : []));
+		expect(names).toEqual(['Write', 'ToolSearch', 'ExitPlanMode', 'Write', 'Read']);
+		expect(live(lines).turns).toEqual(state.turns);
+	});
+
+	it('reads the feedback as part of the call’s answer', () => {
+		const exit = cold(lines).turns[0]?.entries.find(
+			(entry): entry is ToolEntry => entry.kind === 'tool' && entry.name === 'ExitPlanMode',
+		);
+		expect(exit?.status).toBe('done');
+		expect(exit?.result).toContain('User has approved your plan.');
+		expect(exit?.result).toContain('also write the word twice');
+	});
+});
+
 describe('a compaction (#130)', () => {
 	// Recorded on Claude Code 2.1.286: an idle compaction after a finished turn
 	// — the `compact_boundary` system line, the summary as a string `user` line
@@ -249,6 +274,45 @@ describe('a rewind and a cancelled re-send (#131)', () => {
 			answer('a4', 'u4', 'another'),
 		]);
 		expect(prompts(state)).toEqual(['block resend', 'string resend']);
+	});
+
+	describe('a local command after a cancelled prompt', () => {
+		// Recorded on Claude Code 2.1.281: a prompt cancelled and re-sent, the
+		// re-send cancelled too, then `/model`. The command's caveat is the
+		// sibling of the cancelled prompt, and the command hangs from the caveat.
+		const lines = fixtureLines('command-after-cancel');
+
+		it('drops the cancelled prompt when the next thing sent is a command', () => {
+			expect(prompts(cold(lines))).toEqual(['/model', 'next']);
+			expect(live(lines).turns).toEqual(cold(lines).turns);
+		});
+
+		it('says which turn it dropped when the command arrives', () => {
+			const at = lines.findIndex((line) => line.includes('<local-command-caveat>'));
+			const before = reduce(emptyTranscript(), lines.slice(0, at));
+			expect(prompts(before.state)).toEqual(['second draft']);
+
+			const after = reduce(before.state, lines.slice(at));
+
+			expect(after.removedTurnIds).toEqual(['a9da4a97-d54a-479e-8506-ba222565e706']);
+		});
+	});
+
+	it('keeps an answered prompt when a command follows it', () => {
+		const caveat = JSON.stringify({
+			type: 'user',
+			uuid: 'c1',
+			parentUuid: 'a1',
+			isMeta: true,
+			message: { role: 'user', content: '<local-command-caveat>Caveat: local.</local-command-caveat>' },
+		});
+		const state = cold([
+			user('u1', 'p', 'first'),
+			answer('a1', 'u1', 'one'),
+			caveat,
+			user('k1', 'c1', '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>'),
+		]);
+		expect(prompts(state)).toEqual(['first', '/model']);
 	});
 
 	it('hides nothing for a parent it never saw', () => {

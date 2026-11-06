@@ -307,6 +307,12 @@ export interface BranchState {
 	floor: number;
 	/** The newest prompt, what it hangs from and whether anything answered it. */
 	lastPrompt: { turnId: string; parent: string; answered: boolean } | null;
+	/**
+	 * The newest local-command caveat and what it hangs from. A slash command
+	 * hangs from its caveat, and the caveat is where the command entered the
+	 * conversation: the sibling of a prompt cancelled just before it.
+	 */
+	caveat: { uuid: string; parent: string } | null;
 }
 
 export interface ReduceResult {
@@ -326,7 +332,7 @@ export function emptyTranscript(): TranscriptState {
 		turns: [],
 		raw: {},
 		pendingQueue: [],
-		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null },
+		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
 	};
 }
 
@@ -489,6 +495,21 @@ function blockPrompt(
 	return { text: texts.join('\n'), images };
 }
 
+/**
+ * The human's text in a line of content blocks: its text blocks joined, less
+ * the interruption marker and task notifications, which are the runtime's.
+ */
+function blockText(content: readonly unknown[]): string {
+	const texts: string[] = [];
+	for (const block of content) {
+		if (!isRecord(block) || block.type !== 'text') continue;
+		const text = stringField(block, 'text');
+		if (INTERRUPTED.test(text) || taskNotification(text)) continue;
+		if (text.trim()) texts.push(text);
+	}
+	return texts.join('\n');
+}
+
 /** What the runtime writes for the model's eyes only, inside a summary. */
 const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>\s*/g;
 
@@ -549,6 +570,17 @@ function waitingShell(entries: readonly TurnEntry[]): ShellEntry | null {
 		if (entry?.kind === 'shell' && entry.stdout === null) return entry;
 	}
 	return null;
+}
+
+/**
+ * The `isMeta` line Claude Code writes before a slash command run at the
+ * keyboard (`commandPrompt`): `<local-command-caveat>…`, measured on 2.1.281.
+ */
+function isLocalCommandCaveat(line: Json): boolean {
+	if (line.type !== 'user' || line.isMeta !== true) return false;
+	const message = isRecord(line.message) ? line.message : null;
+	const content = message?.content;
+	return typeof content === 'string' && content.trimStart().startsWith('<local-command-caveat>');
 }
 
 /** True for a `user` line that is a local command's own output, not a prompt. */
@@ -740,6 +772,7 @@ class Branch {
 	private answers: number;
 	private floor: number;
 	private lastPrompt: BranchState['lastPrompt'];
+	private caveat: BranchState['caveat'];
 	/** The record being folded, marked by {@link settle}. */
 	private pending: { uuid: string; answer: boolean } | null = null;
 
@@ -749,6 +782,7 @@ class Branch {
 		this.answers = state.answers;
 		this.floor = state.floor;
 		this.lastPrompt = state.lastPrompt;
+		this.caveat = state.caveat;
 	}
 
 	/** The line about to be folded; marked when the next one arrives. */
@@ -756,6 +790,8 @@ class Branch {
 		const uuid = line.uuid;
 		if (typeof uuid !== 'string' || !uuid || line.isSidechain === true) return;
 		this.pending = { uuid, answer: line.type === 'assistant' };
+		const parent = parentOf(line);
+		if (isLocalCommandCaveat(line) && typeof parent === 'string') this.caveat = { uuid, parent };
 	}
 
 	/** Marks the line folded last where it landed. */
@@ -778,10 +814,16 @@ class Branch {
 	 * one goes. A prompt that hangs from an earlier record than the last, with
 	 * an answer written since that record, forks: every turn after the one that
 	 * record landed in goes. A parent this read never saw hides nothing.
+	 *
+	 * A slash command hangs from its local-command caveat, which hangs from
+	 * where the command entered the conversation; that record is the
+	 * command's parent here, so a command typed after a cancelled prompt drops
+	 * it as a re-send does.
 	 */
 	fork(line: Json, draft: Draft): void {
-		const parent = parentOf(line);
-		if (parent === undefined) return;
+		const written = parentOf(line);
+		if (written === undefined) return;
+		const parent = this.caveat && written === this.caveat.uuid ? this.caveat.parent : written;
 		const previous = this.lastPrompt;
 		if (previous && !previous.answered && parent !== null && parent === previous.parent) {
 			draft.remove(previous.turnId);
@@ -815,6 +857,7 @@ class Branch {
 			answers: this.answers,
 			floor: this.floor,
 			lastPrompt: this.lastPrompt,
+			caveat: this.caveat,
 		};
 	}
 }
@@ -953,11 +996,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				}
 				if (Array.isArray(content)) {
 					let attached = false;
+					let answers = false;
+					let answered: ToolEntry | null = null;
 					for (const block of content) {
 						if (!isRecord(block) || block.type !== 'tool_result') continue;
+						answers = true;
 						const toolUseId = stringField(block, 'tool_use_id');
 						const entry = draft.toolEntry(toolUseId);
 						if (!entry) continue;
+						answered = entry;
 						entry.result = resultText(block.content);
 						// A failed call and one the user refused both arrive as
 						// `is_error`; a launch notice means the work goes on (#91).
@@ -976,6 +1023,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						const turn = draft.turnOf(toolUseId);
 						if (turn) draft.touch(turn.id);
 						attached = true;
+					}
+					if (answers) {
+						// Text beside a tool result is part of that answer, never a
+						// prompt: approving a plan with feedback writes the feedback
+						// as a text block after the ExitPlanMode result (2.1.318).
+						const rider = blockText(content);
+						if (answered && rider) answered.result = `${answered.result ?? ''}\n\n${rider}`.trim();
+						if (!attached) countRaw(type);
+						continue;
 					}
 					// A prompt of content blocks — a pasted image, a pasted block —
 					// is a prompt like a string one (#129). A line of tool results
