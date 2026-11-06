@@ -594,9 +594,8 @@ export class TurnRenderer {
 				});
 				// Reading inside a disclosure the view opened is a choice to keep it
 				// (#128): a running group folds once it settles, and must not fold
-				// under a reader who is selecting or following a row in it. Ovis's
-				// `keepOpen` (devswha/ovis, MIT). A click on the summary is a toggle,
-				// which the listener above takes.
+				// under a reader who is selecting or following a row in it. A click
+				// on the summary is a toggle, which the listener above takes.
 				component.registerDomEvent(details, 'click', (event) => {
 					const target = event.target as HTMLElement | null;
 					if (!details.open || open.has(key) || target?.closest('summary')) return;

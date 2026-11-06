@@ -360,8 +360,9 @@ So for a local herdr (`src/herdr/paneClaude.ts`): `pane.process_info`, the
 process called `claude` (by name or program file name; else the foreground
 group's leader), its `cwd` as the real cwd, and its `CLAUDE_CONFIG_DIR` from
 `/proc/<pid>/environ` (Linux) or `ps -wwE -o command= -p <pid>` (macOS, parsed
-as Ovis does); a relative value is taken from Claude's cwd. No process: the
-pane's `cwd` through `realpath` here. No environment read: `~/.claude`. An
+for the last `CLAUDE_CONFIG_DIR=` assignment, up to the next `NAME=`); a
+relative value is taken from Claude's cwd. No process: the pane's `cwd`
+through `realpath` here. No environment read: `~/.claude`. An
 answer is kept per pane and agent session, 30 s when the environment was read
 and 2 s when anything fell back, and refreshed on that pane's updates only
 while a session model follows it. The watcher pushes the path as soon as it is
@@ -1467,9 +1468,10 @@ prompt; these are the facts a build may rely on.
 Measured on 2026-11-06 for issue #136, against herdr 0.9.5 and Codex 0.163.0
 (the standalone TUI at `~/.local/bin/codex`), 0.166.0 (the shared app-server
 daemon) and 0.167.0 (the mise install), in a scratch herdr tab on
-`/tmp/oh-codex-live` with one-word prompts. The discussion, Ovis's
-cross-check and what the agent-neutral model needs are in the docs root,
-`findings/agent-codex.md`. Scrubbed recordings are in `tests/fixtures/codex/`,
+`/tmp/oh-codex-live` with one-word prompts. The discussion, a cross-check
+against another reader of Codex's files and what the agent-neutral model
+needs are in the docs root, `findings/agent-codex.md`. Scrubbed recordings
+are in `tests/fixtures/codex/`,
 and `tests/codexFixtures.test.ts` pins the facts below that rest on them.
 
 - **Which agent a pane runs.** herdr names it in `PaneInfo.agent`

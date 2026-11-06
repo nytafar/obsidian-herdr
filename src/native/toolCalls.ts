@@ -201,7 +201,7 @@ export interface ToolGroupHeader {
 	/**
 	 * "2 failed", or null when nothing did. Its own part so a narrow view that
 	 * cuts the counts short never cuts this: a failure is what a glance at a
-	 * folded group must not miss. Ovis's `workFailed` (devswha/ovis, MIT).
+	 * folded group must not miss.
 	 */
 	failed: string | null;
 }
@@ -277,9 +277,9 @@ export interface TodoItem {
  *
  * Claude Code sends the whole list on every update, as `todos: [{ content,
  * status, activeForm }]`, so the input is the list as it stands. An item with
- * no words makes the list unreadable rather than shorter, as Ovis reads it
- * (devswha/ovis, MIT, `src/lib/todos.ts`); a status this build does not know
- * reads as pending.
+ * no words makes the list unreadable rather than shorter: a list missing an
+ * item would read as further along than it is. A status this build does not
+ * know reads as pending.
  */
 export function todoList(entry: ToolEntry): TodoItem[] | null {
 	if (toolKind(entry.name) !== 'todo') return null;

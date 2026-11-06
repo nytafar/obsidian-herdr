@@ -48,7 +48,7 @@ export const PLAN_IN_TERMINAL = 'Approve the plan or tell Claude what to change 
  * One option as the card draws it, inside `parent` (a button or a line): the
  * label with Claude's "(Recommended)" suffix drawn as a tag, and the
  * description on the line under it — never a tooltip alone, which neither a
- * touch screen nor a screen reader shows (after Ovis's `PromptCard.tsx`, MIT).
+ * touch screen nor a screen reader shows.
  */
 export function drawOption(parent: HTMLElement, option: PendingQuestionOption): void {
 	const { text, recommended } = optionName(option.label);
@@ -94,7 +94,7 @@ function foldKey(card: WaitingCardModel): string {
  * says, and where a failed one says why. The status is in the card from its
  * first draw, clipped while it is empty rather than left out, because a live
  * region that appears together with its words is not read and one that is
- * there and gets them is (Ovis's `PromptCard.tsx`, MIT).
+ * there and gets them is.
  */
 interface CardFeedback {
 	/** The answer is on its way: say so, and mark the options busy. */

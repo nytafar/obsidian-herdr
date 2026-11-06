@@ -5,8 +5,8 @@
  *
  * What the list says is pure and lives in `./toolCalls.ts` (`todoList`,
  * `todoProgress`, `latestTodoList`); this is the drawing. Each item's state is
- * a glyph for the eye and words for a screen reader, after Ovis's `TodoList`
- * (devswha/ovis, MIT, `src/components/ChatView.tsx`).
+ * a glyph for the eye and words for a screen reader, so the glyph is never
+ * the only thing that says it.
  *
  * Where the chip goes was decided for the narrow sidebar the view usually
  * lives in: not pinned over the top of the turns, where it would cover the
