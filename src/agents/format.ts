@@ -41,6 +41,7 @@ import type { PendingQuestionOption } from '../native/pendingRequest';
 import { sessionBinding, type SessionBinding } from '../runtime/kind';
 import type { RuntimeKind } from '../runtimes';
 import { CLAUDE_FORMAT } from './claude/format';
+import type { ScreenDialog } from './screenDialog';
 
 export type { SessionBinding } from '../runtime/kind';
 
@@ -143,6 +144,12 @@ export interface AgentFormat<S extends ConversationState = ConversationState> {
 	readonly efforts: readonly string[];
 	/** The permission modes the agent offers, in its own words, for a picker (#110). */
 	readonly modes: readonly string[];
+	/**
+	 * Reads the dialog on a pane's visible screen (#163, ADR-0009), for an
+	 * agent whose dialogs can be answered by keys. `unknown` for anything it
+	 * cannot read whole.
+	 */
+	readonly screenDialog?: (screen: string) => ScreenDialog;
 }
 
 /** Every format this build has, one per agent. */

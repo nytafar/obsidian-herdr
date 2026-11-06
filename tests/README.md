@@ -583,3 +583,17 @@ the registry, the gate (a format and a trusted session binding), the
 catalog's `native` flag, and what Claude's format reads: the dialogs it
 blocks on, where a background report is, and session info. Nothing here
 needs Obsidian: a Claude pane looks as it did before.
+
+## Claude's dialogs on the screen (#163)
+
+`tests/screenDialog.test.ts` puts every recorded screen in
+`fixtures/screens/claude-2.1.318/` through `parseClaudeScreen`: the wide ones
+from spike #151 and the 60- and 90-column ones recorded for the parser on
+herdr and hc (the folder's README says how). A last test fails when a
+fixture has no check, so a new recording cannot go unread. Labels,
+questions, commands, folders and typed text are compared with
+`wrappedEquals`, never by position. The rest are screens the parser must
+refuse, made by altering a fixture one line: the dialog's rule off the top,
+a line after the hint, two cursors or none, rows numbered out of turn, a
+torn `Submit` row, other wording on the plan or the trust prompt. Nothing
+here needs a live pane.

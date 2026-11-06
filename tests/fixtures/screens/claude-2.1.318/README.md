@@ -16,6 +16,41 @@ prompt in a `/var/tmp` one). Measurements and key sequences: the docs root,
 Scrubbed: the account's plan name in the banner (`Claude Pro`) and the
 editor named on the `ctrl+g` hint (`nvim`). Nothing else was changed.
 
+## Narrow screens (issue #163)
+
+Recorded 2026-11-06 for the screen dialog parser
+(`src/agents/claude/screenDialog.ts`, `tests/screenDialog.test.ts`), with
+long questions, labels, typed answers, commands and file names so that every
+part of every dialog wraps:
+
+- `herdr-60-*`, `herdr-90-*`: herdr 0.9.5 `pane.read {source: visible,
+  format: text}` of one pane held at 60x40, then 90x45, by a `herdr terminal
+  session control --cols --rows` client; one Claude session for both, so the
+  90-column screens name the `…-herdr60` folder and repeat its plan slug.
+  `*-trust` from a second pane in `/var/tmp/oh-test-trust-narrow-herdr`,
+  resized from 60 to 90.
+- `hc-60-*`, `hc-90-*`: hc 0.1.18 `terminal.read {lines: 0}` `.text` of
+  terminals started at 60x40 and 90x45 (`terminal.run {size}`); text typed
+  key by key over `terminal.keys` (`shift+x` for capitals). `hc-60-trust`
+  sits in a folder with a long name, so the path wraps mid-word.
+
+Scrubbed as above, plus the home directory in the shell line over
+`herdr-*-trust` (`/home/user`). Replacing the editor's name shortens hint
+lines without re-wrapping them.
+
+| File (`<runtime>-<cols>-…`) | State when read |
+| --- | --- |
+| `ask-single`, `ask-other-typed` | single choice as opened; cursor on the own-answer row with a long answer typed |
+| `ask-multi`, `-ticked`, `-other` | multi-select as opened; 1 and 3 ticked; a long own answer typed (ticks row 4) |
+| `ask-multi-submit-row` | cursor moved down to `Submit` |
+| `ask-multi-submit-row-torn` | the same on `herdr-90` and `hc-60`: Claude repainted the row as `❯    Submit<end of the typed answer>` and dropped the answer's last line. Must read as no dialog |
+| `ask-multi-review` | the review after `enter` on `Submit` |
+| `ask-two`, `-second`, `-review` | two questions: first tab, second tab after `2`, review after `1` |
+| `bash-permission`, `-deny-amend`, `-deny-feedback` | a long `touch`; `tab` on "No" (placeholder); feedback typed |
+| `write-permission`, `edit-permission` | Write, then (after allowing it) Edit, of a long file name |
+| `plan`, `plan-feedback` | plan approval; long feedback typed on row 3 |
+| `trust` | workspace trust as opened |
+
 | File | Dialog | State when read |
 | --- | --- | --- |
 | `*-ask-single` | one `AskUserQuestion`, single choice | as opened, cursor on 1 |
