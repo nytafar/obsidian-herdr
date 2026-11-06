@@ -20,6 +20,7 @@
 
 import { LineSplitter } from '../herdr/lineSplitter';
 import {
+	contextUsageRequest,
 	controlResponse,
 	denyResponse,
 	encodeLine,
@@ -180,9 +181,23 @@ export class ClaudeProcess {
 	 */
 	sessionControl(control: SessionControl): Promise<ControlAnswer> {
 		const requestId = this.nextRequestId(control.setting);
+		return this.control(requestId, sessionControlRequest(requestId, control));
+	}
+
+	/**
+	 * Asks for the context breakdown (#171), which writes nothing to the
+	 * conversation; settles as {@link sessionControl} does.
+	 */
+	contextUsage(): Promise<ControlAnswer> {
+		const requestId = this.nextRequestId('context');
+		return this.control(requestId, contextUsageRequest(requestId));
+	}
+
+	/** Writes one control request and settles with the answer to its id. */
+	private control(requestId: string, request: object): Promise<ControlAnswer> {
 		return new Promise<ControlAnswer>((resolve, reject) => {
 			try {
-				this.send(sessionControlRequest(requestId, control));
+				this.send(request);
 			} catch (error) {
 				reject(error instanceof Error ? error : new Error(String(error)));
 				return;

@@ -725,10 +725,26 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	font-size: 0.8em;
 }
 
+/* A button (#171): a click shows the context breakdown, so it reads as text. */
 .herdr-native-session-context {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
 	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
 	font-variant-numeric: tabular-nums;
+	height: auto;
+	padding: var(--size-2-1) var(--size-4-1);
 	white-space: nowrap;
+}
+
+.herdr-native-session-context:not(:disabled):hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-native-session-context:disabled {
+	cursor: default;
 }
 
 /* Nothing known yet, or tokens with no window: no separator, no percentage. */
@@ -744,6 +760,55 @@ svg.svg-icon[class*='herdr-kind-'] text {
 /* From 80% of the window (finding `native-view-header` §1). */
 .herdr-native-session-context.herdr-is-warning {
 	color: var(--text-warning);
+}
+
+/*
+ * The context breakdown (#171): a popover over the bar's far end, the
+ * agent's categories as a table. The bar is its anchor; the table takes the
+ * reading view's own table styles from the `markdown-rendered` ancestor.
+ */
+.herdr-native-session-bar {
+	position: relative;
+}
+
+.herdr-native-context-popover {
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	bottom: 100%;
+	box-shadow: var(--shadow-s);
+	color: var(--text-normal);
+	max-height: 60vh;
+	max-width: min(100%, 28em);
+	overflow-y: auto;
+	padding: var(--size-4-2) var(--size-4-3);
+	position: absolute;
+	right: 0;
+	z-index: var(--layer-popover);
+}
+
+.herdr-native-context-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: space-between;
+}
+
+.herdr-native-context-title {
+	font-variant-numeric: tabular-nums;
+	font-weight: var(--font-semibold);
+}
+
+.herdr-native-context-table {
+	font-size: var(--font-ui-small);
+	margin-block: var(--size-4-2) 0;
+	width: 100%;
+}
+
+/* Above `.markdown-rendered td`, which aligns every cell to the start. */
+.herdr-native-context-table .herdr-native-context-number {
+	font-variant-numeric: tabular-nums;
+	text-align: end;
 }
 
 .herdr-native-empty {

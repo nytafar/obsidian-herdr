@@ -158,6 +158,14 @@ export interface AgentFormat<S extends ConversationState = ConversationState> {
 	 * cannot read whole.
 	 */
 	readonly screenDialog?: (screen: string) => ScreenDialog;
+	/**
+	 * The command that writes the agent's context breakdown into its
+	 * transcript (#171: Claude's `/context`), which the session bar sends
+	 * through the prompt on a kind with no way to ask without writing to the
+	 * conversation. The parser reads its output into
+	 * `SessionInfo.contextReport` and never into a turn.
+	 */
+	readonly contextCommand?: string;
 }
 
 /** Every format this build has, one per agent. */

@@ -76,7 +76,7 @@
 
 import type { BlockKind } from '../native/sessionWatcher';
 import type { SessionInfo } from '../native/conversation';
-import { foldRuntimeInfo } from './sessionInfo';
+import { foldContextWindow, foldRuntimeInfo } from './sessionInfo';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -94,6 +94,7 @@ import {
 	permissionResponse,
 	SESSION_ID_RE,
 	userMessage,
+	type ContextUsage,
 	type SessionControl,
 	type StreamEvent,
 	type ToolPermissionRequest,
@@ -344,6 +345,10 @@ export const ALLOW_ONCE_NO_TERMINAL =
 export const SETTINGS_IN_TERMINAL = 'the agent is in its terminal view; change it there';
 /** Said for a session setting while the agent moves between its views. */
 export const SETTINGS_SWITCHING = 'the agent is moving between its views; try again once it has';
+/** Said for the context breakdown while the agent runs in its terminal view (#171). */
+export const CONTEXT_IN_TERMINAL = 'the agent is in its terminal view; run /context there';
+/** Said when Claude answered `get_context_usage` with something else. */
+export const CONTEXT_NOT_ANSWERED = 'Claude did not answer with a breakdown';
 /** Said for a mode change on a row pinned to Allow once (ADR-0008). */
 export const MODE_PINNED = 'this agent asks before every permission (Allow once), so its mode stays';
 /** Said when Claude refused a setting without words of its own. */
@@ -731,6 +736,42 @@ export class ClaudeAgents {
 			record.info = { ...record.info, effort: control.effort };
 			this.emit(runtimeId, record.stored.id, 'status');
 		}
+	}
+
+	/**
+	 * The context breakdown of the agent's session (#171): the
+	 * `get_context_usage` control request over its headless process, which
+	 * writes nothing to the conversation, at any status but while stopping.
+	 * The window it states goes in the session info, as a result's does. A
+	 * stopped agent is resumed for it, as a prompt resumes it.
+	 */
+	async contextUsage(runtimeId: string, agentId: string): Promise<ContextUsage> {
+		const record = this.record(runtimeId, agentId);
+		this.refuseHeld(record);
+		if (record.switching) throw new Error(SETTINGS_SWITCHING);
+		if (record.tui) throw new Error(CONTEXT_IN_TERMINAL);
+		if (record.process?.isStopping) throw new Error(AGENT_STOPPING);
+		if (!record.process) {
+			// A person asked: a Stop no longer holds it.
+			record.hold = null;
+			this.wantStream(record);
+			this.spawn(runtimeId, record);
+		}
+		const process = record.process;
+		if (!process?.alive) throw new Error('the agent could not be started');
+		const answer = await process.contextUsage();
+		if (!answer.ok) throw new Error(answer.error || answer.errorCode || CONTEXT_NOT_ANSWERED);
+		const usage = answer.context;
+		if (!usage) throw new Error(CONTEXT_NOT_ANSWERED);
+		if (record.process === process) {
+			const windows = usage.model && usage.maxTokens > 0 ? { [usage.model]: usage.maxTokens } : {};
+			const info = foldContextWindow(record.info, windows);
+			if (info !== record.info) {
+				record.info = info;
+				this.emit(runtimeId, record.stored.id, 'status');
+			}
+		}
+		return usage;
 	}
 
 	/** Answers a pending permission request. Throws a readable error. */

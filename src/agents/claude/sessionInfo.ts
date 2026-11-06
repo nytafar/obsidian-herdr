@@ -25,13 +25,16 @@
  *   after a `local_command` for `context`: the window, for the model it names.
  *   It counts while that model is the session's, so a model change hides it
  *   until the next `/context` (or a change back). Nothing else in a herdr or
- *   hc transcript says the window: no model table, no default.
+ *   hc transcript says the window: no model table, no default. The same
+ *   output is the breakdown the session bar shows (#171,
+ *   `SessionInfo.contextReport`): its headline and its category table.
  *
  * Pure. {@link SessionReader} is the working copy of one batch, as the parser's
  * branch is: the info object is replaced only when a field changed, so a batch
  * that says nothing new leaves it as it was.
  */
 
+import type { ContextBreakdown, ContextCategory } from '../../native/contextBreakdown';
 import type { SessionInfo } from '../../native/conversation';
 
 type Json = Record<string, unknown>;
@@ -82,6 +85,66 @@ const CONTEXT_TOKENS = /\*\*Tokens:\*\*\s*[\d.,]+\s*[km]?\s*\/\s*([\d.,]+)\s*([k
 /** `/context`'s model: "**Model:** claude-opus-5-5". */
 const CONTEXT_MODEL = /\*\*Model:\*\*\s*(\S+)/;
 
+/** `/context`'s headline as written: used, window and share ("22.6k / 1m (2%)"). */
+const CONTEXT_HEADLINE = /\*\*Tokens:\*\*\s*([\d.,]+\s*[km]?)\s*\/\s*([\d.,]+\s*[km]?)\s*(?:\(([^)]*)\))?/i;
+
+/** The heading of `/context`'s category table. */
+const CATEGORY_HEADING = /^#{2,4}\s*Estimated usage by category\s*$/i;
+
+/** One Markdown table row's cells, or null for a line that is no row. */
+function tableCells(line: string): string[] | null {
+	const trimmed = line.trim();
+	if (!trimmed.startsWith('|')) return null;
+	return trimmed
+		.replace(/^\|/, '')
+		.replace(/\|$/, '')
+		.split('|')
+		.map((cell) => cell.trim());
+}
+
+/** The rows of `/context`'s category table: the table after its heading, header and rule left out. */
+function contextCategories(content: string): ContextCategory[] {
+	const lines = content.split('\n');
+	const start = lines.findIndex((line) => CATEGORY_HEADING.test(line.trim()));
+	if (start < 0) return [];
+	const categories: ContextCategory[] = [];
+	let header = true;
+	for (const line of lines.slice(start + 1)) {
+		const cells = tableCells(line);
+		if (!cells) {
+			// Blank lines before the table; anything else after it ends it.
+			if (line.trim() === '' && header) continue;
+			break;
+		}
+		if (header) {
+			header = false;
+			continue;
+		}
+		if (cells.every((cell) => /^:?-+:?$/.test(cell))) continue;
+		const [name = '', tokens = '', share = ''] = cells;
+		if (name) categories.push({ name, tokens, share });
+	}
+	return categories;
+}
+
+/**
+ * `/context`'s Markdown as the breakdown the session bar shows (#171), or
+ * null for a line that has no "**Tokens:**" headline. `id` tells this report
+ * from the next one.
+ */
+export function contextReportOf(content: string, id: string): ContextBreakdown | null {
+	const headline = CONTEXT_HEADLINE.exec(content);
+	if (!headline) return null;
+	return {
+		id,
+		model: CONTEXT_MODEL.exec(content)?.[1] ?? '',
+		used: (headline[1] ?? '').replace(/\s+/g, ''),
+		window: (headline[2] ?? '').replace(/\s+/g, ''),
+		percent: (headline[3] ?? '').trim(),
+		categories: contextCategories(content),
+	};
+}
+
 /** "1m", "200k", "128000" as tokens; null when it is no number. */
 function tokenCount(value: string, unit: string): number | null {
 	const number = Number.parseFloat(value.replace(/,/g, ''));
@@ -89,6 +152,9 @@ function tokenCount(value: string, unit: string): number | null {
 	const scale = unit.toLowerCase() === 'm' ? 1_000_000 : unit.toLowerCase() === 'k' ? 1_000 : 1;
 	return Math.round(number * scale);
 }
+
+/** `/context` run at the prompt, as its `<command-name>` envelope. */
+export const CONTEXT_NAME = /^\s*(?:<command-message>context<\/command-message>\s*)?<command-name>\s*\/context\s*<\/command-name>/;
 
 /** A `system` line that is a local command named `/context`, its name or its output. */
 function isContextCommand(line: Json): boolean {
@@ -162,7 +228,13 @@ export class SessionReader {
 		const content = message?.content;
 		if (typeof content !== 'string') return;
 		if (line.isMeta === true) {
-			if (pending) this.contextOutput(content);
+			if (pending) this.contextOutput(content, stringField(line, 'uuid') || stringField(line, 'timestamp'));
+			return;
+		}
+		// `/context` written as a `user` line instead of a `system` one: its
+		// name and its coloured stdout still announce the output that follows.
+		if (CONTEXT_NAME.test(content) || (pending && localStdout(content) !== null)) {
+			this.contextPending = true;
 			return;
 		}
 		const stdout = localStdout(content);
@@ -222,8 +294,10 @@ export class SessionReader {
 		if (effort?.[1]) this.set('effort', effort[1].toLowerCase());
 	}
 
-	/** `/context`'s Markdown: the window, for the model it names. */
-	private contextOutput(content: string): void {
+	/** `/context`'s Markdown: the window, for the model it names, and the breakdown (#171). */
+	private contextOutput(content: string, id: string): void {
+		const report = contextReportOf(content, id);
+		if (report && this.info.contextReport?.id !== id) this.info = { ...this.info, contextReport: report };
 		const tokens = CONTEXT_TOKENS.exec(content);
 		const count = tokens ? tokenCount(tokens[1] ?? '', tokens[2] ?? '') : null;
 		if (count === null) return;

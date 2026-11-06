@@ -609,6 +609,52 @@ describe('the claude kind over a fake claude', () => {
 		});
 	});
 
+	describe('the context breakdown (#171)', () => {
+		function reader(h: Harness) {
+			const read = h.kind.contextUsage?.(() => h.client);
+			if (!read) throw new Error('no context reader');
+			return read;
+		}
+
+		it('asks with get_context_usage, writes nothing to the conversation, and takes the window', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const before = stdin(h.log).filter((message) => message.type === 'user').length;
+			const breakdown = await reader(h).read(paneId);
+			expect(breakdown).toMatchObject({ model: 'claude-haiku-5-5', used: '14.6k', window: '1m', percent: '1%' });
+			expect(breakdown.categories).toEqual([
+				{ name: 'System prompt', tokens: '2.3k', share: '0.2%' },
+				{ name: 'Messages', tokens: '107', share: '0.0%' },
+				{ name: 'Autocompact buffer', tokens: '33k', share: '3.3%' },
+				{ name: 'Free space', tokens: '952.4k', share: '95.2%' },
+			]);
+			const requests = stdin(h.log).filter((message) => message.type === 'control_request');
+			expect(requests.at(-1)?.request).toEqual({ subtype: 'get_context_usage' });
+			expect(stdin(h.log).filter((message) => message.type === 'user')).toHaveLength(before);
+			const info = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.sessionInfo;
+			expect(info?.contextWindow).toEqual({ tokens: 1_000_000, source: 'runtime' });
+			// Two reads are two reports.
+			expect((await reader(h).read(paneId)).id).not.toBe(breakdown.id);
+		});
+
+		it('reads mid-turn, and resumes a stopped agent for it', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'SLOW');
+			await new Promise((done) => setTimeout(done, 60));
+			expect(status(h, paneId)).toBe('working');
+			await expect(reader(h).read(paneId)).resolves.toMatchObject({ used: '14.6k' });
+			expect(status(h, paneId)).toBe('working');
+			await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await expect(reader(h).read(paneId)).resolves.toMatchObject({ window: '1m' });
+			expect(starts(h.log)).toHaveLength(2);
+		});
+	});
+
 	it('refuses an answer while the agent is stopping, and shows the request as stopping', async () => {
 		const h = harness();
 		const paneId = await started(h);

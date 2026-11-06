@@ -169,4 +169,6 @@ export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 	models: CLAUDE_MODELS,
 	modeLabels: CLAUDE_MODE_LABELS,
 	screenDialog: parseClaudeScreen,
+	// Its output is read into `SessionInfo.contextReport`, never a turn (#171).
+	contextCommand: '/context',
 };

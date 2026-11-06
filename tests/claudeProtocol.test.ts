@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	claudeArgv,
+	contextUsageRequest,
 	controlResponse,
 	describeUpdate,
 	encodeLine,
@@ -397,6 +398,47 @@ describe('the response JSON of each answer', () => {
 			message: 'The user rejected the plan: also add a second line',
 		});
 		expect(respond(plan, { type: 'reject-plan', feedback: '' }).response.response.message).toBe('The user rejected the plan.');
+	});
+});
+
+describe('the context breakdown request (#171)', () => {
+	it('builds get_context_usage, and reads its answer without the paths and the grid', () => {
+		expect(contextUsageRequest('x1')).toEqual({
+			type: 'control_request',
+			request_id: 'x1',
+			request: { subtype: 'get_context_usage' },
+		});
+		const line = JSON.stringify({
+			type: 'control_response',
+			response: {
+				subtype: 'success',
+				request_id: 'x1',
+				response: {
+					categories: [{ id: 'messages', name: 'Messages', tokens: 107, kind: 'used' }, { tokens: 5 }],
+					totalTokens: 14649,
+					maxTokens: 1000000,
+					percentage: 1,
+					model: 'claude-opus-5-5',
+					memoryFiles: [{ path: '/home/someone/.claude/CLAUDE.md', tokens: 630 }],
+					gridRows: [[]],
+				},
+			},
+		});
+		expect(parseStreamLine(line)).toEqual({
+			type: 'response',
+			requestId: 'x1',
+			ok: true,
+			// Its model is no model set.
+			model: '',
+			mode: '',
+			context: {
+				model: 'claude-opus-5-5',
+				totalTokens: 14649,
+				maxTokens: 1000000,
+				percentage: 1,
+				categories: [{ name: 'Messages', tokens: 107 }],
+			},
+		});
 	});
 });
 

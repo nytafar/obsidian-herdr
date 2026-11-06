@@ -855,6 +855,9 @@ export class TerminalView extends ItemView {
 			// The session bar's pickers (#161), for a kind that can change the
 			// model, effort and mode; asked of the kind as it is now.
 			sessionSettings: () => this.kind().sessionSettings?.(nativeClient) ?? null,
+			// The readout's breakdown (#171), for a kind that asks without
+			// writing to the conversation; the others send `/context`.
+			contextUsage: () => this.kind().contextUsage?.(nativeClient) ?? null,
 			// The waiting card's "Trust this folder" (#99), over the same client and
 			// only ever `Down Enter` on the workspace trust prompt.
 			keySender: {

@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_FORMAT } from '../src/agents/claude/format';
 import { emptyTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
-import { foldRuntimeInfo } from '../src/claude/sessionInfo';
+import { contextReportOf } from '../src/agents/claude/sessionInfo';
+import { contextBreakdownOf, foldContextWindow, foldRuntimeInfo } from '../src/claude/sessionInfo';
 import type { StreamEvent } from '../src/claude/protocol';
 import { mergeSessionInfo, type SessionInfo } from '../src/native/conversation';
 
@@ -127,6 +128,8 @@ describe('session info from a 2.1.318 transcript (#160)', () => {
 			effort: 'high',
 			contextUsed: 32868,
 			usage: { input: 32868, output: 3, cached: 32816 },
+			// The newest `/context` stays the breakdown across model changes (#171).
+			contextReport: infoAt(24).contextReport,
 		});
 	});
 
@@ -159,6 +162,95 @@ describe('session info from a 2.1.318 transcript (#160)', () => {
 			},
 		].map((line) => JSON.stringify(line));
 		expect(CLAUDE_FORMAT.sessionInfo(cold(lines))).toEqual({ permissionMode: 'default' });
+	});
+});
+
+describe('the /context breakdown in the transcript (#171)', () => {
+	it('reads the headline and the category table of /context’s output, by the line it came in', () => {
+		expect(infoAt(5).contextReport).toBeUndefined();
+		const report = infoAt(6).contextReport;
+		expect(report).toMatchObject({ model: 'claude-opus-5-5', used: '22.6k', window: '1m', percent: '2%' });
+		expect(report?.id).toBe((JSON.parse(SETTINGS[6] ?? '{}') as { uuid?: string }).uuid);
+		expect(report?.categories[0]).toEqual({ name: 'System prompt', tokens: '2.4k', share: '0.2%' });
+		const haiku = infoAt(24).contextReport;
+		expect(haiku).toMatchObject({ model: 'claude-haiku-5-5', used: '26.9k', percent: '3%' });
+		expect(haiku?.categories.map((category) => category.name)).toEqual([
+			'System prompt',
+			'System tools',
+			'MCP server instructions',
+			'MCP tools (deferred)',
+			'System tools (deferred)',
+			'Custom agents',
+			'Memory files',
+			'Skills',
+			'Messages',
+			'Free space',
+			'Autocompact buffer',
+		]);
+		expect(haiku?.categories.at(-1)).toEqual({ name: 'Autocompact buffer', tokens: '33k', share: '3.3%' });
+	});
+
+	it('stops at the end of the category table', () => {
+		const content = [
+			'## Context Usage',
+			'',
+			'**Model:** claude-sonnet-5  ',
+			'**Tokens:** 38.7k / 1m (4%)',
+			'',
+			'### Estimated usage by category',
+			'',
+			'| Category | Tokens | Percentage |',
+			'|----------|--------|------------|',
+			'| Messages | 18.2k | 1.8% |',
+			'',
+			'### MCP Tools',
+			'',
+			'| Tool | Server | Tokens |',
+			'|------|--------|--------|',
+			'| mcp__x__y | x | 165 |',
+		].join('\n');
+		expect(contextReportOf(content, 'u1')).toEqual({
+			id: 'u1',
+			model: 'claude-sonnet-5',
+			used: '38.7k',
+			window: '1m',
+			percent: '4%',
+			categories: [{ name: 'Messages', tokens: '18.2k', share: '1.8%' }],
+		});
+		expect(contextReportOf('## Context Usage', 'u2')).toBeNull();
+	});
+
+	it('never makes /context a turn, as system lines (2.1.318, herdr and hc alike) or as user lines', () => {
+		// What `agent.prompt` and `hc send` of `/context` wrote, measured live
+		// on 2.1.318: the name and the coloured stdout as `local_command`
+		// lines, the Markdown as an `isMeta` user line.
+		const markdown = '## Context Usage\n\n**Model:** claude-haiku-5-5  \n**Tokens:** 17.4k / 1m (2%)\n';
+		const name = '<command-name>/context</command-name>\n            <command-message>context</command-message>\n            <command-args></command-args>';
+		const system = [
+			{ type: 'user', uuid: 'p1', message: { role: 'user', content: 'Hi' } },
+			{ type: 'system', subtype: 'local_command', uuid: 's1', content: name },
+			{
+				type: 'system',
+				subtype: 'local_command',
+				uuid: 's2',
+				commandRun: { command: 'context', args: '' },
+				content: '<local-command-stdout> \u001b[1mContext Usage\u001b[22m</local-command-stdout>',
+			},
+			{ type: 'user', uuid: 'm1', isMeta: true, message: { role: 'user', content: markdown } },
+		].map((line) => JSON.stringify(line));
+		const state = cold(system);
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Hi']);
+		expect(state.turns[0]?.entries).toEqual([]);
+		expect(CLAUDE_FORMAT.sessionInfo(state).contextReport).toMatchObject({ id: 'm1', used: '17.4k' });
+		// The same command as `user` lines, as other commands are written.
+		const user = [
+			{ type: 'user', uuid: 'c1', message: { role: 'user', content: name } },
+			{ type: 'user', uuid: 'c2', message: { role: 'user', content: '<local-command-stdout>Context Usage</local-command-stdout>' } },
+			{ type: 'user', uuid: 'm2', isMeta: true, message: { role: 'user', content: markdown } },
+		].map((line) => JSON.stringify(line));
+		const read = cold(user);
+		expect(read.turns).toEqual([]);
+		expect(CLAUDE_FORMAT.sessionInfo(read).contextReport).toMatchObject({ id: 'm2' });
 	});
 });
 
@@ -221,5 +313,36 @@ describe('what the `claude` kind hears from its process (#160)', () => {
 		// A model the transcript has not reached yet is the process’s, by its id.
 		const switched = foldRuntimeInfo(overlay, { type: 'response', requestId: 'r', ok: true, model: 'claude-haiku-5-5', mode: '' });
 		expect(mergeSessionInfo(read, switched).model).toEqual({ id: 'claude-haiku-5-5', label: 'claude-haiku-5-5' });
+	});
+
+	it('words a get_context_usage answer as /context does (#171), and takes its window', () => {
+		const usage = {
+			model: 'claude-opus-5-5',
+			totalTokens: 14649,
+			maxTokens: 1_000_000,
+			percentage: 1,
+			categories: [
+				{ name: 'System prompt', tokens: 2256 },
+				{ name: 'MCP server instructions', tokens: 276 },
+				{ name: 'Autocompact buffer', tokens: 33000 },
+				{ name: 'Free space', tokens: 952351 },
+			],
+		};
+		expect(contextBreakdownOf(usage, 'r1')).toEqual({
+			id: 'r1',
+			model: 'claude-opus-5-5',
+			used: '14.6k',
+			window: '1m',
+			percent: '1%',
+			categories: [
+				{ name: 'System prompt', tokens: '2.3k', share: '0.2%' },
+				{ name: 'MCP server instructions', tokens: '276', share: '0.0%' },
+				{ name: 'Autocompact buffer', tokens: '33k', share: '3.3%' },
+				{ name: 'Free space', tokens: '952.4k', share: '95.2%' },
+			],
+		});
+		const info = foldContextWindow(foldRuntimeInfo({}, init('claude-opus-5-5[1m]')), { 'claude-opus-5-5': 1_000_000 });
+		expect(info.contextWindow).toEqual({ tokens: 1_000_000, source: 'runtime' });
+		expect(foldContextWindow(info, { 'claude-opus-5-5': 1_000_000 })).toBe(info);
 	});
 });

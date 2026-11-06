@@ -12,7 +12,8 @@
  * - `./viewLinks.ts` opens and previews the links in the view (#114);
  * - `./promptBox.ts` is the prompt box under the transcript (#97);
  * - `./sessionBar.ts` is the model, effort and mode pickers and the context
- *   readout under the prompt box (#161).
+ *   readout under the prompt box (#161), whose click shows the context
+ *   breakdown (#171).
  *
  * What stays here is the session model binding — which turns a change names,
  * when everything is drawn again — and the strip under the view.
@@ -28,6 +29,7 @@ import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
 import type { SessionSettingsSender } from './sessionSettings';
+import type { ContextUsageReader } from './contextBreakdown';
 import type { WaitingResponder } from './pendingRequest';
 import { linkVaultUris } from './noteLinks';
 import { resolveObsidianUri, vaultLookup } from './obsidianUri';
@@ -73,6 +75,12 @@ export interface NativePaneSurfaceOptions {
 	 * values, disabled, with the reason.
 	 */
 	sessionSettings?: () => SessionSettingsSender | null;
+	/**
+	 * How the context readout's breakdown is asked for without writing to the
+	 * conversation (#171), read per click. Null, or left out, for a kind whose
+	 * agent is asked through the prompt (the format's `contextCommand`).
+	 */
+	contextUsage?: () => ContextUsageReader | null;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -281,6 +289,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.sessionBar = new SessionBar({
 			paneId: () => this.identity.paneId,
 			sender: () => this.options.sessionSettings?.() ?? null,
+			contextUsage: () => this.options.contextUsage?.() ?? null,
+			// `/context` on herdr and herdr-core: the prompt's own path (#171).
+			sendCommand: (paneId, text) => this.options.sender.send(paneId, text),
 			notify: (message) => this.notify(message),
 		});
 		this.sessionBar.mount(root);
