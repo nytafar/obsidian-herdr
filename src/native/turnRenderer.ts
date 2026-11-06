@@ -21,7 +21,16 @@
 import { Component } from 'obsidian';
 import { FoldMemory } from './foldMemory';
 import { nameTurnItems } from './itemKeys';
-import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
+import type {
+	CompactionEntry,
+	ImageEntry,
+	NoticeEntry,
+	ShellEntry,
+	TextEntry,
+	ThinkingEntry,
+	ToolEntry,
+	Turn,
+} from './reducer';
 import {
 	changedPath,
 	changeLine,
@@ -248,6 +257,22 @@ const ITEM_KINDS: ItemKinds = {
 		signature: (item) => JSON.stringify([item.latest, todoList(item.entry)]),
 		render: (item, context) => renderTodo(item.entry, item.latest, context),
 	},
+	image: {
+		signature: (item) => item.entry.mediaType,
+		render: (item, context) => renderImage(item.entry, context),
+	},
+	compaction: {
+		signature: (item) => item.entry.summary,
+		render: (item, context) => renderCompaction(item.entry, context),
+	},
+	notice: {
+		signature: (item) => item.entry.text,
+		render: (item, context) => renderNotice(item.entry, context),
+	},
+	shell: {
+		signature: (item) => JSON.stringify([item.entry.command, item.entry.stdout, item.entry.stderr]),
+		render: (item, context) => renderShell(item.entry, context),
+	},
 };
 
 /** The signature of an item, through its kind's entry. */
@@ -338,6 +363,20 @@ export class TurnRenderer {
 	headingEl(turnId: string, index: number, headingCount: number | undefined): HTMLElement | undefined {
 		const els = this.turns.get(turnId)?.headingEls ?? [];
 		return els.length === headingCount ? els[index] : undefined;
+	}
+
+	/**
+	 * Drops one turn — its element, its items' components and what the reader
+	 * opened in it — because a rewind left it behind (#131). A turn not drawn
+	 * is nothing to drop.
+	 */
+	remove(turnId: string): void {
+		const drawn = this.turns.get(turnId);
+		this.folds.forget(turnId);
+		if (!drawn) return;
+		for (const item of drawn.items.values()) item.component.unload();
+		drawn.el.remove();
+		this.turns.delete(turnId);
 	}
 
 	/** Drops every turn element and the components that went with them. */
@@ -605,6 +644,7 @@ function renderToolGroup(tools: readonly ToolEntry[], context: ItemContext): Ite
 			text: detail ? `${entry.name} ${detail}` : entry.name,
 		});
 		if (entry.status === 'error') rowEl.addClass('is-error');
+		if (entry.status === 'lost') rowEl.addClass('is-lost');
 	}
 	context.disclose(details, toolGroupStartsOpen(state));
 	return { el: details };
@@ -695,5 +735,58 @@ function renderSource(entry: ToolEntry, context: ItemContext): ItemDraw {
 			href: link.url,
 		});
 	}
+	return { el };
+}
+
+/**
+ * A picture sent with the prompt, as a placeholder (#129): the bytes stay in
+ * the transcript, and the line says one was there and of what type.
+ */
+export function imageLabel(entry: ImageEntry): string {
+	const subtype = entry.mediaType.split('/')[1]?.trim();
+	return subtype ? `Image (${subtype.toUpperCase()})` : 'Image';
+}
+
+function renderImage(entry: ImageEntry, context: ItemContext): ItemDraw {
+	return { el: context.parent.createDiv({ cls: 'herdr-native-image', text: imageLabel(entry) }) };
+}
+
+/**
+ * A compaction (#130): a slim divider, "Context compacted", that opens to the
+ * summary the agent continued from. The summary is rendered the first time it
+ * is open — it runs to pages, and most readers never open it — and is not
+ * prose as far as the headings go (#118).
+ */
+function renderCompaction(entry: CompactionEntry, context: ItemContext): ItemDraw {
+	const details = context.parent.createEl('details', { cls: 'herdr-native-compaction' });
+	details.createEl('summary', { cls: 'herdr-native-compaction-summary', text: 'Context compacted' });
+	const bodyEl = details.createDiv({ cls: 'herdr-native-compaction-body' });
+	let rendered = false;
+	const renderOnce = (): void => {
+		if (rendered || !details.open || !entry.summary) return;
+		rendered = true;
+		void context.options.renderMarkdown(entry.summary, bodyEl, context.component);
+	};
+	context.component.registerDomEvent(details, 'toggle', renderOnce);
+	context.disclose(details, false);
+	renderOnce();
+	return { el: details };
+}
+
+/** The runtime's own notice (#133), a muted line where it was written. */
+function renderNotice(entry: NoticeEntry, context: ItemContext): ItemDraw {
+	return { el: context.parent.createDiv({ cls: 'herdr-native-notice', text: entry.text }) };
+}
+
+/**
+ * A bash-mode command and what it printed (#133): the command as the human
+ * typed it after the `!`, then its output as the terminal showed it, stderr
+ * marked as such. Nothing yet while the command is still running.
+ */
+function renderShell(entry: ShellEntry, context: ItemContext): ItemDraw {
+	const el = context.parent.createDiv({ cls: 'herdr-native-shell' });
+	el.createDiv({ cls: 'herdr-native-shell-command', text: `! ${entry.command}` });
+	if (entry.stdout) el.createEl('pre', { cls: 'herdr-native-shell-output', text: entry.stdout });
+	if (entry.stderr) el.createEl('pre', { cls: ['herdr-native-shell-output', 'is-error'], text: entry.stderr });
 	return { el };
 }

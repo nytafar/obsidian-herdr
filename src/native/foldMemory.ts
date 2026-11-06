@@ -43,6 +43,11 @@ export class FoldMemory {
 		return folds;
 	}
 
+	/** Forgets one turn: a rewind dropped it, and it is not coming back (#131). */
+	forget(turnId: string): void {
+		this.turns.delete(turnId);
+	}
+
 	/** Forgets everything: another pane is another session's turns. */
 	clear(): void {
 		this.turns.clear();

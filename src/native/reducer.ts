@@ -18,6 +18,8 @@
  *   `claude` kind, ADR-0007) is enqueued and dequeued before its `user` line
  *   as a matter of course, and that line says where it came from
  *   (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`), so it is a prompt.
+ *   A prompt written as content blocks — a pasted image — is a prompt too
+ *   (#129): its text blocks are the prompt and each image a placeholder entry.
  * - A **steer** — a prompt accepted while the agent was working — never becomes
  *   a `user` line at all. It shows as a `queued_command` attachment with
  *   `origin.kind: "human"`, and belongs inline in the turn already running.
@@ -79,6 +81,13 @@ export interface ThinkingEntry {
 export interface TaskNotification {
 	/** The task's own id; also the name of the subagent transcript. */
 	taskId: string;
+	/**
+	 * Whose notification it is, by what its summary says (#135): a subagent's
+	 * (`Agent "…" finished`), a background command's (`Background command "…"
+	 * completed`), or something else's (a monitor). Only a subagent has a
+	 * report to read.
+	 */
+	kind: 'agent' | 'command' | 'other';
 	/** The file the task wrote, empty when the notification named none. */
 	outputFile: string;
 }
@@ -95,8 +104,10 @@ export interface TaskNotification {
  * - `error` — the result carried `is_error`, which is what a failed call and a
  *   call the user refused both look like, or the notification reported
  *   anything other than completion.
+ * - `lost` — it was running when the agent went away, and nothing will ever
+ *   report it (#135). Set by {@link markLost}, never by a transcript line.
  */
-export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
+export type ToolStatus = 'pending' | 'running' | 'done' | 'error' | 'lost';
 
 /** A tool call and, once it lands, the result that answered it. */
 export interface ToolEntry {
@@ -133,7 +144,63 @@ export interface SteerEntry {
 	text: string;
 }
 
-export type TurnEntry = TextEntry | ThinkingEntry | ToolEntry | SteerEntry;
+/**
+ * A picture the human sent with a prompt (#129), kept as a placeholder: the
+ * bytes stay in the transcript, and the view says only that one was there.
+ * Placed first in its turn's entries, so it reads under the prompt it came
+ * with.
+ */
+export interface ImageEntry {
+	kind: 'image';
+	/** The picture's media type as the transcript gave it, '' when it gave none. */
+	mediaType: string;
+}
+
+/**
+ * Where the agent's context was compacted (#130): the conversation before it
+ * was folded into a summary, which the agent continues from. Shown as a
+ * divider with the summary folded, at the point it happened, never as a
+ * prompt.
+ */
+export interface CompactionEntry {
+	kind: 'compaction';
+	/** The summary the agent continued from, as Markdown. */
+	summary: string;
+}
+
+/**
+ * The runtime speaking to the human, not the agent (#133): an unknown
+ * command, a usage limit reached or reset, a connection dropped. Shown where
+ * it was written, in the turn running then, and never as a turn of its own.
+ */
+export interface NoticeEntry {
+	kind: 'notice';
+	text: string;
+	/** When it was written, '' when the line did not say; lines a moment apart join. */
+	at: string;
+}
+
+/**
+ * A command the human ran in the agent's shell (bash mode, `!` in Claude
+ * Code), and what it printed (#133). It opens a turn as a prompt does.
+ */
+export interface ShellEntry {
+	kind: 'shell';
+	command: string;
+	/** What it printed, null until the output has arrived. */
+	stdout: string | null;
+	stderr: string;
+}
+
+export type TurnEntry =
+	| TextEntry
+	| ThinkingEntry
+	| ToolEntry
+	| SteerEntry
+	| ImageEntry
+	| CompactionEntry
+	| NoticeEntry
+	| ShellEntry;
 
 /** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
 export interface TurnHeading {
@@ -204,17 +271,63 @@ export interface TranscriptState {
 	 * This is what tells a subagent notification from a human prompt.
 	 */
 	pendingQueue: string[];
+	/** Which records the conversation stands on, for a rewind (#131). */
+	branch: BranchState;
+}
+
+/** Where one record landed, for a prompt that later hangs from it (#131). */
+export interface RecordMark {
+	/** The turn that was last when the record was folded, '' before any. */
+	turn: string;
+	/** How many answers had been written by then, this record included. */
+	answers: number;
+}
+
+/**
+ * The branch of the conversation the session is on (#131).
+ *
+ * Claude Code links every record to the one before it (`parentUuid`) and never
+ * rewrites the file. A rewind (Esc Esc, Restore) leaves the turns it went back
+ * over in place, and the next prompt hangs from the record it went back to;
+ * a prompt cancelled before any reply and sent again is written as a sibling
+ * of the cancelled one, under the same parent. This is what reading a prompt
+ * needs to know to drop what the conversation left behind.
+ */
+export interface BranchState {
+	/** The record folded last, null before any. */
+	last: string | null;
+	/** Every record folded so far, by uuid. Replaced, never written into. */
+	records: ReadonlyMap<string, RecordMark>;
+	/** Answers (assistant records) written so far. */
+	answers: number;
+	/**
+	 * Answers written before the conversation last started over (an in-file
+	 * `/clear`, #134): a prompt that hangs from nothing reaches back to here.
+	 */
+	floor: number;
+	/** The newest prompt, what it hangs from and whether anything answered it. */
+	lastPrompt: { turnId: string; parent: string; answered: boolean } | null;
 }
 
 export interface ReduceResult {
 	state: TranscriptState;
 	/** Turn ids created or changed by this batch, in order, each once. */
 	changedTurnIds: string[];
+	/**
+	 * Turn ids the state held before this batch and holds no more: a rewind's
+	 * abandoned turns and a cancelled prompt's (#131). A view drops them.
+	 */
+	removedTurnIds: string[];
 }
 
 /** The state a session starts from, and what a rotation goes back to. */
 export function emptyTranscript(): TranscriptState {
-	return { turns: [], raw: {}, pendingQueue: [] };
+	return {
+		turns: [],
+		raw: {},
+		pendingQueue: [],
+		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null },
+	};
 }
 
 /** Raw counter key for a line that was not JSON. */
@@ -256,11 +369,20 @@ function resultText(content: unknown): string {
  * and what it should say is the command as typed.
  */
 function commandPrompt(content: string): string | null {
-	const name = /^<command-name>([^<]*)<\/command-name>/.exec(content);
+	// A skill run as a command writes its `<command-message>` first (2.1.286).
+	const name = /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>([^<]*)<\/command-name>/.exec(content);
 	if (!name) return null;
 	const args = /<command-args>([^<]*)<\/command-args>/.exec(content);
 	return `${name[1] ?? ''} ${args?.[1] ?? ''}`.trim();
 }
+
+/**
+ * A `/clear` run at the keyboard, as its whole envelope (#134): the name, and
+ * at most its own message and empty arguments. Prose that quotes `/clear`,
+ * or a command with arguments, is not one.
+ */
+const CONTEXT_CLEAR =
+	/^\s*(?:<command-message>clear<\/command-message>\s*)?<command-name>\s*\/clear\s*<\/command-name>(?:\s*<command-message>clear<\/command-message>)?(?:\s*<command-args>\s*<\/command-args>)?\s*$/;
 
 /** The text of one `<tag>` in a task notification, empty when it has none. */
 function notificationField(content: string, tag: string): string {
@@ -281,6 +403,7 @@ function taskNotification(
 	content: string,
 ): { toolUseId: string; completed: boolean; notification: TaskNotification } | null {
 	if (!content.trimStart().startsWith('<task-notification>')) return null;
+	const summary = notificationField(content, 'summary');
 	return {
 		toolUseId: notificationField(content, 'tool-use-id'),
 		// `completed`, `failed` and `killed` are the three values this machine's
@@ -288,10 +411,24 @@ function taskNotification(
 		completed: notificationField(content, 'status') === 'completed',
 		notification: {
 			taskId: notificationField(content, 'task-id'),
+			kind: summary.startsWith('Agent "')
+				? 'agent'
+				: summary.startsWith('Background command')
+					? 'command'
+					: 'other',
 			outputFile: notificationField(content, 'output-file'),
 		},
 	};
 }
+
+/** Tool names of a subagent call, as `./toolCalls.ts` aliases them. */
+const AGENT_TOOL = /^(agent|task)$/i;
+
+/**
+ * How a background command's `tool_result` opens: the command went to the
+ * background and its notification will say how it ended (2.1.286, 2.1.318).
+ */
+const BACKGROUND_COMMAND_NOTICE = /^command running in background with id:/i;
 
 /**
  * How an async `Agent` call's `tool_result` opens: the launch notice Claude
@@ -310,6 +447,110 @@ export function isAsyncLaunchNotice(result: string | null): boolean {
 	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
 }
 
+/** Whether a tool result says the work went on in the background (#91, #135). */
+function isBackgroundLaunch(result: string): boolean {
+	const text = result.trimStart();
+	return ASYNC_LAUNCH_NOTICE.test(text) || BACKGROUND_COMMAND_NOTICE.test(text);
+}
+
+/**
+ * The marker Claude Code writes when the human stops a turn, as a `user` line
+ * of content blocks: `[Request interrupted by user]`, or `… for tool use]`.
+ * It is the runtime's bookkeeping, not anything the human typed.
+ */
+const INTERRUPTED = /^\[Request interrupted by user/;
+
+/**
+ * A prompt written as content blocks rather than a string (#129): what a TUI
+ * prompt with a pasted image is (`[{text: "[Image #3]"}, {image}]`, measured
+ * on 2.1.283), with no `isMeta`. The text blocks are the prompt; each image is
+ * kept as a placeholder. Null for a line that is no prompt: one that carries
+ * nothing but tool results, an interruption marker, or a task notification.
+ */
+function blockPrompt(
+	line: Json,
+	content: readonly unknown[],
+): { text: string; images: ImageEntry[] } | null {
+	if (line.isMeta === true || typeof line.interruptedMessageId === 'string') return null;
+	const texts: string[] = [];
+	const images: ImageEntry[] = [];
+	for (const block of content) {
+		if (!isRecord(block)) continue;
+		if (block.type === 'text') {
+			const text = stringField(block, 'text');
+			if (INTERRUPTED.test(text) || taskNotification(text)) continue;
+			if (text.trim()) texts.push(text);
+		} else if (block.type === 'image') {
+			const source = isRecord(block.source) ? block.source : {};
+			images.push({ kind: 'image', mediaType: stringField(source, 'media_type') });
+		}
+	}
+	if (texts.length === 0 && images.length === 0) return null;
+	return { text: texts.join('\n'), images };
+}
+
+/** What the runtime writes for the model's eyes only, inside a summary. */
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>\s*/g;
+
+/**
+ * The summary of a compaction, from its `user` line (#130): Claude Code
+ * writes it as a string `user` line with `isCompactSummary: true` (measured on
+ * 2.1.286 and 2.1.318), sometimes as text blocks. The reminders inside it are
+ * the model's, not the reader's.
+ */
+function compactionSummary(content: unknown): string {
+	const text = typeof content === 'string' ? content : resultText(content);
+	return text.replace(SYSTEM_REMINDER, '').trim();
+}
+
+/** Notices written this close together are one notice (#133). */
+const NOTICE_JOIN_MS = 1000;
+
+/** A notice is not a log: past this, the rest stays in the terminal. */
+const NOTICE_MAX_CHARS = 4000;
+
+/** Terminal escape sequences and other controls, which a notice or a shell's output may carry. */
+// eslint-disable-next-line no-control-regex
+const TERMINAL_CONTROLS = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+
+/** Text as the terminal showed it, without its escape codes, cut to a notice's length. */
+function plainText(text: string): string {
+	const plain = text.replace(TERMINAL_CONTROLS, '');
+	return plain.length > NOTICE_MAX_CHARS ? `${plain.slice(0, NOTICE_MAX_CHARS)}\u2026` : plain;
+}
+
+/** Whether two lines were written together; never when either has no readable time. */
+function writtenTogether(a: string, b: string): boolean {
+	const first = Date.parse(a);
+	const second = Date.parse(b);
+	return !Number.isNaN(first) && !Number.isNaN(second) && Math.abs(first - second) <= NOTICE_JOIN_MS;
+}
+
+/**
+ * Whether a string `user` line is the human's own, as bash mode writes it:
+ * a typed prompt carries `origin` and `permissionMode`, a bash-mode line
+ * neither (measured on 2.1.286 and 2.1.318), so a prompt that merely quotes
+ * the tags is not taken for one.
+ */
+function bashModeLine(line: Json): boolean {
+	return !('origin' in line) && !('permissionMode' in line);
+}
+
+/** The command of a bash-mode line: the whole line is `<bash-input>…</bash-input>`. */
+const BASH_INPUT = /^\s*<bash-input>([\s\S]*)<\/bash-input>\s*$/;
+
+/** What a bash-mode command printed: `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`. */
+const BASH_OUTPUT = /^\s*<bash-stdout>([\s\S]*)<\/bash-stdout>\s*(?:<bash-stderr>([\s\S]*)<\/bash-stderr>)?\s*$/;
+
+/** The newest shell entry still waiting for what its command printed, or null. */
+function waitingShell(entries: readonly TurnEntry[]): ShellEntry | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry?.kind === 'shell' && entry.stdout === null) return entry;
+	}
+	return null;
+}
+
 /** True for a `user` line that is a local command's own output, not a prompt. */
 function isLocalCommandOutput(content: string): boolean {
 	return content.startsWith('<local-command-stdout>');
@@ -318,6 +559,10 @@ function isLocalCommandOutput(content: string): boolean {
 /** A working copy of one turn, so the reducer never mutates the state it was given. */
 class Draft {
 	private readonly turns: Turn[];
+	/** The turns as the batch found them, for what it removed. */
+	private readonly initial: readonly Turn[];
+	/** Turns this batch removed, by id. */
+	private readonly removed = new Set<string>();
 	private readonly changed: string[] = [];
 	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
 	private readonly changedIds = new Set<string>();
@@ -325,7 +570,31 @@ class Draft {
 	private readonly mine = new Set<string>();
 
 	constructor(turns: Turn[]) {
+		this.initial = turns;
 		this.turns = [...turns];
+	}
+
+	/** The id of the turn open for new content, '' before the first. */
+	lastId(): string {
+		return this.turns[this.turns.length - 1]?.id ?? '';
+	}
+
+	/** Drops one turn, if it is still here (#131). */
+	remove(turnId: string): void {
+		const index = this.turns.findIndex((turn) => turn.id === turnId);
+		if (index === -1) return;
+		this.removed.add(turnId);
+		this.turns.splice(index, 1);
+	}
+
+	/**
+	 * Drops every turn after `turnId`, or every turn for '' (#131). A turn
+	 * that is no longer here drops nothing: what it named is already gone.
+	 */
+	dropAfter(turnId: string): void {
+		const index = turnId ? this.turns.findIndex((turn) => turn.id === turnId) : -1;
+		if (turnId && index === -1) return;
+		for (const turn of this.turns.splice(index + 1)) this.removed.add(turn.id);
 	}
 
 	/** The turn open for new content, or null before the first prompt. */
@@ -401,8 +670,9 @@ class Draft {
 	 * place: prose arrives a block at a time, and a turn the batch did not touch
 	 * still says what it said (#100).
 	 */
-	finish(): { turns: Turn[]; changedTurnIds: string[] } {
-		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed };
+	finish(): { turns: Turn[]; changedTurnIds: string[]; removedTurnIds: string[] } {
+		const removedTurnIds = this.removedIds();
+		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed, removedTurnIds };
 		// Indexed once rather than searched per id: the first batch of a tail is
 		// the whole file, so every turn in a long session can be in `changed`, and
 		// a `find` each would be quadratic in exactly the case the native view's
@@ -412,7 +682,18 @@ class Draft {
 			const turn = byId.get(id);
 			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
 		}
-		return { turns: this.turns, changedTurnIds: this.changed };
+		// A turn opened and dropped within the batch was never anyone's to draw.
+		const changedTurnIds = this.removed.size
+			? this.changed.filter((id) => byId.has(id))
+			: this.changed;
+		return { turns: this.turns, changedTurnIds, removedTurnIds };
+	}
+
+	/** The turns the batch found and no longer holds, in their old order. */
+	private removedIds(): string[] {
+		if (this.removed.size === 0) return [];
+		const kept = new Set(this.turns.map((turn) => turn.id));
+		return this.initial.map((turn) => turn.id).filter((id) => this.removed.has(id) && !kept.has(id));
 	}
 
 	/**
@@ -434,6 +715,111 @@ class Draft {
 }
 
 /**
+ * What a record hangs from: its `parentUuid`, or for a compaction's boundary,
+ * which starts a chain of its own (`parentUuid: null`), the record it
+ * continues (`logicalParentUuid`). Null for a record that hangs from nothing,
+ * undefined for one that does not say.
+ */
+function parentOf(line: Json): string | null | undefined {
+	const parent = line.parentUuid;
+	if (parent === null) return typeof line.logicalParentUuid === 'string' ? line.logicalParentUuid : null;
+	return typeof parent === 'string' ? parent : undefined;
+}
+
+/**
+ * A working copy of the {@link BranchState}, for one batch (#131).
+ *
+ * A record is marked once it has been folded, so the mark names the turn it
+ * landed in — a prompt's own record names the turn it opened. Records on a
+ * side chain (a subagent's, inlined by older builds) are not the session's
+ * conversation and are not marked.
+ */
+class Branch {
+	private last: string | null;
+	private readonly records: Map<string, RecordMark>;
+	private answers: number;
+	private floor: number;
+	private lastPrompt: BranchState['lastPrompt'];
+	/** The record being folded, marked by {@link settle}. */
+	private pending: { uuid: string; answer: boolean } | null = null;
+
+	constructor(state: BranchState) {
+		this.last = state.last;
+		this.records = new Map(state.records);
+		this.answers = state.answers;
+		this.floor = state.floor;
+		this.lastPrompt = state.lastPrompt;
+	}
+
+	/** The line about to be folded; marked when the next one arrives. */
+	saw(line: Json): void {
+		const uuid = line.uuid;
+		if (typeof uuid !== 'string' || !uuid || line.isSidechain === true) return;
+		this.pending = { uuid, answer: line.type === 'assistant' };
+	}
+
+	/** Marks the line folded last where it landed. */
+	settle(draft: Draft): void {
+		const pending = this.pending;
+		if (!pending) return;
+		this.pending = null;
+		if (pending.answer) {
+			this.answers++;
+			if (this.lastPrompt) this.lastPrompt = { ...this.lastPrompt, answered: true };
+		}
+		this.records.set(pending.uuid, { turn: draft.lastId(), answers: this.answers });
+		this.last = pending.uuid;
+	}
+
+	/**
+	 * A prompt is about to open a turn: drops what the conversation left
+	 * behind to get here. A prompt that hangs from the newest prompt's own
+	 * parent while nothing answered that one is its re-send, and the cancelled
+	 * one goes. A prompt that hangs from an earlier record than the last, with
+	 * an answer written since that record, forks: every turn after the one that
+	 * record landed in goes. A parent this read never saw hides nothing.
+	 */
+	fork(line: Json, draft: Draft): void {
+		const parent = parentOf(line);
+		if (parent === undefined) return;
+		const previous = this.lastPrompt;
+		if (previous && !previous.answered && parent !== null && parent === previous.parent) {
+			draft.remove(previous.turnId);
+			return;
+		}
+		if (this.last === null || parent === this.last) return;
+		const mark = parent === null ? { turn: '', answers: this.floor } : this.records.get(parent);
+		if (mark && this.answers > mark.answers) draft.dropAfter(mark.turn);
+	}
+
+	/** A prompt opened `turnId`; it is the newest now, and nothing answered it yet. */
+	/**
+	 * The conversation started over in the same file (#134): what was read
+	 * before is no branch to go back to, and a prompt that hangs from nothing
+	 * reaches back only to here.
+	 */
+	cleared(): void {
+		this.floor = this.answers;
+		this.lastPrompt = null;
+	}
+
+	prompted(turnId: string, line: Json): void {
+		const parent = parentOf(line);
+		this.lastPrompt = { turnId, parent: typeof parent === 'string' ? parent : '', answered: false };
+	}
+
+	finish(): BranchState {
+		return {
+			last: this.last,
+			records: this.records,
+			answers: this.answers,
+			floor: this.floor,
+			lastPrompt: this.lastPrompt,
+		};
+	}
+}
+
+/**
  * Folds `lines` into `state`. Neither `state` nor anything reachable from it is
  * mutated: turns this batch touched are replaced by copies, the rest are shared.
  */
@@ -441,12 +827,48 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const draft = new Draft(state.turns);
 	const raw = { ...state.raw };
 	const pendingQueue = [...state.pendingQueue];
+	const branch = new Branch(state.branch);
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
 	};
+	/**
+	 * Opens the turn a human prompt starts, after dropping what a rewind or a
+	 * re-send left behind (#131).
+	 */
+	/**
+	 * A background task's notification, applied to the call it names (#96,
+	 * #135). Claude Code writes one notification as its enqueue, a mid-turn
+	 * attachment, a `user` line, or several of these, so applying it is
+	 * idempotent: the same notification again changes nothing. A background
+	 * command's notification never ends a subagent's call.
+	 */
+	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>): void => {
+		const entry = draft.toolEntry(task.toolUseId);
+		if (!entry) return;
+		if (task.notification.kind === 'command' && AGENT_TOOL.test(entry.name.trim())) return;
+		const status: ToolStatus = task.completed ? 'done' : 'error';
+		const same =
+			entry.notification?.taskId === task.notification.taskId &&
+			entry.notification.outputFile === task.notification.outputFile &&
+			entry.status === status;
+		if (same) return;
+		entry.notification = task.notification;
+		// The background work is over, one way or the other (#91).
+		entry.status = status;
+		const turn = draft.turnOf(task.toolUseId);
+		if (turn) draft.touch(turn.id);
+	};
+	const openPrompt = (line: Json, prompt: string): Turn => {
+		branch.fork(line, draft);
+		const turn = draft.open(stringField(line, 'uuid') || `turn-${draft.length}`, prompt);
+		branch.prompted(turn.id, line);
+		return turn;
+	};
 
 	for (const line of lines) {
+		// The line before this one has landed; where is what a rewind reads.
+		branch.settle(draft);
 		if (!line.trim()) continue;
 		let parsed: unknown;
 		try {
@@ -464,6 +886,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			countRaw(UNTYPED);
 			continue;
 		}
+		branch.saw(parsed);
 
 		switch (type) {
 			case 'queue-operation': {
@@ -472,7 +895,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// queue moved on, and the pairing has already been made by then.
 				if (stringField(parsed, 'operation') === 'enqueue') {
 					const content = stringField(parsed, 'content');
-					if (content) pendingQueue.push(content);
+					// A notification is read from whichever record carries it, and
+					// some reach the transcript as their enqueue alone (#135).
+					const task = taskNotification(content);
+					if (task) notify(task);
+					else if (content) pendingQueue.push(content);
 				}
 				countRaw(type);
 				continue;
@@ -481,6 +908,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				const attachment = isRecord(parsed.attachment) ? parsed.attachment : null;
 				const origin = attachment && isRecord(attachment.origin) ? attachment.origin : null;
 				const human = attachment?.type === 'queued_command' && origin?.kind === 'human';
+				// A notification taken in mid-turn is this attachment, with no
+				// `user` line after it (#135).
+				const task =
+					attachment?.type === 'queued_command' ? taskNotification(stringField(attachment, 'prompt')) : null;
+				if (task) {
+					notify(task);
+					countRaw(type);
+					continue;
+				}
 				if (!human) {
 					countRaw(type);
 					continue;
@@ -507,6 +943,14 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'user': {
 				const message = isRecord(parsed.message) ? parsed.message : null;
 				const content = message?.content;
+				if (parsed.isCompactSummary === true) {
+					// Not the human speaking, however much it reads like a prompt: a
+					// divider in the turn it happened in (#130).
+					const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, '');
+					turn.entries.push({ kind: 'compaction', summary: compactionSummary(content) });
+					draft.touch(turn.id);
+					continue;
+				}
 				if (Array.isArray(content)) {
 					let attached = false;
 					for (const block of content) {
@@ -517,18 +961,30 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						entry.result = resultText(block.content);
 						// A failed call and one the user refused both arrive as
 						// `is_error`; a launch notice means the work goes on (#91).
-						entry.status =
-							block.is_error === true
-								? 'error'
-								: isAsyncLaunchNotice(entry.result)
-									? 'running'
-									: 'done';
+						// A notification that already landed has said how it ended.
+						if (!entry.notification) {
+							entry.status =
+								block.is_error === true
+									? 'error'
+									: isBackgroundLaunch(entry.result)
+										? 'running'
+										: 'done';
+						}
 						// The turn that changed is the one holding the call, which is
 						// not always the turn now open: a background command answers
 						// after the next prompt has started one (#93, #94).
 						const turn = draft.turnOf(toolUseId);
 						if (turn) draft.touch(turn.id);
 						attached = true;
+					}
+					// A prompt of content blocks — a pasted image, a pasted block —
+					// is a prompt like a string one (#129). A line of tool results
+					// carries no text of the human's and opens nothing.
+					const sent = blockPrompt(parsed, content);
+					if (sent) {
+						const turn = openPrompt(parsed, sent.text);
+						turn.entries.push(...sent.images);
+						continue;
 					}
 					if (!attached) countRaw(type);
 					continue;
@@ -537,25 +993,21 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
+				const task = taskNotification(content);
+				if (task) {
+					// Never a prompt, whether or not its enqueue was seen (#96, #135).
+					notify(task);
+					countRaw(type);
+					continue;
+				}
 				const queued = pendingQueue.indexOf(content);
 				if (queued !== -1 && isStreamPrompt(parsed, content)) {
 					// Its own enqueue, spent; then an ordinary prompt below.
 					pendingQueue.splice(queued, 1);
 				} else if (queued !== -1) {
-					// Enqueued before it arrived: a subagent's task notification, or a
-					// steer that has already been rendered from its attachment.
+					// Enqueued before it arrived: a steer that has already been
+					// rendered from its attachment, or other injected content.
 					pendingQueue.splice(queued, 1);
-					// A notification belongs to the call it names, not to the
-					// conversation: it is how a background task says it finished (#96).
-					const task = taskNotification(content);
-					const entry = task ? draft.toolEntry(task.toolUseId) : null;
-					if (task && entry) {
-						entry.notification = task.notification;
-						// The background work is over, one way or the other (#91).
-						entry.status = task.completed ? 'done' : 'error';
-						const turn = draft.turnOf(task.toolUseId);
-						if (turn) draft.touch(turn.id);
-					}
 					countRaw(type);
 					continue;
 				}
@@ -563,8 +1015,37 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
-				const prompt = commandPrompt(content) ?? content;
-				draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, prompt);
+				if (CONTEXT_CLEAR.test(content)) {
+					// `/clear` inside the file (#134): the turns go, and with them
+					// every call a late result could still find. Usually Claude moves
+					// to a new file instead, and there this clears nothing.
+					draft.dropAfter('');
+					branch.cleared();
+					countRaw(type);
+					continue;
+				}
+				if (bashModeLine(parsed)) {
+					// Bash mode (#133): the command opens a turn as a prompt does,
+					// and the line after it holds what it printed.
+					const command = BASH_INPUT.exec(content);
+					if (command) {
+						const turn = openPrompt(parsed, '');
+						turn.entries.push({ kind: 'shell', command: (command[1] ?? '').trim(), stdout: null, stderr: '' });
+						continue;
+					}
+					const printed = BASH_OUTPUT.exec(content);
+					if (printed) {
+						const turn = draft.current();
+						const shell = turn ? waitingShell(turn.entries) : null;
+						if (turn && shell) {
+							shell.stdout = plainText((printed[1] ?? '').replace(/\n+$/, ''));
+							shell.stderr = plainText((printed[2] ?? '').replace(/\n+$/, ''));
+							draft.touch(turn.id);
+						} else countRaw(type);
+						continue;
+					}
+				}
+				openPrompt(parsed, commandPrompt(content) ?? content);
 				continue;
 			}
 			case 'assistant': {
@@ -619,14 +1100,40 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				draft.touch(turn.id);
 				continue;
 			}
+			case 'system': {
+				// The runtime's own notices (#133). A slash command's output, the
+				// `local_command` subtype, stays hidden as its `user` form does: the
+				// command itself is the turn, and what it set is the session
+				// chrome's to show.
+				if (stringField(parsed, 'subtype') !== 'informational') {
+					countRaw(type);
+					continue;
+				}
+				const text = plainText(stringField(parsed, 'content')).trim();
+				if (!text) {
+					countRaw(type);
+					continue;
+				}
+				const at = stringField(parsed, 'timestamp');
+				const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `notice-${draft.length}`, '');
+				const last = turn.entries[turn.entries.length - 1];
+				// Claude Code writes one notice as several lines a moment apart
+				// ("Unknown command" and the arguments it dropped).
+				if (last?.kind === 'notice' && writtenTogether(last.at, at)) {
+					last.text = plainText(`${last.text}\n${text}`);
+				} else turn.entries.push({ kind: 'notice', text, at });
+				draft.touch(turn.id);
+				continue;
+			}
 			default:
 				countRaw(type);
 				continue;
 		}
 	}
 
-	const { turns, changedTurnIds } = draft.finish();
-	return { state: { turns, raw, pendingQueue }, changedTurnIds };
+	branch.settle(draft);
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { turns, raw, pendingQueue, branch: branch.finish() }, changedTurnIds, removedTurnIds };
 }
 
 /**
@@ -649,8 +1156,27 @@ export function attachSubagentReport(
 		entry.report = report;
 		draft.touch(turn.id);
 	}
-	const { turns, changedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds };
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+}
+
+/**
+ * Every call still running marked lost (#135): the agent that ran it is gone,
+ * and nothing will report it. Pure, like {@link attachSubagentReport}; the
+ * session model decides when the agent is gone.
+ */
+export function markLost(state: TranscriptState): ReduceResult {
+	const draft = new Draft(state.turns);
+	for (const turn of state.turns) {
+		for (const entry of turn.entries) {
+			if (entry.kind !== 'tool' || entry.status !== 'running') continue;
+			const owned = draft.toolEntry(entry.id);
+			if (owned) owned.status = 'lost';
+			draft.touch(turn.id);
+		}
+	}
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
 }
 
 /**

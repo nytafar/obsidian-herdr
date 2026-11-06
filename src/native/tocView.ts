@@ -203,8 +203,13 @@ export class TocPanel {
 
 	/** One turn: its prompt, then the headings of its prose, nested under it. */
 	private renderTurn(listEl: HTMLElement, turn: Turn): void {
+		// A turn nobody prompted — what a compaction or the runtime's notices
+		// open before the first prompt (#130, #133) — has no row of its own;
+		// its headings, if it has any, still do.
+		const label = turnLabel(turn);
+		if (!label && turn.headings.length === 0) return;
 		const turnEl = listEl.createDiv({ cls: 'herdr-toc-turn' });
-		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], firstLine(turn.prompt), turn.id);
+		if (label) this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], label, turn.id);
 		turn.headings.forEach((heading, index) => {
 			this.renderRow(
 				turnEl,
@@ -262,6 +267,19 @@ export class TocPanel {
 			heading,
 		);
 	}
+}
+
+/**
+ * What a turn's row says: its prompt's first line, for a bash-mode command
+ * the command (#133), or for a prompt that was only a picture, that it was
+ * one (#129). Empty for a turn nobody prompted.
+ */
+export function turnLabel(turn: Turn): string {
+	const line = firstLine(turn.prompt);
+	if (line) return line;
+	const first = turn.entries[0];
+	if (first?.kind === 'shell') return `! ${first.command}`;
+	return first?.kind === 'image' ? 'Image' : '';
 }
 
 /** A prompt's first line, which is all a one-line row can say. */

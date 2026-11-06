@@ -415,6 +415,36 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
    lists its transcripts; the one named by that pane's `agent_session.value` in
    `herdr agent list` is the file the view is showing.
 
+## Recorded transcript fixtures (#129–#135)
+
+`tests/transcriptShapes.test.ts` reads fixtures cut from real Claude Code
+transcripts on this machine and scrubbed: prose, commands, tool input and
+output replaced, paths moved under `/home/user`, image bytes cut to a stub,
+bookkeeping lines (`api-request`, `ai-title`, …) dropped. Ids, parents,
+timestamps, types and the tags the reducer reads are kept as recorded.
+
+- `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
+  (no 2.1.318 transcript on this machine has one).
+- `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
+  2.1.318 lines have the same shape.
+- `resend.jsonl` — a prompt cancelled before any reply and sent again, 2.1.318.
+- `unknown-command.jsonl` — an unknown slash command's two notices, 2.1.286.
+- `usage-limit.jsonl` — a usage limit reached and later reset, 2.1.286.
+- `bash-mode.jsonl` — a `!` command, its output and the agent's answer, 2.1.318.
+- `in-file-clear.jsonl` — the three `/clear` lines recorded at the start of a
+  rotated 2.1.286 file, with a turn and a late tool result written around them
+  in the same shapes (no transcript here clears inside its own file).
+- `background-command.jsonl` — a background command's launch and its
+  notification as enqueue and `user` line, 2.1.318.
+- `subagent-notification.jsonl` — a background subagent's notification taken
+  in mid-turn: its enqueue, a `remove` and the `queued_command` attachment,
+  with no `user` line, 2.1.318.
+- `rewind-fork.jsonl` — copied unchanged from
+  https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
+  commit c43dffdd), MIT License, Copyright (c) 2026 devswha:
+  two answered prompts, a Restore to before the first, and the prompt that
+  forks the session.
+
 ## Smoking tool groups and the to-do list (#127, #128, #143)
 
 What a redraw costs and which disclosure is open are unit tested on the DOM

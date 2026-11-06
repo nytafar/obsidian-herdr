@@ -782,7 +782,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ description: 'Check the styles' },
 			'Async agent launched successfully. agentId: a1f2',
 		);
-		launched.notification = { taskId: 'a1f2', outputFile: '/tmp/a1f2.output' };
+		launched.notification = { taskId: 'a1f2', kind: 'agent', outputFile: '/tmp/a1f2.output' };
 
 		model.push([turn('u1', 'Start the long job', [launched])], {
 			changedTurnIds: ['u1'],

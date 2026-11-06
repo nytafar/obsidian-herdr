@@ -21,6 +21,10 @@
 
 import {
 	isAsyncLaunchNotice,
+	type CompactionEntry,
+	type ImageEntry,
+	type NoticeEntry,
+	type ShellEntry,
 	type ThinkingEntry,
 	type TextEntry,
 	type SteerEntry,
@@ -176,14 +180,14 @@ export function toolGroupState(
 /**
  * The index of the turn's open run among its items, or -1: the last group,
  * when nothing that ends a run comes after it. A call that escaped the group
- * (a vault change, a source) does not end it (`turnItems`), so it does not
- * end it here either; anything else does.
+ * (a vault change, a source) or the runtime's notice does not end it
+ * (`turnItems`), so it does not end it here either; anything else does.
  */
 export function openRunIndex(items: readonly TurnItem[]): number {
 	for (let index = items.length - 1; index >= 0; index--) {
 		const kind = items[index]?.kind;
 		if (kind === 'group') return index;
-		if (kind !== 'change' && kind !== 'source' && kind !== 'todo') return -1;
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo' && kind !== 'notice') return -1;
 	}
 	return -1;
 }
@@ -206,10 +210,14 @@ export interface ToolGroupHeader {
 export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupState): ToolGroupHeader {
 	const title = state === 'live' ? 'Working…' : state === 'waiting' ? 'Needs you' : 'Worked';
 	const failures = tools.filter((entry) => entry.status === 'error').length;
+	// Work the agent left running when it went away (#135) is as much a thing
+	// a glance must not miss as a failure.
+	const lost = tools.filter((entry) => entry.status === 'lost').length;
+	const parts = [failures > 0 ? `${failures} failed` : '', lost > 0 ? `${lost} lost` : ''].filter(Boolean);
 	return {
 		title,
 		counts: toolGroupCounts(tools),
-		failed: failures > 0 ? `${failures} failed` : null,
+		failed: parts.length ? parts.join(', ') : null,
 	};
 }
 
@@ -516,7 +524,22 @@ export type TurnItem =
 	| { kind: 'source'; entry: ToolEntry }
 	| { kind: 'report'; entry: ToolEntry }
 	/** A to-do list update (#143); `latest` for the turn's last one. */
-	| { kind: 'todo'; entry: ToolEntry; latest: boolean };
+	| { kind: 'todo'; entry: ToolEntry; latest: boolean }
+	| MarkItem;
+
+/**
+ * The entries that are neither the agent speaking nor a call it made, each
+ * drawn as an item of its own kind: a picture sent with the prompt (#129), a
+ * compaction (#130), the runtime's notice and a bash-mode command (#133).
+ */
+export type MarkEntry = ImageEntry | CompactionEntry | NoticeEntry | ShellEntry;
+
+/** One {@link MarkEntry} as an item, under its own kind. */
+export type MarkItem =
+	| { kind: 'image'; entry: ImageEntry }
+	| { kind: 'compaction'; entry: CompactionEntry }
+	| { kind: 'notice'; entry: NoticeEntry }
+	| { kind: 'shell'; entry: ShellEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -528,6 +551,20 @@ export type TurnItem =
  */
 function rendersNothing(entry: TurnEntry): boolean {
 	return (entry.kind === 'thinking' || entry.kind === 'text') && !entry.text.trim();
+}
+
+/** A {@link MarkEntry} under its own kind, for the switch that draws it. */
+function markItem(entry: MarkEntry): MarkItem {
+	switch (entry.kind) {
+		case 'image':
+			return { kind: 'image', entry };
+		case 'compaction':
+			return { kind: 'compaction', entry };
+		case 'notice':
+			return { kind: 'notice', entry };
+		case 'shell':
+			return { kind: 'shell', entry };
+	}
 }
 
 /**
@@ -564,6 +601,18 @@ export function turnItems(
 		if (entry.kind === 'steer') {
 			group = null;
 			items.push({ kind: 'steer', entry });
+			continue;
+		}
+		if (entry.kind === 'notice') {
+			// The runtime speaking mid-work is not the agent stopping: like a
+			// vault change, it is drawn where it was written and the run goes on.
+			items.push(markItem(entry));
+			continue;
+		}
+		if (entry.kind !== 'tool') {
+			// Visible, so it ends the run like a steer does.
+			group = null;
+			items.push(markItem(entry));
 			continue;
 		}
 		const kind = toolKind(entry.name);

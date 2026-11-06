@@ -435,6 +435,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
+			// What a rewind left behind goes first (#131): a turn the new branch
+			// opens is drawn after the ones that stay.
+			for (const id of change.removedTurnIds ?? []) this.turns?.remove(id);
 			// The latest turn too, whatever moved: its tool groups say whether the
 			// agent is working or waiting in them (#128), and the status moves
 			// without a line. And the turn that was latest, which has settled.

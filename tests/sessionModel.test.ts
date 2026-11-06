@@ -290,6 +290,21 @@ describe('SessionModel: the pane’s current transcript', () => {
 		expect(handle.model.agentStatus).toBe('idle');
 	});
 
+	it('names the turns a rewind dropped in the change it emits (#131)', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// A prompt hanging from before the first one, with an answer since.
+		source.tails[0]?.emit([
+			'{"type":"user","message":{"role":"user","content":"Instead"},"uuid":"u9","parentUuid":null}',
+		]);
+
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['Instead']);
+		expect(changes).toEqual([{ changedTurnIds: ['u9'], removedTurnIds: ['u1'], reset: false }]);
+	});
+
 	it('has no session yet when the pane has no agent session', () => {
 		// A freshly started Claude sits idle with no `agent_session` until its
 		// first prompt (docs/architecture.md); the view shows "no session yet".
@@ -964,6 +979,77 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		]);
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 		expect(reportOf(handle.model)).toBeNull();
+	});
+});
+
+describe('SessionModel: background work the agent left behind (#135)', () => {
+	/** A turn whose background command is still running when it ends. */
+	const RUNNING = [
+		'{"type":"user","message":{"role":"user","content":"Start the slow check"},"uuid":"u1"}',
+		'{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_b1","name":"Bash","input":{"command":"sleep 600","run_in_background":true}}]},"uuid":"a1"}',
+		'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b1","content":"Command running in background with ID: b1. Output is being written to: /tmp/b1.output"}]},"uuid":"r1","parentUuid":"a1"}',
+		'',
+	].join('\n');
+
+	function statusOf(model: { state: { turns: { entries: unknown[] }[] } }, id: string): string | undefined {
+		for (const turn of model.state.turns) {
+			for (const entry of turn.entries) {
+				const tool = entry as { kind: string; id?: string; status?: string };
+				if (tool.kind === 'tool' && tool.id === id) return tool.status;
+			}
+		}
+		return undefined;
+	}
+
+	it('marks it lost once the runtime says the agent stopped, and says so', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// The `claude` kind keeps a stopped agent's session on show.
+		watcher.set({ ...PANE, stopped: true });
+		watcher.statusChanged('w4:p1', 'idle');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+		expect(changes).toEqual([{ changedTurnIds: ['u1'], reset: false }]);
+	});
+
+	it('marks lost what the earlier run left running when Claude resumes the session, and nothing after', () => {
+		// herdr and herdr-core drop the session when the agent exits: the view
+		// empties, and `--resume` brings the same file back.
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		watcher.set({ ...PANE, agentSession: '' });
+		watcher.paneUpdated('w4:p1', '');
+		expect(handle.model.state.turns).toEqual([]);
+
+		source.files.set(
+			PATH_1,
+			RUNNING +
+				[
+					'{"type":"user","message":{"role":"user","content":"Again"},"uuid":"u2","parentUuid":"r1"}',
+					'{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_b2","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]},"uuid":"a2"}',
+					'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b2","content":"Command running in background with ID: b2."}]},"uuid":"r2","parentUuid":"a2"}',
+					'',
+				].join('\n'),
+		);
+		watcher.set(PANE);
+		watcher.paneUpdated('w4:p1', 'session-1');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+		expect(statusOf(handle.model, 'toolu_b2')).toBe('running');
+	});
+
+	it('leaves running work running across a reconnect to the same session', () => {
+		const { registry, reconnect } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		reconnect();
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
 	});
 });
 

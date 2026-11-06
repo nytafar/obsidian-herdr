@@ -205,6 +205,8 @@ describe('reduce: steers and task notifications', () => {
 				status: 'done',
 				notification: {
 					taskId: 'a1f2',
+					// Its summary names an agent (#135).
+					kind: 'agent',
 					outputFile: '/tmp/claude-1000/-home-lasse-hvelv/s1/tasks/a1f2.output',
 				},
 				report: null,

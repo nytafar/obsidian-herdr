@@ -828,7 +828,8 @@ plugin's own modules driven from a script outside the repo, a throwaway
   while working was queued (two `queue-operation` lines) and rendered inline.
 - `/clear` rotated the label and the model followed with a reset. The new
   session's file starts with Claude's own `/clear` local-command lines, which
-  the view shows as a turn, as it does on herdr. `/exit` cleared the session
+  the view shows as a turn, as it does on herdr (since #134 the `/clear` echo
+  is read as a reset and opens no turn, in a new file or the same one). `/exit` cleared the session
   and the gate said no Claude; `claude --resume <first id>` in the same
   terminal brought the first session back with its turns.
 - Blocks on the wire: a Bash permission prompt reported `{"state":"blocked",
@@ -1236,6 +1237,11 @@ scratch pane created with `tab create` and `agent start`.
   subtypes are `turn_duration`, `away_summary`, `local_command`,
   `informational`, `bridge_status` and `scheduled_task_fire`. No
   `compact_boundary` line exists on this machine, so its shape is unverified.
+  (Since measured, 2026-11-06, 2.1.286 and 2.1.318: `compact_boundary` has
+  `parentUuid: null` and names the record it continues in
+  `logicalParentUuid`; the summary after it is a string `user` line with
+  `isCompactSummary: true`. `informational` carries the runtime's notices —
+  "Unknown command: …", "Usage limit reached · …", "Compacted while idle …".)
 - **Not every string-content `user` line is a human prompt.** A background
   subagent's completion arrives as a `queue-operation` enqueue followed by a
   `user` line whose string content is a `<task-notification>` block, with
@@ -1252,6 +1258,16 @@ scratch pane created with `tab create` and `agent start`.
   `subagents/agent-<id>.jsonl`, so the output file is a JSONL transcript and
   its report is the last assistant text, not plain text. A background shell
   task's output file, by contrast, is a plain file holding its stdout.
+- **A notification comes in any of three records, and sometimes only one**
+  (measured 2026-11-06 over every transcript on this machine, 2.1.263 to
+  2.1.318): its queue enqueue always; then a `user` line, or a
+  `queued_command` attachment with `commandMode: "task-notification"` when it
+  is taken in mid-turn (526 of 1,171), or nothing more at all (238, enqueue
+  and `remove` only). Its `<summary>` says whose it is: `Agent "…" finished`
+  for a subagent (also on a `SendMessage` call that resumed one), `Background
+  command "…" completed (exit code 0)` / `failed with exit code N` / `was
+  stopped …` for a shell command, `Monitor …` for a monitor. A background
+  command's launch result opens `Command running in background with ID:`.
 - **The shapes a tool call's outcome comes in.** Measured 2026-09-15 over every
   transcript on this machine. A steer's queue enqueue always precedes its
   `queued_command` attachment and carries the identical string, so the two pair
