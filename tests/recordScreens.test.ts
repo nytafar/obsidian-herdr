@@ -245,6 +245,21 @@ describe('the scenario', () => {
 		}
 	});
 
+	it('never saves a model or an effort while recording the pickers (#169)', () => {
+		const settings = all.filter((session) => session.name.startsWith('oh-test-settings-'));
+		expect(settings.length).toBe(4);
+		for (const session of settings) {
+			for (const step of session.steps) {
+				// `/model <alias>` and `/effort <level>` save the default; the bare ones open a picker.
+				if (step.do === 'command' || step.do === 'prompt') expect(step.text, session.name).not.toMatch(/^\/(model|effort)\s+\S/);
+				// `enter` or a digit in a picker saves the default.
+				if (step.do === 'keys' || step.do === 'answer') {
+					for (const key of step.keys) expect(key, session.name).not.toMatch(/^(enter|\d)$/);
+				}
+			}
+		}
+	});
+
 	it('never answers a trust prompt', () => {
 		for (const session of all.filter((s) => s.trust)) {
 			expect(session.steps.every((step) => step.do === 'record' || step.do === 'resize'), session.name).toBe(true);

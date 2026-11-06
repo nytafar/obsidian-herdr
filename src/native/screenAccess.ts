@@ -29,8 +29,10 @@ import { NO_CONNECTION_MESSAGE, type PromptClient } from './promptSender';
 /**
  * The keys a dialog answer uses, in the one spelling both runtimes accept:
  * moves (`up`, `down`, `left`, `right`, `tab`, `ctrl+u`) and commits
- * (`enter`, `esc`, `shift+tab`, a digit). No letters: hc's `terminal.keys`
- * lowercases them, and text goes through {@link ScreenAccess.type}.
+ * (`enter`, `esc`, `shift+tab`, a digit). One letter, `s`: Claude's model
+ * and effort pickers take it as "this session only" (#169), and it is
+ * already lower case, which is what hc's `terminal.keys` makes of a letter.
+ * No other: text goes through {@link ScreenAccess.type}.
  */
 export const SCREEN_KEYS = [
 	'up',
@@ -42,6 +44,7 @@ export const SCREEN_KEYS = [
 	'enter',
 	'esc',
 	'ctrl+u',
+	's',
 	'1',
 	'2',
 	'3',
@@ -150,5 +153,23 @@ export function herdrScreenAccess(client: () => PromptClient | null): ScreenAcce
 			if (!text) return;
 			await connected().request('pane.send_text', typeParams(paneId, text));
 		},
+	};
+}
+
+/**
+ * The pane's agent status as herdr reports it now (`pane.get`'s
+ * `agent_status`: `idle`, `working`, `blocked`, `done`, `unknown`), or null
+ * for a pane with no agent: what the session settings driver checks before
+ * it sends anything (#169, #170).
+ */
+export function herdrAgentStatus(client: () => PromptClient | null): (paneId: string) => Promise<string | null> {
+	return async (paneId) => {
+		const connected = client();
+		if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+		const result = await connected.request<{ pane?: { agent?: unknown; agent_status?: unknown } } | null>('pane.get', {
+			pane_id: paneId,
+		});
+		const pane = result?.pane;
+		return pane?.agent && typeof pane.agent_status === 'string' ? pane.agent_status : null;
 	};
 }

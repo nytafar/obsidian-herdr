@@ -28,7 +28,8 @@ import { earlierTurnCount, type ToolEntry, type Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
-import type { SessionSettingsSender } from './sessionSettings';
+import type { SessionSettingsSender, SettingQuestion } from './sessionSettings';
+import { ConfirmModal } from '../views/modals';
 import type { ContextUsageReader } from './contextBreakdown';
 import type { WaitingResponder } from './pendingRequest';
 import type { ScreenAnswering } from './screenAnswerers';
@@ -86,6 +87,12 @@ export interface NativePaneSurfaceOptions {
 	 * values, disabled, with the reason.
 	 */
 	sessionSettings?: () => SessionSettingsSender | null;
+	/**
+	 * Puts a question the agent asks on the way to a setting change to the
+	 * user ("Switch model?", #169). Defaults to a confirm modal with the
+	 * agent's own words.
+	 */
+	confirmSetting?: (question: SettingQuestion) => Promise<boolean>;
 	/**
 	 * How the context readout's breakdown is asked for without writing to the
 	 * conversation (#171), read per click. Null, or left out, for a kind whose
@@ -328,6 +335,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			// `/context` on herdr and herdr-core: the prompt's own path (#171).
 			sendCommand: (paneId, text) => this.options.sender.send(paneId, text),
 			notify: (message) => this.notify(message),
+			confirm: (question) =>
+				this.options.confirmSetting
+					? this.options.confirmSetting(question)
+					: new ConfirmModal(this.options.app, { title: question.title, body: question.body, confirm: question.confirm }).ask(),
 		});
 		this.sessionBar.mount(root);
 		this.bind();

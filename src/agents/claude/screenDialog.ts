@@ -42,6 +42,17 @@ import {
 	type ScreenTab,
 	type TrustDialog,
 } from '../screenDialog';
+import {
+	UNKNOWN_SETTINGS_SCREEN,
+	type CommandResult,
+	type EffortPickerScreen,
+	type ModelPickerScreen,
+	type PickerRow,
+	type PromptScreen,
+	type ScreenSettingsReader,
+	type SettingsScreen,
+	type SwitchModelScreen,
+} from '../settingsScreen';
 import { isSafeSlug } from './planFile';
 
 const CURSOR = '❯';
@@ -474,3 +485,278 @@ function hintIs(lines: readonly string[], start: string, end: string): boolean {
 function sameLines(a: readonly string[], b: readonly string[]): boolean {
 	return a.length === b.length && a.every((line, i) => line === b[i]);
 }
+
+// ------------------------------------------------- settings pickers (#169, #170)
+
+/*
+ * Claude Code's own settings screens (issues #169, #170): the `/model` and
+ * `/effort` pickers, the "Switch model?" confirm, and the prompt with its
+ * footer, as 2.1.318 draws them (fixtures `*-model-picker*`,
+ * `*-effort-picker*`, `*-switch-model`, `*-footer-*`). A picker sits under a
+ * rule of `▔` (which may carry `◐ medium · /effort` near its end) and runs to
+ * the last line; the prompt sits between two rules of `─`, with the user's
+ * own statusline, whatever it shows, and the footer under it. The facts are
+ * in `docs/architecture.md`, "Model, effort, permission mode and context".
+ */
+
+/** The rule over a picker: `▔` across, maybe with the effort indicator near its end. */
+const PICKER_RULE = /^▔{10,}(?: .* ▔)?$/;
+const MODEL_HINT = 'Enter to set as default · s to use this session only · Esc to cancel';
+const EFFORT_HINT = '←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel';
+/** A model row: cursor or scroll mark, number, then the name and, two spaces on, a description. */
+const MODEL_ROW = /^ {3}([❯↑↓ ]) (\d+)\.\s+(\S.*)$/;
+/** The tick on the model the session runs now. */
+const CURRENT_TICK = ' ✔';
+/** The `… +3 models` line under a scrolled list. */
+const MORE_MODELS = /^ +… \+\d+ models?$/;
+/** The effort row inside the model picker (`◐ Medium effort (default) ←/→ to adjust`). */
+const EFFORT_ROW = /^ {3}\S+ .*effort.* ←\/→ to adjust$/;
+const SWITCH_ROW = /^ {3}([❯ ]) ([12])\. (\S.*)$/;
+const SWITCH_YES = /^Yes, switch to (.+)$/;
+const SWITCH_NO = 'No, go back';
+
+/**
+ * The footer under the prompt, by mode: `⏸ manual mode on`, `⏵⏵ accept edits
+ * on (shift+tab to cycle)`, `⏸ plan mode on …`, `⏵⏵ auto mode on …`; what
+ * follows the words (`· ← for agents`) is not read. The bypass wording is
+ * Claude's for a session started to allow it, not measured here.
+ */
+const FOOTER_MODES: readonly (readonly [RegExp, string])[] = [
+	[/^ {2}⏸ manual mode on(?: |$)/, 'default'],
+	[/^ {2}⏵⏵ accept edits on(?: |$)/, 'acceptEdits'],
+	[/^ {2}⏸ plan mode on(?: |$)/, 'plan'],
+	[/^ {2}⏵⏵ auto mode on(?: |$)/, 'auto'],
+	[/^ {2}⏵⏵ bypass permissions on(?: |$)/, 'bypassPermissions'],
+];
+/** The most lines a statusline draws between the prompt's lower rule and the footer. */
+const MAX_STATUS_LINES = 4;
+/** A rule of `─` across the screen, as the prompt is framed. */
+const PROMPT_RULE = /^─{10,}$/;
+
+/** Reads Claude's settings pickers, or the prompt with its footer, off a visible screen. */
+export function parseClaudeSettingsScreen(screen: string): SettingsScreen {
+	const lines = screen
+		.split('\n')
+		.map((line) => line.replace(/\s+$/, ''))
+		.filter((line) => line !== '');
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (!PICKER_RULE.test(lines[i] ?? '')) continue;
+		const region = lines.slice(i + 1);
+		return parseModelPicker(region) ?? parseEffortPicker(region) ?? parseSwitchModel(region) ?? UNKNOWN_SETTINGS_SCREEN;
+	}
+	// A dialog Claude asks with (a question, a permission, …) is never the prompt.
+	if (parseClaudeScreen(screen).kind !== 'unknown') return UNKNOWN_SETTINGS_SCREEN;
+	return parsePrompt(lines) ?? UNKNOWN_SETTINGS_SCREEN;
+}
+
+function parseModelPicker(region: string[]): ModelPickerScreen | null {
+	if (region[0] !== '   Select model') return null;
+	let at = 1;
+	while (at < region.length && !MODEL_ROW.test(region[at] ?? '')) {
+		if (!/^ {3}\S/.test(region[at] ?? '')) return null;
+		at++;
+	}
+	const rows: PickerRow[] = [];
+	let cursor: number | null = null;
+	let cursors = 0;
+	for (; at < region.length; at++) {
+		const line = region[at] ?? '';
+		const row = MODEL_ROW.exec(line);
+		if (!row) break;
+		const text = row[3] ?? '';
+		const named = text.split(/ {2,}/)[0] ?? '';
+		const current = named.endsWith(CURRENT_TICK);
+		const label = current ? named.slice(0, -CURRENT_TICK.length) : named;
+		const number = Number(row[2]);
+		const previous = rows[rows.length - 1];
+		if (!label || (previous && number !== previous.number + 1)) return null;
+		if (row[1] === CURSOR) {
+			cursor = number;
+			cursors++;
+		}
+		rows.push({ number, label, current });
+		// A description wraps under its own column, past the name's.
+		const column = line.length - text.length + named.length;
+		while (at + 1 < region.length && describes(region[at + 1] ?? '', column)) at++;
+	}
+	if (MORE_MODELS.test(region[at] ?? '')) at++;
+	if (EFFORT_ROW.test(region[at] ?? '')) at++;
+	const hint = region.slice(at);
+	if (hint.length === 0 || !hint.every((line) => /^ {3}\S/.test(line)) || joinWrapped(hint) !== MODEL_HINT) return null;
+	if (rows.length < 2 || cursors !== 1 || cursor === null) return null;
+	if (rows.filter((row) => row.current).length > 1) return null;
+	return { kind: 'model-picker', rows, cursor };
+}
+
+/** A line of a description wrapped under a model row: indented past the row's name. */
+function describes(line: string, column: number): boolean {
+	const indent = line.length - line.trimStart().length;
+	return indent > column && !MODEL_ROW.test(line) && !MORE_MODELS.test(line) && !EFFORT_ROW.test(line);
+}
+
+function parseEffortPicker(region: string[]): EffortPickerScreen | null {
+	if (region[0] !== '   Effort') return null;
+	if (!/^ +Faster +Smarter$/.test(region[1] ?? '')) return null;
+	const slider = region[2] ?? '';
+	if (!/^ +─*▲─*$/.test(slider)) return null;
+	const mark = slider.indexOf('▲');
+	const levels: Level[] = [];
+	for (const match of (region[3] ?? '').matchAll(/\S+/g)) {
+		const word = match[0];
+		if (!/^[a-z]+$/.test(word)) return null;
+		levels.push({ word, start: match.index, end: match.index + word.length - 1 });
+	}
+	if (levels.length < 2) return null;
+	// At most one line saying what the level costs, then the hint.
+	let at = 4;
+	while (at < region.length && !(region[at] ?? '').startsWith('   ←/→')) at++;
+	const hint = region.slice(at);
+	if (at > 5 || hint.length === 0 || !hint.every((line) => /^ {3}\S/.test(line)) || joinWrapped(hint) !== EFFORT_HINT) {
+		return null;
+	}
+	return { kind: 'effort-picker', levels: levels.map((level) => level.word), selected: levelUnder(levels, mark) };
+}
+
+interface Level {
+	word: string;
+	start: number;
+	end: number;
+}
+
+/**
+ * The level whose word the slider's mark stands over: within the word, or
+ * one column beside it. Two candidates, or none, is no level.
+ */
+function levelUnder(levels: readonly Level[], mark: number): string | null {
+	const near = levels.filter((level) => mark >= level.start - 1 && mark <= level.end + 1);
+	return near.length === 1 ? (near[0]?.word ?? null) : null;
+}
+
+function parseSwitchModel(region: string[]): SwitchModelScreen | null {
+	if (region[0] !== '   Switch model?') return null;
+	const body: string[] = [];
+	let at = 1;
+	while (at < region.length && !SWITCH_ROW.test(region[at] ?? '')) {
+		const line = region[at++] ?? '';
+		if (!/^ {3}\S/.test(line)) return null;
+		body.push(line.trim());
+	}
+	const one = SWITCH_ROW.exec(region[at] ?? '');
+	const two = SWITCH_ROW.exec(region[at + 1] ?? '');
+	if (!one || !two || one[2] !== '1' || two[2] !== '2' || region.length !== at + 2) return null;
+	const yes = one[3] ?? '';
+	const no = two[3] ?? '';
+	const target = SWITCH_YES.exec(yes)?.[1] ?? '';
+	if (!target || no !== SWITCH_NO || body.length === 0) return null;
+	// The body names the model the yes row names.
+	if (!joinWrapped(body).includes(`Switching to ${target} `)) return null;
+	const onYes = one[1] === CURSOR;
+	if (onYes === (two[1] === CURSOR)) return null;
+	return { kind: 'switch-model', title: 'Switch model?', body, target, yes, no, cursor: onYes ? 'yes' : 'no' };
+}
+
+function parsePrompt(lines: string[]): PromptScreen | null {
+	// The prompt's lower rule, with at most the statusline between it and the footer.
+	let bottom = -1;
+	for (let i = lines.length - 2; i >= Math.max(0, lines.length - 2 - MAX_STATUS_LINES); i--) {
+		if (PROMPT_RULE.test(lines[i] ?? '')) {
+			bottom = i;
+			break;
+		}
+	}
+	if (bottom < 0) return null;
+	let top = -1;
+	for (let i = bottom - 1; i >= 0; i--) {
+		if (PROMPT_RULE.test(lines[i] ?? '')) {
+			top = i;
+			break;
+		}
+	}
+	if (top < 0 || !(lines[top + 1] ?? '').startsWith(CURSOR)) return null;
+	const footer = lines[lines.length - 1] ?? '';
+	const mode = FOOTER_MODES.find(([pattern]) => pattern.test(footer))?.[1] ?? null;
+	return { kind: 'prompt', mode, last: lastEcho(lines.slice(0, top)) };
+}
+
+/**
+ * The newest echoed prompt in the history (`❯ /model`) and the `⎿` lines
+ * under it, wrapped lines joined.
+ */
+function lastEcho(history: string[]): PromptScreen['last'] {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const line = history[i] ?? '';
+		if (!line.startsWith(`${CURSOR} `)) continue;
+		const out: string[] = [];
+		let at = i + 1;
+		const first = /^ {2}⎿ {2}(\S.*)$/.exec(history[at] ?? '');
+		if (first) {
+			out.push(first[1] ?? '');
+			at++;
+			while (/^ {5}\S/.test(history[at] ?? '')) out.push((history[at++] ?? '').trim());
+		}
+		return { echo: line.slice(2).trim(), result: out.length ? commandResult(out.join(' ')) : null };
+	}
+	return null;
+}
+
+/** What `/model` or `/effort` printed, in Claude 2.1.318's words; backticks, where drawn, dropped. */
+export function commandResult(text: string): CommandResult {
+	const plain = text.replace(/`/g, '').trim();
+	const model = /^Set model to (.+?) (for this session only|and saved as your default for new sessions)\b/.exec(plain);
+	if (model) {
+		return { kind: 'model', label: model[1] ?? '', scope: model[2] === 'for this session only' ? 'session' : 'default' };
+	}
+	const effort = /^Set effort level to ([a-z]+) \((this session only|saved as your default for new sessions)\)/.exec(plain);
+	if (effort) {
+		return { kind: 'effort', level: effort[1] ?? '', scope: effort[2] === 'this session only' ? 'session' : 'default' };
+	}
+	const kept = /^Kept model as (.+)$/.exec(plain);
+	if (kept) return { kind: 'kept', label: kept[1] ?? '' };
+	if (plain === 'Cancelled') return { kind: 'cancelled' };
+	return { kind: 'other', text: plain };
+}
+
+/** A model's name as the picker shows it (`Sonnet 5.5`): its family, and its version as numbers. */
+function modelName(label: string): { family: string; version: number[] } | null {
+	const match = /^([A-Za-z]+) (\d+(?:\.\d+)*)$/.exec(label.trim());
+	if (!match) return null;
+	return { family: (match[1] ?? '').toLowerCase(), version: (match[2] ?? '').split('.').map(Number) };
+}
+
+function newer(a: readonly number[], b: readonly number[]): boolean {
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const diff = (a[i] ?? 0) - (b[i] ?? 0);
+		if (diff !== 0) return diff > 0;
+	}
+	return false;
+}
+
+/**
+ * Claude's settings screens, for the settings driver
+ * (`../../native/screenSettings.ts`). A model choice is a family alias
+ * (`sonnet`), which Claude takes as that family's newest model, so its row is
+ * the one named `<Family> <version>` with the highest version on screen:
+ * never "Default (recommended)", and never a row by its place.
+ */
+export const CLAUDE_SCREEN_SETTINGS: ScreenSettingsReader = {
+	parse: parseClaudeSettingsScreen,
+	modelCommand: '/model',
+	effortCommand: '/effort',
+	modelRow(choice, rows) {
+		let best: { row: PickerRow; version: number[] } | null = null;
+		for (const row of rows) {
+			const name = modelName(row.label);
+			if (!name || name.family !== choice.value.toLowerCase()) continue;
+			if (!best || newer(name.version, best.version)) best = { row, version: name.version };
+		}
+		return best?.row ?? null;
+	},
+	isModel: (choice, label) => modelName(label)?.family === choice.value.toLowerCase(),
+	sameMode(a, b) {
+		const plain = (mode: string): string => (mode === 'manual' ? 'default' : mode);
+		return plain(a) === plain(b);
+	},
+	// Measured on 2.1.318: manual, accept edits, plan, auto, and round again.
+	// `dontAsk` is not on it; `bypassPermissions` only for a session started to allow it.
+	cycleModes: ['default', 'acceptEdits', 'plan', 'auto'],
+};

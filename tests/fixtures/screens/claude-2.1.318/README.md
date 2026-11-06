@@ -79,6 +79,29 @@ Scrubbed as above.
 | --- | --- | --- |
 | `*-write-after-plan` | Write `d.txt`, the plan's step | as opened; under its hint a titled rule, `──── create-d-txt-file ─` (herdr) and `──── create-d-txt-plan ─` (hc), is the screen's last line |
 
+## The settings pickers and footers (issues #169, #170)
+
+Recorded 2026-11-06 by `npm run record-screens -- --only settings` from
+`oh-test-settings-*` sessions (`settingsSteps` in
+`scripts/record-screens/scenario.ts`): herdr 0.9.5 at 233x62 and 60x40, hc
+0.1.18 at 200x120 and 60x40, `claude --permission-mode default --model
+haiku`. Nothing was chosen in a picker: they were left with `esc`, and `s`
+was pressed once, after a reply, to bring up the confirm. Scrubbed as above.
+The line between the prompt's lower rule and the footer is the recording
+account's own statusline. Read by `parseClaudeSettingsScreen`
+(`tests/settingsScreen.test.ts`); `parseClaudeScreen` reads every one as no
+dialog.
+
+| File (`<runtime>-[60-]…`) | State when read |
+| --- | --- |
+| `footer-manual` | the prompt at start, `⏸ manual mode on · ← for agents` |
+| `model-picker` | `/model` as opened, cursor on Haiku 5.5 ✔ (row 5) |
+| `model-picker-scrolled` | wide only: `down` ×6, cursor on row 11, `↑ 2.` on top |
+| `effort-picker`, `-right` | `/effort` as opened (`▲` over medium); after `right` (high) |
+| `switch-model` | after a reply, `/model`, `up`, `s`: "Switch model?" to Sonnet 5.5 |
+| `model-picker-back` | `esc` on the confirm: the picker again, cursor on the current model |
+| `footer-accept-edits`, `-plan`, `-auto` | `shift+tab` once, twice, three times |
+
 ## Re-recording for a new Claude (issue #168)
 
 `npm run record-screens` re-records this set for the Claude Code on the PATH

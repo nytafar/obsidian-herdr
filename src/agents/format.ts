@@ -44,6 +44,7 @@ import { sessionBinding, type SessionBinding } from '../runtime/kind';
 import type { RuntimeKind } from '../runtimes';
 import { CLAUDE_FORMAT } from './claude/format';
 import type { ScreenDialog } from './screenDialog';
+import type { ScreenSettingsReader } from './settingsScreen';
 
 export type { SessionBinding } from '../runtime/kind';
 
@@ -210,6 +211,13 @@ export interface AgentFormat<S extends ConversationState = ConversationState> {
 	 * cannot read whole.
 	 */
 	readonly screenDialog?: (screen: string) => ScreenDialog;
+	/**
+	 * Reads the agent's own settings pickers and its prompt footer off a
+	 * pane's screen, and names the commands that open them (#169, #170): how
+	 * herdr and herdr-core change the model and effort for this session only,
+	 * and the permission mode, by keys (`native/screenSettings.ts`).
+	 */
+	readonly screenSettings?: ScreenSettingsReader;
 	/**
 	 * The command that writes the agent's context breakdown into its
 	 * transcript (#171: Claude's `/context`), which the session bar sends

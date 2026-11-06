@@ -37,6 +37,7 @@ import {
 	pickerBlock,
 	WORKING_REASON,
 	type SessionSettingsSender,
+	type SettingQuestion,
 	type SettingScope,
 } from '../src/native/sessionSettings';
 import { NativePaneSurface, type NativePaneSurfaceOptions } from '../src/native/surface';
@@ -105,6 +106,9 @@ class FakeSender implements SessionSettingsSender {
 	scopes: SettingScope[] = ['session'];
 	settings: SessionSettingsSender['settings'] = ['model', 'effort', 'mode'];
 	midTurn = true;
+	modes?: readonly string[];
+	readMode?: (paneId: string) => Promise<string | null>;
+	unavailable?: (paneId: string) => string | null;
 	readonly calls: string[] = [];
 	failWith: string | null = null;
 	/** Holds every call open until released, so the busy state can be seen. */
@@ -325,12 +329,109 @@ describe('the session bar in the native surface (#161)', () => {
 		expect(items.map((item) => item.title)).toEqual([
 			'Opus', 'Sonnet', 'Haiku', 'Fable',
 			'Use for new sessions too',
+			"Also becomes Claude's default for new sessions, in and outside Obsidian.",
 			'Opus', 'Sonnet', 'Haiku', 'Fable',
 		]);
 		expect(items[4]?.isLabel).toBe(true);
-		items[7]?.click?.();
+		expect(items[5]?.isLabel).toBe(true);
+		items[8]?.click?.();
 		await settle();
 		expect(sender.calls).toEqual(['model w4:p1 haiku default']);
+
+		// The effort's default is per model.
+		picker(el, 'effort').dispatch('click', {});
+		expect(Menu.shown[1]?.items.map((item) => item.title)).toContain(
+			"Also becomes Claude's default for this model in new sessions, in and outside Obsidian.",
+		);
+	});
+
+	it("hands the agent's question on the way to a model switch to the user (#169)", async () => {
+		const model = new FakeModel();
+		const asked: SettingQuestion[] = [];
+		let answer: boolean | null = null;
+		const sender: SessionSettingsSender = {
+			scopes: ['session'],
+			settings: ['model', 'effort', 'mode'],
+			midTurn: false,
+			async setModel(_paneId, _model, _scope, ask) {
+				const question = { title: 'Switch model?', body: 'Re-read', confirm: 'Yes, switch to Sonnet 5.5', cancel: 'No, go back' };
+				answer = (await ask?.(question)) ?? null;
+			},
+			setEffort: () => Promise.resolve(),
+			setMode: () => Promise.resolve(),
+		};
+		const { surface, el, host } = surfaceOn(model, sender, {
+			confirmSetting: (question) => {
+				asked.push(question);
+				return Promise.resolve(false);
+			},
+		});
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		picker(el, 'model').dispatch('click', {});
+		Menu.shown[0]?.items[1]?.click?.();
+		await settle();
+		expect(asked.map((q) => q.confirm)).toEqual(['Yes, switch to Sonnet 5.5']);
+		expect(answer).toBe(false);
+	});
+
+	it("shows the footer's mode where the runtime reports none, and the transcript's as at the last prompt (#170)", async () => {
+		const model = new FakeModel();
+		const sender = new FakeSender();
+		sender.modes = ['default', 'acceptEdits', 'plan', 'auto'];
+		let footer: string | null = 'plan';
+		sender.readMode = () => Promise.resolve(footer);
+		const { surface, el, host } = surfaceOn(model, sender);
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		expect(shown(el, 'mode')).toBe('Manual');
+		expect(picker(el, 'mode').getAttribute('aria-label')).toBe('Permission mode: Manual (at the last prompt)');
+
+		// Opening the menu reads the footer first, and lists only what shift+tab reaches.
+		picker(el, 'mode').dispatch('click', { clientX: 3, clientY: 4 });
+		await settle();
+		expect(shown(el, 'mode')).toBe('Plan');
+		expect(picker(el, 'mode').getAttribute('aria-label')).toBe('Permission mode: Plan');
+		const menu = Menu.shown[0];
+		expect(menu?.position).toEqual({ x: 3, y: 4 });
+		expect(menu?.items.map((item) => item.title)).toEqual(['Manual', 'Accept edits', 'Plan', 'Auto']);
+		expect(menu?.items.find((item) => item.checked)?.title).toBe('Plan');
+
+		// After a change the footer is read again, whatever the sender said.
+		footer = 'auto';
+		menu?.items[3]?.click?.();
+		await settle();
+		await settle();
+		expect(sender.calls).toEqual(['mode w4:p1 auto']);
+		expect(shown(el, 'mode')).toBe('Auto');
+
+		// A new prompt's mode is the transcript's again.
+		model.overlay = { permissionMode: 'acceptEdits' };
+		model.emit();
+		expect(shown(el, 'mode')).toBe('Accept edits');
+	});
+
+	it('disables the other pickers while a kind that changes one thing at a time is busy', async () => {
+		const model = new FakeModel();
+		const sender = new FakeSender();
+		let busy = false;
+		sender.unavailable = () => (busy ? 'Another change is on its way to this pane.' : null);
+		let release = (): void => {};
+		sender.hold = new Promise((done) => {
+			release = done;
+		});
+		const { surface, el, host } = surfaceOn(model, sender);
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		picker(el, 'effort').dispatch('click', {});
+		busy = true;
+		Menu.shown[0]?.items[0]?.click?.();
+		await settle();
+		expect(picker(el, 'model').disabled).toBe(true);
+		busy = false;
+		release();
+		await settle();
+		expect(picker(el, 'model').disabled).toBe(false);
 	});
 
 	it('keeps a picker disabled until its change is answered, and turns a refusal into a notice', async () => {

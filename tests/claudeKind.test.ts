@@ -481,7 +481,7 @@ describe('the claude kind over a fake claude', () => {
 
 	describe('session settings (#162)', () => {
 		function settings(h: Harness) {
-			const sender = h.kind.sessionSettings?.(() => h.client);
+			const sender = h.kind.sessionSettings?.(() => h.client, null);
 			if (!sender) throw new Error('no session settings');
 			return sender;
 		}

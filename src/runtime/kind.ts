@@ -47,6 +47,7 @@ import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
 import type { TabLabels } from '../tabLabels';
 import type { AgentProbe } from '../agents/catalog';
+import type { AgentFormat } from '../agents/format';
 
 /**
  * What a runtime of a kind can do, as the UI asks it. herdr has all of it;
@@ -425,11 +426,13 @@ export interface RuntimeKindAdapter<
 	screen?(client: () => PromptClient | null): ScreenAccess;
 	/**
 	 * The session bar's model, effort and mode changes (#161), over the same
-	 * client: control requests on the `claude` kind (#162). Absent for a
-	 * kind that cannot change them yet (herdr and herdr-core until #169 and
-	 * #170), whose pickers show the value, disabled, with the reason.
+	 * client: control requests on the `claude` kind (#162); on herdr and
+	 * herdr-core the agent's own pickers on its screen (#169, #170), which
+	 * the pane's agent `format` reads (`AgentFormat.screenSettings`), so null
+	 * for an agent whose format reads none. Absent, or null, and the pickers
+	 * show the value, disabled, with the reason.
 	 */
-	sessionSettings?(client: () => PromptClient | null): SessionSettingsSender;
+	sessionSettings?(client: () => PromptClient | null, format: AgentFormat | null): SessionSettingsSender | null;
 	/**
 	 * The context readout's breakdown (#171), asked of the agent without
 	 * writing to the conversation: `get_context_usage` on the `claude` kind.

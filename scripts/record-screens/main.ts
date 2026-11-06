@@ -546,6 +546,23 @@ async function runSession(pane: Pane, out: string, recorded: Recorded, files: st
 				await pane.resize(step.size);
 				await steady(pane);
 				break;
+			case 'command': {
+				await settle(pane);
+				const before = await pane.read();
+				await pane.prompt(step.text);
+				await changed(pane, before, step.text);
+				break;
+			}
+			case 'say': {
+				await settle(pane);
+				const before = await pane.read();
+				await pane.prompt(step.text);
+				await changed(pane, before, 'the prompt');
+				// Past the first reads that still say idle.
+				await sleep(2000);
+				await settle(pane);
+				break;
+			}
 		}
 	}
 }
