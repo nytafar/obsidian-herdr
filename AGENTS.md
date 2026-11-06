@@ -11,18 +11,21 @@ plugin) holds general plugin conventions.
 - Plugin id `herdr`, name `Herdr`, `isDesktopOnly: true`. Ship only `main.js`,
   `manifest.json`, `styles.css`. No helper files, no Python, no native addons.
 - Each runtime kind has its own seams, over a socket or child_process pipes,
-  never a PTY or a native addon. **herdr:** the terminal seam is `herdr terminal session
+  never a native addon, and never a PTY except the one exception below.
+  **herdr:** the terminal seam is `herdr terminal session
   control|observe` with NDJSON — not `herdr agent attach`, not the binary
   client socket. **herdr-core:** `hc connect` (or `ssh -T <host> … connect`)
   in framed mode, JSON-RPC on channel 0, events and attach on their own
   channels — ADR-0005, the recorded exception, resting on the finding
   `herdr-core-api`. **claude** ("Claude, run by Obsidian", ADR-0007): the
   plugin spawns `claude -p` in stream-json mode itself, over child_process
-  pipes with no shell, one process per agent, every stdin line through the
-  one strict writer (`src/claude/protocol.ts`); no pty. The `script(1)`
-  terminal view, ADR-0007's recorded exception to "not a PTY", arrives with
-  D2 and only for this kind. If a seam proves insufficient, write it up as a
-  finding in the docs root before changing it.
+  pipes with no shell, every stdin line through the one strict writer
+  (`src/claude/protocol.ts`). The one recorded exception to "not a PTY", for
+  this kind only: its terminal view and shell tabs run on a pty from
+  `script(1)` (`src/claude/pty.ts`), spawned over plain pipes inside the POSIX
+  sh fd-3 watchdog that ends `script` when the plugin dies. An agent runs one
+  process at a time, headless or its TUI. If a seam proves insufficient, write
+  it up as a finding in the docs root before changing it.
 - No code from Whip (KaminariOS/whip, AGPL). Read it for behaviour only.
 - Obsidian guidelines are rules: `this.app` never global `app`; `registerEvent`,
   `registerDomEvent`, `registerInterval` for everything that must be torn down;
