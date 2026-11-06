@@ -1,7 +1,7 @@
 /**
  * The transcript reducer (issue #93, ADR-0003).
  *
- * `reduce(state, lines)` is pure, so every case here is a fixture transcript
+ * `reduce(state, lines)` does no I/O, so every case here is a fixture transcript
  * under `tests/fixtures/transcripts/` reduced from the empty state: the shapes
  * are trimmed copies of real Claude Code lines (`docs/architecture.md`,
  * "Agent prompts and session identity"), never invented ones.
@@ -16,7 +16,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { emptyTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
+import { emptyTranscript, forkTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
 
 /** A fixture transcript's lines, newline-split the way a tail delivers them. */
 function fixtureLines(name: string): string[] {
@@ -175,11 +175,11 @@ describe('reduce: a tool call’s status (#91)', () => {
 		const lines = fixtureLines('steer-and-notification');
 		// Up to and including the launch notice, but before the notification.
 		const launched = reduce(emptyTranscript(), lines.slice(0, 4));
-		const finished = reduce(launched.state, lines.slice(4));
-
 		const running = launched.state.turns[0]?.entries[1];
-		const done = finished.state.turns[0]?.entries[1];
 		expect(running?.kind === 'tool' && running.status).toBe('running');
+
+		const finished = reduce(launched.state, lines.slice(4));
+		const done = finished.state.turns[0]?.entries[1];
 		expect(done?.kind === 'tool' && done.status).toBe('done');
 	});
 });
@@ -275,17 +275,19 @@ describe('reduce: a slash command run at the keyboard', () => {
 });
 
 describe('reduce: incremental', () => {
-	it('reports only the turns a batch of lines changed, and leaves the old state alone', () => {
+	it('reports only the turns a batch of lines changed, folding into the state it was given', () => {
 		const lines = fixtureLines('tool-results');
 		const first = reduce(emptyTranscript(), lines.slice(0, 2));
-		const second = reduce(first.state, lines.slice(2));
-
 		expect(first.changedTurnIds).toEqual(['u4']);
-		expect(second.changedTurnIds).toEqual(['u4']);
-		// The first result is a snapshot: reducing on does not mutate it.
 		expect(first.state.turns[0]?.entries).toEqual([
 			{ kind: 'text', messageId: 'msg_5', text: 'Running them.' },
 		]);
+
+		const second = reduce(first.state, lines.slice(2));
+
+		expect(second.changedTurnIds).toEqual(['u4']);
+		// In place (#138): the batch folds into the state, and copies none of it.
+		expect(second.state).toBe(first.state);
 		expect(second.state.turns[0]?.entries).toHaveLength(3);
 	});
 
@@ -303,29 +305,32 @@ describe('reduce: incremental', () => {
 		expect(call?.kind === 'tool' && call.result).toBe('3 passed');
 	});
 
-	it('leaves the entries of a snapshot it already returned untouched', () => {
-		// The reducer is pure: a turn this batch touches is copied entry by entry,
-		// so a view holding an older snapshot keeps seeing what it drew. Merging
-		// more of one message's text into it must not reach back.
+	it('leaves the state it forked from untouched when text merges into a fork', () => {
+		// A fork (#138) copies a turn entry by entry before its fold writes into
+		// it, so merging more of one message's text into the fork's turn must not
+		// reach back into the state it came from.
 		const lines = fixtureLines('merged-blocks');
 		const first = reduce(emptyTranscript(), lines.slice(0, 3));
-		const firstEntries = JSON.stringify(first.state.turns[0]?.entries);
+		const firstJson = JSON.stringify(first.state);
 
-		const second = reduce(first.state, lines.slice(3));
+		const second = reduce(forkTranscript(first.state), lines.slice(3));
 
-		expect(JSON.stringify(first.state.turns[0]?.entries)).toBe(firstEntries);
+		expect(JSON.stringify(first.state)).toBe(firstJson);
 		expect(second.state.turns[0]?.entries).not.toEqual(first.state.turns[0]?.entries);
+		expect(second.state.turns).toEqual(reduce(emptyTranscript(), lines).state.turns);
 	});
 
-	it('leaves an earlier snapshot’s tool call without the result that came later', () => {
+	it('leaves the state it forked from without the tool result a fork took in', () => {
 		const lines = fixtureLines('tool-results');
 		const first = reduce(emptyTranscript(), lines.slice(0, 3));
-		const second = reduce(first.state, lines.slice(3));
+		const second = reduce(forkTranscript(first.state), lines.slice(3));
 
 		const before = first.state.turns[0]?.entries[1];
 		const after = second.state.turns[0]?.entries[1];
 		expect(before?.kind === 'tool' && before.result).toBeNull();
 		expect(after?.kind === 'tool' && after.result).toBe('3 passed');
+		// The turns a fork did not write into are still the state's own.
+		expect(second.state.turns.slice(1)).toEqual(first.state.turns.slice(1));
 	});
 
 	it('reports a new turn once, however the lines are batched', () => {

@@ -41,6 +41,7 @@ import {
 	emptyConversation,
 	markLost,
 	mergeSessionInfo,
+	previewTail,
 	type ConversationState,
 	type ImageBytes,
 	type ImageEntry,
@@ -246,7 +247,19 @@ export class SessionModel implements SessionModelView {
 	 * pane (a follow or a status transition), put over the format's reading.
 	 */
 	private infoOverlay: SessionInfo | undefined = undefined;
+	/**
+	 * The transcript as its ended lines say, folded in place (#138). Everything
+	 * the model decides — reports, subagents, what is lost, the plan — reads
+	 * this; only the view reads {@link state}, which may preview over it.
+	 */
 	private transcript: ConversationState = emptyConversation();
+	/**
+	 * The last line of the file being shown as the tail last saw it, written
+	 * but not yet ended by its newline; '' when the file ends in one (#138).
+	 */
+	private tailLine = '';
+	/** {@link tailLine} folded over a fork of {@link transcript}, or null while it shows nothing new. */
+	private preview: ReduceResult | null = null;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	private currentPath: string | null = null;
 	private session = '';
@@ -346,9 +359,14 @@ export class SessionModel implements SessionModelView {
 		this.disconnected();
 	}
 
-	/** The reduced transcript as it stands. Never mutated in place. */
+	/**
+	 * The reduced transcript as the view should show it: what the ended lines
+	 * say, with the line still being written previewed over it when that line
+	 * is a whole record (#138). Folded in place, so read it when a change is
+	 * emitted rather than keeping it.
+	 */
 	get state(): ConversationState {
-		return this.transcript;
+		return this.preview?.state ?? this.transcript;
 	}
 
 	/**
@@ -692,7 +710,7 @@ export class SessionModel implements SessionModelView {
 		// there is no gap between reading the history and following it.
 		// A closed tail delivers nothing (`TranscriptStream`), so whatever this
 		// hears is the file being shown.
-		this.stream = source.open(path, (lines, restart) => this.onLines(lines, restart === true), {
+		this.stream = source.open(path, (lines, restart, tail) => this.onLines(lines, restart === true, tail ?? ''), {
 			onProblem: (problem) => this.onProblem(problem),
 		});
 		this.streamSource = source;
@@ -708,6 +726,8 @@ export class SessionModel implements SessionModelView {
 	/** Empties everything read so far, for another file or the same one replaced. */
 	private restart(): void {
 		this.transcript = this.currentFormat?.parser.empty() ?? emptyConversation();
+		this.tailLine = '';
+		this.preview = null;
 		// Nothing of the new file has been read, whatever was read of the old one.
 		this.delivered = false;
 		// Another file is another block, whatever the status still says.
@@ -725,21 +745,56 @@ export class SessionModel implements SessionModelView {
 	/**
 	 * A batch of whole lines from the tail. `restart` is the tail saying the
 	 * file was replaced or truncated under it: what was read before is void, and
-	 * these lines are the file again from its start.
+	 * these lines are the file again from its start. `tail` is the line after
+	 * them, written but not ended yet, which the view previews (#138).
 	 */
-	private onLines(lines: string[], restart: boolean): void {
+	private onLines(lines: string[], restart: boolean, tail: string): void {
 		if (restart) this.restart();
 		this.delivered = true;
+		this.tailLine = tail;
 		const { state, changedTurnIds, removedTurnIds } = this.reduceLines(lines);
 		this.transcript = state;
 		this.planReader?.feed(lines);
 		// The block may have come before the lines that say it is plan mode.
 		this.refreshPlan();
-		if (restart) this.emit({ changedTurnIds: [], reset: true });
-		else if (removedTurnIds.length) this.emit({ changedTurnIds, removedTurnIds, reset: false });
-		else this.emit({ changedTurnIds, reset: false });
+		if (restart) {
+			this.repreview();
+			this.emit({ changedTurnIds: [], reset: true });
+		} else this.emitTurns(changedTurnIds, removedTurnIds);
 		this.readReports(changedTurnIds);
 		this.syncSubagents();
+	}
+
+	/**
+	 * Says which turns moved, after previewing the unended line again over
+	 * what the transcript says now (#138): the turns the old preview showed
+	 * are drawn again from the transcript, or from the new preview, and a turn
+	 * only the old preview held is removed. A preview is never what the model
+	 * decides on, so nothing here reads reports or follows subagents.
+	 */
+	private emitTurns(changedTurnIds: readonly string[], removedTurnIds: readonly string[] = []): void {
+		const shown = this.repreview();
+		const turns = this.state.turns;
+		const holds = (id: string): boolean => {
+			for (let i = turns.length - 1; i >= 0; i--) if (turns[i]?.id === id) return true;
+			return false;
+		};
+		const changed = [...new Set([...changedTurnIds, ...shown])].filter(holds);
+		const removed = [...new Set([...removedTurnIds, ...shown])].filter((id) => !holds(id));
+		if (removed.length) this.emit({ changedTurnIds: changed, removedTurnIds: removed, reset: false });
+		else this.emit({ changedTurnIds: changed, reset: false });
+	}
+
+	/**
+	 * Folds the unended line over a fork of the transcript as it stands now,
+	 * and returns the ids of the turns the old preview and the new one touched:
+	 * what the view must draw again to stay true to both.
+	 */
+	private repreview(): string[] {
+		const before = this.preview?.changedTurnIds ?? [];
+		const parser = this.currentFormat?.parser;
+		this.preview = parser && this.tailLine ? previewTail(parser, this.transcript, this.tailLine) : null;
+		return [...before, ...(this.preview?.changedTurnIds ?? [])];
 	}
 
 	/**
@@ -786,7 +841,7 @@ export class SessionModel implements SessionModelView {
 		if (!stopped) return false;
 		const { state, changedTurnIds } = markLost(this.transcript);
 		this.transcript = state;
-		this.emit({ changedTurnIds, reset: false });
+		this.emitTurns(changedTurnIds);
 		return true;
 	}
 
@@ -794,7 +849,7 @@ export class SessionModel implements SessionModelView {
 	 * Starts the read for every finished background subagent in the turns that
 	 * just moved (#96).
 	 *
-	 * The parser stays pure, so this is where the file is opened: a report is
+	 * The parser does no I/O, so this is where the file is opened: a report is
 	 * not in the transcript at all, only the notification that names the file it
 	 * was written to. Each call is read once, and the answer comes back as an
 	 * ordinary changed turn.
@@ -901,7 +956,7 @@ export class SessionModel implements SessionModelView {
 			this.transcript = result.state;
 			for (const id of result.changedTurnIds) changed.add(id);
 		}
-		if (changed.size) this.emit({ changedTurnIds: [...changed], reset: false });
+		if (changed.size) this.emitTurns([...changed]);
 	}
 
 	/** Reads one report and feeds it back, unless the session moved on meanwhile. */
@@ -915,7 +970,7 @@ export class SessionModel implements SessionModelView {
 		const { state, changedTurnIds } = attachSubagentReport(this.transcript, toolUseId, report);
 		if (!changedTurnIds.length) return;
 		this.transcript = state;
-		this.emit({ changedTurnIds, reset: false });
+		this.emitTurns(changedTurnIds);
 	}
 
 	/**

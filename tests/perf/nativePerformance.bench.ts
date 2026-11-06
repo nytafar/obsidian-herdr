@@ -229,6 +229,22 @@ describe('reduce over a whole transcript', () => {
 	);
 });
 
+/**
+ * The same lines one per batch, the way a tail delivers a live session (#138):
+ * a batch folds in place, so this is the whole read plus per-batch overhead,
+ * where a fold that copied the session per batch made it quadratic.
+ */
+function lineByLine(lines: string[]): void {
+	let state = emptyTranscript();
+	for (const line of lines) state = reduce(state, [line]).state;
+}
+
+describe('reduce one line per batch, as a tail delivers it', () => {
+	bench('(a) one large real session', () => lineByLine(large), options);
+	bench('(b) the three largest, concatenated', () => lineByLine(longest), options);
+	bench(`(c) (b) ${COPIES} times over, several hundred turns`, () => lineByLine(repeated), options);
+});
+
 describe('the surface drawing every turn', () => {
 	bench('(a) one large real session', async () => void (await draw(largeState)), options);
 	bench(

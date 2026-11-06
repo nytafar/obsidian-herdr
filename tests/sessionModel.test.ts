@@ -42,6 +42,10 @@ class FakeTail implements TranscriptStream {
 	emit(lines: string[]): void {
 		if (!this.closed) this.onLines(lines);
 	}
+	/** Lines that ended, and the last line as written so far without its newline (#138). */
+	write(lines: string[], tail: string): void {
+		if (!this.closed) this.onLines(lines, false, tail);
+	}
 	/** The file was replaced or truncated: these lines are it from its start. */
 	restart(lines: string[]): void {
 		if (!this.closed) this.onLines(lines, true);
@@ -990,6 +994,94 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		]);
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 		expect(reportOf(handle.model)).toBeNull();
+	});
+});
+
+describe('SessionModel: the line still being written (#138)', () => {
+	/** More of u1's answer, as one record: what Claude writes before its newline. */
+	const MORE =
+		'{"type":"assistant","message":{"id":"m-u1","role":"assistant","content":[{"type":"text","text":"And more."}]},"uuid":"a2"}';
+	const NEXT_PROMPT = '{"type":"user","message":{"role":"user","content":"Next question"},"uuid":"u9"}';
+
+	function answer(model: { state: { turns: { entries: unknown[] }[] } }): string {
+		const entry = model.state.turns[0]?.entries[0] as { text?: string } | undefined;
+		return entry?.text ?? '';
+	}
+
+	it('shows a whole record before its newline, and the line once, when it ends', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		const tail = source.tails[0] as FakeTail;
+
+		tail.write([], MORE);
+
+		expect(changes).toEqual([{ changedTurnIds: ['u1'], reset: false }]);
+		expect(answer(handle.model)).toBe('First answer.\n\nAnd more.');
+
+		tail.write([MORE], '');
+
+		// The preview gave way to the line itself: merged once, not twice.
+		expect(changes.at(-1)).toEqual({ changedTurnIds: ['u1'], reset: false });
+		expect(answer(handle.model)).toBe('First answer.\n\nAnd more.');
+	});
+
+	it('shows nothing of a record still being written', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		(source.tails[0] as FakeTail).write([], MORE.slice(0, -3));
+
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		expect(answer(handle.model)).toBe('First answer.');
+	});
+
+	it('removes a turn only the preview held when the preview goes without its line', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		const tail = source.tails[0] as FakeTail;
+
+		tail.write([], NEXT_PROMPT);
+		expect(handle.model.state.turns.map((turn) => turn.id)).toEqual(['u1', 'u9']);
+
+		tail.write([], '');
+
+		expect(changes).toEqual([
+			{ changedTurnIds: ['u9'], reset: false },
+			{ changedTurnIds: [], removedTurnIds: ['u9'], reset: false },
+		]);
+		expect(handle.model.state.turns.map((turn) => turn.id)).toEqual(['u1']);
+	});
+
+	it('reads a previewed notification’s report once, from the line, and applies it once', async () => {
+		const lines = LAUNCHED.split('\n').filter(Boolean);
+		const { registry, source } = registryWith(
+			filesWith([PATH_1, `${lines.slice(0, 2).join('\n')}\n`], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const tail = source.tails[0] as FakeTail;
+		const call = (): { status?: string; notification?: unknown } =>
+			(handle.model.state.turns[0]?.entries[0] ?? {}) as { status?: string; notification?: unknown };
+
+		tail.write([], lines[2] as string);
+
+		// The view sees the call finish; the model reads nothing for a preview.
+		expect(call().status).toBe('done');
+		await Promise.resolve();
+		expect(source.reads).toEqual([]);
+
+		tail.write([lines[2] as string], lines[3] as string);
+		await vi.waitFor(() => expect(reportOf(handle.model)).toBe('The styles are **fine**.'));
+		tail.write([lines[3] as string], '');
+
+		expect(source.reads).toEqual([OUTPUT_FILE]);
+		expect(call().status).toBe('done');
+		expect(reportOf(handle.model)).toBe('The styles are **fine**.');
 	});
 });
 

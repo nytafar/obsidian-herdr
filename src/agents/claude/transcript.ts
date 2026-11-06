@@ -59,6 +59,7 @@
 
 import {
 	TurnDraft as Draft,
+	forkConversation,
 	type ConversationParser,
 	type ImageBytes,
 	type ImageEntry,
@@ -156,8 +157,8 @@ export interface RecordMark {
 export interface BranchState {
 	/** The record folded last, null before any. */
 	last: string | null;
-	/** Every record folded so far, by uuid. Replaced, never written into. */
-	records: ReadonlyMap<string, RecordMark>;
+	/** Every record folded so far, by uuid. */
+	records: RecordMarks;
 	/** Answers (assistant records) written so far. */
 	answers: number;
 	/**
@@ -175,6 +176,30 @@ export interface BranchState {
 	caveat: { uuid: string; parent: string } | null;
 }
 
+/**
+ * Where every record folded so far landed, by uuid (#131): written into as
+ * records are folded, and a fork's reads through to the marks it was forked
+ * from without writing into them (#138), so a preview copies none.
+ */
+export class RecordMarks {
+	private readonly own = new Map<string, RecordMark>();
+
+	constructor(private readonly base: RecordMarks | null = null) {}
+
+	get(uuid: string): RecordMark | undefined {
+		return this.own.get(uuid) ?? this.base?.get(uuid);
+	}
+
+	set(uuid: string, mark: RecordMark): void {
+		this.own.set(uuid, mark);
+	}
+
+	/** Marks that read these and write only their own. */
+	fork(): RecordMarks {
+		return new RecordMarks(this);
+	}
+}
+
 /** The state a session starts from, and what a rotation goes back to. */
 export function emptyTranscript(): TranscriptState {
 	return {
@@ -182,10 +207,24 @@ export function emptyTranscript(): TranscriptState {
 		raw: {},
 		pendingQueue: [],
 		dequeued: 0,
-		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
+		branch: { last: null, records: new RecordMarks(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
 		info: {},
 		reading: emptyReading(),
 		resume: emptyResume(),
+	};
+}
+
+/**
+ * A state to fold a preview into (#138): the turns borrowed, the record marks
+ * layered, and the rest — a few small values — copied, so nothing a fold does
+ * to the fork reaches `state`. The session reading and the resume state are
+ * replaced rather than written into, so they are shared as they are.
+ */
+export function forkTranscript(state: TranscriptState): TranscriptState {
+	return {
+		...forkConversation(state),
+		pendingQueue: [...state.pendingQueue],
+		branch: { ...state.branch, records: state.branch.records.fork() },
 	};
 }
 
@@ -519,7 +558,8 @@ function parentOf(line: Json): string | null | undefined {
 }
 
 /**
- * A working copy of the {@link BranchState}, for one batch (#131).
+ * The {@link BranchState} as one batch folds it (#131): the record marks are
+ * written into where they are, the few values beside them put back at the end.
  *
  * A record is marked once it has been folded, so the mark names the turn it
  * landed in — a prompt's own record names the turn it opened. Records on a
@@ -528,7 +568,7 @@ function parentOf(line: Json): string | null | undefined {
  */
 class Branch {
 	private last: string | null;
-	private readonly records: Map<string, RecordMark>;
+	private readonly records: RecordMarks;
 	private answers: number;
 	private floor: number;
 	private lastPrompt: BranchState['lastPrompt'];
@@ -538,7 +578,7 @@ class Branch {
 
 	constructor(state: BranchState) {
 		this.last = state.last;
-		this.records = new Map(state.records);
+		this.records = state.records;
 		this.answers = state.answers;
 		this.floor = state.floor;
 		this.lastPrompt = state.lastPrompt;
@@ -623,13 +663,15 @@ class Branch {
 }
 
 /**
- * Folds `lines` into `state`. Neither `state` nor anything reachable from it is
- * mutated: turns this batch touched are replaced by copies, the rest are shared.
+ * Folds `lines` into `state`, in place (#138), and returns it with the turns
+ * the batch changed and removed. Nothing the session holds is copied: a batch
+ * costs its own lines. To fold without changing `state`, fold into
+ * {@link forkTranscript}`(state)`.
  */
 export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const draft = new Draft(state.turns);
-	const raw = { ...state.raw };
-	const pendingQueue = [...state.pendingQueue];
+	const raw = state.raw;
+	const pendingQueue = state.pendingQueue;
 	let dequeued = state.dequeued;
 	const branch = new Branch(state.branch);
 	const reader = new SessionReader(state.info, state.reading);
@@ -1049,13 +1091,14 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	}
 
 	branch.settle(draft);
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	const { changedTurnIds, removedTurnIds } = draft.finish();
 	const { info, reading } = reader.finish();
-	return {
-		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info, reading, resume: resumes.finish() },
-		changedTurnIds,
-		removedTurnIds,
-	};
+	state.dequeued = dequeued;
+	state.branch = branch.finish();
+	state.info = info;
+	state.reading = reading;
+	state.resume = resumes.finish();
+	return { state, changedTurnIds, removedTurnIds };
 }
 
 /**
@@ -1131,5 +1174,6 @@ export function transcriptImage(text: string, record: string, index: number): Im
 /** Claude Code's parser, as the agent seam takes it (`../format.ts`). */
 export const claudeParser: ConversationParser<TranscriptState> = {
 	empty: emptyTranscript,
+	fork: forkTranscript,
 	reduce,
 };

@@ -604,7 +604,8 @@ no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
 ## The agent seam (#137)
 
 `tests/agentSeam.test.ts` reads the recorded Codex rollouts
-(`fixtures/codex/`) with a stub parser behind the seam's interface and puts
+(`fixtures/codex/`) with a stub parser behind the seam's interface
+(`fixtures/codexParser.ts`) and puts
 the result through the session model, the turn renderer, the tool groups,
 the table of contents, copy, find and the waiting card: nothing above the
 seam knows the session is not Claude's. No Codex format is registered, so
@@ -613,6 +614,16 @@ the registry, the gate (a format and a trusted session binding), the
 catalog's `native` flag, and what Claude's format reads: the dialogs it
 blocks on, where a background report is, and session info. Nothing here
 needs Obsidian: a Claude pane looks as it did before.
+
+Live equals cold (#138): `tests/transcriptLiveCold.test.ts` folds every
+fixture under `fixtures/transcripts/` (Claude's parser) and `fixtures/codex/`
+(the stub) in 25 seeded random splits, and asserts the state the whole file
+folds to, exact changed and removed turn ids per batch, and that a preview
+of each next line leaves the state alone and shows what folding it does. A
+failure names its seed and split. The preview through the session model is
+`tests/sessionModel.test.ts`, "the line still being written"; the tail that
+delivers it, `tests/transcriptSource.test.ts`. Whether Claude leaves a line
+unended long enough to see the preview is a hand check in a live view.
 
 ## Claude's dialogs on the screen (#163)
 
