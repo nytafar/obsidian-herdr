@@ -1823,7 +1823,24 @@ and `permissionMode`, `system:status`'s mode, `result.modelUsage[<model>]
 .contextWindow` (source `runtime`), and a control response's `model` or
 `mode`. Its watcher tells the model through `onSessionInfo`, not as a status.
 The overlay wins per field, except that a model it knows by id only keeps the
-transcript's name for the same id. Nothing shows or sets them yet (#161).
+transcript's name for the same id.
+
+**What is shown and set (#161).** The native view's session bar, one row
+under the prompt box (`src/native/sessionBar.ts`): model, effort and mode
+pickers that show the current value (`—` while nothing has stated it) and
+the context readout, `23k / 1M · 2%`, or `23k` with no window, amber from
+80% of the window. It is updated in place on every session model change and
+stays, disabled, while the waiting card hides the prompt box. The tab header
+keeps icons only. A picker's menu lists the format's vocabulary
+(`AgentFormat.models`, `efforts`, `modes`, `modeLabels`; Claude's offers no
+`bypassPermissions`) and a pick goes to the runtime kind's
+`SessionSettingsSender` (`RuntimeKindAdapter.sessionSettings`,
+`src/native/sessionSettings.ts`): `setModel`, `setEffort` (both with a scope,
+`session` or `default`) and `setMode`, with the scopes, settings and whether
+it works mid-turn as its capabilities. A kind without one (herdr, herdr-core
+until #169 and #170) shows the values disabled, with the reason. Nothing is
+shown as changed until the runtime or the transcript says it is; a refusal is
+a notice with the runtime's words.
 
 - **What the transcript says.** Every `assistant` line: `message.model`
   and top-level `effort` (and `perTurnEffort`). A `model` attachment

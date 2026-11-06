@@ -296,12 +296,18 @@ export class FileSystemAdapter {}
  */
 export class Menu {
 	static shown: Menu[] = [];
-	readonly items: { title: string; disabled: boolean; checked: boolean }[] = [];
+	readonly items: { title: string; disabled: boolean; checked: boolean; isLabel: boolean; click: (() => void) | null }[] = [];
 	position: { x: number; y: number } | null = null;
 	addItem(build: (item: MenuItemStub) => void): this {
 		const item = new MenuItemStub();
 		build(item);
-		this.items.push({ title: item.title, disabled: item.disabled, checked: item.checked });
+		this.items.push({
+			title: item.title,
+			disabled: item.disabled,
+			checked: item.checked,
+			isLabel: item.isLabel,
+			click: item.click,
+		});
 		return this;
 	}
 	addSeparator(): this {
@@ -320,6 +326,9 @@ export class MenuItemStub {
 	title = '';
 	disabled = false;
 	checked = false;
+	isLabel = false;
+	/** What a click on the item runs, so a test can pick it. */
+	click: (() => void) | null = null;
 	setTitle(title: string): this {
 		this.title = title;
 		return this;
@@ -335,10 +344,12 @@ export class MenuItemStub {
 		this.disabled = disabled;
 		return this;
 	}
-	setIsLabel(): this {
+	setIsLabel(isLabel = true): this {
+		this.isLabel = isLabel;
 		return this;
 	}
-	onClick(): this {
+	onClick(handler?: () => void): this {
+		this.click = handler ?? null;
 		return this;
 	}
 }

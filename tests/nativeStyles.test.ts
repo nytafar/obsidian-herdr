@@ -36,6 +36,8 @@ describe('styles.css: the native view', () => {
 		const narrow = blocks(/@container herdr-native \(max-width: \d+px\)/).join('\n');
 		expect(narrow).toContain('.herdr-native-prompt-row');
 		expect(narrow).toContain('.herdr-native-turn table');
+		// The session bar collapses to short values (#161).
+		expect(narrow).toContain('.herdr-native-session-short');
 	});
 
 	it('never lets the text area’s own minimum widen the view', () => {

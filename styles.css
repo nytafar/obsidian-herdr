@@ -670,6 +670,82 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: none;
 }
 
+/*
+ * The session bar (#161): one slim row under the prompt box, and under the
+ * waiting card while that hides the box, so the values stay in sight. The
+ * pickers are buttons with the value and a chevron; the context readout sits
+ * at the far end.
+ */
+.herdr-native-session-bar {
+	align-items: center;
+	color: var(--text-muted);
+	display: flex;
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	gap: var(--size-4-2);
+	order: 5;
+	padding-block: var(--size-4-1);
+}
+
+.herdr-native-session-pickers {
+	display: flex;
+	flex: 1 1 auto;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+
+.herdr-native-session-picker {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	gap: var(--size-2-2);
+	height: auto;
+	padding: var(--size-2-1) var(--size-4-1);
+	white-space: nowrap;
+}
+
+.herdr-native-session-picker:not(:disabled):hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-native-session-picker:disabled {
+	cursor: default;
+	opacity: 0.7;
+}
+
+/* The short value is for a narrow view only (below). */
+.herdr-native-session-short {
+	display: none;
+}
+
+.herdr-native-session-chevron {
+	font-size: 0.8em;
+}
+
+.herdr-native-session-context {
+	flex: 0 0 auto;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/* Nothing known yet, or tokens with no window: no separator, no percentage. */
+.herdr-native-session-context.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-session-context:not(.herdr-has-window) .herdr-native-session-sep,
+.herdr-native-session-context:not(.herdr-has-window) .herdr-native-session-percent {
+	display: none;
+}
+
+/* From 80% of the window (finding `native-view-header` §1). */
+.herdr-native-session-context.herdr-is-warning {
+	color: var(--text-warning);
+}
+
 .herdr-native-empty {
 	color: var(--text-muted);
 }
@@ -1592,6 +1668,20 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	.herdr-native-prompt-row {
 		flex-wrap: wrap;
 		justify-content: flex-end;
+	}
+
+	/* The session bar collapses to `Opus`, `◐`, the mode's short word, and `2%`. */
+	.herdr-native-session-value {
+		display: none;
+	}
+
+	.herdr-native-session-short {
+		display: inline;
+	}
+
+	.herdr-native-session-context.herdr-has-window .herdr-native-session-tokens,
+	.herdr-native-session-context.herdr-has-window .herdr-native-session-sep {
+		display: none;
 	}
 
 	.herdr-native-prompt-input {
