@@ -14,6 +14,10 @@
  *   `enter` in a picker: both save the default.
  * - **Use for new sessions too**: the command with its argument through the
  *   prompt, which Claude carries out and saves.
+ * - **The permission mode**: `shift+tab`, one press at a time, the footer
+ *   read after each, stopping on the target and refusing after one full
+ *   cycle. Herdr and hc report the mode nowhere; the footer is the only
+ *   current word on it, and `readMode` reads it.
  * - **"Switch model?"**, which Claude asks before a switch in a conversation
  *   with replies (and which neither runtime reports): read off the screen,
  *   its words put to the user through `ask`, and `enter` on "Yes, switch to
@@ -99,18 +103,20 @@ const UNCHANGED = 'nothing was changed';
 /**
  * The herdr and herdr-core sender for an agent whose format reads its
  * settings screens. Idle or done only (`midTurn: false`); both scopes for the
- * model and the effort.
+ * model and the effort; the modes the agent's `shift+tab` cycles through.
  */
 export function screenSettingsSender(deps: ScreenSettingsDeps): SessionSettingsSender {
 	const driver = new SettingsDriver(deps);
 	return {
 		scopes: ['session', 'default'],
-		settings: ['model', 'effort'],
+		settings: ['model', 'effort', 'mode'],
 		midTurn: false,
+		modes: deps.reader.cycleModes,
 		unavailable: (paneId) => (driver.busy(paneId) ? BUSY_REASON : null),
 		setModel: (paneId, model, scope, ask) => driver.locked(paneId, () => driver.model(paneId, model, scope, ask)),
 		setEffort: (paneId, effort, scope) => driver.locked(paneId, () => driver.effort(paneId, effort, scope)),
-		setMode: () => Promise.reject(new Error('this runtime cannot change the mode yet')),
+		setMode: (paneId, mode) => driver.locked(paneId, () => driver.mode(paneId, mode)),
+		readMode: (paneId) => driver.readMode(paneId),
 	};
 }
 
@@ -332,6 +338,41 @@ class SettingsDriver {
 		throw new Error(printed.kind === 'other' ? printed.text : 'Claude did not change the effort');
 	}
 
+	// -------------------------------------------------------------- the mode
+
+	/**
+	 * Presses `shift+tab` until the footer shows `mode`, one press at a time
+	 * and each read back. Refuses once the footer is back where it started:
+	 * the cycle does not reach that mode.
+	 */
+	async mode(paneId: string, mode: string): Promise<void> {
+		const start = await this.ready(paneId);
+		const { reader } = this.deps;
+		if (start.mode === null) throw new Error(`the terminal's footer shows no mode Gjetr can read; ${UNCHANGED}`);
+		let current = start.mode;
+		if (reader.sameMode(current, mode)) return;
+		for (let presses = 0; presses < 2 * reader.cycleModes.length + 2; presses++) {
+			await this.press(paneId, 'shift+tab');
+			const was = current;
+			const next = await this.until(paneId, (s) => s.kind === 'prompt' && s.mode !== null && s.mode !== was, this.timing.stepMs);
+			if (next?.kind !== 'prompt' || next.mode === null) {
+				throw new Error(`the footer did not change after shift+tab; it showed ${this.modeName(current)}, look in the terminal`);
+			}
+			current = next.mode;
+			if (reader.sameMode(current, mode)) return;
+			if (reader.sameMode(current, start.mode)) {
+				throw new Error(`shift+tab does not reach ${this.modeName(mode)} in this session; it is ${this.modeName(current)} again`);
+			}
+		}
+		throw new Error(`shift+tab did not come round; the mode is ${this.modeName(current)}`);
+	}
+
+	/** The mode the footer shows now, or null when the screen shows no footer to read. */
+	async readMode(paneId: string): Promise<string | null> {
+		const shown = await this.read(paneId);
+		return shown.kind === 'prompt' ? shown.mode : null;
+	}
+
 	// ----------------------------------------------------------- the steps
 
 	/** Idle or done, and the prompt on screen with nothing over it: what a change starts from. */
@@ -435,6 +476,10 @@ class SettingsDriver {
 
 	private choice(model: string): SettingChoice {
 		return this.deps.models?.find((choice) => choice.value === model) ?? { value: model, label: model };
+	}
+
+	private modeName(mode: string): string {
+		return this.deps.modeLabels?.[mode]?.label ?? mode;
 	}
 }
 

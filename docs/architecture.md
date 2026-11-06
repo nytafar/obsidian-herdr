@@ -2061,8 +2061,15 @@ in Claude's words (a confirm modal); yes is `enter` after a read showed the
 cursor on "Yes, switch to <the row picked>", no is `esc` back to the picker
 and `esc` out of it ("Kept model as …"), and the bar stays. Any mismatch
 inside a picker the run opened ends with `esc` and a notice; on any other
-screen nothing is pressed. One change per pane at a time, plugin-wide. The
-mode picker stays disabled on these kinds for now (#170).
+screen nothing is pressed. The mode: `shift+tab` one press per call, the
+footer read after each, stopping on the target, refusing once the footer is
+back at its start; the menu lists only what the cycle reaches (manual,
+accept edits, plan, auto; auto only as its own item, and a cycle that passes
+it, plan to manual, stops there for no longer than one press while Claude is
+idle). The bar shows the footer's mode, read when the
+mode menu opens and after every change, until the transcript's next prompt
+says a mode; before that the transcript's mode carries "(at the last
+prompt)" in its tooltip. One change per pane at a time, plugin-wide.
 
 **The `claude` kind's sender (#162)** is control requests over the agent's
 headless process (`ClaudeProcess.sessionControl`, built by

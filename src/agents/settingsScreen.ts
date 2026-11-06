@@ -114,4 +114,11 @@ export interface ScreenSettingsReader {
 	modelRow(choice: SettingChoice, rows: readonly PickerRow[]): PickerRow | null;
 	/** Whether a model the screen names (`Sonnet 5.5`) is the choice (`sonnet`). */
 	isModel(choice: SettingChoice, label: string): boolean;
+	/** Whether two of the agent's mode words are one mode (`manual` and `default`). */
+	sameMode(a: string, b: string): boolean;
+	/**
+	 * The modes the agent's mode key (`shift+tab`) cycles through, in its
+	 * words: the ones a picker can reach this way.
+	 */
+	readonly cycleModes: readonly string[];
 }

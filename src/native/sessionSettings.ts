@@ -46,6 +46,12 @@ export interface SessionSettingsSender {
 	 * next turn). Without it the pickers wait for `idle` or `done`.
 	 */
 	readonly midTurn: boolean;
+	/**
+	 * The modes this kind can set, in the agent's words, when it cannot set
+	 * every one the format offers (herdr and herdr-core reach only what
+	 * Claude's `shift+tab` cycles through). Absent: all of them.
+	 */
+	readonly modes?: readonly string[];
 	/** Why this pane's settings cannot be changed now, beyond its status, or null. */
 	unavailable?(paneId: string): string | null;
 	/**
@@ -59,6 +65,12 @@ export interface SessionSettingsSender {
 	setEffort(paneId: string, effort: string, scope: SettingScope): Promise<void>;
 	/** Sets the permission mode, in the agent's word (`AgentFormat.modes`). */
 	setMode(paneId: string, mode: string): Promise<void>;
+	/**
+	 * Reads the mode the agent shows now, where the runtime reports none
+	 * (Claude's footer on herdr and herdr-core, #170), or null when it cannot
+	 * be read. Absent where the session's own record is exact.
+	 */
+	readMode?(paneId: string): Promise<string | null>;
 }
 
 /** A question the agent asks on the way to a change, in its own words, for the user to answer. */

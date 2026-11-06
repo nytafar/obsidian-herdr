@@ -375,6 +375,42 @@ describe('the session bar in the native surface (#161)', () => {
 		expect(answer).toBe(false);
 	});
 
+	it("shows the footer's mode where the runtime reports none, and the transcript's as at the last prompt (#170)", async () => {
+		const model = new FakeModel();
+		const sender = new FakeSender();
+		sender.modes = ['default', 'acceptEdits', 'plan', 'auto'];
+		let footer: string | null = 'plan';
+		sender.readMode = () => Promise.resolve(footer);
+		const { surface, el, host } = surfaceOn(model, sender);
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		expect(shown(el, 'mode')).toBe('Manual');
+		expect(picker(el, 'mode').getAttribute('aria-label')).toBe('Permission mode: Manual (at the last prompt)');
+
+		// Opening the menu reads the footer first, and lists only what shift+tab reaches.
+		picker(el, 'mode').dispatch('click', { clientX: 3, clientY: 4 });
+		await settle();
+		expect(shown(el, 'mode')).toBe('Plan');
+		expect(picker(el, 'mode').getAttribute('aria-label')).toBe('Permission mode: Plan');
+		const menu = Menu.shown[0];
+		expect(menu?.position).toEqual({ x: 3, y: 4 });
+		expect(menu?.items.map((item) => item.title)).toEqual(['Manual', 'Accept edits', 'Plan', 'Auto']);
+		expect(menu?.items.find((item) => item.checked)?.title).toBe('Plan');
+
+		// After a change the footer is read again, whatever the sender said.
+		footer = 'auto';
+		menu?.items[3]?.click?.();
+		await settle();
+		await settle();
+		expect(sender.calls).toEqual(['mode w4:p1 auto']);
+		expect(shown(el, 'mode')).toBe('Auto');
+
+		// A new prompt's mode is the transcript's again.
+		model.overlay = { permissionMode: 'acceptEdits' };
+		model.emit();
+		expect(shown(el, 'mode')).toBe('Accept edits');
+	});
+
 	it('disables the other pickers while a kind that changes one thing at a time is busy', async () => {
 		const model = new FakeModel();
 		const sender = new FakeSender();

@@ -122,6 +122,9 @@ export function defaultScopeNote(setting: SessionSetting, agent: string): string
 	return `Also becomes ${agent}'s ${what}, in and outside Obsidian.`;
 }
 
+/** What a mode read from the transcript says it is, where a runtime reports the mode nowhere (#170). */
+export const AT_LAST_PROMPT = 'at the last prompt';
+
 interface Picker {
 	setting: SessionSetting;
 	buttonEl: HTMLButtonElement;
@@ -147,6 +150,13 @@ export class SessionBar {
 	private popover: { el: HTMLElement; component: Component } | null = null;
 	/** The state last drawn, which a pick's menu reads. */
 	private state: SessionBarState = { info: {}, status: 'unknown', connected: false, format: undefined };
+	/**
+	 * The mode the agent's footer showed when last read (#170), on a kind
+	 * that reads it (`SessionSettingsSender.readMode`), with the transcript's
+	 * mode at that time: it is shown until the transcript says another one
+	 * (a new prompt), or the tab points at another pane.
+	 */
+	private footerMode: { paneId: string; mode: string; base: string | undefined } | null = null;
 
 	constructor(options: SessionBarOptions) {
 		this.options = options;
@@ -210,7 +220,36 @@ export class SessionBar {
 		if (!format) return [];
 		if (setting === 'model') return [...(format.models ?? [])];
 		if (setting === 'effort') return format.efforts.map((effort) => ({ value: effort, label: effortText(effort).full }));
-		return format.modes.map((mode) => ({ value: mode, label: modeText(mode, format.modeLabels).full }));
+		// Only the modes the kind can set (herdr and hc: what `shift+tab` reaches).
+		const reachable = this.options.sender()?.modes;
+		return format.modes
+			.filter((mode) => !reachable || reachable.some((other) => isCurrentMode(other, mode, format.modeLabels)))
+			.map((mode) => ({ value: mode, label: modeText(mode, format.modeLabels).full }));
+	}
+
+	/** The mode to show: the footer's when it was read since the last prompt, else the transcript's. */
+	private shownMode(): { mode: string | undefined; fromFooter: boolean } {
+		const recorded = this.state.info.permissionMode;
+		const footer = this.footerMode;
+		if (footer && footer.paneId === this.options.paneId() && footer.base === recorded) {
+			return { mode: footer.mode, fromFooter: true };
+		}
+		return { mode: recorded, fromFooter: false };
+	}
+
+	/** Reads the agent's footer, on a kind that can, and shows what it says. Never throws. */
+	private async readFooter(sender: SessionSettingsSender, paneId: string): Promise<void> {
+		if (!sender.readMode) return;
+		let mode: string | null = null;
+		try {
+			mode = await sender.readMode(paneId);
+		} catch {
+			// Unread: the transcript's mode stays, labelled as such.
+		}
+		if (mode && this.options.paneId() === paneId) {
+			this.footerMode = { paneId, mode, base: this.state.info.permissionMode };
+		}
+		this.draw();
 	}
 
 	/** Whether `choice` is what the session runs with now. */
@@ -218,7 +257,7 @@ export class SessionBar {
 		const { info, format } = this.state;
 		if (setting === 'model') return isCurrentModel(info.model, choice);
 		if (setting === 'effort') return info.effort === choice.value;
-		return isCurrentMode(info.permissionMode, choice.value, format?.modeLabels);
+		return isCurrentMode(this.shownMode().mode, choice.value, format?.modeLabels);
 	}
 
 	/** Why `setting` cannot be changed now, or null when it can. */
@@ -236,11 +275,14 @@ export class SessionBar {
 	private draw(): void {
 		if (!this.rootEl) return;
 		const { info, format } = this.state;
+		const mode = this.shownMode();
 		const texts: Record<SessionSetting, { full: string; short: string }> = {
 			model: modelText(info.model),
 			effort: effortText(info.effort),
-			mode: modeText(info.permissionMode, format?.modeLabels),
+			mode: modeText(mode.mode, format?.modeLabels),
 		};
+		// Where the runtime reports the mode nowhere, the transcript's is as of the last prompt.
+		const stale = mode.mode !== undefined && !mode.fromFooter && this.options.sender()?.readMode !== undefined;
 		for (const picker of this.pickers.values()) {
 			const text = texts[picker.setting];
 			setTextIfChanged(picker.fullEl, text.full);
@@ -248,7 +290,8 @@ export class SessionBar {
 			const reason = this.block(picker.setting);
 			picker.buttonEl.disabled = reason !== null || picker.busy;
 			const name = SETTING_NAMES[picker.setting];
-			const label = reason ? `${name}: ${text.full}. ${reason}` : `${name}: ${text.full}`;
+			const value = picker.setting === 'mode' && stale ? `${text.full} (${AT_LAST_PROMPT})` : text.full;
+			const label = reason ? `${name}: ${value}. ${reason}` : `${name}: ${value}`;
 			if (picker.buttonEl.getAttribute('aria-label') !== label) picker.buttonEl.setAttr('aria-label', label);
 		}
 		const readout = contextReadout(info);
@@ -386,10 +429,26 @@ export class SessionBar {
 		this.readoutEl?.setAttr('aria-expanded', 'false');
 	}
 
-	/** Opens a picker's menu: every value, the current one checked. */
+	/**
+	 * Opens a picker's menu: every value, the current one checked. The mode
+	 * picker on a kind that reads the agent's footer reads it first, so the
+	 * check is on the mode the agent shows now (#170).
+	 */
 	private open(picker: Picker, event: MouseEvent): void {
 		const sender = this.options.sender();
 		if (!sender || picker.busy || this.block(picker.setting) !== null) return;
+		const at = { x: event.clientX, y: event.clientY };
+		if (picker.setting === 'mode' && sender.readMode) {
+			const paneId = this.options.paneId();
+			void this.readFooter(sender, paneId).then(() => {
+				if (this.rootEl && !picker.busy && this.block(picker.setting) === null) this.showMenu(picker, sender, at);
+			});
+			return;
+		}
+		this.showMenu(picker, sender, at);
+	}
+
+	private showMenu(picker: Picker, sender: SessionSettingsSender, at: { x: number; y: number }): void {
 		const choices = this.choices(picker.setting);
 		const menu = new Menu();
 		const scopes = picker.setting === 'mode' ? sender.scopes.slice(0, 1) : sender.scopes;
@@ -411,7 +470,7 @@ export class SessionBar {
 				);
 			}
 		});
-		menu.showAtMouseEvent(event);
+		menu.showAtPosition(at);
 	}
 
 	/** Sends one pick; the button stays disabled until the sender answers. */
@@ -436,6 +495,8 @@ export class SessionBar {
 			this.notify(settingFailureMessage(target.setting, error));
 		} finally {
 			target.busy = false;
+			// Whatever happened, the footer says where the mode is now.
+			if (target.setting === 'mode') await this.readFooter(sender, paneId);
 			this.draw();
 		}
 	}

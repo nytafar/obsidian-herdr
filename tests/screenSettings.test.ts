@@ -363,6 +363,7 @@ describe('what a change starts from', () => {
 		expect(await outcome(sender.setEffort(PANE, 'high', 'session'))).toBe(
 			'the terminal shows something over the prompt; finish it there first (nothing was changed)',
 		);
+		expect(await outcome(sender.setMode(PANE, 'plan'))).toContain('finish it there first');
 		expect(claude.sent).toEqual([]);
 		expect(claude.keys).toEqual([]);
 	});
@@ -385,11 +386,11 @@ describe('what a change starts from', () => {
 		expect(sender.unavailable?.(PANE)).toBeNull();
 	});
 
-	it('offers both scopes for model and effort, idle or done only, and no mode yet', () => {
+	it('offers both scopes for model and effort, idle or done only, and the modes shift+tab reaches', () => {
 		const { sender } = setup();
 		expect(sender.scopes).toEqual(['session', 'default']);
 		expect(sender.midTurn).toBe(false);
-		expect(sender.settings).toEqual(['model', 'effort']);
+		expect(sender.modes).toEqual(['default', 'acceptEdits', 'plan', 'auto']);
 	});
 });
 
@@ -473,6 +474,66 @@ describe('the effort (#169)', () => {
 	});
 });
 
+describe('the permission mode (#170)', () => {
+	for (const [from, to, presses] of [
+		['default', 'acceptEdits', 1],
+		['default', 'plan', 2],
+		['default', 'auto', 3],
+		['plan', 'default', 2],
+		['auto', 'acceptEdits', 2],
+		['acceptEdits', 'default', 3],
+	] as const) {
+		it(`reaches ${to} from ${from} in ${presses}, one shift+tab at a time`, async () => {
+			const { claude, sender, outcome } = setup((c) => {
+				c.mode = from;
+			});
+			expect(await outcome(sender.setMode(PANE, to))).toBe('ok');
+			expect(claude.keys).toEqual(Array.from({ length: presses }, () => 'shift+tab'));
+			expect(claude.mode).toBe(to);
+		});
+	}
+
+	it('takes manual for default', async () => {
+		const { claude, sender, outcome } = setup((c) => {
+			c.mode = 'plan';
+		});
+		expect(await outcome(sender.setMode(PANE, 'manual'))).toBe('ok');
+		expect(claude.mode).toBe('default');
+	});
+
+	it('presses nothing when the footer already shows it', async () => {
+		const { claude, sender, outcome } = setup();
+		expect(await outcome(sender.setMode(PANE, 'default'))).toBe('ok');
+		expect(claude.keys).toEqual([]);
+	});
+
+	it('refuses after one full cycle without a match, back where it started', async () => {
+		const { claude, sender, outcome } = setup();
+		expect(await outcome(sender.setMode(PANE, 'dontAsk'))).toBe(
+			"shift+tab does not reach Don't ask in this session; it is Manual again",
+		);
+		expect(claude.keys).toHaveLength(4);
+		expect(claude.mode).toBe('default');
+	});
+
+	it('stops, and says where the mode is, when a press does not show', async () => {
+		const { claude, sender, outcome } = setup((c) => {
+			c.drop.add('shift+tab');
+		});
+		expect(await outcome(sender.setMode(PANE, 'plan'))).toBe(
+			'the footer did not change after shift+tab; it showed Manual, look in the terminal',
+		);
+		expect(claude.keys).toEqual(['shift+tab']);
+	});
+
+	it('reads the footer', async () => {
+		const { sender, run } = setup((c) => {
+			c.mode = 'auto';
+		});
+		expect(await run(sender.readMode?.(PANE) ?? Promise.resolve(null))).toBe('auto');
+	});
+});
+
 describe('the kinds (#169, #170)', () => {
 	it('herdr and herdr-core have the sender for an agent whose format reads its screens', () => {
 		const herdr = createHerdrKind({
@@ -493,6 +554,7 @@ describe('the kinds (#169, #170)', () => {
 		for (const kind of [herdr, core]) {
 			const sender: SessionSettingsSender | null | undefined = kind.sessionSettings?.(() => null, CLAUDE_FORMAT);
 			expect(sender?.scopes).toEqual(['session', 'default']);
+			expect(typeof sender?.readMode).toBe('function');
 			const plain = { ...CLAUDE_FORMAT, screenSettings: undefined };
 			expect(kind.sessionSettings?.(() => null, plain)).toBeNull();
 			expect(kind.sessionSettings?.(() => null, null)).toBeNull();
@@ -508,6 +570,6 @@ describe('the kinds (#169, #170)', () => {
 			isPublished: () => true,
 		});
 		const sender = herdr.sessionSettings?.(() => null, CLAUDE_FORMAT);
-		await expect(sender?.setEffort('w1:p1', 'high', 'session')).rejects.toThrow('not connected');
+		await expect(sender?.setMode('w1:p1', 'plan')).rejects.toThrow('not connected');
 	});
 });

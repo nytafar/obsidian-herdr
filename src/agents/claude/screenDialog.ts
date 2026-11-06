@@ -752,4 +752,11 @@ export const CLAUDE_SCREEN_SETTINGS: ScreenSettingsReader = {
 		return best?.row ?? null;
 	},
 	isModel: (choice, label) => modelName(label)?.family === choice.value.toLowerCase(),
+	sameMode(a, b) {
+		const plain = (mode: string): string => (mode === 'manual' ? 'default' : mode);
+		return plain(a) === plain(b);
+	},
+	// Measured on 2.1.318: manual, accept edits, plan, auto, and round again.
+	// `dontAsk` is not on it; `bypassPermissions` only for a session started to allow it.
+	cycleModes: ['default', 'acceptEdits', 'plan', 'auto'],
 };
