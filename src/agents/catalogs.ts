@@ -218,7 +218,7 @@ export class AgentCatalogs {
 		const pending = this.probe(connection);
 		const where = machinePhrase(connection.endpoint.runtime);
 		const timer = setTimer(() => {
-			this.host.notice?.(`Herdr: checking which agent CLIs are installed ${where}…`);
+			this.host.notice?.(`Gjetr: checking which agent CLIs are installed ${where}…`);
 		}, PROBE_WAIT_NOTICE_MS);
 		try {
 			return await pending;

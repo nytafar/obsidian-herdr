@@ -62,7 +62,7 @@ export const BUTTON_CLASS = 'herdr-folder-button';
 export const CLAIM_ATTR = 'data-herdr-folder-button';
 
 /** Sentence case, and it says whose button this is. */
-const BUTTON_LABEL = 'Herdr actions';
+const BUTTON_LABEL = 'Gjetr actions';
 
 /**
  * Keys that open the menu, mirroring what a `button` element itself activates
@@ -424,9 +424,9 @@ export class ExplorerFolderButtons {
 	private async copyPath(path: string): Promise<void> {
 		try {
 			await navigator.clipboard.writeText(path);
-			new Notice(`Herdr: copied ${path}`);
+			new Notice(`Gjetr: copied ${path}`);
 		} catch (error) {
-			new Notice(`Herdr: could not copy the path. ${(error as Error).message}`);
+			new Notice(`Gjetr: could not copy the path. ${(error as Error).message}`);
 		}
 	}
 }

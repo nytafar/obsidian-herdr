@@ -347,7 +347,7 @@ function fakeFiles(): ImageFiles & { written: PromptImage[][]; released: string[
 		released,
 		async write(images) {
 			written.push([...images]);
-			return images.map((_, index) => `/tmp/obsidian-herdr-images/image-${index}.png`);
+			return images.map((_, index) => `/tmp/gjetr-images/image-${index}.png`);
 		},
 		release(paths) {
 			released.push([...paths]);
@@ -390,13 +390,13 @@ describe('herdr: images as a pasted path (#144)', () => {
 				method: 'pane.send_text',
 				params: {
 					pane_id: 'w4:p1',
-					text: '\u001b[200~/tmp/obsidian-herdr-images/image-0.png /tmp/obsidian-herdr-images/image-1.png\u001b[201~',
+					text: '\u001b[200~/tmp/gjetr-images/image-0.png /tmp/gjetr-images/image-1.png\u001b[201~',
 				},
 			},
 			{ method: 'agent.prompt', params: { target: 'w4:p1', text: 'What colour?' } },
 		]);
 		expect(files.released).toEqual([
-			['/tmp/obsidian-herdr-images/image-0.png', '/tmp/obsidian-herdr-images/image-1.png'],
+			['/tmp/gjetr-images/image-0.png', '/tmp/gjetr-images/image-1.png'],
 		]);
 	});
 
@@ -614,7 +614,7 @@ describe('pasting and dropping images on the prompt box (#144)', () => {
 		expect(drop.defaultPrevented).toBe(true);
 		expect(root.hasClass('herdr-is-drop-target')).toBe(false);
 		expect(prompt.attachedImages.map((image) => image.name)).toEqual(['a.png', 'b.gif']);
-		expect(notices).toEqual(['Herdr: notes.pdf is not a PNG, JPEG, GIF or WebP image.']);
+		expect(notices).toEqual(['Gjetr: notes.pdf is not a PNG, JPEG, GIF or WebP image.']);
 	});
 
 	it('removes an image from the strip with its button', async () => {
@@ -639,8 +639,8 @@ describe('pasting and dropping images on the prompt box (#144)', () => {
 		expect(dropped.defaultPrevented).toBe(true);
 		expect(prompt.attachedImages).toEqual([]);
 		expect(notices).toEqual([
-			'Herdr: images cannot be sent here (this herdr-core has no terminal.put; a newer hc sends images).',
-			'Herdr: images cannot be sent here (this herdr-core has no terminal.put; a newer hc sends images).',
+			'Gjetr: images cannot be sent here (this herdr-core has no terminal.put; a newer hc sends images).',
+			'Gjetr: images cannot be sent here (this herdr-core has no terminal.put; a newer hc sends images).',
 		]);
 	});
 
@@ -651,7 +651,7 @@ describe('pasting and dropping images on the prompt box (#144)', () => {
 		root.dispatch('drop', { dataTransfer: transfer([file('a.png', 'image/png')]) });
 
 		expect(prompt.attachedImages).toEqual([]);
-		expect(notices).toEqual([`Herdr: images cannot be sent here (${IMAGES_UNSUPPORTED}).`]);
+		expect(notices).toEqual([`Gjetr: images cannot be sent here (${IMAGES_UNSUPPORTED}).`]);
 	});
 
 	it('takes no image while there is no agent to send it to', () => {
@@ -660,7 +660,7 @@ describe('pasting and dropping images on the prompt box (#144)', () => {
 		root.dispatch('drop', { dataTransfer: transfer([file('a.png', 'image/png')]) });
 
 		expect(prompt.attachedImages).toEqual([]);
-		expect(notices).toEqual(['Herdr: images cannot be sent here (no agent in this pane).']);
+		expect(notices).toEqual(['Gjetr: images cannot be sent here (no agent in this pane).']);
 	});
 
 	it('leaves a drag of text alone', () => {

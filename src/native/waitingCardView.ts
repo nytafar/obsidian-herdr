@@ -26,7 +26,7 @@ import type { SessionModelView } from './sessionModel';
 /** What a failed trust answer says, with herdr's message in the tail (#99). */
 export function trustFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
-	return `Herdr: could not trust this folder (${reason})`;
+	return `Gjetr: could not trust this folder (${reason})`;
 }
 
 /**

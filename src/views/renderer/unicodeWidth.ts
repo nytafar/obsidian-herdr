@@ -82,7 +82,7 @@ export async function applyUnicodeWidths(
 		return terminal.unicode.activeVersion === UNICODE_VERSION;
 	} catch (error) {
 		console.warn(
-			'herdr: xterm.js Unicode 11 widths unavailable; wide glyphs may shift the frame',
+			'Gjetr: xterm.js Unicode 11 widths unavailable; wide glyphs may shift the frame',
 			error,
 		);
 		return false;

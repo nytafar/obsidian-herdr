@@ -123,7 +123,7 @@ protocol is the herdr-side change that unblocks the click half of #25.
 
 1. `npm run build` (or `npm run dev` for a watch build). The dev vault
    `/Users/lasse/Vaults/hvelv` has this repo symlinked at
-   `.obsidian/plugins/herdr`; Hot-Reload picks up `main.js`.
+   `.obsidian/plugins/gjetr`; Hot-Reload picks up `main.js`.
 2. Open an agent's terminal from the agent list (the terminal button on a row).
    The shipped build has no dev-only smoke command; the real terminal view is the
    harness. To eyeball escape handling without an agent, run
@@ -214,7 +214,7 @@ on every run (a claim whose evidence has gone prints `[STALE]`):
 ## Smoking the xterm.js engine inside Obsidian (#27)
 
 The renderer itself needs a DOM, so nothing below is unit tested. With a terminal
-open, settings → Herdr → Terminal → **Terminal engine** → xterm.js:
+open, settings → Gjetr → Terminal → **Terminal engine** → xterm.js:
 
 1. The open terminal rebuilds in place: history reappears as plain text (no
    colours — the same trade a hide/reveal makes), and the status line still says
@@ -279,7 +279,7 @@ hand in the dev vault:
 
 The unit tests cover the decisions, not the wiring. Inside the dev vault:
 
-1. Command palette → **Herdr: Show agents** opens the list in the left
+1. Command palette → **Gjetr: Show agents** opens the list in the left
    sidebar (first time it is created with `getLeftLeaf(true)`; after that it is
    revealed wherever the user dragged it).
 2. Rows group by herdr tab and show a status dot, the agent name, the stripped
@@ -295,7 +295,7 @@ The unit tests cover the decisions, not the wiring. Inside the dev vault:
    the render path: with the devtools network-free view open, adding a pane
    should cause at most one extra `tab.list`, and repainting none at all.
 3. The status bar shows `N blocked · M done` and clicking it reveals the list.
-4. Right-click a folder or a note in the file explorer → the three Herdr items.
+4. Right-click a folder or a note in the file explorer → the three Gjetr items.
    The same three exist in the command palette for the active note's folder.
 5. Notifications: let an agent finish or block while Obsidian is in the
    background; expect one Notice and one system notification, and nothing more
@@ -566,7 +566,7 @@ no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
 2. Right-click it: the menu lists only the agent CLIs installed on the
    runtime's machine (`command -v claude codex …` there), the default
    checked. Switch runtimes and right-click again: the list follows.
-3. Add an agent CLI in Settings → Herdr → Agents with a command that does
+3. Add an agent CLI in Settings → Gjetr → Agents with a command that does
    not exist and press **Done**: it shows in the menu as "(not found)", and
    its settings row says "was not found on …". Install it and press **Check
    again**: the mark goes without a reconnect.

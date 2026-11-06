@@ -1,6 +1,6 @@
 # Settings
 
-All under **Settings → Herdr**. Sentence case names match the UI.
+All under **Settings → Gjetr**. Sentence case names match the UI.
 
 ## Runtimes
 
@@ -27,7 +27,7 @@ editing, removing and switching, and for every field.
 | Problems | What the runtime still lacks, or "None.". |
 
 The agent list's toolbar switches runtimes once there are two or more, and
-**Herdr: Switch runtime** does from the palette. With more than one runtime the
+**Gjetr: Switch runtime** does from the palette. With more than one runtime the
 status bar names the active one.
 
 ## Connection
@@ -74,7 +74,7 @@ status bar names the active one.
 
 | Setting | Meaning |
 |---|---|
-| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Herdr: Switch render mode**. Native is offered for panes of a local herdr, and for herdr-core terminals on this machine or over SSH once the Claude session hook labels them; an SSH herdr runtime shows terminals. |
+| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Gjetr: Switch render mode**. Native is offered for panes of a local herdr, and for herdr-core terminals on this machine or over SSH once the Claude session hook labels them; an SSH herdr runtime shows terminals. |
 | Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
 | Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, but only on a runtime that reports the prompt as the trust prompt, and no runtime does today, so the setting currently does nothing. herdr reports no kind of block, and on herdr-core Claude shows the prompt before its session hook has labelled the terminal, so the tab is still a terminal then. Answer the prompt with the waiting card's **Trust this folder** button, or in the terminal. Off by default. Nothing else is answered for you. |
 

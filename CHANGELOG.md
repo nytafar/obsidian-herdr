@@ -1,7 +1,51 @@
 # Changelog
 
-All notable changes to Herdr for Obsidian. Versions are the bare
+All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
+
+## 0.6.1 — 2026-11-06
+
+For the community directory's review.
+
+### Changed
+
+- **Description**: "Run persistent agents in your vault locally or remotely
+  using herdr or herdr-core."
+- **Release assets carry build provenance attestations**, so a download can be
+  checked against the workflow that built it from this repository.
+- **README** says what the plugin uses on your machine: the programs it starts,
+  the files it reads and writes outside the vault, the vault's file list, the
+  clipboard, and that it sends nothing over the network except SSH to your
+  hosts.
+
+### Fixed
+
+- Terminal underline and overline styles use `text-decoration-line` and
+  `text-decoration-style`, which every supported Obsidian build has; the dim
+  rule and the prompt box's height no longer need `!important` or a duplicate
+  declaration.
+- The connection and terminal modules time with Node's timers instead of
+  `globalThis`, and the element check uses Obsidian's cross-window
+  `instanceOf`.
+
+## 0.6.0 — 2026-11-06
+
+### Changed
+
+- **The plugin is now Gjetr, id `gjetr`.** Commands
+  read **Gjetr: Show agents** and so on, the settings tab is **Settings →
+  Gjetr**, and the plugin folder is `.obsidian/plugins/gjetr/`. The GitHub
+  repository stays `nytafar/obsidian-herdr`, so BRAT keeps working.
+- Settings carry over: on the first load as `gjetr`, the plugin copies
+  `.obsidian/plugins/herdr/data.json` when that folder is this plugin's (its
+  manifest is ours, or, without one, the file has this plugin's own settings
+  keys), saves it once and says so in a notice. Another plugin's data in that
+  folder is never read in, and the old folder is never changed or removed.
+  Hotkeys bound to the old `herdr:` command ids have to be set again.
+- The old install is turned off: when this plugin's `herdr` copy is still
+  enabled beside Gjetr (BRAT and a manual update leave it enabled), Gjetr
+  disables it at load, before registering its views, and says so. Another
+  plugin with the `herdr` id is never touched.
 
 ## 0.5.0 — 2026-11-06
 

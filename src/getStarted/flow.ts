@@ -337,7 +337,7 @@ export class GetStartedFlow {
 	async startSimpleMode(): Promise<boolean> {
 		return this.once(false, async () => {
 			if (!this.scan?.claude) {
-				this.host.notice('Herdr: install Claude Code first, then check again.');
+				this.host.notice('Gjetr: install Claude Code first, then check again.');
 				return false;
 			}
 			const runtime = await this.ensureClaudeRuntime();
@@ -352,9 +352,9 @@ export class GetStartedFlow {
 		const command = hcInstallCommand(this.host.platform);
 		try {
 			await this.host.copy(command);
-			this.host.notice('Herdr: the herdr-core install command is on the clipboard.');
+			this.host.notice('Gjetr: the herdr-core install command is on the clipboard.');
 		} catch (error) {
-			this.host.notice(`Herdr: could not copy the command. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not copy the command. ${describe(error)}`);
 		}
 	}
 
@@ -367,7 +367,7 @@ export class GetStartedFlow {
 	async runInTerminal(): Promise<string | null> {
 		const offer = this.model().install.terminal;
 		if (!offer.available) {
-			this.host.notice(`Herdr: ${offer.reason}`);
+			this.host.notice(`Gjetr: ${offer.reason}`);
 			return null;
 		}
 		const runtime = await this.ensureClaudeRuntime();
@@ -386,7 +386,7 @@ export class GetStartedFlow {
 	async askClaude(): Promise<string | null> {
 		return this.once<string | null>(null, async () => {
 			if (!this.scan?.claude) {
-				this.host.notice('Herdr: "Ask Claude" needs Claude Code on this machine.');
+				this.host.notice('Gjetr: "Ask Claude" needs Claude Code on this machine.');
 				return null;
 			}
 			const runtime = await this.ensureClaudeRuntime();
@@ -413,7 +413,7 @@ export class GetStartedFlow {
 		return this.once(false, async () => {
 			const scan = await this.rescan();
 			if (!scan.hc) {
-				this.host.notice('Herdr: hc was not found yet. Finish the install, then check again.');
+				this.host.notice('Gjetr: hc was not found yet. Finish the install, then check again.');
 				return false;
 			}
 			let runtime = localHcRuntimeOf(this.host.settings());
@@ -435,7 +435,7 @@ export class GetStartedFlow {
 	private async activate(runtime: RuntimeConfig): Promise<boolean> {
 		await this.host.switchRuntime(runtime.id);
 		if (await this.host.waitForRuntime(runtime.id)) return true;
-		this.host.notice('Herdr: the runtime did not connect. Its status is in the settings.');
+		this.host.notice('Gjetr: the runtime did not connect. Its status is in the settings.');
 		return false;
 	}
 

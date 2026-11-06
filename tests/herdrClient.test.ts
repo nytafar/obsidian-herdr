@@ -241,7 +241,7 @@ describe('HerdrClient.request', () => {
 		// gets its workspaces and panes.
 		await expect(client.listAgents()).resolves.toEqual([]);
 		expect(messages).toEqual([
-			'Herdr: this herdr does not support agent.list; agent rows show titles instead of names.',
+			'Gjetr: this herdr does not support agent.list; agent rows show titles instead of names.',
 		]);
 
 		// Second time: no wire traffic, no second notice, still off.
