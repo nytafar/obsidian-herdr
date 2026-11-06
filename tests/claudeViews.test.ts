@@ -21,6 +21,7 @@ import { NativePaneSurface } from '../src/native/surface';
 import { effectivePaneView, paneViewAvailability } from '../src/native/paneSurface';
 import { isTypedAnswerKey, optionName, questionAnswer, requestCard, waitingCard } from '../src/native/waitingCard';
 import { buildRows, toRow } from '../src/views/rowModel';
+import { answerFailureText, SENDING_TEXT } from '../src/native/waitingCardView';
 
 const VAULT = '/home/lasse/hvelv';
 
@@ -180,7 +181,7 @@ class FakeModel implements SessionModelView {
 	}
 }
 
-async function surfaceOn(model: FakeModel) {
+async function surfaceOn(model: FakeModel, respond?: (answer: WaitingAnswer) => Promise<void>) {
 	const { el, host } = hostEl();
 	const answers: { paneId: string; requestId: string; answer: WaitingAnswer }[] = [];
 	const interrupts: string[] = [];
@@ -203,6 +204,7 @@ async function surfaceOn(model: FakeModel) {
 		responder: {
 			respond: async (paneId, requestId, answer) => {
 				answers.push({ paneId, requestId, answer });
+				await respond?.(answer);
 			},
 		},
 		notify: (message) => notices.push(message),
@@ -456,6 +458,155 @@ describe('a question answered in the user’s own words (#141)', () => {
 		expect(answers.map((entry) => entry.answer)).toEqual([
 			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Red', 'Size?': 'S' } },
 		]);
+	});
+});
+
+/** A promise the test settles by hand: the runtime taking its time over an answer. */
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+	let resolve: () => void = () => {};
+	let reject: (error: Error) => void = () => {};
+	const promise = new Promise<void>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+function cardStatus(el: FakeElement): FakeElement {
+	return el.find('herdr-native-waiting').find('herdr-native-waiting-status');
+}
+
+describe('the waiting card while it sends, when it fails, folded, and to a screen reader (#142)', () => {
+	beforeEach(() => MarkdownRenderer.reset());
+
+	it('says it is sending, from a live region there from the first draw, with the options busy', async () => {
+		const model = new FakeModel();
+		const pending = deferred();
+		const { el } = await surfaceOn(model, () => pending.promise);
+		model.block(DESCRIBED);
+		const status = cardStatus(el);
+		expect(status.attrs.role).toBe('status');
+		expect(status.attrs['aria-live']).toBe('polite');
+		expect(status.textContent).toBe('');
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(true);
+		const choices = el.find('herdr-native-waiting-choices');
+		expect(choices.attrs['aria-busy']).toBe('false');
+		// Busy on the options alone: never on the card, whose status must be read.
+		expect(el.find('herdr-native-waiting').attrs['aria-busy']).toBeUndefined();
+
+		press(el, 'Postgres');
+		expect(cardStatus(el)).toBe(status);
+		expect(status.textContent).toBe(SENDING_TEXT);
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(false);
+		expect(choices.attrs['aria-busy']).toBe('true');
+		expect(buttons(el).every((entry) => entry.disabled)).toBe(true);
+		expect(typedField(el).disabled).toBe(true);
+
+		pending.resolve();
+		await settle();
+		expect(status.textContent).toBe('Answer sent.');
+		expect(choices.attrs['aria-busy']).toBe('false');
+	});
+
+	it('says a failure in place, keeps what was typed, and takes the answer again', async () => {
+		const model = new FakeModel();
+		let fail = true;
+		const { el, notices, answers } = await surfaceOn(model, async () => {
+			if (fail) throw new Error('the agent is not running');
+		});
+		model.block(DESCRIBED);
+		type(typedField(el), 'SQLite');
+		press(el, 'Send');
+		await settle();
+		const error = el.find('herdr-native-waiting-error');
+		expect(error.attrs.role).toBe('alert');
+		expect(error.textContent).toBe(answerFailureText(new Error('the agent is not running'), true));
+		expect(error.textContent).toContain('the agent is not running');
+		expect(notices).toEqual([]);
+		expect(cardStatus(el).textContent).toBe('');
+		// Usable again, with the typed answer still there and Send ready for it.
+		expect(typedField(el).value).toBe('SQLite');
+		expect(typedField(el).disabled).toBe(false);
+		expect(buttons(el).every((entry) => !entry.disabled)).toBe(true);
+
+		fail = false;
+		press(el, 'Send');
+		await settle();
+		expect(el.findAll('herdr-native-waiting-error')).toEqual([]);
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'SQLite' } },
+			{ type: 'answer', answers: { 'Which store?': 'SQLite' } },
+		]);
+	});
+
+	it('says so when the request went or changed before the answer arrived', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model, async () => {
+			// The runtime moved on while the answer was on its way.
+			model.request = null;
+			throw new Error('that request is no longer waiting');
+		});
+		model.block(WRITE);
+		press(el, 'Allow');
+		await settle();
+		expect(el.find('herdr-native-waiting-error').textContent).toBe(answerFailureText(new Error('x'), false));
+	});
+
+	it('folds to its title bar and opens again, and the next request opens unfolded', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.block(PLAN);
+		const fold = el.find('herdr-native-waiting-fold');
+		expect(fold.attrs['aria-expanded']).toBe('true');
+		expect(fold.attrs['aria-label']).toBe('Collapse the card');
+		fold.dispatch('click');
+		const card = el.find('herdr-native-waiting');
+		expect(card.hasClass('is-folded')).toBe(true);
+		expect(card.find('herdr-native-waiting-content').hasClass('herdr-is-hidden')).toBe(true);
+		expect(fold.attrs['aria-expanded']).toBe('false');
+		expect(fold.attrs['aria-label']).toBe('Expand the card');
+		// The bar still says what is waiting, and the status stays outside the fold.
+		expect(card.find('herdr-native-waiting-title').textContent).toBe('Claude is ready to code');
+		expect(card.find('herdr-native-waiting-status').parent).toBe(card);
+		fold.dispatch('click');
+		expect(card.hasClass('is-folded')).toBe(false);
+		expect(card.find('herdr-native-waiting-content').hasClass('herdr-is-hidden')).toBe(false);
+
+		fold.dispatch('click');
+		model.block(null);
+		model.block(WRITE);
+		expect(el.find('herdr-native-waiting').hasClass('is-folded')).toBe(false);
+	});
+
+	it('keeps a folded card folded while a block without a request is drawn again', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.agentStatus = 'blocked';
+		model.blockKind = 'question';
+		model.emit();
+		el.find('herdr-native-waiting-fold').dispatch('click');
+		model.emit();
+		expect(el.find('herdr-native-waiting').hasClass('is-folded')).toBe(true);
+	});
+
+	it('names the card, and says which toggles are on; an option that answers at once is no toggle', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const card = el.find('herdr-native-waiting');
+		expect(card.attrs.role).toBe('region');
+		expect(card.attrs['aria-label']).toBe('Claude asked a question');
+		expect(el.findAll('herdr-native-waiting-choice').map((entry) => entry.attrs['aria-pressed'])).toEqual([
+			undefined,
+			undefined,
+		]);
+		model.block(null);
+		model.block({ ...QUESTION, id: 'req-5', questions: [{ ...QUESTION.questions[0]!, multiSelect: true }] });
+		const pressed = (): (string | undefined)[] => el.findAll('herdr-native-waiting-choice').map((entry) => entry.attrs['aria-pressed']);
+		expect(pressed()).toEqual(['false', 'false']);
+		press(el, 'Blue');
+		expect(pressed()).toEqual(['false', 'true']);
+		expect(el.find('herdr-native-waiting-choices').attrs).toMatchObject({ role: 'group', 'aria-label': 'Which colour do you prefer?' });
 	});
 });
 

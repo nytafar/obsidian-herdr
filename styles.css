@@ -720,6 +720,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	font-weight: var(--font-semibold);
 }
 
+/*
+ * The title bar, with the fold button at its end (#142). Folded, the card is
+ * this bar alone, one line, so a long plan stops covering a narrow pane.
+ */
+.herdr-native-waiting-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-head .herdr-native-waiting-title {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-waiting.is-folded .herdr-native-waiting-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-waiting-fold {
+	flex: 0 0 auto;
+}
+
+.herdr-native-waiting-content.herdr-is-hidden {
+	display: none;
+}
+
+/* "Sending your answer…", and why an answer did not get through (#142). */
+.herdr-native-waiting-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+/*
+ * A live region with nothing to say: clipped out of sight, never
+ * `display: none`, so a screen reader still has it when its words come (#142).
+ * Scoped to the view so it outranks the readable-width sizer it also carries.
+ */
+.herdr-native-view .herdr-native-visually-hidden {
+	block-size: 1px;
+	clip-path: inset(50%);
+	inline-size: 1px;
+	margin: 0;
+	overflow: hidden;
+	padding: 0;
+	position: absolute;
+	white-space: nowrap;
+}
+
 /* The question, the plan or the tool's detail line, as it was written. */
 .herdr-native-waiting-body {
 	color: var(--text-muted);

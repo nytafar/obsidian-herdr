@@ -9,7 +9,7 @@
  * kind's responder). It holds the guards that make each answer go out once.
  */
 
-import { Component } from 'obsidian';
+import { Component, setIcon } from 'obsidian';
 import type { AgentStatus } from '../herdr/types.gen';
 import type { KeySender } from './promptSender';
 import { isTypedAnswerKey, optionName, questionAnswer, waitingCard, type WaitingCardModel } from './waitingCard';
@@ -55,6 +55,50 @@ export function drawOption(parent: HTMLElement, option: PendingQuestionOption): 
 
 /** What the card disables while an answer is on its way: its buttons and its text fields. */
 type Control = HTMLButtonElement | HTMLInputElement;
+
+/** What the card's live status says while an answer is on its way (#142). */
+export const SENDING_TEXT = 'Sending your answer…';
+
+/**
+ * What the card says, in place, when an answer did not get through (#142).
+ * The card stays as it was, with what was chosen and typed, so the user can
+ * answer again; `stillWaiting` is whether the runtime still holds this very
+ * request, read again after the failure, since a request that went or was
+ * replaced meanwhile is a different thing to say than a failed send.
+ */
+export function answerFailureText(error: unknown, stillWaiting: boolean): string {
+	if (!stillWaiting) {
+		return 'The request changed or was answered elsewhere before this answer arrived. Check the card and answer again.';
+	}
+	const reason = error instanceof Error ? error.message : String(error);
+	return `Could not send the answer (${reason}). The request is still waiting, so you can answer again.`;
+}
+
+/**
+ * Which block a card is about, so a fold lasts while the card is drawn again
+ * for the same block and a new block opens unfolded.
+ */
+function foldKey(card: WaitingCardModel): string {
+	return card.request ? `request:${card.request.id}` : `${card.kind}:${card.toolUseId}`;
+}
+
+/**
+ * The card's live status and its error line (#142): what an answer on its way
+ * says, and where a failed one says why. The status is in the card from its
+ * first draw, clipped while it is empty rather than left out, because a live
+ * region that appears together with its words is not read and one that is
+ * there and gets them is (Ovis's `PromptCard.tsx`, MIT).
+ */
+interface CardFeedback {
+	/** The answer is on its way: say so, and mark the options busy. */
+	sending(): void;
+	/** The answer is in. */
+	sent(): void;
+	/** The answer failed: say why, in place, and free the options. */
+	failed(message: string): void;
+	/** Option groups to mark `aria-busy` while an answer is on its way. */
+	busy: HTMLElement[];
+}
 
 /** Draws one action button of a request card; the answer is null for "not yet". */
 type ButtonMaker = (
@@ -107,6 +151,10 @@ export class WaitingCardView {
 	private waitingRequest: PendingRequest | null = null;
 	/** The request an answer has been sent for, so a second press sends nothing. */
 	private answeredRequest = '';
+	/** Whether the card is folded to its one-line bar (#142). */
+	private folded = false;
+	/** The block the fold belongs to; a card for another block opens unfolded. */
+	private foldedFor = '';
 
 	constructor(private readonly options: WaitingCardViewOptions) {}
 
@@ -121,6 +169,8 @@ export class WaitingCardView {
 			this.clear();
 			// The block is over: the next one is an answer of its own.
 			this.trustSent = false;
+			this.foldedFor = '';
+			this.folded = false;
 			this.options.setPromptHidden(false);
 			return;
 		}
@@ -169,18 +219,92 @@ export class WaitingCardView {
 	 * (`docs/architecture.md`, "What a bare Enter selects on each of Claude's
 	 * blocking dialogs"): the cursor sits on the first option, which here is
 	 * "No, exit", so the keys are `Down Enter` and never a bare Enter.
+	 *
+	 * **It folds** (#142): the title is a bar with a fold button, and folded the
+	 * card is that bar alone, so a long plan stops covering a narrow pane. The
+	 * fold lasts while the same block is drawn again; the next block opens.
+	 * The live status and the error line sit outside what folds.
 	 */
 	private render(root: HTMLElement, card: WaitingCardModel): void {
 		this.clear();
 		const component = new Component();
 		component.load();
 		this.waitingComponent = component;
-		const el = root.createDiv({ cls: ['herdr-native-waiting', 'herdr-native-sizer'] });
+		const key = foldKey(card);
+		if (key !== this.foldedFor) {
+			this.foldedFor = key;
+			this.folded = false;
+		}
+		const el = root.createDiv({
+			cls: ['herdr-native-waiting', 'herdr-native-sizer'],
+			attr: { role: 'region', 'aria-label': card.title },
+		});
 		this.waitingEl = el;
-		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		const head = el.createDiv({ cls: 'herdr-native-waiting-head' });
+		head.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		const foldEl = head.createEl('button', { cls: ['clickable-icon', 'herdr-native-waiting-fold'] });
+		const content = el.createDiv({ cls: 'herdr-native-waiting-content' });
+		const feedback = this.feedback(el);
+		const applyFold = (): void => {
+			el.toggleClass('is-folded', this.folded);
+			content.toggleClass('herdr-is-hidden', this.folded);
+			foldEl.setAttr('aria-expanded', String(!this.folded));
+			foldEl.setAttr('aria-label', this.folded ? 'Expand the card' : 'Collapse the card');
+			setIcon(foldEl, this.folded ? 'chevron-up' : 'chevron-down');
+		};
+		applyFold();
+		component.registerDomEvent(foldEl, 'click', () => {
+			this.folded = !this.folded;
+			applyFold();
+		});
+		this.renderContent(content, card, component, feedback);
+	}
+
+	/**
+	 * The card's status line and error line, after what folds. The status line
+	 * is there from the first draw (see {@link CardFeedback}); the error line
+	 * comes when there is an error and goes with the next answer.
+	 */
+	private feedback(el: HTMLElement): CardFeedback {
+		const statusEl = el.createDiv({
+			cls: ['herdr-native-waiting-status', 'herdr-native-visually-hidden'],
+			attr: { role: 'status', 'aria-live': 'polite' },
+		});
+		let errorEl: HTMLElement | null = null;
+		const busy: HTMLElement[] = [];
+		const say = (text: string): void => {
+			statusEl.setText(text);
+			statusEl.toggleClass('herdr-native-visually-hidden', text === '');
+		};
+		const setBusy = (value: boolean): void => {
+			for (const group of busy) group.setAttr('aria-busy', String(value));
+		};
+		return {
+			busy,
+			sending: () => {
+				errorEl?.remove();
+				errorEl = null;
+				say(SENDING_TEXT);
+				setBusy(true);
+			},
+			sent: () => {
+				say('Answer sent.');
+				setBusy(false);
+			},
+			failed: (message) => {
+				say('');
+				setBusy(false);
+				errorEl?.remove();
+				errorEl = el.createDiv({ cls: 'herdr-native-waiting-error', text: message, attr: { role: 'alert' } });
+			},
+		};
+	}
+
+	/** Everything on the card under its title bar: what folds. */
+	private renderContent(el: HTMLElement, card: WaitingCardModel, component: Component, feedback: CardFeedback): void {
 		if (card.request && this.options.responder) {
 			this.waitingRequest = card.request;
-			this.renderRequest(el, card, card.request, component);
+			this.renderRequest(el, card, card.request, component, feedback);
 			return;
 		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
@@ -280,6 +404,7 @@ export class WaitingCardView {
 		card: WaitingCardModel,
 		request: PendingRequest,
 		component: Component,
+		feedback: CardFeedback,
 	): void {
 		const controls: Control[] = [];
 		// A stopping agent has denied the request already: shown, not answerable.
@@ -291,7 +416,7 @@ export class WaitingCardView {
 		// card sets it, and it runs again whenever a failed answer frees them.
 		let refresh = (): void => {};
 		const send = (answer: WaitingAnswer): void => {
-			void this.answer(request, answer, controls, () => refresh());
+			void this.answer(request, answer, { controls, refresh: () => refresh(), feedback });
 		};
 		const button: ButtonMaker = (parent, text, cls, answer) => {
 			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
@@ -319,7 +444,14 @@ export class WaitingCardView {
 			return;
 		}
 		if (request.kind === 'question') {
-			refresh = this.renderQuestions(el, request.questions, { button, send, stopping, controls, component });
+			refresh = this.renderQuestions(el, request.questions, {
+				button,
+				send,
+				stopping,
+				controls,
+				component,
+				busy: feedback.busy,
+			});
 			return;
 		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
@@ -358,9 +490,11 @@ export class WaitingCardView {
 			stopping: boolean;
 			controls: Control[];
 			component: Component;
+			/** Where the option groups go to be marked busy while an answer is on its way. */
+			busy: HTMLElement[];
 		},
 	): () => void {
-		const { button, send, stopping, controls, component } = parts;
+		const { button, send, stopping, controls, component, busy } = parts;
 		const single = questions.length === 1 && questions[0]?.multiSelect !== true;
 		const picked = new Map<PendingQuestion, Set<string>>();
 		const typed = new Map<PendingQuestion, HTMLInputElement>();
@@ -387,11 +521,24 @@ export class WaitingCardView {
 			const block = el.createDiv({ cls: 'herdr-native-waiting-question' });
 			if (question.header) block.createDiv({ cls: 'herdr-native-waiting-header', text: question.header });
 			block.createDiv({ cls: 'herdr-native-waiting-body', text: question.question });
-			const choices = block.createDiv({ cls: 'herdr-native-waiting-choices' });
+			// A group named by its question, busy on its own and never on the card:
+			// a live region inside an `aria-busy` subtree is not read (Chromium).
+			const choices = block.createDiv({
+				cls: 'herdr-native-waiting-choices',
+				attr: { role: 'group', 'aria-label': question.question, 'aria-busy': 'false' },
+			});
+			busy.push(choices);
 			const optionEls = new Map<string, HTMLButtonElement>();
+			// Options that toggle say whether they are on; one that answers at once
+			// is a plain button and says nothing of the kind.
 			const mark = (): void => {
+				if (single) return;
 				const chosen = picked.get(question);
-				for (const [label, optionEl] of optionEls) optionEl.toggleClass('is-selected', chosen?.has(label) === true);
+				for (const [label, optionEl] of optionEls) {
+					const on = chosen?.has(label) === true;
+					optionEl.toggleClass('is-selected', on);
+					optionEl.setAttr('aria-pressed', String(on));
+				}
 			};
 			for (const option of question.options) {
 				const optionEl = button(choices, '', ['herdr-native-waiting-choice'], () => {
@@ -416,6 +563,7 @@ export class WaitingCardView {
 				drawOption(optionEl, option);
 				optionEls.set(option.label, optionEl);
 			}
+			mark();
 			// The dialog's "Other": the user's own words, sent as the answer's text.
 			const other = block.createDiv({ cls: 'herdr-native-waiting-other' });
 			const field = other.createEl('input', {
@@ -457,27 +605,30 @@ export class WaitingCardView {
 
 	/**
 	 * Sends one answer to the request on the card, once: the controls go
-	 * disabled until the runtime has it, and come back only if it failed, with
-	 * what was chosen and typed still on them.
+	 * disabled and the card says it is sending until the runtime has it (#142).
+	 * A failure is said on the card, not in a notice, and gives the controls
+	 * back with what was chosen and typed still on them.
 	 */
 	private async answer(
 		request: PendingRequest,
 		answer: WaitingAnswer,
-		controls: Control[],
-		refresh: () => void,
+		card: { controls: Control[]; refresh: () => void; feedback: CardFeedback },
 	): Promise<void> {
 		const responder = this.options.responder;
 		if (!responder || request.stopping || this.answeredRequest === request.id) return;
 		this.answeredRequest = request.id;
-		for (const control of controls) control.disabled = true;
+		for (const control of card.controls) control.disabled = true;
+		card.feedback.sending();
 		try {
 			await responder.respond(this.options.paneId(), request.id, answer);
+			card.feedback.sent();
 		} catch (error) {
 			this.answeredRequest = '';
-			for (const control of controls) control.disabled = false;
-			refresh();
-			const reason = error instanceof Error ? error.message : String(error);
-			this.options.notify(`Herdr: could not answer Claude (${reason})`);
+			for (const control of card.controls) control.disabled = false;
+			card.refresh();
+			// Read again: the request may have gone, or another taken its place.
+			const stillWaiting = this.options.model()?.request?.id === request.id;
+			card.feedback.failed(answerFailureText(error, stillWaiting));
 		}
 	}
 }
