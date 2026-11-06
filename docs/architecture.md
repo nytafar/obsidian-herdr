@@ -1338,7 +1338,9 @@ scratch pane created with `tab create` and `agent start`.
   on a dialog with more than one question `right` then `1` submits; a
   one-question single-select dialog submits on the digit. Details and the
   probe in the docs root, `findings/native-view-session-chrome.md` and
-  `findings/native-view-control-channels.md`.
+  `findings/native-view-control-channels.md`. On 2.1.318 the question is
+  dangling again ("Answering Claude's dialogs from the screen" below), and the digits-in-one-call reading
+  does not hold on herdr.
 - **Plan approval and the plan file (issue #148).** Read 2026-11-06 from
   this machine's transcripts. On Claude Code 2.1.286 `ExitPlanMode` is no
   longer dangling: in session `363fde6f` the call (timestamped at the
@@ -1378,6 +1380,87 @@ scratch pane created with `tab create` and `agent start`.
   answer in the terminal either way. herdr over SSH has no transcript source
   and reads nothing; herdr-core over SSH reads the file with `file.read` on
   its own machine, as it reads the transcript.
+
+## Answering Claude's dialogs from the screen
+
+Measured 2026-11-06 for issue #151 against Claude Code 2.1.318, herdr 0.9.5
+and hc 0.1.18, in `oh-test-*` panes running `claude --permission-mode default`
+in `/tmp` folders. The measurements, key by key, are the finding
+`answering-on-screen` in the docs root; the proposed design is ADR-0009. The
+screens are recorded in `tests/fixtures/screens/claude-2.1.318/` with an
+index. Nothing in the plugin answers these dialogs yet except the trust
+prompt; these are the facts a build may rely on.
+
+- **What is in the transcript while a dialog is up.** `AskUserQuestion`:
+  a dangling `tool_use` with the full `input.questions` (checked while the
+  dialog was up; 2.1.281 wrote it only when answered). Bash and Write
+  permissions: dangling, as before. `ExitPlanMode`: not written until
+  answered, then call and result together (as on 2.1.286). Trust: no
+  transcript. So on 2.1.318 a blocked pane with no dangling call past
+  startup is plan approval or an unknown dialog, never a question.
+- **What hc reports.** Claude's OSC 7501 status carries the request in
+  `msg`: question `kind: question`, `msg: "answer: <question> (A · B · C)"`;
+  Bash `kind: permission`, `msg: "approve Bash: <command>"`; plan approval
+  `kind: permission`, `msg: "approve plan"`. At the trust prompt the status is
+  `null`: Claude reports nothing before trust, so hc never says `trust`.
+- **Reading the screen.** herdr `pane.read {source: visible, format: text}`
+  and hc `terminal.read {lines: 0}` both show the dialog with its cursor
+  (`❯`) and ticks (`[✔]`, `☒` in the tab bar) as text; colour is not needed.
+  herdr's `revision` in the read result did not change while a text row was
+  typed into, so it is not a screen version; hc's read has none. A
+  dialog's identity is its content.
+- **Telling the dialogs apart.** Question: hint `Enter to select · ↑/↓ to
+  navigate` (`Tab/Arrow keys to navigate` with several questions), rows
+  `N. label` with the description on the next line, then `Type something.`
+  and, under a rule, `Chat about this`; multi-select adds a tab bar
+  `←  ☐ header  ✔ Submit  →`, `[ ]` boxes and an unnumbered `Submit` row.
+  Review: `Review your answers`, ` ● question` / `   → answer`, `1. Submit
+  answers`. Permission: `Do you want to proceed?` (Bash) or `Do you want to
+  create <file>?` (Write), hint `Esc to cancel · Tab to amend`. Plan:
+  `Ready to code?`, `Would you like to proceed?`, the hint ending in
+  `~/.claude/plans/<slug>.md`. Trust: `Accessing workspace:`, the folder,
+  `No, exit` / `Yes, I trust this folder`, hint `Enter to confirm`.
+- **Option 2 of a permission is not one thing.** Bash `python3 …`: "Yes, and
+  don’t ask again for: python3 *", which wrote `Bash(python3 *)` to the
+  folder's `.claude/settings.local.json`. Bash `touch one.txt`: "Yes, and
+  always allow access to <folder> from this project", which wrote no settings
+  file. Write: "Yes, and switch to accept edits … for this session
+  (shift+tab)". Option 3 on Bash switches to auto mode.
+- **Keys.** Single-choice question: a digit, or `down`s and `enter`, answers
+  at once. Multi-select: `enter` toggles the row under the cursor and leaves
+  the cursor; `right`, or `down` `enter` on `Submit`, opens the review, where
+  `enter` submits. Several questions: a digit per tab, then the review. Own
+  answer: move to `Type something.`, type, `enter` (single) or `down` `enter`
+  (multi; typing ticks the row). Permission: digit, or move and `enter`; deny
+  with `esc`; deny with feedback is `No`, `tab` (the row becomes "No, and tell
+  Claude what to do differently"), text, `enter`. Plan: `2` approves with
+  manual edits, `1` with auto mode; row 3, text, `enter` rejects with
+  feedback and Claude replans; row 3, text, `shift+tab` approves **and
+  switches the session to auto mode**. Trust: `down` `enter`. `esc` on a
+  question or permission writes a rejected `tool_result`.
+- **Text goes only onto a text row.** Text sent with the cursor on an option,
+  or on the Bash `No` row before `tab`, was ignored; a single digit there
+  would answer. herdr `pane.send_text` types exactly. hc `terminal.keys`
+  lowercases letters (`A` → `a`; capitals need `shift+a`, space is `space`),
+  and `terminal.send --force` pastes and presses Enter after about 5 s, which
+  on a multi-select text row unticked it. One AUTOMATIC_INPUT frame on a
+  `terminal.attach {cols, rows, history: 0, resumed: true}` at the terminal's
+  own grid typed `Mango, Ripe 2` exactly and left the size at 200x120.
+  `ctrl+u` empties a text row.
+- **herdr merges printable keys in one `agent.send_keys`.** `["1", "3"]` on a
+  multi-select toggled nothing, the same digits in two calls toggled both,
+  `["4", "Down"]` did both. hc's `terminal.keys` spaces keys 30 ms apart and
+  `["1", "3"]` toggled both.
+- **Confirmation.** Every answer cleared its dialog from the screen within
+  about a second. The next dialog can look the same: after a deny with
+  feedback a new Bash permission with the same options came up within
+  seconds, differing only in the command. The transcript is the authority: a
+  question's `toolUseResult.answers` (multi-select joined with `, `, a typed
+  answer containing a comma quoted), a permission's `tool_result`
+  (`is_error: true` with the user's words for a denial), the `ExitPlanMode`
+  call and result. hc's `terminal.keys` replies at once with the status from
+  before the key (`{status: "blocked", turn}`); `msg` names the next request
+  1-3 s later, and `turn` advances on every status change.
 
 ## A second agent: Codex
 
