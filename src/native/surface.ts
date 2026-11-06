@@ -199,7 +199,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			resolveUri: (uri) => this.resolveUri(uri),
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
-		this.lines = new SessionLines(root);
+		this.lines = new SessionLines(root, {
+			component: this.component,
+			onRetry: () => this.model?.retryRead?.(),
+		});
 		this.rootEl = root;
 		this.component.load();
 		// The setting is the vault's, and it may move under an open view (#117).

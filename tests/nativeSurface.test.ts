@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
+import { READ_FAILURE_LINE } from '../src/native/sessionLines';
 import { NativePaneSurface } from '../src/native/surface';
 import {
 	emptyTranscript,
@@ -846,22 +847,50 @@ describe('NativePaneSurface: keeping up', () => {
 });
 
 describe('NativePaneSurface: a transcript the runtime cannot read', () => {
-	it('says why in the empty line, above any turns, and drops it once readable', async () => {
+	/** The failure line, which is built once and hidden rather than removed. */
+	function shownFailure(el: FakeElement): FakeElement | null {
+		const [line] = el.findAll('herdr-native-read-failure');
+		return line && !line.hasClass('herdr-is-hidden') ? line : null;
+	}
+
+	it('says it failed above any turns, with the reason behind Details, and hides it once readable', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
 		await surface.attach(host);
 		model.path = '/transcript.jsonl';
 		model.readProblem = 'cannot be read: over the limit';
 		model.push([], { changedTurnIds: [], reset: false });
-		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+		const line = shownFailure(el);
+		expect(line?.find('herdr-native-read-failure-text').textContent).toBe(READ_FAILURE_LINE);
+		expect(line?.find('herdr-native-read-detail').textContent).toBe('cannot be read: over the limit');
+		expect(line?.getAttribute('role')).toBe('alert');
+		// A view that cannot read says so, and does not also guess "no turns yet".
+		expect(el.findAll('herdr-native-empty')).toEqual([]);
 
 		// Turns read before the file grew past the limit stay, under the reason.
 		model.push([turn('u1', 'Before')], { changedTurnIds: ['u1'], reset: false });
-		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+		expect(shownFailure(el)).not.toBeNull();
 
 		model.readProblem = null;
 		model.push([turn('u1', 'Before')], { changedTurnIds: [], reset: false });
+		expect(shownFailure(el)).toBeNull();
 		expect(el.findAll('herdr-native-empty')).toEqual([]);
+	});
+
+	it('reads the transcript again when Try again is pressed (#146)', async () => {
+		const model = new FakeModel();
+		const retryRead = vi.fn();
+		Object.assign(model, { retryRead });
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.readProblem = 'cannot be read: over the limit';
+		model.push([], { changedTurnIds: [], reset: false });
+		// Shown twice: one button, one listener, one retry per press.
+		model.push([], { changedTurnIds: [], reset: false });
+
+		el.find('herdr-native-read-retry').dispatch('click');
+
+		expect(retryRead).toHaveBeenCalledTimes(1);
 	});
 });
 
