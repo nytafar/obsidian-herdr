@@ -22,8 +22,12 @@
  *
  * **Status** comes from the stream, not from a screen:
  *
- * - `working` from a prompt written until its `result` (one per message,
- *   queued ones included);
+ * - `working` from a prompt written until Claude has answered it: every
+ *   prompt goes under its own uuid, and is answered by a `result` that
+ *   lists it in `user_message_uuids` (one result can answer several, when a
+ *   queued prompt is absorbed into the running turn) or ends by its
+ *   `command_lifecycle` (a cancelled one gets no result); a result that
+ *   names nothing answers the oldest;
  * - `blocked` while a `can_use_tool` request waits, with `question` for
  *   `AskUserQuestion` and `permission` for everything else; never `trust`;
  * - `done` once the last turn ended, until a person looks at the agent or
@@ -72,6 +76,7 @@
 
 import type { BlockKind } from '../native/sessionWatcher';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { isAbsolute, resolve, type PlatformPath } from 'node:path';
@@ -345,8 +350,8 @@ interface AgentRecord {
 	unclaimed: ClaudePrompt[];
 	/** The current process is already the other way of starting; never a third. */
 	retried: boolean;
-	/** Prompts written whose `result` has not come yet. */
-	turns: number;
+	/** The uuids of the prompts written whose answer has not come, oldest first (#158). */
+	open: Set<string>;
 	/** The last turn ended and nobody has looked or prompted since. */
 	finished: boolean;
 	/** Pending `can_use_tool` requests, oldest first (Map keeps insertion order). */
@@ -429,6 +434,19 @@ function asError(error: unknown): Error {
 
 type Listener = (runtimeId: string, agentId: string, change: ClaudeAgentChange) => void;
 
+/**
+ * Writes one prompt under a fresh uuid and holds the agent `working` until
+ * Claude answers that uuid: a `result` that names it in
+ * `user_message_uuids` (a queued prompt absorbed into the running turn
+ * shares that turn's result), or a `command_lifecycle` end (a queued prompt
+ * cancelled never gets a result). Throws when the line could not be written.
+ */
+function writePrompt(record: AgentRecord, process: ClaudeProcess, prompt: ClaudePrompt): void {
+	const uuid = randomUUID();
+	process.send(userMessage(prompt.text, prompt.images, uuid));
+	record.open.add(uuid);
+}
+
 /** A record for a row, with no process. */
 function newRecord(stored: StoredClaudeSession): AgentRecord {
 	return {
@@ -441,7 +459,7 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		initSeen: false,
 		unclaimed: [],
 		retried: false,
-		turns: 0,
+		open: new Set(),
 		finished: false,
 		pending: new Map(),
 		status: 'stopped',
@@ -617,9 +635,8 @@ export class ClaudeAgents {
 		if (!record.process) this.spawn(runtimeId, record);
 		const process = record.process;
 		if (!process?.alive) throw new Error('the agent could not be started');
-		process.send(userMessage(prompt.text, prompt.images));
+		writePrompt(record, process, prompt);
 		if (!record.initSeen) record.unclaimed.push(prompt);
-		record.turns++;
 		record.finished = false;
 		this.update(runtimeId, record);
 		return Promise.resolve();
@@ -730,7 +747,7 @@ export class ClaudeAgents {
 		}
 		const stops: Promise<void>[] = [];
 		const process = record.process;
-		if (process) stops.push(process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] }));
+		if (process) stops.push(process.stop({ busy: record.open.size > 0, pending: [...record.pending.keys()] }));
 		if (record.tui) stops.push(record.tui.stop());
 		if (stops.length === 0) return;
 		const stopping: Promise<void> = Promise.all(stops).then(
@@ -934,7 +951,7 @@ export class ClaudeAgents {
 		record.initSeen = false;
 		record.unclaimed = [];
 		record.retried = how !== undefined;
-		record.turns = 0;
+		record.open.clear();
 		record.finished = false;
 		record.pending.clear();
 		process.start();
@@ -944,13 +961,12 @@ export class ClaudeAgents {
 		let written = 0;
 		for (const prompt of replay) {
 			try {
-				process.send(userMessage(prompt.text, prompt.images));
+				writePrompt(record, process, prompt);
 			} catch {
 				break;
 			}
 			written++;
 			record.unclaimed.push(prompt);
-			record.turns++;
 		}
 		this.update(runtimeId, record);
 		return written;
@@ -1015,15 +1031,29 @@ export class ClaudeAgents {
 					this.update(runtimeId, record);
 					return;
 				}
-				record.turns = Math.max(0, record.turns - 1);
+				if (event.answered) {
+					for (const uuid of event.answered) record.open.delete(uuid);
+				} else {
+					// A result that names nothing answers the oldest, one per message.
+					const oldest = record.open.values().next();
+					if (!oldest.done) record.open.delete(oldest.value);
+				}
 				if (!event.isError) this.markStarted(runtimeId, record);
-				if (record.turns === 0) record.finished = true;
+				if (record.open.size === 0) record.finished = true;
 				if (event.isError && !event.terminalReason.startsWith('aborted')) {
 					const reason = event.terminalReason ? ` (${event.terminalReason})` : '';
 					this.host.notice(
 						`Gjetr: ${record.stored.name || 'Claude'}: ${event.message || event.subtype || 'the turn failed'}${reason}`,
 					);
 				}
+				this.update(runtimeId, record);
+				return;
+			}
+			case 'lifecycle': {
+				// A message cancelled while queued never gets a result; one that
+				// completed has had it already, and is gone by now.
+				if (!event.ended || !record.open.delete(event.uuid)) return;
+				if (record.open.size === 0) record.finished = true;
 				this.update(runtimeId, record);
 				return;
 			}
@@ -1060,7 +1090,7 @@ export class ClaudeAgents {
 		this.live.delete(process);
 		if (record.process !== process) return;
 		record.process = null;
-		record.turns = 0;
+		record.open.clear();
 		record.finished = false;
 		record.pending.clear();
 		// Claude refused how it was started: the session id is taken (the row
@@ -1100,7 +1130,7 @@ export class ClaudeAgents {
 		}
 		if (!record.process?.alive) return 'stopped';
 		if (record.pending.size > 0) return 'blocked';
-		if (record.turns > 0) return 'working';
+		if (record.open.size > 0) return 'working';
 		return record.finished ? 'done' : 'idle';
 	}
 
