@@ -39,8 +39,10 @@ attach to also shows up, whatever started it.
 
 - Obsidian **desktop** 1.7.2 or newer. No mobile build.
 - macOS or Linux.
-- **herdr 0.8.0 or newer, already running.** The plugin never starts, stops or
-  updates a herdr server; it attaches to the one you have.
+- One runtime: **herdr 0.8.0 or newer, already running** (the plugin never
+  starts, stops or updates a herdr server; it attaches to the one you have),
+  **herdr-core** (`hc`), or **Claude Code** for the simple mode. See
+  [Getting started](#getting-started).
 - For a runtime over SSH: `ssh` on this machine, key-based login that does not
   prompt, and a copy of the vault on the remote host kept in sync by whatever you
   already use (Obsidian Sync, Self-hosted LiveSync, Syncthing, git).
@@ -53,6 +55,36 @@ Until the plugin is in the community list, install it with
 plugins. Manual install works too: put `main.js`, `manifest.json` and
 `styles.css` from a [release](https://github.com/nytafar/obsidian-herdr/releases)
 into `<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
+
+## Getting started
+
+Nothing installed yet? Open the agent list (**Herdr: Show agents**). While no
+runtime connects, it shows **Get started** in place of the list; the
+**Herdr: Get started** command opens the same card at any time. It offers
+three ways in:
+
+1. **Start now with Claude, run by Obsidian.** If Claude Code is installed,
+   one click adds the simple-mode runtime, makes it active and starts an
+   agent at the vault root. No multiplexer needed; agents stop when Obsidian
+   closes. If Claude Code is missing, the card links its setup guide and shows
+   its official install command for you to run yourself.
+2. **Install herdr-core**, the headless runtime that keeps agents running
+   after Obsidian closes. The card shows its official install command,
+   `curl -fsSL https://releases.herdr.dev/core/install.sh | sh` (on Windows,
+   `irm https://releases.herdr.dev/core/install.ps1 | iex` in PowerShell), and
+   offers to **Copy** it, **Run in a terminal tab** you watch and can stop
+   (not on Windows), or **Ask Claude** to run it. Claude always runs that
+   session in the asking permission mode, whatever your runtime is set to, so
+   the command waits on a permission card until you allow it. When the
+   install is done, **Check again** finds `hc`, and **Add herdr-core on this
+   machine** adds the runtime, makes it active and offers the Claude session
+   hook for the native view.
+3. **Prefer the herdr terminal app?** A link to herdr's install docs.
+
+**What the plugin downloads: nothing.** It never downloads, installs or
+updates anything by itself. On request it shows herdr-core's official
+installer and can run it, in a terminal tab you see or as a command Claude
+asks you to allow; updates stay with `hc update`.
 
 ## Five-minute setup
 

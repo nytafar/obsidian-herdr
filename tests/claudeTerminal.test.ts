@@ -29,7 +29,7 @@ import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import { CLAUDE_TERMINAL_UNAVAILABLE, createClaudeKind, SHELL_NO_NATIVE, type ClaudeKind, type ClaudeKindHost } from '../src/runtime/claudeKind';
 import { DEFAULT_SETTINGS } from '../src/settings';
-import { newRuntime } from '../src/runtimes';
+import { newRuntime, type ClaudePermissionMode } from '../src/runtimes';
 import type { PaneSession } from '../src/views/paneTerminal';
 import { FakePty } from './fixtures/fakePty';
 
@@ -96,6 +96,9 @@ interface HarnessOptions {
 	connect?: boolean;
 	/** One stored row, {@link AGENT}, never started or started. */
 	row?: 'fresh' | 'started';
+	/** The runtime's permission mode, and the one the stored row pins, if any. */
+	runtimeMode?: ClaudePermissionMode;
+	rowMode?: ClaudePermissionMode;
 }
 
 /** The stored row's id. */
@@ -130,9 +133,17 @@ function harness(options: HarnessOptions = {}): Harness {
 	});
 	kinds.push(kind);
 	const runtime = newRuntime('claude', 'local', []);
+	if (options.runtimeMode) runtime.permissionMode = options.runtimeMode;
 	if (options.row) {
 		stored[runtime.id] = [
-			{ id: AGENT, sessionId: SESSION, cwd: dir, name: 'a', ...(options.row === 'started' ? { started: true } : {}) },
+			{
+				id: AGENT,
+				sessionId: SESSION,
+				cwd: dir,
+				name: 'a',
+				...(options.row === 'started' ? { started: true } : {}),
+				...(options.rowMode ? { permissionMode: options.rowMode } : {}),
+			},
 		];
 	}
 	const endpoint = endpointOf(runtime);
@@ -271,6 +282,14 @@ describe('the view switch, as a state machine', () => {
 });
 
 describe('an agent in its terminal view', () => {
+	it('starts the TUI of a row pinned to the asking mode in that mode, whatever the runtime is set to (ADR-0008)', async () => {
+		const h = harness({ row: 'fresh', runtimeMode: 'auto', rowMode: 'manual' });
+		openTab(h, AGENT);
+		await reported(h);
+		expect(inner(h.pty.last.argv)).toContain("'--permission-mode' 'manual'");
+		expect(inner(h.pty.last.argv)).not.toContain("'auto'");
+	});
+
 	it('starts the TUI of a stopped agent in its cwd, with its session and permission mode, under the watchdog', async () => {
 		const h = harness({ row: 'fresh' });
 		const paneId = AGENT;

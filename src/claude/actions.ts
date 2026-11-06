@@ -141,7 +141,7 @@ export class ClaudeActions implements RuntimeActions {
 		await this.agents.stop(this.runtimeId, paneId);
 		// The session as it is after the stop: a `/clear` may have rotated it.
 		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
-		const permissionMode = this.agents.permissionMode(this.runtimeId);
+		const permissionMode = this.agents.permissionMode(this.runtimeId, paneId);
 		return { cwd: after.cwd, sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) };
 	}
 

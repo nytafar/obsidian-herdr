@@ -63,7 +63,7 @@ import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { isAbsolute, resolve, type PlatformPath } from 'node:path';
 import { claudeTranscriptFile } from '../native/transcriptSource';
-import type { ClaudePermissionMode } from '../runtimes';
+import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,
 	claudeTuiArgv,
@@ -99,6 +99,14 @@ export interface StoredClaudeSession {
 	 * before this was recorded.
 	 */
 	started?: boolean;
+	/**
+	 * A permission mode this row always starts in, whatever its runtime's is.
+	 * Set only by a caller that must not run in the runtime's mode: the
+	 * getting-started flow's "Ask Claude" pins the asking mode (ADR-0008), so
+	 * its installer command always arrives as a permission card, now and
+	 * after a resume. Absent on every other row.
+	 */
+	permissionMode?: ClaudePermissionMode;
 }
 
 /**
@@ -142,6 +150,9 @@ export function normalizeClaudeSessions(
 				cwd,
 				name: typeof row.name === 'string' ? row.name : '',
 				...(row.started === true ? { started: true } : {}),
+				...((CLAUDE_PERMISSION_MODES as readonly unknown[]).includes(row.permissionMode)
+					? { permissionMode: row.permissionMode as ClaudePermissionMode }
+					: {}),
 			});
 		}
 		if (sessions.length > 0) result[runtimeId] = sessions;
@@ -371,9 +382,13 @@ export class ClaudeAgents {
 		return record ? this.view(runtimeId, record) : null;
 	}
 
-	/** The permission mode a runtime's agents start in; null before it is configured. */
-	permissionMode(runtimeId: string): ClaudePermissionMode | null {
-		return this.setups.get(runtimeId)?.permissionMode ?? null;
+	/**
+	 * The permission mode a runtime's agents start in, or one agent's own when
+	 * its row pins one; null before the runtime is configured.
+	 */
+	permissionMode(runtimeId: string, agentId?: string): ClaudePermissionMode | null {
+		const pinned = agentId ? this.table(runtimeId).get(agentId)?.stored.permissionMode : undefined;
+		return pinned ?? this.setups.get(runtimeId)?.permissionMode ?? null;
 	}
 
 	/** Names in use on a runtime, for a new agent's name. */
@@ -386,11 +401,26 @@ export class ClaudeAgents {
 		return () => this.listeners.delete(listener);
 	}
 
-	/** A new agent in `cwd`, stored and started at once (it idles until prompted). */
-	start(runtimeId: string, cwd: string, name: string): ClaudeAgentView {
+	/**
+	 * A new agent in `cwd`, stored and started at once (it idles until
+	 * prompted). `options.permissionMode` pins the row to that mode instead of
+	 * the runtime's, for every process it ever runs.
+	 */
+	start(
+		runtimeId: string,
+		cwd: string,
+		name: string,
+		options: { permissionMode?: ClaudePermissionMode } = {},
+	): ClaudeAgentView {
 		const table = this.table(runtimeId);
 		const id = this.host.newAgentId(new Set(table.keys()));
-		const record = newRecord({ id, sessionId: this.host.newSessionId(), cwd, name });
+		const record = newRecord({
+			id,
+			sessionId: this.host.newSessionId(),
+			cwd,
+			name,
+			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+		});
 		table.set(id, record);
 		this.persist(runtimeId);
 		this.emit(runtimeId, id, 'added');
@@ -629,7 +659,7 @@ export class ClaudeAgents {
 			binary: setup.binary,
 			sessionId,
 			resume,
-			permissionMode: setup.permissionMode,
+			permissionMode: record.stored.permissionMode ?? setup.permissionMode,
 			extraArgs: this.host.extraArgs?.(),
 		});
 		const process: ClaudeProcess = new ClaudeProcess({
@@ -936,7 +966,7 @@ export class ClaudeAgents {
 			binary: setup.binary,
 			sessionId,
 			resume,
-			permissionMode: setup.permissionMode,
+			permissionMode: record.stored.permissionMode ?? setup.permissionMode,
 			extraArgs: this.host.extraArgs?.(),
 		});
 		const size = this.tuiSize(record);

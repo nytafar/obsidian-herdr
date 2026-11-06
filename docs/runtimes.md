@@ -11,6 +11,46 @@ One runtime is **active** at a time. The agent list, the folder actions, the
 notifications and the status bar counts are all for the active runtime;
 switching tears the connection down and opens the next one.
 
+## Getting started
+
+With no runtime that connects (the default local herdr is not installed, or
+the active runtime fails), the agent list shows **Get started** instead of
+"Not connected"; the **Get started** command opens the same card in a modal
+whenever you want it. It scans this machine for `claude` and `hc` once when
+it first shows, and again on **Check again**. It offers (ADR-0008):
+
+- **Start now with Claude, run by Obsidian**, when `claude` is found: adds a
+  Claude, run by Obsidian runtime unless there is one, makes it active, and
+  starts an agent at the vault root. When `claude` is missing, the card links
+  Claude Code's setup guide and shows its official install command; it never
+  runs it.
+- **Install herdr-core**, with its official command for this platform:
+  `curl -fsSL https://releases.herdr.dev/core/install.sh | sh`, or on Windows
+  `irm https://releases.herdr.dev/core/install.ps1 | iex`.
+  - **Copy** puts it on the clipboard, on every platform.
+  - **Run in a terminal tab** opens a shell tab in the vault that prints the
+    command, runs it while you watch (Ctrl+C stops it), then leaves you at
+    your shell. Shell tabs
+    belong to Claude, run by Obsidian, so a runtime of that kind is added
+    (not made active) when `claude` is found; without either, and on Windows,
+    the button is disabled with the reason.
+  - **Ask Claude** makes the Claude, run by Obsidian runtime active and starts
+    an agent named "Install herdr-core" in the vault, prompted to run exactly
+    that command and then `hc --version`. That agent always runs in the
+    asking permission mode (`manual`), whatever the runtime's **Permission
+    mode** says, and keeps it after a resume, so the installer arrives on the
+    native view's waiting card with the full command, and nothing runs until
+    you press Allow.
+- **After the install**: once `hc` is found, **Add herdr-core on this
+  machine** (or **Use herdr-core on this machine** when such a runtime exists)
+  adds the runtime, makes it active, and once it connects opens the Claude
+  session hook's consent modal ([below](#the-claude-session-hook)); closing
+  it leaves the hook out.
+- **Prefer the herdr terminal app?** links herdr's install docs.
+
+The plugin itself never downloads or installs anything: the installer runs
+only where you see it, in a terminal tab or as a tool call you allow.
+
 ## Adding, editing and removing
 
 - **Add runtime** creates a herdr runtime over SSH and opens its form. Change

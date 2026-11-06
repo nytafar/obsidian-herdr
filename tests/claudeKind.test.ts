@@ -32,7 +32,8 @@ import {
 	type ClaudeKindHost,
 } from '../src/runtime/claudeKind';
 import { DEFAULT_SETTINGS } from '../src/settings';
-import { newRuntime } from '../src/runtimes';
+import { newRuntime, type ClaudePermissionMode } from '../src/runtimes';
+import { normalizeClaudeSessions } from '../src/claude/agents';
 
 const FAKE = resolve(__dirname, 'fixtures/fake-claude.mjs');
 
@@ -104,6 +105,8 @@ interface HarnessOptions {
 	host?: Partial<ClaudeKindHost>;
 	/** Variables added to the environment agents start with. */
 	env?: NodeJS.ProcessEnv;
+	/** The runtime's permission mode; `manual` (the default) otherwise. */
+	permissionMode?: ClaudePermissionMode;
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -133,6 +136,7 @@ function harness(options: HarnessOptions = {}): Harness {
 	kinds.push(kind);
 	const runtime = newRuntime('claude', 'local', []);
 	if (options.runtimeId) runtime.id = options.runtimeId;
+	if (options.permissionMode) runtime.permissionMode = options.permissionMode;
 	const endpoint = endpointOf(runtime);
 	const driver = kind.connection;
 	if (!driver) throw new Error('no driver');
@@ -586,6 +590,42 @@ describe('the claude kind over a fake claude', () => {
 			permissionMode: h.connection.endpoint.runtime.permissionMode,
 		});
 		expect(h.scope.get(paneId)?.stopped).toBe(true);
+	});
+
+	it('starts a row pinned to the asking mode in that mode, even on a runtime set to auto, and keeps it (ADR-0008)', async () => {
+		const h = harness({ permissionMode: 'auto' });
+		const modeOf = (argv: string[] | undefined): string | undefined => argv?.[(argv?.indexOf('--permission-mode') ?? -2) + 1];
+		// An ordinary agent takes the runtime's mode.
+		await started(h);
+		expect(modeOf(starts(h.log)[0])).toBe('auto');
+		const pinned = h.kind.agents.start(h.runtimeId, h.dir, 'Install herdr-core', { permissionMode: 'manual' });
+		await waitFor(() => starts(h.log).length === 2, 'the pinned start');
+		expect(modeOf(starts(h.log)[1])).toBe('manual');
+		expect(h.stored[h.runtimeId]?.find((row) => row.id === pinned.id)?.permissionMode).toBe('manual');
+		// The pin survives a stop and a resume, and goes with a graduation.
+		await prompt(h, pinned.id, 'hello');
+		await waitFor(() => status(h, pinned.id) === 'done', 'done');
+		const actions = h.kind.createActions(actionHost(h));
+		await actions.closePane(pinned.id, h.runtimeId);
+		await actions.resumeAgent?.(pinned.id);
+		await waitFor(() => starts(h.log).length === 3, 'the resume');
+		expect(starts(h.log)[2]).toContain('--resume');
+		expect(modeOf(starts(h.log)[2])).toBe('manual');
+		expect(h.kind.agents.permissionMode(h.runtimeId, pinned.id)).toBe('manual');
+		expect(h.kind.agents.permissionMode(h.runtimeId)).toBe('auto');
+		expect((await actions.releaseForGraduation?.(pinned.id))?.permissionMode).toBe('manual');
+	});
+
+	it('reads a pinned permission mode back from data.json, and drops one it does not know', () => {
+		const row = { id: 'cl-1', sessionId: '11111111-2222-4333-8444-555555555555', cwd: '/v', name: 'a' };
+		expect(
+			normalizeClaudeSessions({
+				rt: [
+					{ ...row, permissionMode: 'manual' },
+					{ ...row, id: 'cl-2', permissionMode: 'bypassPermissions' },
+				],
+			}),
+		).toEqual({ rt: [{ ...row, permissionMode: 'manual' }, { ...row, id: 'cl-2' }] });
 	});
 
 	it('stops every process on unload, denying what is pending first', async () => {

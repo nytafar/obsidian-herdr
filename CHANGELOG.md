@@ -86,6 +86,16 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
 - **Open shell here** for Claude, run by Obsidian: a plain shell in a
   folder, in a terminal tab of its own, from the folder menu or the command.
   It lives while a tab shows it.
+- **Get started** (ADR-0008): while no runtime connects, the agent list
+  shows a guided start, also behind a `Get started` command. Start at once in
+  Claude, run by Obsidian (the runtime is added, made active, and an agent
+  starts in the vault), or install herdr-core with its official command:
+  copy it, run it in a terminal tab, or ask Claude to run it. Ask Claude
+  always starts in the asking permission mode, whatever the runtime's mode,
+  so the command waits on a permission card. **Check again** finds `hc`
+  afterwards and adds herdr-core on this machine in one click, then offers
+  the Claude session hook. A link covers herdr instead. The plugin never
+  downloads or installs anything itself.
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

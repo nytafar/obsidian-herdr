@@ -86,6 +86,65 @@
 	padding: var(--size-4-2);
 }
 
+/* "Get started" (ADR-0008): in the agent list and in its command's modal. */
+.herdr-get-started {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+	padding: var(--size-4-2);
+	font-size: var(--font-ui-small);
+}
+
+.herdr-get-started-title {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+}
+
+.herdr-get-started-why,
+.herdr-get-started-note,
+.herdr-get-started-reason {
+	color: var(--text-muted);
+}
+
+.herdr-get-started-reason {
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-get-started-section,
+.herdr-get-started-after {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.herdr-get-started-section + .herdr-get-started-section {
+	border-top: var(--border-width) solid var(--background-modifier-border);
+	padding-top: var(--size-4-3);
+}
+
+.herdr-get-started-heading {
+	font-weight: var(--font-medium);
+}
+
+.herdr-get-started-command {
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-1) var(--size-4-2);
+	overflow-x: auto;
+	user-select: text;
+}
+
+.herdr-get-started-command code {
+	white-space: pre;
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-get-started-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
 .herdr-tab-group {
 	display: flex;
 	flex-direction: column;

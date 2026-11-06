@@ -94,6 +94,16 @@ import { HcClient } from './hc/client';
 import { hcHookMachine } from './sessionHook/installer';
 import { SESSION_HOOK_COMMAND_NAME } from './hc/sessionWatcher';
 import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
+import { resolveHerdrBinary } from './herdr/binary';
+import { buildAgentName } from './actions';
+import type { PaneView } from './native/renderMode';
+import {
+	GET_STARTED_COMMAND_NAME,
+	GetStartedFlow,
+	showGetStarted,
+	type GetStartedHost,
+} from './getStarted/flow';
+import { GetStartedModal } from './getStarted/card';
 
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
@@ -139,7 +149,10 @@ export default class HerdrPlugin extends Plugin {
 				new Notice(message);
 			},
 			setError: (message) => {
+				const changed = this.connectError !== message;
 				this.connectError = message;
+				// The agent list's "Get started" card follows a failed attempt.
+				if (changed) this.refreshAgentList();
 			},
 			onReplaced: () => {
 				// The caches belong to the connection that just went (#43, #81).
@@ -206,6 +219,11 @@ export default class HerdrPlugin extends Plugin {
 		}),
 		claude: this.claudeKind,
 	};
+	/**
+	 * "Get started" (ADR-0008): the card the agent list shows while no
+	 * runtime connects, and the `Get started` command's modal.
+	 */
+	readonly getStarted = new GetStartedFlow(this.getStartedHost());
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */
@@ -693,7 +711,7 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/** Waits until `runtimeId` is published with a resolved scope; false after the timeout. */
-	private async scopeReady(runtimeId: string, timeoutMs = 15000): Promise<boolean> {
+	async scopeReady(runtimeId: string, timeoutMs = 15000): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
 		for (;;) {
 			const current = this.connection.current;
@@ -701,6 +719,86 @@ export default class HerdrPlugin extends Plugin {
 			if (Date.now() >= deadline) return false;
 			await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
 		}
+	}
+
+	/**
+	 * Whether the agent list draws "Get started" (ADR-0008) instead of its
+	 * "not connected" line: no runtime connects.
+	 */
+	showGetStarted(): boolean {
+		return showGetStarted({
+			runtimeCount: this.settings.runtimes.length,
+			published: this.connection.current !== null,
+			unavailable: this.kindUnavailable(activeRuntimeOf(this.settings).kind),
+			error: this.connectError,
+		});
+	}
+
+	/** Why the card shows: the active runtime's failure, as a sentence. */
+	getStartedReason(): string {
+		const runtime = activeRuntimeOf(this.settings);
+		const why = this.kindUnavailable(runtime.kind) ?? this.connectError ?? 'it is not connected';
+		return `${runtimeDisplayName(runtime)} is not available: ${why}`;
+	}
+
+	/** Everything the "Get started" flow needs from the plugin (ADR-0008). */
+	private getStartedHost(): GetStartedHost {
+		return {
+			platform: process.platform,
+			settings: () => this.settings,
+			vaultPath: () => this.vaultPath(),
+			findBinary: async (name) => {
+				// A runtime of that kind with a binary set is where the user said it is.
+				const kind = name === 'hc' ? 'herdr-core' : 'claude';
+				const configured = this.settings.runtimes.find(
+					(runtime) => runtime.kind === kind && runtime.target === 'local' && runtime.binary.trim(),
+				);
+				const found = await resolveHerdrBinary({
+					override: configured?.binary,
+					extraPath: this.settings.extraPath,
+					binaryName: name,
+				});
+				return found?.path ?? null;
+			},
+			shellsAvailable: () => this.claudeKind.shells !== null,
+			addRuntime: async (runtime) => {
+				this.settings.runtimes = [...this.settings.runtimes, runtime];
+				await this.saveSettings();
+				this.refreshRuntimes();
+			},
+			switchRuntime: (id) => this.switchRuntime(id),
+			waitForRuntime: (id) => this.scopeReady(id),
+			startAgentInVault: () => this.actions.startAgentHere(this.vaultPath()),
+			startClaudeAgent: async ({ runtimeId, cwd, name, prompt, permissionMode }) => {
+				const runtime = runtimeById(this.settings, runtimeId);
+				if (!runtime || runtime.kind !== 'claude') return null;
+				const agents = this.claudeKind.agents;
+				let paneId: string;
+				try {
+					const unique = buildAgentName(name, { folder: '', vault: '' }, agents.names(runtimeId));
+					paneId = agents.start(runtimeId, cwd, unique, { permissionMode }).id;
+					agents.prompt(runtimeId, paneId, prompt);
+				} catch (error) {
+					new Notice(`Herdr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);
+					return null;
+				}
+				// The native view: its waiting card is where the permission is answered.
+				await this.openTerminal(paneId, cwd, endpointOf(runtime).id, 'native');
+				return paneId;
+			},
+			openShellHere: (folder, options) => this.openShellHere(folder, options),
+			copy: (text) => navigator.clipboard.writeText(text),
+			openSessionHook: () => this.openSessionHook(),
+			notice: (message) => {
+				new Notice(message);
+			},
+			changed: () => this.refreshAgentList(),
+		};
+	}
+
+	/** The `Get started` command's modal. */
+	openGetStarted(): void {
+		new GetStartedModal(this.app, this.getStarted).open();
 	}
 
 	/** Opens the runtime picker over every runtime, the active one marked. */
@@ -737,7 +835,7 @@ export default class HerdrPlugin extends Plugin {
 	 * filling the main area — while attaching to the same folder split beside the
 	 * note (issue #28).
 	 */
-	async openTerminal(paneId: string, cwd?: string, onEndpoint?: string): Promise<void> {
+	async openTerminal(paneId: string, cwd?: string, onEndpoint?: string, view?: PaneView): Promise<void> {
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
 		// is opened on and pinned to (issue #54). A shell tab names its own.
@@ -768,7 +866,7 @@ export default class HerdrPlugin extends Plugin {
 					active: true,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
-					state: { paneId, mode: this.attachModeOf(reused), endpointId },
+					state: { paneId, mode: this.attachModeOf(reused), endpointId, ...(view ? { view } : {}) },
 				});
 				leaf = reused;
 			}
@@ -778,7 +876,7 @@ export default class HerdrPlugin extends Plugin {
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
-				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
+				state: { paneId, mode: this.settings.defaultAttachMode, endpointId, ...(view ? { view } : {}) },
 			});
 		}
 		await workspace.revealLeaf(leaf);
@@ -1066,6 +1164,12 @@ export default class HerdrPlugin extends Plugin {
 			id: 'switch-runtime',
 			name: 'Switch runtime',
 			callback: () => this.openRuntimeSwitcher(),
+		});
+		// ADR-0008: always offered, connected or not. No default hotkey.
+		this.addCommand({
+			id: 'get-started',
+			name: GET_STARTED_COMMAND_NAME,
+			callback: () => this.openGetStarted(),
 		});
 		// ADR-0006: offered while the active runtime is herdr-core.
 		this.addCommand({

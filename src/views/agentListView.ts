@@ -58,6 +58,7 @@ import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
+import { getStartedActionOf, renderGetStartedCard, runGetStartedAction } from '../getStarted/card';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
 
@@ -104,6 +105,11 @@ export class AgentListView extends ItemView {
 		this.registerDomEvent(container, 'click', (event) => this.rows.click(event));
 		this.registerDomEvent(container, 'keydown', (event) => this.rows.keyDown(event));
 		this.registerDomEvent(container, 'contextmenu', (event) => this.rows.contextMenu(event));
+		// The "Get started" card's buttons (ADR-0008), delegated like the rows.
+		this.registerDomEvent(container, 'click', (event) => {
+			const action = getStartedActionOf(event.target);
+			if (action) void runGetStartedAction(this.plugin.getStarted, action);
+		});
 
 		this.bindScope();
 		// The sidebar is usually restored before `connect()` has built a scope, and
@@ -359,6 +365,13 @@ export class AgentListView extends ItemView {
 
 		const session = this.session();
 		const scope = session?.scope;
+		if (!scope && this.plugin.showGetStarted()) {
+			// No runtime connects: a guided start instead of a dead end (ADR-0008).
+			// The first card scans for the binaries once; only "Check again" rescans.
+			renderGetStartedCard(list, this.plugin.getStarted.model(), this.plugin.getStartedReason());
+			this.plugin.getStarted.ensureScanned();
+			return;
+		}
 		if (!scope || !scope.workspaceId) {
 			// A runtime whose kind this build cannot run says so, rather than
 			// looking like a herdr that is down (ADR-0004).
