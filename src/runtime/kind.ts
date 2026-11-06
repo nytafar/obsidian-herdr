@@ -38,6 +38,7 @@ import type {
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
 import type { WaitingResponder } from '../native/pendingRequest';
 import type { ScreenAccess } from '../native/screenAccess';
+import type { SessionSettingsSender } from '../native/sessionSettings';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
@@ -421,6 +422,13 @@ export interface RuntimeKindAdapter<
 	 * messages and go through {@link responder}).
 	 */
 	screen?(client: () => PromptClient | null): ScreenAccess;
+	/**
+	 * The session bar's model, effort and mode changes (#161), over the same
+	 * client: control requests on the `claude` kind (#162). Absent for a
+	 * kind that cannot change them yet (herdr and herdr-core until #169 and
+	 * #170), whose pickers show the value, disabled, with the reason.
+	 */
+	sessionSettings?(client: () => PromptClient | null): SessionSettingsSender;
 	/**
 	 * The tab labels views on this connection read, built once per connection.
 	 * `alive()` is true while that connection is the published one.

@@ -12,6 +12,7 @@
 import type { AgentFormat, PendingCall, PlanReader } from '../format';
 import type { PendingQuestionOption } from '../../native/pendingRequest';
 import type { ToolEntry, ToolKind } from '../../native/conversation';
+import type { ModeLabel, SettingChoice } from '../../native/sessionSettings';
 import { builtinCatalog, LocalCommandCatalog } from './commands';
 import { subagentTranscript, transcriptPath } from './paths';
 import { PlanTracker, planFilePath } from './planFile';
@@ -109,6 +110,33 @@ function planReader(): PlanReader {
 	};
 }
 
+/**
+ * The models the session bar offers (#161), by the alias `/model` and
+ * `set_model` take (measured on 2.1.318, `docs/architecture.md`, "Model,
+ * effort, permission mode and context"). Which ones an account may use is
+ * Claude's to say: a model it refuses is a notice with Claude's words.
+ */
+export const CLAUDE_MODELS: readonly SettingChoice[] = [
+	{ value: 'opus', label: 'Opus' },
+	{ value: 'sonnet', label: 'Sonnet' },
+	{ value: 'haiku', label: 'Haiku' },
+	{ value: 'fable', label: 'Fable' },
+];
+
+/**
+ * What the session bar calls each mode: Claude's own footer says "manual
+ * mode" for `default`, which `--permission-mode manual` also starts.
+ */
+export const CLAUDE_MODE_LABELS: Readonly<Record<string, ModeLabel>> = {
+	default: { label: 'Manual', short: 'Manual' },
+	manual: { label: 'Manual', short: 'Manual' },
+	acceptEdits: { label: 'Accept edits', short: 'Edits' },
+	plan: { label: 'Plan', short: 'Plan' },
+	auto: { label: 'Auto', short: 'Auto' },
+	dontAsk: { label: "Don't ask", short: "Don't ask" },
+	bypassPermissions: { label: 'Bypass permissions', short: 'Bypass' },
+};
+
 /** Claude Code's format, as the registry in `../format.ts` lists it. */
 export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 	agent: 'claude',
@@ -138,5 +166,7 @@ export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 	sessionInfo: (state) => state.info,
 	efforts: CLAUDE_EFFORTS,
 	modes: CLAUDE_MODES,
+	models: CLAUDE_MODELS,
+	modeLabels: CLAUDE_MODE_LABELS,
 	screenDialog: parseClaudeScreen,
 };

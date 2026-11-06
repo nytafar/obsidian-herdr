@@ -192,8 +192,13 @@ export function emptyTranscript(): TranscriptState {
 /** Claude Code's reasoning efforts, as `/effort` and `--effort` take them (#110). */
 export const CLAUDE_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
 
-/** Claude Code's permission modes, as `permissionMode` writes them (#110). */
-export const CLAUDE_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
+/**
+ * Claude Code's permission modes a picker offers, as `permissionMode` writes
+ * them (#110). `bypassPermissions` is written too, and shown when a session
+ * runs in it, but not offered: Claude takes it only from a process started to
+ * allow it, and a picker must not put it one click away (#161).
+ */
+export const CLAUDE_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
 
 /** Raw counter key for a line that was not JSON. */
 const UNPARSED = '(unparsed)';

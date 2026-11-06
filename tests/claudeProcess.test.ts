@@ -9,6 +9,9 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import {
 	ClaudeProcess,
+	CONTROL_EXITED,
+	CONTROL_TIMEOUT,
+	CONTROL_WAIT_MS,
 	EOF_WAIT_MS,
 	INTERRUPT_WAIT_MS,
 	TERM_WAIT_MS,
@@ -198,6 +201,40 @@ describe('ClaudeProcess', () => {
 		]);
 		expect(process.alive).toBe(false);
 		expect(() => process.send({ type: 'user' })).toThrow('the agent is not running');
+	});
+
+	it('settles a session setting with Claude’s answer to its own request id, after the event (#162)', async () => {
+		const child = new FakeChild();
+		const { process, events } = start(child);
+		const first = process.sessionControl({ setting: 'model', model: 'sonnet' });
+		const second = process.sessionControl({ setting: 'mode', mode: 'bogus' });
+		const [one, two] = child.writes as { request_id: string; request: { subtype: string } }[];
+		expect(one?.request.subtype).toBe('set_model');
+		expect(two?.request.subtype).toBe('set_permission_mode');
+		expect(one?.request_id).not.toBe(two?.request_id);
+		// Answered out of order, as Claude answered set_model last in the spike.
+		child.line({
+			type: 'control_response',
+			response: { subtype: 'error', request_id: two?.request_id, error: 'Cannot set permission mode', error_code: 'invalid_mode' },
+		});
+		child.line({ type: 'control_response', response: { subtype: 'success', request_id: one?.request_id, response: { model: 'claude-sonnet-5-5' } } });
+		await expect(second).resolves.toMatchObject({ ok: false, errorCode: 'invalid_mode' });
+		await expect(first).resolves.toMatchObject({ ok: true, model: 'claude-sonnet-5-5' });
+		// The subscriber heard both, so the session info had moved before the caller was told.
+		expect(events.filter((event) => event.type === 'response')).toHaveLength(2);
+	});
+
+	it('rejects a session setting nobody answers, and one whose process exits first', async () => {
+		const child = new FakeChild();
+		const { process, clock } = start(child);
+		const silent = process.sessionControl({ setting: 'effort', effort: 'low' });
+		const rejected = expect(silent).rejects.toThrow(CONTROL_TIMEOUT);
+		await clock.advance(CONTROL_WAIT_MS);
+		await rejected;
+		const orphan = process.sessionControl({ setting: 'effort', effort: 'high' });
+		child.emit('exit', 0, null);
+		await expect(orphan).rejects.toThrow(CONTROL_EXITED);
+		await expect(process.sessionControl({ setting: 'mode', mode: 'plan' })).rejects.toThrow('the agent is not running');
 	});
 
 	it('reports a spawn failure as an exit', () => {

@@ -1020,9 +1020,11 @@ denial (measured live).
 binaries (override, the usual directories, extra PATH, the login shell's
 PATH); the client answers `ping` at once and its one `connected` edge primes
 the scope (`src/claude/scope.ts`) from the stored rows. The client's
-`request` takes three methods for the native view: `agent.prompt`,
-`agent.interrupt` and `agent.respond`. Its tab labels are empty; there are no
-tabs.
+`request` takes the native view's methods: `agent.prompt`,
+`agent.interrupt` and `agent.respond`, and the session bar's
+`agent.set_model`, `agent.set_effort` and `agent.set_permission_mode`
+(#162, "Model, effort, permission mode and context"). Its tab labels are
+empty; there are no tabs.
 
 **The native view.** The transcript stays the content (ADR-0003), from this
 machine's files, path derived from cwd and session. Measured 2026-11-06: a
@@ -1823,7 +1825,45 @@ and `permissionMode`, `system:status`'s mode, `result.modelUsage[<model>]
 .contextWindow` (source `runtime`), and a control response's `model` or
 `mode`. Its watcher tells the model through `onSessionInfo`, not as a status.
 The overlay wins per field, except that a model it knows by id only keeps the
-transcript's name for the same id. Nothing shows or sets them yet (#161).
+transcript's name for the same id.
+
+**What is shown and set (#161).** The native view's session bar, one row
+under the prompt box (`src/native/sessionBar.ts`): model, effort and mode
+pickers that show the current value (`—` while nothing has stated it) and
+the context readout, `23k / 1M · 2%`, or `23k` with no window, amber from
+80% of the window. It is updated in place on every session model change and
+stays, disabled, while the waiting card hides the prompt box. The tab header
+keeps icons only. A picker's menu lists the format's vocabulary
+(`AgentFormat.models`, `efforts`, `modes`, `modeLabels`; Claude's offers no
+`bypassPermissions`) and a pick goes to the runtime kind's
+`SessionSettingsSender` (`RuntimeKindAdapter.sessionSettings`,
+`src/native/sessionSettings.ts`): `setModel`, `setEffort` (both with a scope,
+`session` or `default`) and `setMode`, with the scopes, settings and whether
+it works mid-turn as its capabilities. A kind without one (herdr, herdr-core
+until #169 and #170) shows the values disabled, with the reason. Nothing is
+shown as changed until the runtime or the transcript says it is; a refusal is
+a notice with the runtime's words.
+
+**The `claude` kind's sender (#162)** is control requests over the agent's
+headless process (`ClaudeProcess.sessionControl`, built by
+`sessionControlRequest` and written through `encodeLine`): `set_model`,
+`apply_flag_settings {settings: {effortLevel}}` and `set_permission_mode`,
+session scope only, at any status but while stopping (the bar itself waits
+out a block), a stopped agent resumed for it as a prompt resumes it. Each
+settles with Claude's answer to its own request id, or after 10 s without
+one. `set_model`'s and `set_permission_mode`'s answers go into the overlay
+through the stream; `apply_flag_settings` answers bare, so the effort is
+recorded from the request. `manual` goes as `default`. Refused here before
+Claude is asked: an effort Claude does not list (it answers success to
+`bogus`), a mode change on a row pinned to Allow once (ADR-0008), and an agent
+in its terminal view or between views. Measured on 2.1.318 against a
+`claude -p` that had no prompt: refusals are `{subtype: "error", request_id,
+error, error_code}`, `invalid_mode` "Cannot set permission mode: must be one
+of acceptEdits, auto, bypassPermissions, default, dontAsk, plan" and
+`not_found` "Model 'nosuchmodel' not found" (that one also carrying the
+current `model`); answers came out of order (`set_model` last); a request
+before any prompt is answered. `initialize` and `get_settings` are never
+sent.
 
 - **What the transcript says.** Every `assistant` line: `message.model`
   and top-level `effort` (and `perTurnEffort`). A `model` attachment

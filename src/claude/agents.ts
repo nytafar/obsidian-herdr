@@ -83,6 +83,7 @@ import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { isAbsolute, resolve, type PlatformPath } from 'node:path';
 import { claudeTranscriptFile } from '../agents/claude/paths';
+import { CLAUDE_EFFORTS } from '../agents/claude/transcript';
 import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,
@@ -93,6 +94,7 @@ import {
 	permissionResponse,
 	SESSION_ID_RE,
 	userMessage,
+	type SessionControl,
 	type StreamEvent,
 	type ToolPermissionRequest,
 } from './protocol';
@@ -338,6 +340,15 @@ export const PROMPT_NOT_SENT_KEPT = 'the prompt was not sent: the agent stayed i
  */
 export const ALLOW_ONCE_NO_TERMINAL =
 	"not offered for this agent, which may only be allowed once at a time: Claude's own dialog in the terminal can save a lasting rule";
+/** Said for a session setting while the agent runs in its terminal view (#162). */
+export const SETTINGS_IN_TERMINAL = 'the agent is in its terminal view; change it there';
+/** Said for a session setting while the agent moves between its views. */
+export const SETTINGS_SWITCHING = 'the agent is moving between its views; try again once it has';
+/** Said for a mode change on a row pinned to Allow once (ADR-0008). */
+export const MODE_PINNED = 'this agent asks before every permission (Allow once), so its mode stays';
+/** Said when Claude refused a setting without words of its own. */
+export const SETTING_REFUSED = 'Claude refused it';
+
 /** A native prompt waiting for a switch that a stop overtook. */
 export const PROMPT_NOT_SENT_STOPPED = 'the prompt was not sent: the agent was stopped first';
 
@@ -680,6 +691,46 @@ export class ClaudeAgents {
 		}
 		if (!record.process?.alive) throw new Error('the agent is not running');
 		record.process.interrupt();
+	}
+
+	/**
+	 * Changes the model, effort or permission mode of the agent's session
+	 * (#162), with the control request over its headless process: session
+	 * only, at any status but while stopping, applying from the next turn.
+	 * Settles once Claude has answered, and rejects with Claude's words when
+	 * it refuses (an unknown mode is `invalid_mode`). What Claude answers
+	 * goes in the session info: the model and mode from the answer itself,
+	 * the effort from the request, since `apply_flag_settings` answers bare.
+	 * A stopped agent is resumed for it, as a prompt resumes it.
+	 */
+	async changeSetting(runtimeId: string, agentId: string, control: SessionControl): Promise<void> {
+		const record = this.record(runtimeId, agentId);
+		this.refuseHeld(record);
+		if (record.switching) throw new Error(SETTINGS_SWITCHING);
+		if (record.tui) throw new Error(SETTINGS_IN_TERMINAL);
+		if (record.process?.isStopping) throw new Error(AGENT_STOPPING);
+		if (control.setting === 'mode' && record.stored.allowOnceOnly) throw new Error(MODE_PINNED);
+		// Claude answers success to an effort it does not know (measured on 2.1.318).
+		if (control.setting === 'effort' && !CLAUDE_EFFORTS.includes(control.effort)) {
+			throw new Error(`Claude has no effort level "${control.effort}"`);
+		}
+		// `--permission-mode manual` starts it; `set_permission_mode` calls it `default`.
+		const sent: SessionControl =
+			control.setting === 'mode' && control.mode === 'manual' ? { setting: 'mode', mode: 'default' } : control;
+		if (!record.process) {
+			// A person asked: a Stop no longer holds it.
+			record.hold = null;
+			this.wantStream(record);
+			this.spawn(runtimeId, record);
+		}
+		const process = record.process;
+		if (!process?.alive) throw new Error('the agent could not be started');
+		const answer = await process.sessionControl(sent);
+		if (!answer.ok) throw new Error(answer.error || answer.errorCode || SETTING_REFUSED);
+		if (control.setting === 'effort' && record.process === process && record.info.effort !== control.effort) {
+			record.info = { ...record.info, effort: control.effort };
+			this.emit(runtimeId, record.stored.id, 'status');
+		}
 	}
 
 	/** Answers a pending permission request. Throws a readable error. */

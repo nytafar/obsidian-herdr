@@ -10,7 +10,9 @@
  * - `./waitingCardView.ts` draws the waiting card and answers it (#99);
  * - `./sessionLines.ts` holds the empty line and the status line;
  * - `./viewLinks.ts` opens and previews the links in the view (#114);
- * - `./promptBox.ts` is the prompt box under the transcript (#97).
+ * - `./promptBox.ts` is the prompt box under the transcript (#97);
+ * - `./sessionBar.ts` is the model, effort and mode pickers and the context
+ *   readout under the prompt box (#161).
  *
  * What stays here is the session model binding — which turns a change names,
  * when everything is drawn again — and the strip under the view.
@@ -24,6 +26,8 @@ import { TodoChip } from './todoList';
 import type { Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
+import { SessionBar } from './sessionBar';
+import type { SessionSettingsSender } from './sessionSettings';
 import type { WaitingResponder } from './pendingRequest';
 import { linkVaultUris } from './noteLinks';
 import { resolveObsidianUri, vaultLookup } from './obsidianUri';
@@ -62,6 +66,13 @@ export interface NativePaneSurfaceOptions {
 	 * such a card is described like any other block.
 	 */
 	responder?: WaitingResponder;
+	/**
+	 * How the session bar's pickers change the model, effort and mode (#161),
+	 * read per draw: the tab's runtime may change under it. Null, or left
+	 * out, for a kind that cannot change them yet; the pickers then show the
+	 * values, disabled, with the reason.
+	 */
+	sessionSettings?: () => SessionSettingsSender | null;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -156,6 +167,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private readonly waiting: WaitingCardView;
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
+	/** The session bar under the prompt box (#161); null while detached. */
+	private sessionBar: SessionBar | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
 	/**
@@ -263,6 +276,14 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			onInput: this.options.onPromptInput,
 		});
 		this.promptBox.mount(root);
+		// Its own row, not the box's: the waiting card hides the box and the
+		// bar stays, disabled (#161).
+		this.sessionBar = new SessionBar({
+			paneId: () => this.identity.paneId,
+			sender: () => this.options.sessionSettings?.() ?? null,
+			notify: (message) => this.notify(message),
+		});
+		this.sessionBar.mount(root);
 		this.bind();
 	}
 
@@ -271,6 +292,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.waiting.clear();
 		this.promptBox?.destroy();
 		this.promptBox = null;
+		this.sessionBar?.destroy();
+		this.sessionBar = null;
 		this.follower?.dispose();
 		this.follower = null;
 		this.component.unload();
@@ -592,6 +615,21 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.promptBox?.setStatus(status);
 		this.waiting.update(root, status);
 		this.lines?.updateStatus(status);
+		this.updateSessionBar(status);
+	}
+
+	/**
+	 * The session bar, in place (#161): every change reaches it, a reply's
+	 * usage, a `/model` line and a compaction alike, and none redraws it.
+	 */
+	private updateSessionBar(status = this.model?.agentStatus ?? 'unknown'): void {
+		const model = this.model;
+		this.sessionBar?.update({
+			info: model?.sessionInfo ?? {},
+			status,
+			connected: model?.connected ?? false,
+			format: model?.format,
+		});
 	}
 
 	/** How a failure reaches the user; a Notice, as a failed send is (#97). */

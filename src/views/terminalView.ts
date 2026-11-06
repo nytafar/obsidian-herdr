@@ -212,7 +212,9 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
  * Two decisions, both a function of the view alone (plus the endpoint), kept
  * pure so the header can be asserted without an Obsidian view: the toggle
  * between the two views, and whether the observe/control eye applies at all.
- * The native-only readouts coming in #111 belong in here too.
+ * The header keeps icons only: the model, effort, mode and context readouts
+ * of #111 live in the native view's session bar under the prompt box (#161),
+ * not here.
  */
 export interface TerminalHeaderActions {
 	/** Icon, tooltip and state of the view toggle; what a click *does*. */
@@ -850,6 +852,9 @@ export class TerminalView extends ItemView {
 						},
 					}
 				: {}),
+			// The session bar's pickers (#161), for a kind that can change the
+			// model, effort and mode; asked of the kind as it is now.
+			sessionSettings: () => this.kind().sessionSettings?.(nativeClient) ?? null,
 			// The waiting card's "Trust this folder" (#99), over the same client and
 			// only ever `Down Enter` on the workspace trust prompt.
 			keySender: {
@@ -1054,9 +1059,9 @@ export class TerminalView extends ItemView {
 
 		// Header actions, in the order Obsidian shows them (#105). Surface-specific
 		// first — the view toggle, then the observe/control eye, which only a
-		// terminal has — and connection actions last, so the native-only readouts
-		// of #111 (context, model, effort) can join the first group without
-		// moving anything else.
+		// terminal has — and connection actions last. Icons only: the model,
+		// effort, mode and context of #111 are the native view's session bar,
+		// under its prompt box (#161).
 		this.viewActionEl = this.addAction('book-open', 'Switch to native view', () => {
 			this.detached('view toggle', () => this.togglePaneView());
 		});

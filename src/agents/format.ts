@@ -38,6 +38,7 @@ import type {
 	ToolKind,
 } from '../native/conversation';
 import type { PendingQuestionOption } from '../native/pendingRequest';
+import type { ModeLabel, SettingChoice } from '../native/sessionSettings';
 import { sessionBinding, type SessionBinding } from '../runtime/kind';
 import type { RuntimeKind } from '../runtimes';
 import { CLAUDE_FORMAT } from './claude/format';
@@ -144,6 +145,13 @@ export interface AgentFormat<S extends ConversationState = ConversationState> {
 	readonly efforts: readonly string[];
 	/** The permission modes the agent offers, in its own words, for a picker (#110). */
 	readonly modes: readonly string[];
+	/**
+	 * The models a picker offers (#161), by the name the agent takes and the
+	 * name to show; none for an agent whose models are not listed.
+	 */
+	readonly models?: readonly SettingChoice[];
+	/** What a picker shows for each mode (#161); a mode not here shows its own word. */
+	readonly modeLabels?: Readonly<Record<string, ModeLabel>>;
 	/**
 	 * Reads the dialog on a pane's visible screen (#163, ADR-0009), for an
 	 * agent whose dialogs can be answered by keys. `unknown` for anything it
