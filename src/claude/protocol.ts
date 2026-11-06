@@ -161,8 +161,11 @@ export interface ToolPermissionRequest {
 
 /** What one stdout line is, for the agent state machine. */
 export type StreamEvent =
-	/** `system:init`: sent at the start of every turn, with the session id. */
-	| { type: 'init'; sessionId: string; permissionMode: string }
+	/**
+	 * `system:init`: sent at the start of every turn, with the session id and
+	 * the cwd Claude runs in, which is the real path (a symlink resolved).
+	 */
+	| { type: 'init'; sessionId: string; cwd: string; permissionMode: string }
 	/** `system:status`: a permission mode change, or compacting. */
 	| { type: 'status'; permissionMode: string | null }
 	/** The end of a turn. */
@@ -216,6 +219,7 @@ export function parseStreamLine(line: string): StreamEvent | null {
 				return {
 					type: 'init',
 					sessionId: text(message.session_id),
+					cwd: text(message.cwd),
 					permissionMode: text(message.permissionMode),
 				};
 			}

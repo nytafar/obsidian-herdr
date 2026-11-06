@@ -12,7 +12,7 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -23,6 +23,7 @@ import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import type { WaitingAnswer } from '../src/native/pendingRequest';
+import { encodeProjectDir } from '../src/native/transcriptSource';
 import {
 	claudeEnv,
 	createClaudeKind,
@@ -101,6 +102,8 @@ interface HarnessOptions {
 	dir?: string;
 	/** Host fields to put in place of the harness's own. */
 	host?: Partial<ClaudeKindHost>;
+	/** Variables added to the environment agents start with. */
+	env?: NodeJS.ProcessEnv;
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -110,7 +113,7 @@ function harness(options: HarnessOptions = {}): Harness {
 	const notices: string[] = [];
 	const kind = createClaudeKind({
 		extraPath: () => '',
-		spawnEnv: () => ({ ...process.env, FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_HOME: dir }),
+		spawnEnv: () => ({ ...process.env, FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_HOME: dir, ...options.env }),
 		vaultPath: () => dir,
 		loadSessions: (runtimeId) => stored[runtimeId] ?? [],
 		saveSessions: (runtimeId, sessions) => {
@@ -437,6 +440,89 @@ describe('the claude kind over a fake claude', () => {
 		expect(await actions.forgetAgent?.(paneId, second.runtimeId)).toBe(true);
 		expect(second.scope.list()).toEqual([]);
 		expect(second.stored[second.runtimeId]).toEqual([]);
+	});
+
+	it('resumes an agent started in a symlinked folder, whose transcript Claude keeps under the real path', async () => {
+		const h = harness();
+		const real = join(h.dir, 'real');
+		mkdirSync(real);
+		const link = join(h.dir, 'link');
+		symlinkSync(real, link);
+		const paneId = await started(h, link);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId ?? '';
+		const transcript = join(realpathSync(h.dir), '.claude', 'projects', encodeProjectDir(realpathSync(real)), `${sessionId}.jsonl`);
+		expect(existsSync(transcript)).toBe(true);
+		// The native view follows the file Claude writes, not one derived from the link.
+		expect(h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.transcriptPath).toBe(transcript);
+		await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+		await prompt(h, paneId, 'again');
+		await waitFor(() => status(h, paneId) === 'done', 'done again');
+		expect(starts(h.log)[1]?.slice(-2)).toEqual(['--resume', sessionId]);
+		expect(h.notices.filter((notice) => notice.includes('stopped'))).toEqual([]);
+	});
+
+	it('finds the transcript under CLAUDE_CONFIG_DIR, and resumes from it', async () => {
+		const config = join(tempDir(), 'claude-config');
+		const h = harness({ env: { CLAUDE_CONFIG_DIR: config } });
+		const paneId = await started(h);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId ?? '';
+		const transcript = join(config, 'projects', encodeProjectDir(realpathSync(h.dir)), `${sessionId}.jsonl`);
+		expect(existsSync(transcript)).toBe(true);
+		expect(h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.transcriptPath).toBe(transcript);
+		await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+		await prompt(h, paneId, 'again');
+		await waitFor(() => status(h, paneId) === 'done', 'done again');
+		expect(starts(h.log)[1]?.slice(-2)).toEqual(['--resume', sessionId]);
+	});
+
+	it('records that a session started, and resumes it after a restart without looking for its file', async () => {
+		const first = harness();
+		const paneId = await started(first);
+		expect(first.stored[first.runtimeId]?.[0]?.started).toBeUndefined();
+		await prompt(first, paneId, 'hello');
+		await waitFor(() => status(first, paneId) === 'done', 'done');
+		expect(first.stored[first.runtimeId]?.[0]?.started).toBe(true);
+		await first.kind.dispose();
+		const second = harness({ stored: first.stored, runtimeId: first.runtimeId, dir: first.dir, host: { exists: () => false } });
+		await second.kind.createActions(actionHost(second)).resumeAgent?.(paneId);
+		await waitFor(() => starts(second.log).length === 2, 'the resume');
+		expect(starts(second.log)[1]).toContain('--resume');
+	});
+
+	it('falls back to --resume when Claude says the session id is already in use, and sends the prompt there', async () => {
+		const first = harness();
+		const paneId = await started(first);
+		await prompt(first, paneId, 'hello');
+		await waitFor(() => status(first, paneId) === 'done', 'done');
+		await first.kind.dispose();
+		// A row stored before `started` existed, whose transcript the plugin cannot find.
+		const stored = { [first.runtimeId]: (first.stored[first.runtimeId] ?? []).map(({ started: _started, ...row }) => row) };
+		const second = harness({ stored, runtimeId: first.runtimeId, dir: first.dir, host: { exists: () => false } });
+		await prompt(second, paneId, 'again');
+		await waitFor(() => status(second, paneId) === 'done', 'done after the fallback');
+		const [, refused, resumed] = starts(second.log);
+		expect(refused).toContain('--session-id');
+		expect(resumed).toContain('--resume');
+		expect(stdin(second.log).filter((line) => line.type === 'user').at(-1)).toMatchObject({ message: { content: 'again' } });
+		expect(second.stored[second.runtimeId]?.[0]?.started).toBe(true);
+		expect(second.notices.filter((notice) => notice.includes('in use'))).toEqual([]);
+	});
+
+	it('starts the id afresh when a session recorded as started has no conversation to resume', async () => {
+		const h = harness();
+		const sessionId = '3b3ad50c-0000-4000-8000-0000000000aa';
+		const stored = { [h.runtimeId]: [{ id: 'cl-gone0001', sessionId, cwd: h.dir, name: 'gone', started: true }] };
+		const again = harness({ stored, runtimeId: h.runtimeId, dir: h.dir });
+		await prompt(again, 'cl-gone0001', 'hello');
+		await waitFor(() => status(again, 'cl-gone0001') === 'done', 'done after the fallback');
+		const [refused, fresh] = starts(again.log);
+		expect(refused).toContain('--resume');
+		expect(fresh?.slice(-2)).toEqual(['--session-id', sessionId]);
+		expect(again.notices).toEqual([]);
 	});
 
 	it('stops every process on unload, denying what is pending first', async () => {

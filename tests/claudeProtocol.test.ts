@@ -148,8 +148,10 @@ describe('the strict writer', () => {
 describe('parseStreamLine', () => {
 	it('reads the session from system:init', () => {
 		expect(
-			parseStreamLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: '392262aa', permissionMode: 'default' })),
-		).toEqual({ type: 'init', sessionId: '392262aa', permissionMode: 'default' });
+			parseStreamLine(
+				JSON.stringify({ type: 'system', subtype: 'init', session_id: '392262aa', cwd: '/tmp/x', permissionMode: 'default' }),
+			),
+		).toEqual({ type: 'init', sessionId: '392262aa', cwd: '/tmp/x', permissionMode: 'default' });
 	});
 
 	it('keys errors on is_error, not on subtype', () => {

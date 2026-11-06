@@ -280,7 +280,10 @@ run and how many are stopped.
   Running ones show their live status from Claude's own stream: working,
   done, or blocked with what it waits for. After Obsidian restarts, or the
   plugin reloads, every row comes back **stopped**. Opening a stopped row, or
-  sending it a prompt, resumes the conversation (`claude --resume`).
+  sending it a prompt, resumes the conversation (`claude --resume`). This
+  works in a symlinked folder and with `CLAUDE_CONFIG_DIR` set, since the row
+  records that its session started rather than guessing where Claude put the
+  file.
 - **The native view** is the only view: prompts, queued prompts, `/` commands
   and **Stop** (which interrupts the running turn) go straight to the
   process, and the waiting card answers permissions, questions and plans
@@ -290,7 +293,7 @@ run and how many are stopped.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
   **Forget agent** removes a stopped row; Claude keeps its transcript in
-  `~/.claude/projects`. **Continue in herdr** or **Continue in herdr-core**
+  `~/.claude/projects` (or under `$CLAUDE_CONFIG_DIR`). **Continue in herdr** or **Continue in herdr-core**
   appears when such a runtime is configured on this machine: it stops the
   process, starts `claude --resume <session>` in the same folder on that
   runtime, switches the list there, and removes the row here.

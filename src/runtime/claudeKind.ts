@@ -23,7 +23,7 @@
 
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ConnectionTunnel } from '../connection';
 import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
@@ -144,6 +144,13 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		save: (runtimeId, sessions) => host.saveSessions(runtimeId, sessions),
 		env: (binary) => claudeEnv(host.spawnEnv(), binary),
 		exists: host.exists ?? ((path) => existsSync(path)),
+		realpath: (path) => {
+			try {
+				return realpathSync(path);
+			} catch {
+				return path;
+			}
+		},
 		notice: (message) => host.notice(message),
 		newSessionId: () => randomUUID(),
 		newAgentId: (taken) => newClaudeAgentId(taken),

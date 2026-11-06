@@ -54,7 +54,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   in Claude's own stream-json mode, and its agents open in the native view.
   Status comes straight from Claude: working, done, or blocked with what it
   waits for. After a restart the agents come back as **stopped** rows;
-  opening one or sending it a prompt resumes the conversation. The waiting
+  opening one or sending it a prompt resumes the conversation, in a symlinked
+  folder and with `CLAUDE_CONFIG_DIR` set too. The waiting
   card answers Claude's dialogs itself: Allow, Deny, **Allow for this
   session**, and **Always allow in this project**, which names the exact
   `.claude/settings.local.json` Claude writes, at the root of the agent's git

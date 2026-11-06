@@ -11,8 +11,14 @@
  * pins key on), the session id, the cwd and the name, through the host into
  * the plugin's data. After a restart every row comes back **stopped**.
  * Prompting or opening a stopped row spawns its process again with
- * `--resume <session>`, or with `--session-id` when the session never
- * wrote a transcript and so has nothing to resume.
+ * `--resume <session>` once the session has **started** (its first `init`
+ * or successful `result` came, so Claude has written its transcript), and
+ * with `--session-id` before that. A row stored before `started` existed
+ * looks for the transcript where Claude keeps it: under `CLAUDE_CONFIG_DIR`
+ * (else `~/.claude`), filed by the cwd's real path. Whichever way the guess
+ * goes wrong, Claude says so at startup ("Session ID … is already in use",
+ * or "No conversation found"), and the process is started once more the
+ * other way, with the prompts it never read.
  *
  * **Status** comes from the stream, not from a screen:
  *
@@ -38,7 +44,9 @@
 
 import type { BlockKind } from '../native/sessionWatcher';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
-import { transcriptPath } from '../native/transcriptSource';
+import { homedir } from 'node:os';
+import { isAbsolute, resolve } from 'node:path';
+import { claudeTranscriptFile } from '../native/transcriptSource';
 import type { ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,
@@ -64,6 +72,24 @@ export interface StoredClaudeSession {
 	cwd: string;
 	/** The name the row shows. */
 	name: string;
+	/**
+	 * The session has had a turn, so Claude has written its transcript and it
+	 * is continued with `--resume`. Absent until then, and on rows stored
+	 * before this was recorded.
+	 */
+	started?: boolean;
+}
+
+/**
+ * Claude Code's configuration folder for an environment, which holds the
+ * transcripts: `CLAUDE_CONFIG_DIR`, else `.claude` in the home directory
+ * (Claude 2.1.318 reads it the same way). A relative one is taken from the
+ * agent's cwd, which is where Claude would resolve it.
+ */
+export function claudeConfigDir(env: NodeJS.ProcessEnv, home: string, cwd: string): string {
+	const configured = env.CLAUDE_CONFIG_DIR;
+	if (!configured) return resolve(home, '.claude');
+	return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
 
 /** Whatever `data.json` holds, turned into stored rows; anything else is dropped. */
@@ -82,7 +108,13 @@ export function normalizeClaudeSessions(value: unknown): Record<string, StoredCl
 			const cwd = typeof row.cwd === 'string' ? row.cwd : '';
 			if (!id || seen.has(id) || !SESSION_ID_RE.test(sessionId) || !cwd.startsWith('/')) continue;
 			seen.add(id);
-			sessions.push({ id, sessionId, cwd, name: typeof row.name === 'string' ? row.name : '' });
+			sessions.push({
+				id,
+				sessionId,
+				cwd,
+				name: typeof row.name === 'string' ? row.name : '',
+				...(row.started === true ? { started: true } : {}),
+			});
 		}
 		if (sessions.length > 0) result[runtimeId] = sessions;
 	}
@@ -105,6 +137,10 @@ export interface ClaudeAgentView {
 	request: PendingRequest | null;
 	/** Bumped on every status change, for the list's "most recent first". */
 	statusSeq: number;
+	/** The session has had a turn, so there is a conversation to resume. */
+	started: boolean;
+	/** Where Claude writes the current session's transcript, on this machine. */
+	transcriptPath: string;
 }
 
 /** What changed about an agent, for the scope and the watcher. */
@@ -125,6 +161,11 @@ export interface ClaudeAgentsHost {
 	env(binary: string): NodeJS.ProcessEnv;
 	/** Whether a file exists on this machine: a transcript, before a resume. */
 	exists(path: string): boolean;
+	/**
+	 * The real path of a folder, as Claude sees its cwd (symlinks resolved);
+	 * the path itself when it cannot be resolved. Absent, paths are taken as given.
+	 */
+	realpath?(path: string): string;
 	notice(message: string): void;
 	/** A fresh session UUID. */
 	newSessionId(): string;
@@ -149,6 +190,18 @@ interface AgentRecord {
 	process: ClaudeProcess | null;
 	/** Where the running process writes a project rule; null when not known. */
 	settings: LocalSettingsTarget | null;
+	/** Where the transcripts are and the cwd Claude files them under; null until asked. */
+	where: { configDir: string; realCwd: string } | null;
+	/** The cwd the last `init` reported: Claude's own word for its real cwd. */
+	reportedCwd: string;
+	/** How the current process was started. */
+	spawnedWith: 'resume' | 'session-id';
+	/** The current process has sent an `init`, so it took its prompts. */
+	initSeen: boolean;
+	/** Prompts written to the current process before its first `init`. */
+	unclaimed: string[];
+	/** The current process is already the other way of starting; never a third. */
+	retried: boolean;
 	/** Prompts written whose `result` has not come yet. */
 	turns: number;
 	/** The last turn ended and nobody has looked or prompted since. */
@@ -160,6 +213,35 @@ interface AgentRecord {
 }
 
 type Listener = (runtimeId: string, agentId: string, change: ClaudeAgentChange) => void;
+
+/** What a record starts with besides its row and its process. */
+function freshRecord(): Pick<
+	AgentRecord,
+	'settings' | 'where' | 'reportedCwd' | 'spawnedWith' | 'initSeen' | 'unclaimed' | 'retried'
+> {
+	return {
+		settings: null,
+		where: null,
+		reportedCwd: '',
+		spawnedWith: 'session-id',
+		initSeen: false,
+		unclaimed: [],
+		retried: false,
+	};
+}
+
+/**
+ * The other way to start a process whose startup Claude refused, read off
+ * its stderr (measured on 2.1.318, 2026-11-06); null for any other exit.
+ */
+export function startupFallback(
+	spawnedWith: 'resume' | 'session-id',
+	error: string,
+): 'resume' | 'session-id' | null {
+	if (spawnedWith === 'session-id' && /session id .* is already in use/i.test(error)) return 'resume';
+	if (spawnedWith === 'resume' && /no conversation found/i.test(error)) return 'session-id';
+	return null;
+}
 
 /** Said when something is asked of an agent the table does not have. */
 export const NO_SUCH_AGENT = 'that agent is no longer in the list';
@@ -181,12 +263,12 @@ export class ClaudeAgents {
 
 	/** Every agent of a runtime, stored ones first loaded as stopped. */
 	list(runtimeId: string): ClaudeAgentView[] {
-		return [...this.table(runtimeId).values()].map((record) => this.view(record));
+		return [...this.table(runtimeId).values()].map((record) => this.view(runtimeId, record));
 	}
 
 	get(runtimeId: string, agentId: string): ClaudeAgentView | null {
 		const record = this.table(runtimeId).get(agentId);
-		return record ? this.view(record) : null;
+		return record ? this.view(runtimeId, record) : null;
 	}
 
 	/** Names in use on a runtime, for a new agent's name. */
@@ -206,7 +288,7 @@ export class ClaudeAgents {
 		const record: AgentRecord = {
 			stored: { id, sessionId: this.host.newSessionId(), cwd, name },
 			process: null,
-			settings: null,
+			...freshRecord(),
 			turns: 0,
 			finished: false,
 			pending: new Map(),
@@ -217,7 +299,7 @@ export class ClaudeAgents {
 		this.persist(runtimeId);
 		this.emit(runtimeId, id, 'added');
 		this.spawn(runtimeId, record);
-		return this.view(record);
+		return this.view(runtimeId, record);
 	}
 
 	/** Spawns a stopped agent's process again (`--resume`), with no prompt. */
@@ -234,6 +316,7 @@ export class ClaudeAgents {
 		const process = record.process;
 		if (!process?.alive) throw new Error('the agent could not be started');
 		process.send(userMessage(text));
+		if (!record.initSeen) record.unclaimed.push(text);
 		record.turns++;
 		record.finished = false;
 		this.update(runtimeId, record);
@@ -311,7 +394,7 @@ export class ClaudeAgents {
 				table.set(stored.id, {
 					stored: { ...stored },
 					process: null,
-					settings: null,
+					...freshRecord(),
 					turns: 0,
 					finished: false,
 					pending: new Map(),
@@ -337,14 +420,24 @@ export class ClaudeAgents {
 		);
 	}
 
-	private spawn(runtimeId: string, record: AgentRecord): void {
+	/**
+	 * Starts the agent's process. `how` forces one way of starting, for the
+	 * second attempt after Claude refused the first; `replay` are the prompts
+	 * that attempt never read, written again here.
+	 */
+	private spawn(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith'], replay: string[] = []): void {
 		const setup = this.setups.get(runtimeId);
 		if (!setup) throw new Error('the runtime has not found claude yet');
 		const { cwd, sessionId } = record.stored;
-		// A session that never wrote a transcript has nothing to resume, and
-		// `--resume` on it fails; its id is simply started again.
-		const path = transcriptPath({ cwd, agentSession: sessionId, home: this.host.home });
-		const resume = path !== null && this.host.exists(path);
+		// Resolved again for this process, as Claude resolves its cwd at start.
+		record.where = null;
+		record.reportedCwd = '';
+		// A session that never had a turn has nothing to resume, and `--resume`
+		// on it fails; its id is simply started again. A row from before
+		// `started` was recorded looks for the transcript instead.
+		const resume = how
+			? how === 'resume'
+			: record.stored.started === true || this.host.exists(this.transcriptFile(runtimeId, record));
 		const argv = claudeArgv({
 			binary: setup.binary,
 			sessionId,
@@ -363,29 +456,81 @@ export class ClaudeAgents {
 		});
 		record.process = process;
 		record.settings = this.host.localSettings?.(cwd) ?? null;
+		record.spawnedWith = resume ? 'resume' : 'session-id';
+		record.initSeen = false;
+		record.unclaimed = [];
+		record.retried = how !== undefined;
 		record.turns = 0;
 		record.finished = false;
 		record.pending.clear();
 		process.start();
 		// A spawn that failed outright has already exited and cleared the record.
-		if (record.process === process) this.update(runtimeId, record);
+		if (record.process !== process) return;
+		for (const text of replay) {
+			try {
+				process.send(userMessage(text));
+			} catch {
+				break;
+			}
+			record.unclaimed.push(text);
+			record.turns++;
+		}
+		this.update(runtimeId, record);
+	}
+
+	/** Where Claude writes the row's current transcript (`claudeConfigDir`, the real cwd). */
+	private transcriptFile(runtimeId: string, record: AgentRecord): string {
+		if (!record.where) {
+			const { cwd } = record.stored;
+			const realCwd = record.reportedCwd || this.host.realpath?.(cwd) || cwd;
+			const env = this.host.env(this.setups.get(runtimeId)?.binary ?? '');
+			record.where = { configDir: claudeConfigDir(env, this.host.home ?? homedir(), realCwd), realCwd };
+		}
+		return claudeTranscriptFile(record.where.configDir, record.where.realCwd, record.stored.sessionId);
+	}
+
+	/** The session has had a turn: from now on it is resumed. */
+	private markStarted(runtimeId: string, record: AgentRecord): void {
+		if (record.stored.started) return;
+		record.stored.started = true;
+		this.persist(runtimeId);
 	}
 
 	private onEvent(runtimeId: string, record: AgentRecord, process: ClaudeProcess, event: StreamEvent): void {
 		if (record.process !== process) return;
 		switch (event.type) {
 			case 'init': {
+				record.initSeen = true;
+				record.unclaimed = [];
+				let moved = false;
+				// Claude's own cwd, which is where it files the transcript.
+				if (event.cwd && event.cwd !== record.reportedCwd) {
+					const before = this.transcriptFile(runtimeId, record);
+					record.reportedCwd = event.cwd;
+					record.where = null;
+					moved = this.transcriptFile(runtimeId, record) !== before;
+				}
 				// `/clear` (and a compact) rotates the session in the same process;
-				// the new id comes with the next init (ADR-0007 amendment).
+				// the new id comes with the next init (ADR-0007 amendment), and its
+				// transcript is written by then (measured 2026-11-06).
 				if (event.sessionId && SESSION_ID_RE.test(event.sessionId) && event.sessionId !== record.stored.sessionId) {
 					record.stored.sessionId = event.sessionId;
 					this.persist(runtimeId);
-					this.emit(runtimeId, record.stored.id, 'session');
+					moved = true;
 				}
+				this.markStarted(runtimeId, record);
+				if (moved) this.emit(runtimeId, record.stored.id, 'session');
 				return;
 			}
 			case 'result': {
 				record.turns = Math.max(0, record.turns - 1);
+				// A `--resume` Claude refused at startup reports it as a result
+				// before any init; its exit decides what happens next.
+				if (event.isError && !record.initSeen && record.spawnedWith === 'resume') {
+					this.update(runtimeId, record);
+					return;
+				}
+				if (!event.isError) this.markStarted(runtimeId, record);
 				if (record.turns === 0) record.finished = true;
 				if (event.isError && !event.terminalReason.startsWith('aborted')) {
 					const reason = event.terminalReason ? ` (${event.terminalReason})` : '';
@@ -431,6 +576,22 @@ export class ClaudeAgents {
 		record.turns = 0;
 		record.finished = false;
 		record.pending.clear();
+		// Claude refused how it was started: the session id is taken (the row
+		// had started after all), or there is no conversation under it. Started
+		// once more the other way, with what the refused process never read.
+		const fallback =
+			!info.stopping && !record.retried && !record.initSeen ? startupFallback(record.spawnedWith, info.error) : null;
+		if (fallback) {
+			if (fallback === 'resume') record.stored.started = true;
+			else delete record.stored.started;
+			this.persist(runtimeId);
+			try {
+				this.spawn(runtimeId, record, fallback, record.unclaimed);
+				return;
+			} catch {
+				// No setup any more: reported as the exit it was.
+			}
+		}
 		if (!info.stopping && info.code !== 0) {
 			this.host.notice(`Herdr: ${record.stored.name || 'Claude'} stopped: ${info.error}`);
 		}
@@ -454,7 +615,7 @@ export class ClaudeAgents {
 		this.emit(runtimeId, record.stored.id, 'status');
 	}
 
-	private view(record: AgentRecord): ClaudeAgentView {
+	private view(runtimeId: string, record: AgentRecord): ClaudeAgentView {
 		const first = record.pending.values().next();
 		let request: PendingRequest | null = null;
 		if (!first.done) {
@@ -468,6 +629,8 @@ export class ClaudeAgents {
 			blockKind: status === 'blocked' && request ? (request.kind === 'question' ? 'question' : 'permission') : null,
 			request: status === 'blocked' ? request : null,
 			statusSeq: record.statusSeq,
+			started: record.stored.started === true,
+			transcriptPath: this.transcriptFile(runtimeId, record),
 		};
 	}
 

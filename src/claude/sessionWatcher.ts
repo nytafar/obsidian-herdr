@@ -8,7 +8,9 @@
  * `system:init` says after a `/clear`), the status from the turn boundaries,
  * and while a `can_use_tool` request waits, the block kind and the request
  * itself, which the waiting card answers. Content stays the transcript's
- * (ADR-0003); the path is derived from cwd and session as for herdr.
+ * (ADR-0003), at the path the agent table resolves the way Claude files it
+ * (`CLAUDE_CONFIG_DIR`, the cwd's real path as `init` reports it), so a
+ * symlinked folder or a moved configuration folder is still found.
  *
  * A stopped agent reads as `idle`, so its prompt box sends, and sending
  * resumes it. `trust` is never reported.
@@ -28,6 +30,7 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 			paneId,
 			cwd: agent.cwd,
 			agentSession: agent.sessionId,
+			transcriptPath: agent.transcriptPath,
 			agentStatus: paneStatusOf(agent.status),
 		};
 		if (agent.blockKind) pane.blockKind = agent.blockKind;
@@ -40,7 +43,7 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 			return agents.on((runtime, agentId, change) => {
 				if (runtime !== runtimeId || (change !== 'session' && change !== 'added')) return;
 				const agent = agents.get(runtimeId, agentId);
-				if (agent) handler(agentId, agent.sessionId);
+				if (agent) handler(agentId, agent.sessionId, agent.transcriptPath);
 			});
 		},
 		onStatus(handler): Unsubscribe {

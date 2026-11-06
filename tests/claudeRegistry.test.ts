@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { normalizeClaudeSessions } from '../src/claude/agents';
+import { claudeConfigDir, normalizeClaudeSessions, startupFallback } from '../src/claude/agents';
 import {
 	defaultLocalRuntime,
 	kindTargets,
@@ -97,6 +97,36 @@ describe('data.json across the new kind', () => {
 		});
 		expect(normalizeClaudeSessions(null)).toEqual({});
 		expect(normalizeClaudeSessions([])).toEqual({});
+	});
+
+	it('keeps whether a session has started, and only a real true', () => {
+		expect(
+			normalizeClaudeSessions({
+				'rt-c': [
+					{ id: 'cl-1', sessionId: SESSION, cwd: '/vault', name: 'a', started: true },
+					{ id: 'cl-2', sessionId: SESSION, cwd: '/vault', name: 'b', started: 'yes' },
+				],
+			})['rt-c'],
+		).toEqual([
+			{ id: 'cl-1', sessionId: SESSION, cwd: '/vault', name: 'a', started: true },
+			{ id: 'cl-2', sessionId: SESSION, cwd: '/vault', name: 'b' },
+		]);
+	});
+
+	it('reads the transcripts’ folder as Claude does: CLAUDE_CONFIG_DIR, else ~/.claude', () => {
+		expect(claudeConfigDir({}, '/home/u', '/vault')).toBe('/home/u/.claude');
+		expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: '' }, '/home/u', '/vault')).toBe('/home/u/.claude');
+		expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: '/etc/claude' }, '/home/u', '/vault')).toBe('/etc/claude');
+		expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: 'cfg' }, '/home/u', '/vault')).toBe('/vault/cfg');
+	});
+
+	it('starts the other way only on the two startup refusals Claude prints', () => {
+		const id = '5a22df93-5f1c-4e27-96e8-5f87a38e27fe';
+		expect(startupFallback('session-id', `Error: Session ID ${id} is already in use.`)).toBe('resume');
+		expect(startupFallback('resume', `No conversation found with session ID: ${id}`)).toBe('session-id');
+		expect(startupFallback('resume', `Error: Session ID ${id} is already in use.`)).toBeNull();
+		expect(startupFallback('session-id', `No conversation found with session ID: ${id}`)).toBeNull();
+		expect(startupFallback('session-id', 'exited with code 1')).toBeNull();
 	});
 
 	it('drops a removed runtime’s sessions with its pins', () => {

@@ -23,15 +23,22 @@
  *
  * A stdin line that is not JSON kills it with exit 1 and the CLI's stderr
  * line, as the real one does. stdin EOF ends it once the running turn is
- * over. Each session writes `~/.claude/projects/<enc cwd>/<id>.jsonl` under
- * `FAKE_CLAUDE_HOME` on its first prompt, so a later start can `--resume`.
+ * over. Each session writes `<config>/projects/<enc real cwd>/<id>.jsonl` on
+ * its first prompt (and on `/clear`, for the new id), where `<config>` is
+ * `CLAUDE_CONFIG_DIR`, else `.claude` under `FAKE_CLAUDE_HOME`, so a later
+ * start can `--resume`. With a transcript directory, startup fails the way
+ * Claude 2.1.318 does (measured 2026-11-06): `--session-id` of a session that
+ * has a transcript exits 1 with "Session ID … is already in use.", and
+ * `--resume` of one with none says "No conversation found …" on stderr and
+ * in an error `result`, then exits 1, both before reading stdin.
  *
  * Env: FAKE_CLAUDE_LOG=<file> appends `{"argv":…,"cwd":…}` once and every
  * stdin line it reads, one JSON per line, for the tests to read back.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 
 const argv = process.argv.slice(2);
 const log = process.env.FAKE_CLAUDE_LOG;
@@ -47,6 +54,10 @@ const flag = (name) => {
 let session = flag('--session-id') ?? flag('--resume') ?? randomUUID();
 const permissionMode = flag('--permission-mode') ?? 'default';
 
+const configDir =
+	process.env.CLAUDE_CONFIG_DIR || (process.env.FAKE_CLAUDE_HOME ? `${process.env.FAKE_CLAUDE_HOME}/.claude` : '');
+const transcriptOf = (id) => `${configDir}/projects/${process.cwd().replace(/[^a-zA-Z0-9]/g, '-')}/${id}.jsonl`;
+
 const send = (message) => process.stdout.write(`${JSON.stringify({ ...message, session_id: session })}\n`);
 
 /** The request the fake waits on, with what it asked. */
@@ -59,12 +70,11 @@ let requestSeq = 0;
 const queue = [];
 
 function writeTranscript(prompt) {
-	const home = process.env.FAKE_CLAUDE_HOME;
-	if (!home) return;
-	const dir = `${home}/.claude/projects/${process.cwd().replace(/[^a-zA-Z0-9]/g, '-')}`;
-	mkdirSync(dir, { recursive: true });
+	if (!configDir) return;
+	const file = transcriptOf(session);
+	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(
-		`${dir}/${session}.jsonl`,
+		file,
 		`${JSON.stringify({ type: 'user', sessionId: session, message: { role: 'user', content: prompt } })}\n`,
 	);
 }
@@ -115,6 +125,7 @@ function startTurn(text) {
 		const old = session;
 		send({ type: 'conversation_reset', new_conversation_id: randomUUID(), trigger: 'clear', session_id: old });
 		session = randomUUID();
+		writeTranscript('/clear');
 		send({ type: 'system', subtype: 'hook_response', hook_name: 'SessionStart:clear', output: '' });
 		init();
 		result({ result: '', num_turns: 0, total_cost_usd: 0 });
@@ -270,36 +281,59 @@ function control(message) {
 	});
 }
 
-send({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup' });
-send({ type: 'system', subtype: 'hook_response', hook_name: 'SessionStart:startup', output: '/last30days: Ready — 9 sources active' });
-
-let buffer = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => {
-	buffer += chunk;
-	let newline;
-	while ((newline = buffer.indexOf('\n')) >= 0) {
-		const line = buffer.slice(0, newline);
-		buffer = buffer.slice(newline + 1);
-		let message;
-		try {
-			message = JSON.parse(line);
-		} catch {
-			process.stderr.write(`Error parsing streaming input line (type=unknown, ${line.length} chars): SyntaxError\n`);
-			process.exit(1);
-		}
-		record({ stdin: message });
-		if (message.type === 'user') {
-			queue.push(typeof message.message?.content === 'string' ? message.message.content : '');
-			next();
-		} else if (message.type === 'control_response') {
-			answer(message.response ?? {});
-		} else if (message.type === 'control_request') {
-			control(message);
-		}
+/** Claude's startup refusals, before it reads anything; null when it starts. */
+function refusal() {
+	if (!configDir) return null;
+	if (flag('--session-id') && existsSync(transcriptOf(session))) {
+		return { stderr: `Error: Session ID ${session} is already in use.`, result: false };
 	}
-});
-process.stdin.on('end', () => {
-	ended = true;
-	next();
-});
+	if (flag('--resume') && !existsSync(transcriptOf(session))) {
+		return { stderr: `No conversation found with session ID: ${session}`, result: true };
+	}
+	return null;
+}
+
+const refused = refusal();
+if (refused) {
+	process.stderr.write(`${refused.stderr}\n`);
+	if (refused.result) send({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 0, errors: [] });
+	process.stdout.write('', () => process.exit(1));
+} else {
+	start();
+}
+
+function start() {
+	send({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup' });
+	send({ type: 'system', subtype: 'hook_response', hook_name: 'SessionStart:startup', output: '/last30days: Ready — 9 sources active' });
+
+	let buffer = '';
+	process.stdin.setEncoding('utf8');
+	process.stdin.on('data', (chunk) => {
+		buffer += chunk;
+		let newline;
+		while ((newline = buffer.indexOf('\n')) >= 0) {
+			const line = buffer.slice(0, newline);
+			buffer = buffer.slice(newline + 1);
+			let message;
+			try {
+				message = JSON.parse(line);
+			} catch {
+				process.stderr.write(`Error parsing streaming input line (type=unknown, ${line.length} chars): SyntaxError\n`);
+				process.exit(1);
+			}
+			record({ stdin: message });
+			if (message.type === 'user') {
+				queue.push(typeof message.message?.content === 'string' ? message.message.content : '');
+				next();
+			} else if (message.type === 'control_response') {
+				answer(message.response ?? {});
+			} else if (message.type === 'control_request') {
+				control(message);
+			}
+		}
+	});
+	process.stdin.on('end', () => {
+		ended = true;
+		next();
+	});
+}

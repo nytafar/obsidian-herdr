@@ -18,6 +18,7 @@
 import { watch, type FSWatcher, type Stats } from 'node:fs';
 import { open, readFile, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { clearTimer, setTimer } from '../timers';
 
 /** Claude Code's cap on a project folder name before it hashes the rest. */
@@ -61,6 +62,16 @@ export function transcriptPath(location: TranscriptLocation): string | null {
 	if (!location.cwd || !location.agentSession) return null;
 	const home = location.home ?? homedir();
 	return `${home}/.claude/projects/${encodeProjectDir(location.cwd)}/${location.agentSession}.jsonl`;
+}
+
+/**
+ * Where Claude Code keeps a session's transcript, given its configuration
+ * folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the cwd as Claude itself
+ * sees it, which is the real path: a session started in a symlinked folder is
+ * filed under the folder the link points to (measured 2026-11-06).
+ */
+export function claudeTranscriptFile(configDir: string, realCwd: string, sessionId: string): string {
+	return join(configDir, 'projects', encodeProjectDir(realCwd), `${sessionId}.jsonl`);
 }
 
 /**
