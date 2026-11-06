@@ -5,7 +5,7 @@
  */
 
 import { Terminal } from '@xterm/headless';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	parseProgramStatus,
 	PROGRAM_STATUS_REPLY,
@@ -42,6 +42,46 @@ describe('the replay buffer', () => {
 		for (let i = 0; i < 1500; i++) buffer.push(line);
 		expect(buffer.size).toBeLessThanOrEqual(REPLAY_LIMIT_BYTES);
 		expect(buffer.size).toBeGreaterThan(REPLAY_LIMIT_BYTES - 1024);
+	});
+
+	it('trims a full buffer in time proportional to what comes in, not to the bound', () => {
+		const limit = 64 * 1024;
+		const streams = {
+			// A shell, a log: plenty of line ends.
+			lines: (i: number) => `${String(i).padStart(6, '0')} ${'x'.repeat(1000)}\r\n`,
+			// A full-screen program: cursor addressing, no line end at all.
+			screen: (i: number) => `\x1b[${(i % 40) + 1};1H\x1b[2K${'y'.repeat(1000)}`,
+			// Plain text with neither.
+			text: () => 'z'.repeat(1000),
+		};
+		for (const [name, chunk] of Object.entries(streams)) {
+			const buffer = new ReplayBuffer(limit);
+			for (let i = 0; i < 100; i++) buffer.push(bytes(chunk(i)));
+			// The spy shadows `set` on Uint8Array's prototype; the real one stays on %TypedArray%'s.
+			const typedArray = Object.getPrototypeOf(Uint8Array.prototype) as object;
+			let copied = 0;
+			const set = vi.spyOn(Uint8Array.prototype, 'set').mockImplementation(function (
+				this: Uint8Array,
+				source: ArrayLike<number>,
+				offset?: number,
+			) {
+				copied += source.length;
+				Reflect.apply(Reflect.get(typedArray, 'set') as (...args: unknown[]) => void, this, [source, offset]);
+			});
+			let pushed = 0;
+			try {
+				for (let i = 100; i < 1100; i++) {
+					const data = bytes(chunk(i));
+					pushed += data.length;
+					buffer.push(data);
+				}
+			} finally {
+				set.mockRestore();
+			}
+			expect(buffer.size, name).toBeLessThanOrEqual(limit);
+			// Before, every chunk past the bound copied the whole buffer: 64x here.
+			expect(copied / pushed, name).toBeLessThan(3);
+		}
 	});
 
 	it('cuts a line longer than the bound at an escape sequence, never inside one', () => {

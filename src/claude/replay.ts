@@ -8,7 +8,9 @@
  *
  * - **Bound.** At most {@link REPLAY_LIMIT_BYTES}. Older bytes are dropped
  *   from the front, at a line boundary (an escape sequence never spans one),
- *   so the replay never starts inside a sequence.
+ *   so the replay never starts inside a sequence. Dropping costs what came
+ *   in, not the bound: whole chunks go, only the one the cut falls in is
+ *   copied, and bytes already searched for a line end are not searched again.
  * - **Modes.** Dropping bytes can drop the sequence that switched a mode on
  *   (the alternate screen, bracketed paste, mouse reports, the kitty
  *   keyboard flags). The modes in effect where the kept bytes begin are
@@ -172,6 +174,11 @@ function lastFullReset(bytes: Uint8Array): number {
 export class ReplayBuffer {
 	private chunks: Uint8Array[] = [];
 	private bytes = 0;
+	/** Where the kept bytes start, counted from the first byte ever pushed. */
+	private start = 0;
+	/** No line end, and no ESC, in the stream before these offsets (counted the same way): searched already. */
+	private noLineEndBefore = 0;
+	private noEscBefore = 0;
 	/** The modes in effect where the kept bytes begin. */
 	private startModes = new TerminalModes();
 	private dropped = false;
@@ -194,6 +201,7 @@ export class ReplayBuffer {
 		const reset = lastFullReset(chunk);
 		if (reset >= 0) {
 			// Exact: nothing before a full reset shows.
+			this.start += this.bytes + reset;
 			this.chunks = [];
 			this.bytes = 0;
 			this.startModes = new TerminalModes();
@@ -227,6 +235,7 @@ export class ReplayBuffer {
 	}
 
 	clear(): void {
+		this.start += this.bytes;
 		this.chunks = [];
 		this.bytes = 0;
 		this.startModes = new TerminalModes();
@@ -234,25 +243,70 @@ export class ReplayBuffer {
 	}
 
 	private trim(): void {
-		const all = new Uint8Array(this.bytes);
-		let at = 0;
-		for (const chunk of this.chunks) {
-			all.set(chunk, at);
-			at += chunk.length;
-		}
-		const must = all.length - this.limit;
+		const must = this.bytes - this.limit;
 		// Just after the first line end at or past the bytes that must go.
-		const newline = all.indexOf(NEWLINE, Math.max(0, must - 1));
-		let cut = newline === -1 ? -1 : newline + 1;
-		if (cut === -1 || all.length - cut > this.limit) {
+		const newline = this.find(NEWLINE, Math.max(0, must - 1), 'line');
+		let cut = newline + 1;
+		if (newline === -1) {
 			// One line longer than the bound: cut at the next sequence instead.
-			const esc = all.indexOf(ESC, must);
-			cut = esc === -1 ? all.length : esc;
+			const esc = this.find(ESC, must, 'esc');
+			cut = esc === -1 ? this.bytes : esc;
 		}
-		this.startModes.scan(all.subarray(0, cut));
-		const rest = all.slice(cut);
-		this.chunks = rest.length > 0 ? [rest] : [];
-		this.bytes = rest.length;
+		this.dropFront(cut);
 		this.dropped = true;
+	}
+
+	/**
+	 * The index of the first `byte` at or after `from` in the kept bytes, or
+	 * -1. A search that finds none remembers it, so the next one starts past
+	 * what it read.
+	 */
+	private find(byte: number, from: number, kind: 'line' | 'esc'): number {
+		const known = (kind === 'line' ? this.noLineEndBefore : this.noEscBefore) - this.start;
+		let base = 0;
+		for (const chunk of this.chunks) {
+			const begin = Math.max(from, known) - base;
+			if (begin < chunk.length) {
+				const at = chunk.indexOf(byte, Math.max(0, begin));
+				if (at !== -1) return base + at;
+			}
+			base += chunk.length;
+		}
+		if (kind === 'line') this.noLineEndBefore = this.start + this.bytes;
+		else this.noEscBefore = this.start + this.bytes;
+		return -1;
+	}
+
+	/** Drops the first `count` kept bytes, reading the modes they set. */
+	private dropFront(count: number): void {
+		const gone: Uint8Array[] = [];
+		let left = count;
+		while (left > 0) {
+			const first = this.chunks[0];
+			if (!first) break;
+			if (first.length <= left) {
+				gone.push(first);
+				this.chunks.shift();
+				left -= first.length;
+			} else {
+				gone.push(first.subarray(0, left));
+				this.chunks[0] = first.slice(left);
+				left = 0;
+			}
+		}
+		const dropped = count - left;
+		// One piece for the scan, so a sequence split across chunks is still read.
+		let head = gone[0] ?? new Uint8Array(0);
+		if (gone.length > 1) {
+			head = new Uint8Array(dropped);
+			let at = 0;
+			for (const piece of gone) {
+				head.set(piece, at);
+				at += piece.length;
+			}
+		}
+		this.startModes.scan(head);
+		this.start += dropped;
+		this.bytes -= dropped;
 	}
 }
