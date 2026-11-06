@@ -339,14 +339,22 @@ export interface SessionInfo {
  * `info` with every field `overlay` states put over it: the runtime's word
  * first, the transcript's where the runtime says nothing. Returns `info`
  * itself when the overlay states nothing.
+ *
+ * A runtime that knows a model by its id only says so with the id as its
+ * label; for the model the reading names too, the reading's label stays, so
+ * the name the agent shows is not traded for the id (#160).
  */
 export function mergeSessionInfo(info: SessionInfo, overlay: SessionInfo | null | undefined): SessionInfo {
 	if (!overlay) return info;
 	const merged: SessionInfo = { ...info };
 	let changed = false;
 	for (const key of Object.keys(overlay) as (keyof SessionInfo)[]) {
-		if (overlay[key] === undefined) continue;
-		(merged as Record<string, unknown>)[key] = overlay[key];
+		const value = overlay[key];
+		if (value === undefined) continue;
+		if (key === 'model' && overlay.model?.label === overlay.model?.id && info.model?.id === overlay.model?.id) {
+			continue;
+		}
+		(merged as Record<string, unknown>)[key] = value;
 		changed = true;
 	}
 	return changed ? merged : info;

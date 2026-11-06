@@ -69,6 +69,7 @@ import {
 	type Turn,
 	type TurnEntry,
 } from '../../native/conversation';
+import { emptyReading, SessionReader, type SessionReading } from './sessionInfo';
 
 /** What one batch did to a Claude session's state. */
 export type ReduceResult = ConversationReduceResult<TranscriptState>;
@@ -118,10 +119,13 @@ export interface TranscriptState {
 	/** Which records the conversation stands on, for a rewind (#131). */
 	branch: BranchState;
 	/**
-	 * The model and token usage of the newest answer (#110, #111): Claude
-	 * writes both on every assistant message, and no effort or context window.
+	 * What the records say of the session's settings (#110, #111, #160):
+	 * model, effort, permission mode and context, the newest record winning
+	 * (`./sessionInfo.ts`).
 	 */
 	info: SessionInfo;
+	/** What reading {@link info} keeps across batches. */
+	reading: SessionReading;
 }
 
 /** Where one record landed, for a prompt that later hangs from it (#131). */
@@ -173,62 +177,8 @@ export function emptyTranscript(): TranscriptState {
 		dequeued: 0,
 		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
 		info: {},
+		reading: emptyReading(),
 	};
-}
-
-/**
- * What a main-chain assistant message says of the session: its model and its
- * usage (`input_tokens`, `cache_creation_input_tokens`,
- * `cache_read_input_tokens`, `output_tokens`). The context in use is the sum
- * of the three input counts (#111, checked against `/context`). The info
- * object is replaced only when it changed, so a batch that says nothing new
- * leaves it as it was. The model's label is its id until a name table lands
- * (#110).
- */
-function messageInfo(info: SessionInfo, message: Json, effort: string): SessionInfo {
-	const model = stringField(message, 'model');
-	const usage = isRecord(message.usage) ? message.usage : null;
-	const count = (key: string): number => {
-		const value = usage?.[key];
-		return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-	};
-	const next: SessionInfo = { ...info };
-	// `<synthetic>` is what Claude writes on an answer no model gave (an API
-	// error), with every count 0: neither its model nor its usage is the
-	// session's, so the context in use stays what the last real answer said.
-	const synthetic = model === '<synthetic>';
-	if (model && !synthetic && model !== info.model?.id) next.model = { id: model, label: model };
-	// The top-level `effort` of the line: what this reply ran with.
-	if (effort) next.effort = effort;
-	if (usage && !synthetic) {
-		const cached = count('cache_read_input_tokens');
-		const input = count('input_tokens') + count('cache_creation_input_tokens') + cached;
-		next.contextUsed = input;
-		next.usage = { input, output: count('output_tokens'), ...(cached ? { cached } : {}) };
-	}
-	const same =
-		next.model === info.model &&
-		next.effort === info.effort &&
-		next.contextUsed === info.contextUsed &&
-		next.usage?.input === info.usage?.input &&
-		next.usage?.output === info.usage?.output &&
-		next.usage?.cached === info.usage?.cached;
-	return same ? info : next;
-}
-
-/** A `model` attachment's `identity`: the id, and the name Claude shows (`marketingName`). */
-function modelIdentity(info: SessionInfo, identity: Json): SessionInfo {
-	const id = stringField(identity, 'modelId');
-	if (!id) return info;
-	const label = stringField(identity, 'marketingName') || id;
-	if (info.model?.id === id && info.model.label === label) return info;
-	return { ...info, model: { id, label } };
-}
-
-/** The permission mode a prompt line states (`permissionMode`), as the session's now. */
-function promptInfo(info: SessionInfo, line: Json): SessionInfo {
-	const mode = stringField(line, 'permissionMode');
-	return mode && mode !== info.permissionMode ? { ...info, permissionMode: mode } : info;
 }
 
 /** Claude Code's reasoning efforts, as `/effort` and `--effort` take them (#110). */
@@ -646,7 +596,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const pendingQueue = [...state.pendingQueue];
 	let dequeued = state.dequeued;
 	const branch = new Branch(state.branch);
-	let info = state.info;
+	const reader = new SessionReader(state.info, state.reading);
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
@@ -765,7 +715,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// The model's id and display name, before the first reply after a
 				// switch and at the first prompt (#110).
 				const identity = attachment?.type === 'model' && isRecord(attachment.identity) ? attachment.identity : null;
-				if (identity && parsed.isSidechain !== true) info = modelIdentity(info, identity);
+				if (identity && parsed.isSidechain !== true) reader.identity(identity);
 				// A notification taken in mid-turn is this attachment, with no
 				// `user` line after it (#135).
 				const task =
@@ -810,7 +760,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'user': {
 				const message = isRecord(parsed.message) ? parsed.message : null;
 				const content = message?.content;
-				if (parsed.isSidechain !== true) info = promptInfo(info, parsed);
+				if (parsed.isSidechain !== true) reader.user(parsed);
 				if (parsed.isCompactSummary === true) {
 					// Not the human speaking, however much it reads like a prompt: a
 					// divider in the turn it happened in (#130).
@@ -938,7 +888,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				}
 				const messageId = stringField(message, 'id');
 				// A sidechain's answers are a subagent's, not the session's model.
-				if (parsed.isSidechain !== true) info = messageInfo(info, message, stringField(parsed, 'effort'));
+				if (parsed.isSidechain !== true) reader.reply(message, stringField(parsed, 'effort'));
 				// Content before any prompt (a transcript read from the middle) still
 				// belongs somewhere: it opens a turn with no prompt of its own.
 				const turn = draft.current() ?? draft.open(messageId || 'turn-0', '');
@@ -988,7 +938,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// `local_command` subtype, stays hidden as its `user` form does: the
 				// command itself is the turn, and what it set is the session
 				// chrome's to show.
-				if (stringField(parsed, 'subtype') !== 'informational') {
+				const subtype = stringField(parsed, 'subtype');
+				// What `/model`, `/effort` and `/context` set is the session
+				// info's (#160).
+				if (subtype === 'local_command' && parsed.isSidechain !== true) reader.localCommand(parsed);
+				if (subtype !== 'informational') {
 					countRaw(type);
 					continue;
 				}
@@ -1016,8 +970,9 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 
 	branch.settle(draft);
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	const { info, reading } = reader.finish();
 	return {
-		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info },
+		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info, reading },
 		changedTurnIds,
 		removedTurnIds,
 	};

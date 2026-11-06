@@ -456,6 +456,17 @@ reads are kept as recorded.
 - `queue-cancel.jsonl` — `claude -p` in stream-json: two messages written
   while a command ran, one cancelled (a bare `dequeue`) and one taken in
   mid-turn as an attachment with no `origin`, 2.1.318.
+- `session-settings.jsonl` — spike #110's herdr pane (`tests/claudeSessionInfo.test.ts`,
+  #160): `/context` twice, `/model` saved and for this session only (once
+  with an effort), `/effort` saved and for this session only, an invalid
+  argument to each, a mid-turn `/effort` that wrote nothing, five kept
+  models, 2.1.318. A throwaway probe, so its prompts are kept; the
+  attachments that name the account and the machine are dropped, the
+  `/context` tables cut after the category table and the TUI's coloured
+  `/context` stdout replaced.
+- `session-settings-sdk.jsonl` — the same spike's `claude -p` stream-json
+  process: `set_model`'s replayed stdout naming the model by alias and id,
+  2.1.318.
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:

@@ -162,7 +162,18 @@ class FakeWatcher implements SessionWatcher {
 		(paneId: string, status: AgentStatus, blockKind?: BlockKind) => void
 	>();
 	private readonly membershipHandlers = new Set<(paneId: string) => void>();
+	private readonly infoHandlers = new Set<(paneId: string) => void>();
 	constructor(private pane: PaneSnapshot | null) {}
+
+	onSessionInfo(handler: (paneId: string) => void): Unsubscribe {
+		this.infoHandlers.add(handler);
+		return () => this.infoHandlers.delete(handler);
+	}
+
+	/** What the runtime itself says of the session moved, and nothing else did (#160). */
+	infoChanged(paneId: string): void {
+		for (const handler of [...this.infoHandlers]) handler(paneId);
+	}
 
 	snapshot(paneId: string): PaneSnapshot | null {
 		return this.pane && this.pane.paneId === paneId ? this.pane : null;
@@ -190,7 +201,7 @@ class FakeWatcher implements SessionWatcher {
 	/** Whether anything is still subscribed: a model that let go leaves nothing. */
 	get subscribed(): boolean {
 		return (
-			this.sessionHandlers.size + this.statusHandlers.size + this.membershipHandlers.size > 0
+			this.sessionHandlers.size + this.statusHandlers.size + this.membershipHandlers.size + this.infoHandlers.size > 0
 		);
 	}
 
@@ -1237,6 +1248,59 @@ describe('SessionModel: the plan file of a pane in plan approval (#148)', () => 
 		source.release();
 		await settle();
 		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+});
+
+describe('SessionModel: what the runtime says of the session (#160)', () => {
+	const WITH_MODEL = [
+		'{"type":"user","permissionMode":"default","message":{"role":"user","content":"Go"},"uuid":"u1"}',
+		'{"type":"attachment","uuid":"m1","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5","marketingName":"Opus 5.5"}}}',
+		'{"type":"assistant","effort":"high","message":{"id":"m-u1","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":2,"cache_creation_input_tokens":8,"cache_read_input_tokens":90,"output_tokens":4}},"uuid":"a-u1"}',
+		'',
+	].join('\n');
+
+	it('lays the runtime’s word over the reading per field, and emits when only it moved', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, WITH_MODEL]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		expect(handle.model.sessionInfo).toEqual({
+			model: { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+			effort: 'high',
+			permissionMode: 'default',
+			contextUsed: 100,
+			usage: { input: 100, output: 4, cached: 90 },
+		});
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		watcher.set({
+			...PANE,
+			sessionInfo: {
+				model: { id: 'claude-opus-5-5', label: 'claude-opus-5-5' },
+				permissionMode: 'plan',
+				contextWindow: { tokens: 1000000, source: 'runtime' },
+			},
+		});
+		watcher.infoChanged('w4:p1');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		// The process knows the id only; the name the transcript gave stays.
+		expect(handle.model.sessionInfo).toMatchObject({
+			model: { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+			effort: 'high',
+			permissionMode: 'plan',
+			contextWindow: { tokens: 1000000, source: 'runtime' },
+		});
+
+		// The same overlay again, or another pane's, is nothing to tell.
+		watcher.infoChanged('w4:p1');
+		watcher.infoChanged('w9:p9');
+		expect(changes).toHaveLength(1);
+
+		// Another model from the process wins, by its id until a record names it.
+		watcher.set({ ...PANE, sessionInfo: { model: { id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' } } });
+		watcher.infoChanged('w4:p1');
+		expect(handle.model.sessionInfo.model).toEqual({ id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' });
+		expect(handle.model.sessionInfo.permissionMode).toBe('default');
 		handle.release();
 	});
 });

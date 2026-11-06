@@ -1723,11 +1723,27 @@ Measured 2026-11-06 for issues #110 and #111 against Claude Code 2.1.318,
 herdr 0.9.5 and hc 0.1.18, in `oh-test-*` panes and `claude -p` stream-json
 processes under `/tmp`. The finding `native-view-session-settings` in the
 docs root has the measurements; `native-view-header` the context and
-placement. Claude's agent format reads the `model` attachment, each main-chain
-reply's `message.model`, `effort` and usage, and the prompt's
-`permissionMode` into `SessionInfo` (#137, `src/agents/claude/transcript.ts`);
-nothing shows or sets them yet, and the stdout lines and `/context` are not
-read.
+placement.
+
+**What is read (#160).** Claude's agent format fills `SessionInfo` from the
+main chain, the newest record winning in file order
+(`src/agents/claude/sessionInfo.ts`): the `model` attachment (id and
+`marketingName`), each reply's `message.model`, `effort` and usage
+(`contextUsed`), the prompt's `permissionMode`, the `/model` and `/effort`
+stdout (as a `user` line or a `system` `local_command` line), and `/context`'s
+window for the model its output names, shown while that model is the
+session's (source `context-command`). `/model`'s stdout names the model by
+its display name; the id is the one this session's attachments gave that
+name, '' until one has; the `claude` kind's echo `` `sonnet
+(claude-sonnet-5-5)` `` gives the id. "Kept model as …", "Model '…' not
+found" and "Invalid argument" change nothing. The `claude` kind overlays
+`PaneSnapshot.sessionInfo` from its process (`src/claude/sessionInfo.ts`):
+`system:init`'s `model` (the id: `claude-haiku-5-5` with `--model haiku`)
+and `permissionMode`, `system:status`'s mode, `result.modelUsage[<model>]
+.contextWindow` (source `runtime`), and a control response's `model` or
+`mode`. Its watcher tells the model through `onSessionInfo`, not as a status.
+The overlay wins per field, except that a model it knows by id only keeps the
+transcript's name for the same id. Nothing shows or sets them yet (#161).
 
 - **What the transcript says.** Every `assistant` line: `message.model`
   and top-level `effort` (and `perTurnEffort`). A `model` attachment

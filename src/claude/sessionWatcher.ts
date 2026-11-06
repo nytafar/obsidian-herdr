@@ -26,6 +26,7 @@
  */
 
 import type { AgentStatus } from '../herdr/types.gen';
+import type { SessionInfo } from '../native/conversation';
 import type { PendingRequest } from '../native/pendingRequest';
 import type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from '../native/sessionWatcher';
 import type { ClaudeAgents } from './agents';
@@ -54,6 +55,8 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 		if (agent.status === 'stopped') pane.stopped = true;
 		if (agent.blockKind) pane.blockKind = agent.blockKind;
 		if (agent.request) pane.request = agent.request;
+		// What the process said of the session, over the transcript's word (#160).
+		if (Object.keys(agent.sessionInfo).length > 0) pane.sessionInfo = agent.sessionInfo;
 		return pane;
 	};
 	return {
@@ -98,6 +101,22 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 				}
 				last.set(agentId, next);
 				handler(agentId, next.status, next.kind ?? undefined);
+			});
+		},
+		onSessionInfo(handler): Unsubscribe {
+			// One call per change of what the process said of the session (#160).
+			const last = new Map<string, SessionInfo>();
+			return agents.on((runtime, agentId, change) => {
+				if (runtime !== runtimeId) return;
+				if (change === 'removed') {
+					last.delete(agentId);
+					return;
+				}
+				const info = agents.get(runtimeId, agentId)?.sessionInfo;
+				if (!info || last.get(agentId) === info) return;
+				last.set(agentId, info);
+				// The model compares with what it read, so a first sight is told too.
+				handler(agentId);
 			});
 		},
 		onMembership(handler): Unsubscribe {
