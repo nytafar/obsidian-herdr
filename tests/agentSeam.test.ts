@@ -222,7 +222,9 @@ const CODEX_STUB: AgentFormat<CodexState> = {
 		const reason = /justification:"([^"]*)"/.exec(text(call.input.script));
 		return reason ? { kind: 'permission', reason: reason[1] ?? '' } : null;
 	},
-	toolKinds: {},
+	// Codex's own names: no other format knows them, so only this table can
+	// make them anything but `other`.
+	toolKinds: { exec: 'bash', wait: 'bash' },
 	commands: { builtin: () => [], local: () => ({ catalog: () => [] }) },
 	sessionInfo: (state) => state.info,
 	efforts: ['low', 'medium', 'high'],
@@ -353,6 +355,28 @@ describe('above the seam, a Codex session is a conversation like any other', () 
 		const group = groups[0];
 		expect(group?.kind === 'group' && toolGroupHeader(group.tools, 'settled').failed).toBe('1 declined');
 		expect(changeLine('unknown').lead).toBe('Tried to update ');
+	});
+
+	it('shows the calls by the session’s own format’s tool table, not by the registry’s', () => {
+		const { turns } = parse(STEER);
+		const group = turnItems(turns[0]?.entries ?? [], 'highlight', CODEX_STUB).find((item) => item.kind === 'group');
+		const calls = group?.kind === 'group' ? group.tools : [];
+		expect(calls.length).toBeGreaterThan(0);
+		expect(toolGroupHeader(calls, 'settled', CODEX_STUB).counts).toBe(`ran ${calls.length} commands`);
+		// Read with every format's table, Codex's names are no one's.
+		expect(toolGroupHeader(calls, 'settled').counts).toBe(`used ${calls.length} tools`);
+
+		const { el, host } = hostEl();
+		const renderer = new TurnRenderer(host, {
+			presentation: () => 'highlight',
+			vaultPath: () => '/vault',
+			renderMarkdown: () => Promise.resolve(),
+			resolveUri: () => null,
+			toolTable: () => CODEX_STUB,
+		});
+		for (const turn of turns) renderer.render(turn);
+		const counts = el.findAll('herdr-native-tools-counts').map((node) => node.textContent);
+		expect(counts).toContain(`ran ${calls.length} commands`);
 	});
 
 	it('lists, copies and finds the turns by what was asked and answered', () => {

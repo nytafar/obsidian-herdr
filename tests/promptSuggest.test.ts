@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { hostEl } from './fixtures/dom';
 import { PromptSuggest, type PromptSuggestion } from '../src/native/promptSuggest';
 import type { CatalogEntry, CommandCatalogSource } from '../src/native/commandCatalog';
+import type { AgentFormat } from '../src/agents/format';
 import type { App } from 'obsidian';
 
 function suggestOn(): PromptSuggest {
@@ -100,6 +101,60 @@ describe('PromptSuggest: whose commands a `/` offers', () => {
 		const result = suggestions();
 		expect(result).toBeInstanceOf(Promise);
 		expect((await result).map((s) => (s.kind === 'command' ? s.entry.name : ''))).toEqual(['remote-only']);
+	});
+});
+
+describe('PromptSuggest: the `/` list is the pane’s agent’s (ADR-0010)', () => {
+	const entry = (name: string): CatalogEntry => ({
+		name,
+		scope: 'builtin',
+		kind: 'command',
+		description: '',
+		argumentHint: '',
+		path: null,
+	});
+	/** A format with a fixed list, standing in for an agent that is not Claude. */
+	const other = {
+		agent: 'other',
+		commands: { builtin: () => [entry('presets')], local: () => ({ catalog: () => [entry('presets')] }) },
+	} as unknown as AgentFormat;
+
+	function namesFor(
+		format: (() => AgentFormat | null | undefined) | undefined,
+		catalog: (agent: string) => CommandCatalogSource | null,
+	): { names: string[]; asked: string[] } {
+		const area = { value: '/', selectionStart: 1 } as unknown as HTMLTextAreaElement;
+		const app = { vault: { getFiles: () => [] } } as unknown as App;
+		const asked: string[] = [];
+		const suggest = new PromptSuggest(area, {
+			app,
+			cwd: () => '/repo',
+			vaultPath: () => '',
+			...(format ? { format } : {}),
+			catalog: (agent) => {
+				asked.push(agent);
+				return catalog(agent);
+			},
+		});
+		const access = suggest as unknown as { getSuggestions(): PromptSuggestion[] };
+		return { names: access.getSuggestions().map((s) => (s.kind === 'command' ? s.entry.name : '')), asked };
+	}
+
+	/** The runtime's reader: Claude's catalogue for Claude, none for anyone else. */
+	const claudeOnly = (agent: string): CommandCatalogSource | null =>
+		agent === 'claude' ? { catalog: () => [entry('review')] } : null;
+
+	it('asks the runtime for the pane’s agent’s catalogue, and gets the format’s list for an agent it reads none of', () => {
+		expect(namesFor(() => other, claudeOnly)).toEqual({ names: ['presets'], asked: ['other'] });
+	});
+
+	it('reads a pane whose runtime names no agent as the default agent’s', () => {
+		expect(namesFor(() => undefined, claudeOnly)).toEqual({ names: ['review'], asked: ['claude'] });
+		expect(namesFor(undefined, claudeOnly)).toEqual({ names: ['review'], asked: ['claude'] });
+	});
+
+	it('offers nothing for an agent with no format, and asks no runtime for it', () => {
+		expect(namesFor(() => null, claudeOnly)).toEqual({ names: [], asked: [] });
 	});
 });
 

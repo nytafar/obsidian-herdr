@@ -231,6 +231,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			// A prompt's images, read from the transcript as they come into view
 			// and shown full size on a click (#144).
 			readImage: (image) => this.model?.readImage?.(image) ?? Promise.resolve(null),
+			// What each call is shown as is the session's format's (ADR-0010).
+			toolTable: () => this.model?.format,
 			openImage: (image) =>
 				this.options.openImage ? this.options.openImage(image) : new ImageModal(this.options.app, image).open(),
 		});
@@ -467,7 +469,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			if (this.activeTurnId && this.activeTurnId !== latest) ids.add(this.activeTurnId);
 			// The turn whose to-do update was open and the one whose is now, when
 			// the newest list moved (#143): either may be a turn nothing else names.
-			const todo = this.todos.latest(turns);
+			const todo = this.todos.latest(turns, this.model?.format);
 			if (todo?.entryId !== this.latestTodo?.entryId) {
 				if (this.latestTodo) ids.add(this.latestTodo.turnId);
 				if (todo) ids.add(todo.turnId);
@@ -497,7 +499,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// is never asked for again (#127).
 		this.folds.retain(turns.map((turn) => turn.id));
 		this.todos.clear();
-		this.latestTodo = this.todos.latest(turns);
+		this.latestTodo = this.todos.latest(turns, this.model?.format);
 		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
 		this.activeTurnId = turns.at(-1)?.id ?? null;
 		this.todo?.update(this.latestTodo?.items ?? null);

@@ -114,6 +114,19 @@ describe('paneSessionFromEvent: the one raw read', () => {
 		});
 	});
 
+	it('reads a session another agent reported as no session (finding agent-codex §2)', () => {
+		// Codex's shared daemon reports onto the pane that started it, which may
+		// run Claude now: the id is a Codex thread's, not this pane's session.
+		const event = paneUpdated('w4:p1', '019a-thread');
+		const pane = event.data.pane as { agent_session: { agent: string; source: string } };
+		pane.agent_session.agent = 'codex';
+		pane.agent_session.source = 'herdr:codex';
+		expect(paneSessionFromEvent(event)).toEqual({ paneId: 'w4:p1', agentSession: '' });
+		// The same agent in any case or spacing is the same agent.
+		pane.agent_session.agent = ' Claude ';
+		expect(paneSessionFromEvent(event)).toEqual({ paneId: 'w4:p1', agentSession: '019a-thread' });
+	});
+
 	it('ignores every other event and a malformed pane', () => {
 		expect(paneSessionFromEvent({ event: 'pane_closed', data: {} })).toBeNull();
 		expect(paneSessionFromEvent({ event: 'pane_updated', data: {} })).toBeNull();
@@ -154,6 +167,21 @@ describe('herdrSessionWatcher: the pane as herdr reports it', () => {
 		expect(herdrSessionWatcher({ scope, client })?.snapshot('w4:p9')).toBeNull();
 		// Nothing connected: no pane to read, which is not an error.
 		expect(herdrSessionWatcher(null)).toBeNull();
+	});
+
+	it('does not follow a session another agent reported onto a Claude pane', () => {
+		const scope = {
+			get: () => ({ paneId: 'w4:p1', cwd: '/home/lasse', agent: 'claude', agentStatus: 'idle' }) as PaneState,
+			paneInfo: () =>
+				({
+					pane_id: 'w4:p1',
+					agent: 'claude',
+					agent_session: { agent: 'codex', kind: 'id', source: 'herdr:codex', value: '019a-thread' },
+				}) as PaneInfo,
+			on: () => () => {},
+		};
+
+		expect(herdrSessionWatcher({ scope, client })?.snapshot('w4:p1')?.agentSession).toBe('');
 	});
 
 	it('reports no agent session for a pane that has not taken a prompt yet', () => {

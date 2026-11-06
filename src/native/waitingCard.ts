@@ -108,11 +108,17 @@ export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 }
 
 /**
- * What the card calls the agent: its format's name, or the default agent's
- * for a caller that names no format, as before agents had formats.
+ * The format a card reads with. Two cases kept apart (ADR-0010): undefined is
+ * a caller that names no agent, read as the default agent's, as before agents
+ * had formats; null is an agent with no format, which has nothing to read.
  */
+function formatOf(format: AgentFormat | null | undefined): AgentFormat | null {
+	return format === undefined ? defaultAgentFormat() : format;
+}
+
+/** What the card calls the agent: its format's name, else "The agent". */
 function nameOf(format: AgentFormat | null | undefined): string {
-	return (format ?? defaultAgentFormat())?.name ?? 'The agent';
+	return formatOf(format)?.name ?? 'The agent';
 }
 
 /** The startup card: the workspace trust prompt, the one block the view answers. */
@@ -210,10 +216,13 @@ export function waitingCard(input: {
 	 * dangling is taken to be plan approval when there is a plan to show.
 	 */
 	plan?: string | null;
-	/** The format of the pane's agent; absent, the default agent's. */
+	/**
+	 * The format of the pane's agent: absent is the default agent's, null an
+	 * agent with no format (no name, no call to read).
+	 */
 	format?: AgentFormat | null;
 }): WaitingCardModel {
-	const format = input.format ?? defaultAgentFormat();
+	const format = formatOf(input.format);
 	const agent = nameOf(format);
 	if (input.request) return requestCard(input.request, input.vaultPath, format);
 	const kind = input.blockKind ?? null;

@@ -397,7 +397,8 @@ matches what the view spawns in observe mode; the first line is a
 
 ## Smoking the native view's history inside Obsidian (#93)
 
-The reducer, the transcript source, the session model and what the surface draws
+Claude's transcript parser (`src/agents/claude/transcript.ts`), the transcript
+source, the session model and what the surface draws
 are unit tested (`tests/transcriptReducer.test.ts`, `tests/transcriptSource.test.ts`,
 `tests/sessionModel.test.ts`, `tests/nativeSurface.test.ts`, the first of them
 against the live transcript of whatever session runs them). What needs Obsidian
@@ -421,7 +422,8 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
 transcripts on this machine and scrubbed: prose, commands, tool input and
 output replaced, paths moved under `/home/user`, image bytes cut to a stub,
 bookkeeping lines (`api-request`, `ai-title`, …) dropped. Ids, parents,
-timestamps, types and the tags the reducer reads are kept as recorded.
+timestamps, types and the tags the parser (`src/agents/claude/transcript.ts`)
+reads are kept as recorded.
 
 - `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
   (no 2.1.318 transcript on this machine has one).

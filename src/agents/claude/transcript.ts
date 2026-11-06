@@ -169,11 +169,14 @@ function messageInfo(info: SessionInfo, message: Json, effort: string): SessionI
 		return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 	};
 	const next: SessionInfo = { ...info };
-	// `<synthetic>` is what Claude writes on an answer no model gave (an API error).
-	if (model && model !== '<synthetic>' && model !== info.model?.id) next.model = { id: model, label: model };
+	// `<synthetic>` is what Claude writes on an answer no model gave (an API
+	// error), with every count 0: neither its model nor its usage is the
+	// session's, so the context in use stays what the last real answer said.
+	const synthetic = model === '<synthetic>';
+	if (model && !synthetic && model !== info.model?.id) next.model = { id: model, label: model };
 	// The top-level `effort` of the line: what this reply ran with.
 	if (effort) next.effort = effort;
-	if (usage) {
+	if (usage && !synthetic) {
 		const cached = count('cache_read_input_tokens');
 		const input = count('input_tokens') + count('cache_creation_input_tokens') + cached;
 		next.contextUsed = input;

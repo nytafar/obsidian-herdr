@@ -44,12 +44,12 @@ import type {
 	Unsubscribe,
 } from '../native/sessionWatcher';
 import { nativeAgentReason } from '../native/agentSupport';
-
-/** The agent whose hook writes the session label (ADR-0006). */
-const SESSION_LABEL_AGENT = 'claude';
 import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import { SeenTracker } from './seen';
+
+/** The agent whose hook writes the session label (ADR-0006). */
+const SESSION_LABEL_AGENT = 'claude';
 
 /** The palette command that installs the hook (`main.ts`). */
 export const SESSION_HOOK_COMMAND_NAME = 'Install or remove the Claude session hook';

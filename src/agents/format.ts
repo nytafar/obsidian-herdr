@@ -165,13 +165,21 @@ export function formatAgents(): string[] {
 }
 
 /**
- * The kind a tool name is shown as, by the tool tables of every format;
- * `other` for one none of them knows. One table across formats, because the
- * view draws a call without asking whose it is, and a name two agents share
- * means the same kind of call to both or is `other` to neither.
+ * The tool table a session's calls are shown by: its format (anything with
+ * `toolKinds`, so a test's format is read like the registry's). Undefined is
+ * a caller that names no format, read by every format's table; null is an
+ * agent with no format, whose calls are all `other`.
  */
-export function toolKindOf(name: string): ToolKind {
+export type ToolTable = Pick<AgentFormat, 'toolKinds'> | null | undefined;
+
+/**
+ * The kind a tool name is shown as: by the session's format's table when the
+ * caller names one, else by the tables of every format in the registry;
+ * `other` for a name the table does not know.
+ */
+export function toolKindOf(name: string, table?: ToolTable): ToolKind {
 	const key = name.trim().toLowerCase();
+	if (table !== undefined) return table?.toolKinds[key] ?? 'other';
 	for (const format of FORMATS) {
 		const kind = format.toolKinds[key];
 		if (kind) return kind;

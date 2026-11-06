@@ -225,13 +225,20 @@ export interface NativeSessionAdapter<
 	 */
 	transcripts(endpoint: Endpoint, connection: Connection<C, S, T> | null): TranscriptSource | null;
 	/**
-	 * Where the prompt box's `/` list is read for this endpoint (#98): the
-	 * machine the agent runs on. Not given, or null, is this machine's files,
-	 * read synchronously; an `rpc` endpoint gives a source over `connection`
-	 * (the same rule as {@link transcripts}), or the built-ins without one,
-	 * never this machine's commands.
+	 * Where the prompt box's `/` list of `agent` (the agent catalog's id) is
+	 * read for this endpoint (#98): the machine the agent runs on. A reader
+	 * is one agent's (ADR-0010): what herdr and herdr-core read today is
+	 * Claude's directory layout, so another agent gets its own format's
+	 * list, never Claude's. Not given, or null, is this machine's catalogue
+	 * of the agent's format, read synchronously; an `rpc` endpoint gives a
+	 * source over `connection` (the same rule as {@link transcripts}), or the
+	 * agent's built-ins without one, never this machine's commands.
 	 */
-	commandCatalog?(endpoint: Endpoint, connection: Connection<C, S, T> | null): CommandCatalogSource | null;
+	commandCatalog?(
+		endpoint: Endpoint,
+		connection: Connection<C, S, T> | null,
+		agent: string,
+	): CommandCatalogSource | null;
 }
 
 /** What every use of a herdr-core runtime said before its kind landed. */

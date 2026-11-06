@@ -105,16 +105,20 @@ export interface PromptSuggestOptions {
 	 */
 	cwd: () => string;
 	/**
-	 * Where the `/` catalog is read, asked on every `/`: the pane's machine,
-	 * which for a herdr-core runtime over SSH is another one and answers
-	 * asynchronously. Not given, or null, is this machine's catalogue of the
-	 * pane's agent ({@link format}), walked by this suggest and kept for the TTL.
+	 * Where the `/` catalog of the pane's agent is read, asked on every `/`
+	 * with that agent's id: the pane's machine, which for a herdr-core runtime
+	 * over SSH is another one and answers asynchronously. A runtime reads
+	 * catalogues per agent (`NativeSessionAdapter.commandCatalog`). Not given,
+	 * or null, is this machine's catalogue of the pane's agent ({@link format}),
+	 * walked by this suggest and kept for the TTL.
 	 */
-	catalog?: () => CommandCatalogSource | null;
+	catalog?: (agent: string) => CommandCatalogSource | null;
 	/**
-	 * The format of the agent the pane runs, whose catalogue this machine's
-	 * is read as (ADR-0010). Not given, or null, is the catalog's default
-	 * agent's, as before agents had formats.
+	 * The format of the agent the pane runs, whose catalogue is offered
+	 * (ADR-0010). Two cases, kept apart: undefined (or not given) is a runtime
+	 * that names no agent, read as the catalog's default agent's, as before
+	 * agents had formats; null is an agent this build has no format for, which
+	 * offers no commands at all.
 	 */
 	format?: () => AgentFormat | null | undefined;
 	/** The pane this box prompts, for a catalog that reads per pane (#132). */
@@ -246,12 +250,17 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		return mentionFor({ path, cwd: this.options.cwd() });
 	}
 
-	/** The pane's machine's catalog, or this machine's when none was given. */
+	/**
+	 * The pane's agent's catalogue: the runtime's reader for that agent, or
+	 * this machine's when the runtime gives none. An agent with no format has
+	 * none to offer.
+	 */
 	private catalogSource(): CommandCatalogSource {
-		const given = this.options.catalog?.();
-		if (given) return given;
-		const format = this.options.format?.() ?? defaultAgentFormat();
+		const named = this.options.format?.();
+		const format = named === undefined ? defaultAgentFormat() : named;
 		if (!format) return NO_COMMANDS;
+		const given = this.options.catalog?.(format.agent);
+		if (given) return given;
 		if (this.localCatalog?.format !== format) this.localCatalog = { format, source: format.commands.local() };
 		return this.localCatalog.source;
 	}

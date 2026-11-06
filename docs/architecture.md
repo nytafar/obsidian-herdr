@@ -318,9 +318,15 @@ scope, `agent_session` from the raw `PaneInfo`, and rotation read off
 `pane.updated` one microtask after the client's dispatch, so the scope has
 ingested the update first. It reports no block kind, and the waiting card
 guesses the block from the transcript. On a local herdr it works out the
-transcript path from the pane's Claude process (next section); until that is
-known, and over SSH, the model asks the agent's format for the path, which
-for Claude is cwd and session under `~/.claude`. herdr-core's watcher and
+transcript path of a Claude pane from the pane's Claude process (next
+section), and of no other agent's pane: a path the runtime reports wins over
+the format's, and this one is a Claude transcript's. Until that is known, over
+SSH, and for any other agent, the model asks the agent's format for the path,
+which for Claude is cwd and session under `~/.claude`. A session whose
+`agent_session.agent` is not the pane's agent is not followed: the watcher
+reports no session for the pane (Codex's shared daemon writes its thread id
+onto the pane that started it, which may run Claude now; finding
+`agent-codex` §2). herdr-core's watcher and
 sources are in "herdr-core: the native view" below.
 
 ### The agent seam: formats and session bindings (issue #137, ADR-0010)
@@ -340,12 +346,27 @@ The native view is offered for a pane only when a format exists for its
 agent **and** the runtime's session binding for that agent is `trusted`
 (`AGENT_SESSIONS` in `src/runtime/kind.ts`: herdr `{claude: trusted, codex:
 hint}`, herdr-core and the `claude` kind `{claude: trusted}`, anything
-unlisted `absent`). herdr's and herdr-core's watchers word a refusal through
-`nativeAgentReason` (`src/native/agentSupport.ts`), and the catalog's
-`native` flag is `offersNativeView` for the runtime's kind, so the + menu,
-the settings and the view agree. A runtime that knows session info sooner
-than the transcript puts it in `PaneSnapshot.sessionInfo`; the model lays it
-over the format's reading per field.
+unlisted `absent`), on a runtime whose transcripts this machine can reach
+(`transcriptAccess`, above). herdr's and herdr-core's watchers word a
+refusal through `nativeAgentReason` (`src/native/agentSupport.ts`). The
+catalog's `native` flag is `offersNativeView` for the runtime's kind and the
+runtime's reach (`nativeAdapterFor`, which the plugin answers as
+`nativeReachable` for the + menu and the settings), so all three agree:
+Claude on herdr over SSH has no native view in any of them. A runtime that
+knows session info sooner than the transcript puts it in
+`PaneSnapshot.sessionInfo`; the model lays it over the format's reading per
+field.
+
+Two cases are kept apart wherever a format is picked: an agent the runtime
+does not name is the catalog's default agent (Claude), and an agent without
+a format gets nothing (no `/` list, no name on a waiting card, every call
+`other`). The `/` catalogue the runtime reads (`NativeSessionAdapter
+.commandCatalog`) is asked per agent: herdr's pane-Claude reader and
+herdr-core's `machine.exec` reader are Claude's directory layout and answer
+only for Claude; any other agent gets its own format's list (this machine's
+on a local runtime, its built-ins on herdr-core over SSH). What a tool call is
+shown as is looked up in the session's own format's tool table, not across
+the registry.
 
 ### A pane's Claude process: config dir and real cwd (issue #132)
 

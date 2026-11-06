@@ -7,7 +7,9 @@
  * program it runs and its default arguments, and which runtime kinds can
  * start it. Whether an entry has the native view is the agent seam's answer
  * for its agent on the runtime's kind (`offersNativeView` in `./format.ts`,
- * ADR-0010), the same answer the native view itself is gated on. The built-in
+ * ADR-0010), and whether the runtime's transcripts can be reached from here
+ * (`nativeAdapterFor`, which the caller answers): the two the native view
+ * itself is gated on. The built-in
  * profiles are herdr's own agent kinds; a user adds their own in settings (a
  * wrapper, `codex --profile work`, extra flags), and hc's templates join on a
  * herdr-core runtime.
@@ -172,8 +174,9 @@ export interface CatalogEntry {
 	isDefault: boolean;
 	/**
 	 * Whether a pane it starts on this runtime gets the native view: a format
-	 * for its agent, and a session the runtime's kind can vouch for
-	 * (`offersNativeView`, ADR-0010). Absent reads as false.
+	 * for its agent, a session the runtime's kind can vouch for
+	 * (`offersNativeView`, ADR-0010), and transcripts the runtime lets this
+	 * machine read (`BuildCatalogInput.nativeReachable`). Absent reads as false.
 	 */
 	native?: boolean;
 }
@@ -380,6 +383,13 @@ export interface BuildCatalogInput {
 	settings: AgentCatalogSettings;
 	/** The runtime's probe, or null while none ran (not connected, still probing). */
 	probe: AgentProbe | null;
+	/**
+	 * Whether this runtime's transcripts can be read from here at all
+	 * (`nativeAdapterFor` in `../runtime/kind.ts`): false for herdr over SSH.
+	 * The runtime-level half of the native view's gate, which the caller
+	 * answers from the runtime's kind adapter. Not given reads as true.
+	 */
+	nativeReachable?: boolean;
 }
 
 /**
@@ -405,6 +415,7 @@ export interface BuildCatalogInput {
 export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 	const { runtime, settings, probe } = input;
 	const kind = runtime.kind;
+	const reachable = input.nativeReachable !== false;
 	const hidden = new Set(settings.hiddenAgents);
 	const where = machinePhrase(runtime);
 	const probed = probe?.found ?? null;
@@ -424,7 +435,7 @@ export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 			found: wasFound,
 			hidden: hidden.has(profile.id),
 			isDefault: false,
-			native: offersNativeView(kind, profile.agent),
+			native: reachable && offersNativeView(kind, profile.agent),
 		});
 	};
 
