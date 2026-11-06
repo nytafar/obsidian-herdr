@@ -33,7 +33,6 @@ import {
 	type QuestionDialog,
 	type ReviewDialog,
 	type ScreenDialog,
-	type ScreenRow,
 	type ScreenTab,
 	type TrustDialog,
 } from '../screenDialog';
