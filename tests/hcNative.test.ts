@@ -29,7 +29,7 @@ import { newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { SESSION_LABEL_KEY } from '../src/sessionHook/label';
 import { LocalTranscriptSource } from '../src/native/transcriptSource';
 import { SessionModelRegistry } from '../src/native/sessionModel';
-import { paneViewAvailability } from '../src/native/surface';
+import { paneViewAvailability } from '../src/native/paneSurface';
 import { fakeSpawner, fileLines, RpcError, settle, type FakeCore } from './fixtures/fakeHc';
 
 /** Timers fired by hand, by their delay. */

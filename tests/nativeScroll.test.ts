@@ -19,7 +19,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
-import { isAtBottom, NativePaneSurface } from '../src/native/surface';
+import { NativePaneSurface } from '../src/native/surface';
+import { isAtBottom } from '../src/native/scrollFollower';
 import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
 import type {
 	BlockKind,

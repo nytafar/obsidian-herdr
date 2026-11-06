@@ -17,7 +17,8 @@ import type { PendingRequest, WaitingAnswer } from '../src/native/pendingRequest
 import { PromptBox } from '../src/native/promptBox';
 import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
 import type { BlockKind, SessionChange, SessionHandleOf, SessionModels, SessionModelView } from '../src/native/sessionModel';
-import { effectivePaneView, NativePaneSurface, paneViewAvailability } from '../src/native/surface';
+import { NativePaneSurface } from '../src/native/surface';
+import { effectivePaneView, paneViewAvailability } from '../src/native/paneSurface';
 import { requestCard, waitingCard } from '../src/native/waitingCard';
 import { buildRows, toRow } from '../src/views/rowModel';
 
