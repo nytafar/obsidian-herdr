@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer, Menu } from './fixtures/obsidian';
@@ -39,7 +39,15 @@ import {
 	type SessionSettingsSender,
 	type SettingScope,
 } from '../src/native/sessionSettings';
-import { NativePaneSurface } from '../src/native/surface';
+import { NativePaneSurface, type NativePaneSurfaceOptions } from '../src/native/surface';
+import {
+	breakdownHeadline,
+	contextBlock,
+	contextTokens,
+	CONTEXT_WAIT_MS,
+	NO_BREAKDOWN_REASON,
+	type ContextBreakdown,
+} from '../src/native/contextBreakdown';
 import type { AgentStatus } from '../src/herdr/types.gen';
 
 const LINES = readFileSync(join(__dirname, 'fixtures', 'transcripts', 'session-settings.jsonl'), 'utf8')
@@ -121,7 +129,11 @@ class FakeSender implements SessionSettingsSender {
 	}
 }
 
-function surfaceOn(model: FakeModel, sender: SessionSettingsSender | null) {
+function surfaceOn(
+	model: FakeModel,
+	sender: SessionSettingsSender | null,
+	extra: Partial<NativePaneSurfaceOptions> = {},
+) {
 	const { el, host } = hostEl();
 	const notices: string[] = [];
 	const app = {
@@ -141,6 +153,7 @@ function surfaceOn(model: FakeModel, sender: SessionSettingsSender | null) {
 		autoTrustFolders: () => false,
 		presentation: () => 'highlight',
 		vaultPath: () => '/vault',
+		...extra,
 	});
 	return { surface, el, host, notices };
 }
@@ -434,5 +447,221 @@ describe('session settings helpers (#161)', () => {
 		expect(effortText('medium')).toEqual({ full: '◐ medium', short: '◐' });
 		expect(effortText('xhigh')).toEqual({ full: 'xhigh', short: 'xhigh' });
 		expect(effortText(undefined)).toEqual({ full: '—', short: '—' });
+	});
+});
+
+describe('the context breakdown from the readout (#171)', () => {
+	beforeEach(() => {
+		vi.stubGlobal('window', globalThis);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	/** A prompt sender that records what it sent. */
+	function promptSender() {
+		const sent: string[] = [];
+		return { sent, sender: { send: async (paneId: string, text: string) => void sent.push(`${paneId} ${text}`) } };
+	}
+
+	function readout(el: FakeElement): FakeElement {
+		return el.find('herdr-native-session-context');
+	}
+
+	function rows(el: FakeElement): string[][] {
+		return el
+			.find('herdr-native-context-table')
+			.querySelectorAll('tr')
+			.map((row) => row.querySelectorAll('td').map((cell) => cell.textContent))
+			.filter((cells) => cells.length > 0);
+	}
+
+	it('sends /context through the prompt when idle, and shows its output, never as a turn (herdr, herdr-core)', async () => {
+		const model = new FakeModel();
+		const { sent, sender } = promptSender();
+		const { surface, el, host, notices } = surfaceOn(model, null, { sender });
+		await surface.attach(host);
+		model.read(LINES.slice(0, 4));
+		const turns = model.state.turns.length;
+
+		readout(el).dispatch('click');
+		await settle();
+		expect(sent).toEqual(['w4:p1 /context']);
+		expect(readout(el).disabled).toBe(true);
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+
+		// The `local_command` lines and the `isMeta` Markdown, as Claude writes them.
+		model.read(LINES.slice(4, 7));
+		await settle();
+		expect(model.state.turns).toHaveLength(turns);
+		const popover = el.find('herdr-native-context-popover');
+		expect(popover.find('herdr-native-context-title').textContent).toBe('claude-opus-5-5 · 22.6k / 1m tokens (2%)');
+		expect(rows(el)[0]).toEqual(['System prompt', '2.4k', '0.2%']);
+		expect(readout(el).disabled).toBe(false);
+		expect(readout(el).getAttribute('aria-expanded')).toBe('true');
+		expect(notices).toEqual([]);
+
+		// A second click closes it, as the close button does.
+		readout(el).dispatch('click');
+		await settle();
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+		expect(sent).toHaveLength(1);
+	});
+
+	it('waits for a report newer than the one the session already had', async () => {
+		const model = new FakeModel();
+		const { sent, sender } = promptSender();
+		const { surface, el, host } = surfaceOn(model, null, { sender });
+		await surface.attach(host);
+		// The first `/context` is history by the time of the click.
+		model.read(LINES.slice(0, 20));
+		readout(el).dispatch('click');
+		await settle();
+		model.emit();
+		await settle();
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+		model.read(LINES.slice(20, 25));
+		await settle();
+		expect(sent).toHaveLength(1);
+		expect(el.find('herdr-native-context-title').textContent).toBe('claude-haiku-5-5 · 26.9k / 1m tokens (3%)');
+		el.find('herdr-native-context-close').dispatch('click');
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+	});
+
+	it('sends nothing while the agent works or is blocked, and says why', async () => {
+		const model = new FakeModel();
+		const { sent, sender } = promptSender();
+		const { surface, el, host } = surfaceOn(model, null, { sender });
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		model.agentStatus = 'working';
+		model.emit();
+		expect(readout(el).disabled).toBe(true);
+		expect(readout(el).getAttribute('aria-label')).toBe(`Context: 22,550 tokens. ${WORKING_REASON}`);
+		readout(el).dispatch('click');
+		model.agentStatus = 'blocked';
+		model.emit();
+		expect(readout(el).getAttribute('aria-label')).toBe(`Context: 22,550 tokens. ${BLOCKED_REASON}`);
+		readout(el).dispatch('click');
+		await settle();
+		expect(sent).toEqual([]);
+		model.agentStatus = 'done';
+		model.emit();
+		expect(readout(el).disabled).toBe(false);
+	});
+
+	it('gives up with a notice when the output never reaches the transcript', async () => {
+		vi.useFakeTimers();
+		const model = new FakeModel();
+		const { sender } = promptSender();
+		const { surface, el, host, notices } = surfaceOn(model, null, { sender });
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		readout(el).dispatch('click');
+		await settle();
+		vi.advanceTimersByTime(CONTEXT_WAIT_MS);
+		await settle();
+		expect(notices).toEqual([
+			'Gjetr: could not read the context breakdown (it did not reach the transcript in time)',
+		]);
+		expect(readout(el).disabled).toBe(false);
+	});
+
+	it('asks the runtime’s reader instead where there is one, mid-turn too, and sends no prompt (claude kind)', async () => {
+		const model = new FakeModel();
+		const { sent, sender } = promptSender();
+		const reads: string[] = [];
+		const breakdown: ContextBreakdown = {
+			id: 'r1',
+			model: 'claude-opus-5-5',
+			used: '14.6k',
+			window: '1m',
+			percent: '1%',
+			categories: [{ name: 'Messages', tokens: '107', share: '0.0%' }],
+		};
+		let fail: string | null = null;
+		const { surface, el, host, notices } = surfaceOn(model, null, {
+			sender,
+			contextUsage: () => ({
+				read: async (paneId: string) => {
+					reads.push(paneId);
+					if (fail) throw new Error(fail);
+					return breakdown;
+				},
+			}),
+		});
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		model.agentStatus = 'working';
+		model.emit();
+		expect(readout(el).disabled).toBe(false);
+		readout(el).dispatch('click');
+		await settle();
+		expect(reads).toEqual(['w4:p1']);
+		expect(sent).toEqual([]);
+		expect(rows(el)).toEqual([['Messages', '107', '0.0%']]);
+		readout(el).dispatch('click');
+		fail = 'the agent is in its terminal view; run /context there';
+		readout(el).dispatch('click');
+		await settle();
+		expect(notices).toEqual([
+			'Gjetr: could not read the context breakdown (the agent is in its terminal view; run /context there)',
+		]);
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+	});
+
+	it('opens nothing for an agent with no breakdown, and goes with the surface on detach', async () => {
+		const model = new FakeModel();
+		model.format = { ...CLAUDE_FORMAT, contextCommand: undefined };
+		const { sender } = promptSender();
+		const { surface, el, host } = surfaceOn(model, null, { sender });
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		expect(readout(el).disabled).toBe(true);
+		expect(readout(el).getAttribute('aria-label')).toBe(`Context: 22,550 tokens. ${NO_BREAKDOWN_REASON}`);
+
+		model.format = CLAUDE_FORMAT;
+		model.emit();
+		readout(el).dispatch('click');
+		await settle();
+		model.read(LINES.slice(3, 7));
+		await settle();
+		expect(el.findAll('herdr-native-context-popover')).toHaveLength(1);
+		await surface.detach();
+		expect(el.findAll('herdr-native-context-popover')).toEqual([]);
+	});
+});
+
+describe('context breakdown helpers (#171)', () => {
+	it('counts tokens the way /context words them', () => {
+		expect(contextTokens(276)).toBe('276');
+		expect(contextTokens(2256)).toBe('2.3k');
+		expect(contextTokens(33000)).toBe('33k');
+		expect(contextTokens(952351)).toBe('952.4k');
+		expect(contextTokens(999_990)).toBe('1m');
+		expect(contextTokens(1_000_000)).toBe('1m');
+		expect(contextTokens(1_500_000)).toBe('1.5m');
+	});
+
+	it('words the headline with what it has', () => {
+		const base = { id: 'x', model: '', used: '23k', window: '', percent: '', categories: [] };
+		expect(breakdownHeadline(base)).toBe('23k tokens');
+		expect(breakdownHeadline({ ...base, model: 'm', window: '1m', percent: '2%' })).toBe('m · 23k / 1m tokens (2%)');
+	});
+
+	it('asks through a context command only when idle or done, through a reader at any status but a block', () => {
+		const at = (status: AgentStatus, reader: boolean, command?: string) =>
+			contextBlock({ status, connected: true, paneId: 'p', reader, command });
+		expect(at('idle', false, '/context')).toBeNull();
+		expect(at('done', false, '/context')).toBeNull();
+		expect(at('working', false, '/context')).toBe(WORKING_REASON);
+		expect(at('working', true)).toBeNull();
+		expect(at('blocked', true)).toBe(BLOCKED_REASON);
+		expect(at('idle', false)).toBe(NO_BREAKDOWN_REASON);
+		expect(contextBlock({ status: 'idle', connected: false, paneId: 'p', reader: true, command: undefined })).toBe(
+			NO_AGENT_REASON,
+		);
 	});
 });

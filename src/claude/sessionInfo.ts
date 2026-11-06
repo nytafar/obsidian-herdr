@@ -8,7 +8,8 @@
  *   permission mode;
  * - `system:status`: a permission mode change;
  * - every `result`: `modelUsage[<model>].contextWindow`, the exact window,
- *   which no herdr or hc transcript states;
+ *   which no herdr or hc transcript states (and `get_context_usage`'s
+ *   `maxTokens` when the session bar asks, #171);
  * - a control response that names what it set: `set_model` answers
  *   `{model}`, `set_permission_mode` `{mode}`. (`apply_flag_settings` for
  *   effort answers bare, so effort is the sender's to record.)
@@ -18,8 +19,9 @@
  * Pure, and the info object is replaced only when a field changed.
  */
 
+import { contextTokens, type ContextBreakdown } from '../native/contextBreakdown';
 import type { SessionInfo } from '../native/conversation';
-import type { StreamEvent } from './protocol';
+import type { ContextUsage, StreamEvent } from './protocol';
 
 /** A model id without the window suffix an alias may carry: `claude-opus-5-5[1m]`. */
 function baseModel(model: string): string {
@@ -46,6 +48,18 @@ function windowOf(info: SessionInfo, windows: Record<string, number>): number | 
 	return found ? found[1] : null;
 }
 
+/**
+ * The window stated for the session's model, from a `result`'s
+ * `modelUsage` or a `get_context_usage` answer (#171), as the runtime's.
+ */
+export function foldContextWindow(info: SessionInfo, windows: Record<string, number>): SessionInfo {
+	const tokens = windowOf(info, windows);
+	if (tokens === null || (info.contextWindow?.tokens === tokens && info.contextWindow.source === 'runtime')) {
+		return info;
+	}
+	return { ...info, contextWindow: { tokens, source: 'runtime' } };
+}
+
 /** What one stream event says of the session, folded into what the process said before. */
 export function foldRuntimeInfo(info: SessionInfo, event: StreamEvent): SessionInfo {
 	switch (event.type) {
@@ -53,16 +67,35 @@ export function foldRuntimeInfo(info: SessionInfo, event: StreamEvent): SessionI
 			return withMode(withModel(info, event.model), event.permissionMode);
 		case 'status':
 			return withMode(info, event.permissionMode);
-		case 'result': {
-			const tokens = windowOf(info, event.windows);
-			if (tokens === null || (info.contextWindow?.tokens === tokens && info.contextWindow.source === 'runtime')) {
-				return info;
-			}
-			return { ...info, contextWindow: { tokens, source: 'runtime' } };
-		}
+		case 'result':
+			return foldContextWindow(info, event.windows);
 		case 'response':
 			return event.ok ? withMode(withModel(info, event.model), event.mode) : info;
 		default:
 			return info;
 	}
+}
+
+/** A share of the window the way `/context` words it: `0.2%`. */
+function share(tokens: number, window: number): string {
+	return window > 0 ? `${((tokens / window) * 100).toFixed(1)}%` : '';
+}
+
+/**
+ * A `get_context_usage` answer as the breakdown the session bar shows
+ * (#171), worded as `/context` words it on herdr and hc.
+ */
+export function contextBreakdownOf(usage: ContextUsage, id: string): ContextBreakdown {
+	return {
+		id,
+		model: usage.model,
+		used: contextTokens(usage.totalTokens),
+		window: usage.maxTokens > 0 ? contextTokens(usage.maxTokens) : '',
+		percent: usage.maxTokens > 0 ? `${Math.round(usage.percentage)}%` : '',
+		categories: usage.categories.map((category) => ({
+			name: category.name,
+			tokens: contextTokens(category.tokens),
+			share: share(category.tokens, usage.maxTokens),
+		})),
+	};
 }

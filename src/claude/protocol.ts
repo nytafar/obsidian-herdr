@@ -170,9 +170,10 @@ export type SessionControl =
 
 /**
  * The control request for one {@link SessionControl}: `set_model`,
- * `apply_flag_settings {effortLevel}` or `set_permission_mode`. These three
- * and `interrupt` are every request the plugin makes; never `initialize` or
- * `get_settings`, whose answers carry the account email.
+ * `apply_flag_settings {effortLevel}` or `set_permission_mode`. These three,
+ * `get_context_usage` ({@link contextUsageRequest}) and `interrupt` are every
+ * request the plugin makes; never `initialize` or `get_settings`, whose
+ * answers carry the account email.
  */
 export function sessionControlRequest(requestId: string, control: SessionControl): object {
 	switch (control.setting) {
@@ -183,6 +184,48 @@ export function sessionControlRequest(requestId: string, control: SessionControl
 		case 'mode':
 			return controlRequest(requestId, { subtype: 'set_permission_mode', mode: control.mode });
 	}
+}
+
+/**
+ * The `get_context_usage` control request (#171): the context breakdown
+ * `/context` shows, without writing anything to the conversation.
+ */
+export function contextUsageRequest(requestId: string): object {
+	return controlRequest(requestId, { subtype: 'get_context_usage' });
+}
+
+/**
+ * What `get_context_usage` answers, as far as it is read here (measured on
+ * 2.1.318 against a `claude -p` with no prompt): `categories` (`name`,
+ * `tokens`, `kind`: `used`, `deferred`, `buffer`, `free`), `totalTokens`,
+ * `maxTokens`, `percentage` and `model`. The rest of the answer (memory
+ * file paths, tools, skills, the grid) is dropped where it is read.
+ */
+export interface ContextUsage {
+	model: string;
+	totalTokens: number;
+	maxTokens: number;
+	percentage: number;
+	categories: { name: string; tokens: number }[];
+}
+
+/** A `get_context_usage` answer's payload as {@link ContextUsage}, or null when it is not one. */
+function contextUsage(payload: Record<string, unknown> | null): ContextUsage | null {
+	if (!payload || !Array.isArray(payload.categories)) return null;
+	const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+	const categories: ContextUsage['categories'] = [];
+	for (const entry of payload.categories as unknown[]) {
+		const category = record(entry);
+		const name = text(category?.name);
+		if (name) categories.push({ name, tokens: number(category?.tokens) });
+	}
+	return {
+		model: text(payload.model),
+		totalTokens: number(payload.totalTokens),
+		maxTokens: number(payload.maxTokens),
+		percentage: number(payload.percentage),
+		categories,
+	};
 }
 
 /** The success answer to one of Claude's control requests. */
@@ -276,7 +319,8 @@ export type StreamEvent =
 	 * `set_permission_mode` `{mode}`); '' where it says neither. A refusal
 	 * carries Claude's words and code (#162, measured on 2.1.318:
 	 * `invalid_mode` "Cannot set permission mode: must be one of …",
-	 * `not_found` "Model 'bogus' not found").
+	 * `not_found` "Model 'bogus' not found"). `get_context_usage` answers
+	 * with the breakdown (#171).
 	 */
 	| {
 			type: 'response';
@@ -286,6 +330,7 @@ export type StreamEvent =
 			mode: string;
 			error?: string;
 			errorCode?: string;
+			context?: ContextUsage;
 	  }
 	/** Anything else: assistant and user messages, hooks, partials, rate limits. */
 	| { type: 'other' };
@@ -382,6 +427,9 @@ export function parseStreamLine(line: string): StreamEvent | null {
 					errorCode: text(response?.error_code),
 				};
 			}
+			const context = contextUsage(payload);
+			// `get_context_usage` names its model too, which is no model set.
+			if (context) return { type: 'response', requestId, ok, model: '', mode: '', context };
 			return { type: 'response', requestId, ok, model: text(payload?.model), mode: text(payload?.mode) };
 		}
 		default:

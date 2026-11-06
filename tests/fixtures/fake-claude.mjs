@@ -10,7 +10,7 @@
  * interrupt's own response, `conversation_reset` and a fresh init on
  * `/clear`, `result` lines with `is_error` the way the CLI sends them, and
  * the session settings' answers (`set_model`, `apply_flag_settings`,
- * `set_permission_mode`, #162).
+ * `set_permission_mode`, #162) and `get_context_usage`'s breakdown (#171).
  *
  * A prompt picks the behaviour by keyword:
  *   WRITE  a Write permission (suggestion: setMode acceptEdits, session)
@@ -370,6 +370,29 @@ function control(message) {
 	}
 	if (request.subtype === 'apply_flag_settings') {
 		ok();
+		return;
+	}
+	// The breakdown as 2.1.318 answered it to a `claude -p` with no prompt
+	// (#171), trimmed: the grid, the tools, skills and file paths dropped.
+	if (request.subtype === 'get_context_usage') {
+		ok({
+			categories: [
+				{ id: 'system_prompt', name: 'System prompt', tokens: 2256, color: 'promptBorder', kind: 'used' },
+				{ id: 'messages', name: 'Messages', tokens: 107, color: 'purple_FOR_SUBAGENTS_ONLY', kind: 'used' },
+				{ id: 'autocompact_buffer', name: 'Autocompact buffer', tokens: 33000, color: 'inactive', kind: 'buffer' },
+				{ id: 'free_space', name: 'Free space', tokens: 952351, color: 'promptBorder', kind: 'free' },
+			],
+			totalTokens: 14649,
+			maxTokens: 1000000,
+			rawMaxTokens: 1000000,
+			autocompactSource: 'model-default',
+			percentage: 1,
+			gridRows: [],
+			model,
+			memoryFiles: [{ path: '/home/someone/.claude/CLAUDE.md', type: 'User', tokens: 630 }],
+			isAutoCompactEnabled: true,
+			apiUsage: null,
+		});
 		return;
 	}
 	if (request.subtype === 'set_permission_mode') {

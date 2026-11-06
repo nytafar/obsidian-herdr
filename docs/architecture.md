@@ -1865,6 +1865,43 @@ current `model`); answers came out of order (`set_model` last); a request
 before any prompt is answered. `initialize` and `get_settings` are never
 sent.
 
+**The context breakdown (#171).** A click on the readout shows Claude's
+context breakdown in a popover over the bar: the headline (model, used /
+window, share) and the category table (`src/native/contextBreakdown.ts`).
+On herdr and herdr-core the bar sends the format's `contextCommand`
+(`/context`) through the prompt sender, only while the agent is `idle` or
+`done`, and waits up to 20 s for a `/context` report newer than the one the
+session already held: Claude's format reads the `isMeta` output after a
+`local_command` for `context` into `SessionInfo.contextReport` (id: the
+line's `uuid`), the same line that gives the window (#160). None of these
+lines is a turn; a `<command-name>/context` written as a `user` line would
+not be one either. On the `claude` kind the reader is `get_context_usage`
+(`RuntimeKindAdapter.contextUsage`, `agent.context_usage` on its client),
+at any status but a block, which writes nothing to the conversation; its
+`maxTokens` goes in the overlay as the runtime's window, and a stopped
+agent is resumed for it as for a setting. Measured 2026-11-06 on 2.1.318,
+herdr 0.9.5 and hc 0.1.18 (`oh-test-ctx*` in `/tmp`, haiku, no prompt
+before it, so no model call):
+
+- `herdr agent prompt <pane> /context` and `hc send <t> /context` wrote the
+  same three lines and nothing else of the conversation: `system`
+  `local_command` with the `<command-name>/context</command-name>`
+  envelope, `system` `local_command` with `commandRun: {command: "context"}`
+  and the TUI's coloured stdout, then the `isMeta` `user` Markdown ("##
+  Context Usage", "**Model:** claude-haiku-5-5", "**Tokens:** 17.4k / 1m
+  (2%)", "### Estimated usage by category" and its table, then the MCP
+  tools, agents, memory files and skills tables). The transcript file
+  appeared with it. herdr went from `idle` to `done`.
+- `get_context_usage` to a `claude -p` stream-json process that had no
+  prompt answered at once with `categories` (`id`, `name`, `tokens`,
+  `color`, `kind`: `used`, `deferred`, `buffer` for the autocompact buffer,
+  `free`), `totalTokens`, `maxTokens`, `rawMaxTokens`, `autocompactSource`,
+  `percentage`, `gridRows`, `model` (the id), `memoryFiles` (with paths),
+  `mcpTools`, `mcpInstructions`, `agents`, `slashCommands`, `skills`,
+  `autoCompactThreshold`, `isAutoCompactEnabled`, `messageBreakdown` and
+  `apiUsage` (null). Only the categories, the totals, the share and the
+  model are read; the rest is dropped where the line is parsed.
+
 - **What the transcript says.** Every `assistant` line: `message.model`
   and top-level `effort` (and `perTurnEffort`). A `model` attachment
   (`identity.modelId`, `marketingName`) before the first reply and before

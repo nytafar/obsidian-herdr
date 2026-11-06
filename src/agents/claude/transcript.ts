@@ -74,7 +74,7 @@ import {
 	type TurnEntry,
 } from '../../native/conversation';
 import { emptyResume, Resumes, stampReply, type ResumeState } from './resume';
-import { emptyReading, SessionReader, type SessionReading } from './sessionInfo';
+import { CONTEXT_NAME, emptyReading, SessionReader, type SessionReading } from './sessionInfo';
 
 /** What one batch did to a Claude session's state. */
 export type ReduceResult = ConversationReduceResult<TranscriptState>;
@@ -873,6 +873,14 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				if (isLocalCommandOutput(content)) {
+					countRaw(type);
+					continue;
+				}
+				if (CONTEXT_NAME.test(content)) {
+					// `/context` (#171): what it printed is the session bar's
+					// breakdown, never a turn, whichever line form it took. Claude
+					// 2.1.281 to 2.1.318 write it as `system` lines, which open
+					// nothing either.
 					countRaw(type);
 					continue;
 				}

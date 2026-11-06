@@ -11,7 +11,8 @@
  *   `connected` edge, and `request` takes three methods for the native view:
  *   `agent.prompt`, `agent.interrupt` and `agent.respond`, and the session
  *   bar's `agent.set_model`, `agent.set_effort` and
- *   `agent.set_permission_mode` (#162). Disposing it ends
+ *   `agent.set_permission_mode` (#162) and `agent.context_usage` (#171).
+ *   Disposing it ends
  *   nothing: the processes belong to the table, not to a connection.
  * - **Tab labels.** None: the kind has no tabs.
  *
@@ -261,6 +262,9 @@ export class ClaudeClient implements ConnectionClient {
 					return this.agents
 						.changeSetting(this.runtimeId, target, { setting: 'effort', effort: stringParam(args.effort) })
 						.then(() => null as T);
+				// The breakdown itself is the answer (#171).
+				case 'agent.context_usage':
+					return this.agents.contextUsage(this.runtimeId, target) as Promise<T>;
 				case 'agent.set_permission_mode':
 					return this.agents
 						.changeSetting(this.runtimeId, target, { setting: 'mode', mode: stringParam(args.mode) })

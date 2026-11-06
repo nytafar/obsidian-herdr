@@ -40,6 +40,7 @@ import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/b
 import { ClaudeActions } from '../claude/actions';
 import { ALLOW_ONCE_NO_TERMINAL, ClaudeAgents, type ClaudeQuestion, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
+import type { ContextUsage } from '../claude/protocol';
 import {
 	defaultPtySpawn,
 	defaultPtyTools,
@@ -52,6 +53,7 @@ import { ClaudeShells, isShellId } from '../claude/shells';
 import { ClaudeTerminalSession } from '../claude/terminalSession';
 import { ClaudeClient, ClaudeScope, NoTabLabels } from '../claude/scope';
 import { localSettingsTarget, nodeProjectRootEnv, type LocalSettingsTarget } from '../claude/projectRoot';
+import { contextBreakdownOf } from '../claude/sessionInfo';
 import { claudeSessionWatcher } from '../claude/sessionWatcher';
 import { NO_CONNECTION_MESSAGE } from '../native/promptSender';
 import type { SettingScope } from '../native/sessionSettings';
@@ -244,6 +246,8 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 	const localTranscripts = new LocalTranscriptSource();
 	const watchers = new WeakMap<ClaudeScope, SessionWatcher>();
 	const refuse = (): Error => new Error(`The terminal view is ${terminalUnavailable ?? CLAUDE_TERMINAL_UNAVAILABLE}.`);
+	/** Each breakdown read here gets its own id. */
+	let contextReads = 0;
 	return {
 		kind: 'claude',
 		agents,
@@ -390,6 +394,16 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 				setMode: (paneId, mode) => request('agent.set_permission_mode', { target: paneId, mode }),
 			};
 		},
+		// The readout's breakdown (#171): `get_context_usage`, which writes
+		// nothing to the conversation, where herdr and herdr-core send `/context`.
+		contextUsage: (client) => ({
+			async read(paneId) {
+				const connected = client();
+				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+				const usage = await connected.request<ContextUsage>('agent.context_usage', { target: paneId });
+				return contextBreakdownOf(usage, `get_context_usage-${++contextReads}`);
+			},
+		}),
 		createTabLabels: () => new NoTabLabels(),
 		statusLines: (connection) => (connection ? claudeStatusLines(connection, terminalUnavailable) : null),
 	};

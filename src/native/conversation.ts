@@ -18,6 +18,8 @@
  * saying what it said.
  */
 
+import type { ContextBreakdown } from './contextBreakdown';
+
 /** One assistant message's prose, merged across every record that carried it. */
 export interface TextEntry {
 	kind: 'text';
@@ -370,6 +372,12 @@ export interface SessionInfo {
 		/** Input tokens served from the cache. */
 		cached?: number;
 	};
+	/**
+	 * The newest context breakdown a context command wrote into the
+	 * transcript (Claude's `/context`, #171), which the session bar shows
+	 * when its readout asked for it.
+	 */
+	contextReport?: ContextBreakdown;
 }
 
 /**

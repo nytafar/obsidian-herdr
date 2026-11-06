@@ -39,6 +39,7 @@ import type { KeySender, PromptClient, PromptSender } from '../native/promptSend
 import type { WaitingResponder } from '../native/pendingRequest';
 import type { ScreenAccess } from '../native/screenAccess';
 import type { SessionSettingsSender } from '../native/sessionSettings';
+import type { ContextUsageReader } from '../native/contextBreakdown';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
@@ -429,6 +430,13 @@ export interface RuntimeKindAdapter<
 	 * #170), whose pickers show the value, disabled, with the reason.
 	 */
 	sessionSettings?(client: () => PromptClient | null): SessionSettingsSender;
+	/**
+	 * The context readout's breakdown (#171), asked of the agent without
+	 * writing to the conversation: `get_context_usage` on the `claude` kind.
+	 * Absent where the agent is asked through the prompt instead (herdr and
+	 * herdr-core send the format's `contextCommand`, idle or done only).
+	 */
+	contextUsage?(client: () => PromptClient | null): ContextUsageReader;
 	/**
 	 * The tab labels views on this connection read, built once per connection.
 	 * `alive()` is true while that connection is the published one.

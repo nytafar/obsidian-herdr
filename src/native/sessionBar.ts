@@ -18,6 +18,14 @@
  * Built once per attach and updated in place: a reply, a `/model` line or a
  * compaction rewrites a text or a class, never the row.
  *
+ * The readout is a button (#171): a click shows the agent's context
+ * breakdown in a popover over the bar. A kind that can ask without writing
+ * to the conversation has a reader (the `claude` kind's
+ * `get_context_usage`); elsewhere the format's context command (`/context`)
+ * goes through the prompt, idle or done only, and the breakdown is the
+ * report the transcript then gives (`SessionInfo.contextReport`), which the
+ * parser keeps out of the turns (`./contextBreakdown.ts`).
+ *
  * Its own element, not the prompt box's: the waiting card hides the prompt
  * box (#99) and the bar stays, disabled, because the values are still worth
  * seeing while the agent asks something.
@@ -26,9 +34,17 @@
  * on a `Component` unloaded on `destroy`.
  */
 
-import { Component, Menu, Notice } from 'obsidian';
+import { Component, Menu, Notice, setIcon } from 'obsidian';
 import type { AgentFormat } from '../agents/format';
 import type { AgentStatus } from '../herdr/types.gen';
+import {
+	breakdownHeadline,
+	contextBlock,
+	contextFailureMessage,
+	CONTEXT_WAIT_MS,
+	type ContextBreakdown,
+	type ContextUsageReader,
+} from './contextBreakdown';
 import type { SessionInfo } from './conversation';
 import {
 	contextReadout,
@@ -59,8 +75,28 @@ export interface SessionBarOptions {
 	paneId: () => string;
 	/** The tab's runtime's sender, read per draw and per pick, or null for none yet. */
 	sender: () => SessionSettingsSender | null;
+	/**
+	 * The tab's runtime's way of asking for the context breakdown without
+	 * writing to the conversation (#171), read per click, or null.
+	 */
+	contextUsage?: () => ContextUsageReader | null;
+	/**
+	 * Sends a context command through the prompt, for a kind with no reader:
+	 * the prompt sender's own path. Without it, and without a reader, the
+	 * readout opens nothing.
+	 */
+	sendCommand?: (paneId: string, text: string) => Promise<void>;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
+}
+
+/** Why a context command's output never came. */
+export const CONTEXT_TIMEOUT = 'it did not reach the transcript in time';
+
+/** A context command sent, waiting for a report newer than `seen`. */
+interface ContextWait {
+	seen: string | undefined;
+	settle: (report: ContextBreakdown | Error) => void;
 }
 
 /** What each picker is called, for its tooltip and its label. */
@@ -87,9 +123,15 @@ export class SessionBar {
 	private readonly component = new Component();
 	private rootEl: HTMLElement | null = null;
 	private readonly pickers = new Map<SessionSetting, Picker>();
-	private readoutEl: HTMLElement | null = null;
+	private readoutEl: HTMLButtonElement | null = null;
 	private tokensEl: HTMLElement | null = null;
 	private percentEl: HTMLElement | null = null;
+	/** True from a click on the readout until the breakdown came or failed. */
+	private contextBusy = false;
+	/** A context command waiting for its output in the transcript. */
+	private contextWait: ContextWait | null = null;
+	/** The open breakdown popover and its own listeners, or null. */
+	private popover: { el: HTMLElement; component: Component } | null = null;
 	/** The state last drawn, which a pick's menu reads. */
 	private state: SessionBarState = { info: {}, status: 'unknown', connected: false, format: undefined };
 
@@ -114,10 +156,13 @@ export class SessionBar {
 			this.pickers.set(setting, picker);
 			this.component.registerDomEvent(buttonEl, 'click', (event: MouseEvent) => this.open(picker, event));
 		}
-		const readoutEl = root.createDiv({ cls: 'herdr-native-session-context' });
+		const readoutEl = root.createEl('button', { cls: 'herdr-native-session-context' });
 		this.tokensEl = readoutEl.createSpan({ cls: 'herdr-native-session-tokens' });
 		readoutEl.createSpan({ cls: 'herdr-native-session-sep', text: ' · ' });
 		this.percentEl = readoutEl.createSpan({ cls: 'herdr-native-session-percent' });
+		this.component.registerDomEvent(readoutEl, 'click', () => {
+			void this.openContext();
+		});
 		this.readoutEl = readoutEl;
 		this.rootEl = root;
 		this.draw();
@@ -125,6 +170,9 @@ export class SessionBar {
 
 	/** Drops the row and every listener on it. Idempotent. */
 	destroy(): void {
+		this.closeContext();
+		this.contextWait?.settle(new Error('the view closed'));
+		this.contextWait = null;
 		this.component.unload();
 		this.rootEl?.remove();
 		this.rootEl = null;
@@ -137,6 +185,9 @@ export class SessionBar {
 	/** The session moved: rewrites what changed in place. */
 	update(state: SessionBarState): void {
 		this.state = state;
+		const report = state.info.contextReport;
+		const wait = this.contextWait;
+		if (wait && report && report.id !== wait.seen) wait.settle(report);
 		this.draw();
 	}
 
@@ -195,8 +246,131 @@ export class SessionBar {
 			readoutEl.toggleClass('herdr-is-hidden', readout.tokens === '');
 			readoutEl.toggleClass('herdr-has-window', readout.percent !== '');
 			readoutEl.toggleClass('herdr-is-warning', readout.warning);
-			if (readoutEl.getAttribute('aria-label') !== readout.title) readoutEl.setAttr('aria-label', readout.title);
+			const reason = this.contextBlock();
+			readoutEl.disabled = reason !== null || this.contextBusy;
+			const label = reason ? `${readout.title}. ${reason}` : readout.title;
+			if (readoutEl.getAttribute('aria-label') !== label) readoutEl.setAttr('aria-label', label);
 		}
+	}
+
+	/** Why the readout opens no breakdown now, or null when it does. */
+	private contextBlock(): string | null {
+		return contextBlock({
+			status: this.state.status,
+			connected: this.state.connected,
+			paneId: this.options.paneId(),
+			reader: Boolean(this.options.contextUsage?.()),
+			command: this.options.sendCommand ? this.state.format?.contextCommand : undefined,
+		});
+	}
+
+	/**
+	 * A click on the readout: closes an open breakdown, else asks for one
+	 * and shows it. A failure is a notice with the runtime's words.
+	 */
+	async openContext(): Promise<void> {
+		if (this.popover) {
+			this.closeContext();
+			return;
+		}
+		if (this.contextBusy || this.contextBlock() !== null) return;
+		const paneId = this.options.paneId();
+		const reader = this.options.contextUsage?.() ?? null;
+		this.contextBusy = true;
+		this.draw();
+		try {
+			const breakdown = reader ? await reader.read(paneId) : await this.askCommand(paneId);
+			if (this.rootEl) this.showContext(breakdown);
+		} catch (error) {
+			if (this.rootEl) this.notify(contextFailureMessage(error));
+		} finally {
+			this.contextBusy = false;
+			this.draw();
+		}
+	}
+
+	/**
+	 * Sends the format's context command through the prompt and settles with
+	 * the first report newer than the one the session held when it went.
+	 */
+	private askCommand(paneId: string): Promise<ContextBreakdown> {
+		const command = this.state.format?.contextCommand;
+		const send = this.options.sendCommand;
+		if (!command || !send) return Promise.reject(new Error('this agent has no context command'));
+		return new Promise<ContextBreakdown>((resolve, reject) => {
+			const wait: ContextWait = {
+				seen: this.state.info.contextReport?.id,
+				settle: (report) => {
+					if (this.contextWait !== wait) return;
+					this.contextWait = null;
+					window.clearTimeout(timer);
+					if (report instanceof Error) reject(report);
+					else resolve(report);
+				},
+			};
+			const timer = window.setTimeout(() => wait.settle(new Error(CONTEXT_TIMEOUT)), CONTEXT_WAIT_MS);
+			this.contextWait = wait;
+			send(paneId, command).catch((error: unknown) =>
+				wait.settle(error instanceof Error ? error : new Error(String(error))),
+			);
+		});
+	}
+
+	/** Draws the breakdown in a popover over the bar; Escape, a click outside or the close button ends it. */
+	private showContext(breakdown: ContextBreakdown): void {
+		const root = this.rootEl;
+		if (!root) return;
+		this.closeContext();
+		const component = new Component();
+		component.load();
+		const el = root.createDiv({ cls: 'herdr-native-context-popover' });
+		el.setAttr('role', 'dialog');
+		el.setAttr('aria-label', 'Context usage');
+		const head = el.createDiv({ cls: 'herdr-native-context-head' });
+		head.createSpan({ cls: 'herdr-native-context-title', text: breakdownHeadline(breakdown) });
+		const close = head.createEl('button', { cls: ['clickable-icon', 'herdr-native-context-close'] });
+		setIcon(close, 'x');
+		close.setAttr('aria-label', 'Close');
+		component.registerDomEvent(close, 'click', () => this.closeContext());
+		if (breakdown.categories.length) {
+			const table = el.createEl('table', { cls: 'herdr-native-context-table' });
+			const headRow = table.createEl('thead').createEl('tr');
+			for (const name of ['Category', 'Tokens', 'Share']) headRow.createEl('th', { text: name });
+			const body = table.createEl('tbody');
+			for (const category of breakdown.categories) {
+				const row = body.createEl('tr');
+				row.createEl('td', { text: category.name });
+				row.createEl('td', { cls: 'herdr-native-context-number', text: category.tokens });
+				row.createEl('td', { cls: 'herdr-native-context-number', text: category.share });
+			}
+		}
+		component.registerDomEvent(el, 'keydown', (event: KeyboardEvent) => {
+			if (event.key === 'Escape') this.closeContext();
+		});
+		// The document the bar is in (a popout window has its own).
+		const doc = (root as Partial<Pick<HTMLElement, 'doc'>>).doc;
+		if (doc) {
+			component.registerDomEvent(doc, 'keydown', (event: KeyboardEvent) => {
+				if (event.key === 'Escape') this.closeContext();
+			});
+			component.registerDomEvent(doc, 'mousedown', (event: MouseEvent) => {
+				const target = event.target;
+				if (target instanceof Node && (el.contains(target) || this.readoutEl?.contains(target))) return;
+				this.closeContext();
+			});
+		}
+		this.popover = { el, component };
+		this.readoutEl?.setAttr('aria-expanded', 'true');
+	}
+
+	/** Takes the breakdown popover down, if one is open. */
+	private closeContext(): void {
+		const popover = this.popover;
+		if (!popover) return;
+		this.popover = null;
+		popover.component.unload();
+		popover.el.remove();
+		this.readoutEl?.setAttr('aria-expanded', 'false');
 	}
 
 	/** Opens a picker's menu: every value, the current one checked. */
