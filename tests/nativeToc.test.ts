@@ -12,7 +12,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { TocPanel, tocTarget, type ActiveLeafFacts } from '../src/native/tocView';
 import { OutlineSwap, outlineSwapAction } from '../src/native/tocOutline';
-import { emptyTranscript, type Turn, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,

@@ -16,7 +16,7 @@ import {
 	turnItems,
 	type TodoItem,
 } from '../src/native/toolCalls';
-import type { ToolEntry, Turn, TurnEntry } from '../src/native/reducer';
+import type { ToolEntry, Turn, TurnEntry } from '../src/native/conversation';
 
 function todoWrite(id: string, todos: unknown): ToolEntry {
 	return {

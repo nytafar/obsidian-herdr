@@ -14,7 +14,7 @@ import {
 	turnActivity,
 	turnItems,
 } from '../src/native/toolCalls';
-import type { ToolEntry, ToolStatus, TurnEntry } from '../src/native/reducer';
+import type { ToolEntry, ToolStatus, TurnEntry } from '../src/native/conversation';
 
 function tool(id: string, name = 'Read', status: ToolStatus = 'done'): ToolEntry {
 	return {

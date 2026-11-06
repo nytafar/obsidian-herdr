@@ -29,7 +29,7 @@ import { herdrSessionWatcher, type WatchableScope } from '../src/herdr/sessionWa
 import type { PaneState } from '../src/herdr/scope';
 import type { PaneInfo, PaneProcessInfo } from '../src/herdr/types.gen';
 import type { HerdrEvent } from '../src/herdr/client';
-import { encodeProjectDir } from '../src/native/transcriptSource';
+import { encodeProjectDir } from '../src/agents/claude/paths';
 
 /** `pane.process_info` as herdr 0.9.5 answered it for a Claude pane on 2026-11-06. */
 function processInfo(cwd: string, pid = 4298): PaneProcessInfo {

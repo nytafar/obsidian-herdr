@@ -16,7 +16,7 @@ import {
 	replyMarkdown,
 	type Copier,
 } from '../src/native/copyActions';
-import type { ToolEntry, Turn, TurnEntry } from '../src/native/reducer';
+import type { ToolEntry, Turn, TurnEntry } from '../src/native/conversation';
 
 const VAULT = '/vault';
 

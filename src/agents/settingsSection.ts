@@ -21,6 +21,7 @@
 import { Setting } from 'obsidian';
 import type { HerdrSettings, SettingsCallbacks } from '../settings';
 import { activeRuntimeOf, runtimeDisplayName, RUNTIME_KIND_LABELS, type RuntimeConfig } from '../runtimes';
+import { offersNativeView } from './format';
 import {
 	foundOnAny,
 	machineFailures,
@@ -72,7 +73,7 @@ export function entryDescription(
 	}
 	if (entry.isDefault) parts.push('Default.');
 	if (entry.hidden) parts.push('Hidden from the menu.');
-	if (profile.native) parts.push('Has the native view.');
+	if (entry.native) parts.push('Has the native view.');
 	return parts.join(' ');
 }
 
@@ -168,6 +169,7 @@ export function buildAgentCatalogSettings(
 				found: null,
 				hidden: settings.hiddenAgents.includes(profile.id),
 				isDefault: false,
+				native: offersNativeView(runtime.kind, profile.agent),
 			}));
 
 	const baseDesc = `What the + button offers on ${runtimeDisplayName(runtime)} (${RUNTIME_KIND_LABELS[runtime.kind]}): a left click starts the default, a right click lists them all. Agent CLIs not installed ${machinePhrase(runtime)} are left out; your own entries always show. Each row says which of your runtimes' machines have it, checked once each time settings open.`;

@@ -46,7 +46,7 @@ import { afterAll, bench, describe } from 'vitest';
 import { hostEl, type FakeElement } from '../fixtures/dom';
 import { MarkdownRenderer } from '../fixtures/obsidian';
 import { NativePaneSurface } from '../../src/native/surface';
-import { emptyTranscript, reduce, type TranscriptState } from '../../src/native/reducer';
+import { emptyTranscript, reduce, type TranscriptState } from '../../src/agents/claude/transcript';
 import type {
 	BlockKind,
 	SessionChange,

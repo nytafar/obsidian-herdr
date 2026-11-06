@@ -21,9 +21,15 @@
  * status as `unknown`, which is also what disables the prompt box. It follows
  * again when its own runtime comes back.
  *
- * Content comes from the transcript source, meaning from the reducer, and
+ * Content comes from the transcript source, meaning from the parser, and
  * status from the watcher's transitions; none of those three knows a pane
  * exists.
+ *
+ * **Read with the pane's agent's format** (ADR-0010): the watcher names the
+ * agent, and its `AgentFormat` (`../agents/format.ts`) is the parser, the
+ * transcript's location when the runtime names no path, the images, the
+ * background reports and the plan file. Nothing here knows which agent it
+ * is; a pane whose agent changes is a new session, read from the start.
  *
  * No Obsidian here: the view layer subscribes, and `src/main.ts` holds the
  * registry and hands it each runtime's watcher and source through its kind.
@@ -31,25 +37,21 @@
 
 import {
 	attachSubagentReport,
-	emptyTranscript,
-	lastAssistantText,
+	emptyConversation,
 	markLost,
-	reduce,
-	transcriptImage,
+	mergeSessionInfo,
+	type ConversationState,
 	type ImageBytes,
 	type ImageEntry,
-	type TaskNotification,
-	type TranscriptState,
-} from './reducer';
-import { toolKind } from './toolCalls';
-import {
-	transcriptPath,
-	type TranscriptSource,
-	type TranscriptStream,
-} from './transcriptSource';
+	type ReduceResult,
+	type SessionInfo,
+	type ToolEntry,
+} from './conversation';
+import type { TranscriptSource, TranscriptStream } from './transcriptSource';
 import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
 import type { PendingRequest } from './pendingRequest';
-import { PlanTracker, planFilePath } from './planFile';
+import { agentFormat, type AgentFormat, type PlanReader } from '../agents/format';
+import { DEFAULT_AGENT_KIND } from '../agents/catalog';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
@@ -73,7 +75,19 @@ export interface SessionChange {
  * satisfies.
  */
 export interface SessionModelView {
-	readonly state: TranscriptState;
+	readonly state: ConversationState;
+	/**
+	 * The format the session is read with: the pane's agent's (ADR-0010).
+	 * Null while the pane has none the model can read; optional so a fake need
+	 * not say it, and a view without one words what it shows for any agent.
+	 */
+	readonly format?: AgentFormat | null;
+	/**
+	 * What the session is running with (#110, #111): the format's reading of the
+	 * records, with the runtime's own word put over it per field. Model,
+	 * effort, usage. Optional so a fake need not say it.
+	 */
+	readonly sessionInfo?: SessionInfo;
 	/** The transcript being shown, or null while the pane has no session yet. */
 	readonly path: string | null;
 	/**
@@ -182,6 +196,12 @@ export interface SessionModelOptions {
 	 * Claude resumed on it — what was running in its first lines is lost.
 	 */
 	ended?: Map<string, number>;
+	/**
+	 * The format an agent's sessions are read with, or null for an agent this
+	 * build reads none of. The agent seam's registry when not given
+	 * (`../agents/format.ts`); a test gives its own.
+	 */
+	formats?: (agent: string) => AgentFormat | null;
 }
 
 /** One pane's transcript, reduced, kept current. */
@@ -189,7 +209,14 @@ export class SessionModel implements SessionModelView {
 	readonly endpointId: string;
 	readonly paneId: string;
 	private readonly options: SessionModelOptions;
-	private transcript: TranscriptState = emptyTranscript();
+	/** The format of the session being shown: the pane's agent's (ADR-0010). */
+	private currentFormat: AgentFormat | null = null;
+	/**
+	 * What the runtime itself said of the session when the model last read the
+	 * pane (a follow or a status transition), put over the format's reading.
+	 */
+	private infoOverlay: SessionInfo | undefined = undefined;
+	private transcript: ConversationState = emptyConversation();
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	private currentPath: string | null = null;
 	private session = '';
@@ -237,8 +264,11 @@ export class SessionModel implements SessionModelView {
 	private lostBefore = 0;
 	/** Whether the runtime says the agent stopped while its session stays (#135). */
 	private stopped = false;
-	/** The session's slug and plan mode, from the lines read so far (#148). */
-	private readonly planTracker = new PlanTracker();
+	/**
+	 * Where the session keeps its plan, from the lines read so far (#148), for
+	 * an agent whose format has a plan file; null for any other.
+	 */
+	private planReader: PlanReader | null = null;
 	/** The plan file's text while it is wanted and has been read, else null. */
 	private planText: string | null = null;
 	/**
@@ -279,8 +309,18 @@ export class SessionModel implements SessionModelView {
 	}
 
 	/** The reduced transcript as it stands. Never mutated in place. */
-	get state(): TranscriptState {
+	get state(): ConversationState {
 		return this.transcript;
+	}
+
+	/** The format the session is read with, or null while there is none to read. */
+	get format(): AgentFormat | null {
+		return this.currentFormat;
+	}
+
+	/** What the records read so far say of the session, the runtime's own word put over it per field. */
+	get sessionInfo(): SessionInfo {
+		return mergeSessionInfo(this.currentFormat?.sessionInfo(this.transcript) ?? {}, this.infoOverlay);
 	}
 
 	/** The file being shown, or null while the pane has no session yet. */
@@ -367,7 +407,7 @@ export class SessionModel implements SessionModelView {
 		}
 		const text = await read.text;
 		if (generation !== this.generation || !text) return null;
-		return transcriptImage(text, image.record, image.index);
+		return this.currentFormat?.readImage(text, image) ?? null;
 	}
 
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
@@ -473,8 +513,10 @@ export class SessionModel implements SessionModelView {
 	private onStatusChanged(paneId: string, status: AgentStatus, kind?: BlockKind): void {
 		if (paneId !== this.paneId) return;
 		const block = status === 'blocked' ? (kind ?? null) : null;
-		const request = status === 'blocked' ? (this.watcher?.snapshot(paneId)?.request ?? null) : null;
-		const stopped = this.watcher?.snapshot(paneId)?.stopped === true;
+		const snapshot = this.watcher?.snapshot(paneId);
+		const request = status === 'blocked' ? (snapshot?.request ?? null) : null;
+		const stopped = snapshot?.stopped === true;
+		this.infoOverlay = snapshot?.sessionInfo;
 		if (status === this.status && block === this.block && request === this.pending && stopped === this.stopped) {
 			return;
 		}
@@ -506,21 +548,31 @@ export class SessionModel implements SessionModelView {
 		this.pending = request;
 		this.session = pane?.agentSession ?? '';
 		this.reportedPath = pane?.transcriptPath ?? '';
+		this.infoOverlay = pane?.sessionInfo;
 		this.status = status;
 		this.block = block;
 		if (status !== 'blocked') this.blockClaim = null;
 		// Before the file changes too: a plan wanted for this file is read now,
 		// and one that no longer is goes with the status that ended it.
 		this.refreshPlan();
-		const path = pane?.agentSession
-			? pane.transcriptPath ||
-				transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
-			: null;
+		// The pane's agent picks the format its session is read with; a runtime
+		// that does not say runs the catalog's default agent, as it always did.
+		// An agent with no format has nothing here to read (ADR-0010).
+		const format = pane ? this.formatOf(pane.agent || DEFAULT_AGENT_KIND) : this.currentFormat;
+		const path =
+			pane?.agentSession && format
+				? pane.transcriptPath ||
+					format.transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
+				: null;
 		const source = this.source;
 		// `streamSource` is set exactly while a tail is open, so this is "no
 		// session then and now", or "the same file on a tail from the same
 		// source" — including no tail at all while there is no source to read.
-		if (path === this.currentPath && (path === null || this.streamSource === source)) {
+		if (
+			path === this.currentPath &&
+			format === this.currentFormat &&
+			(path === null || this.streamSource === source)
+		) {
 			// The same session, so nothing to reload. A status read here rather
 			// than off a transition, as after a rebind, is still news to the view.
 			if (this.setStopped(pane?.stopped === true)) return;
@@ -537,6 +589,10 @@ export class SessionModel implements SessionModelView {
 		}
 		this.closeStream();
 		this.currentPath = path;
+		if (format !== this.currentFormat) {
+			this.currentFormat = format;
+			this.planReader = format?.plan?.() ?? null;
+		}
 		this.restart();
 		this.stopped = pane?.stopped === true;
 		if (path) {
@@ -567,7 +623,7 @@ export class SessionModel implements SessionModelView {
 
 	/** Empties everything read so far, for another file or the same one replaced. */
 	private restart(): void {
-		this.transcript = emptyTranscript();
+		this.transcript = this.currentFormat?.parser.empty() ?? emptyConversation();
 		// Nothing of the new file has been read, whatever was read of the old one.
 		this.delivered = false;
 		// Another file is another block, whatever the status still says.
@@ -576,7 +632,7 @@ export class SessionModel implements SessionModelView {
 		this.readingReports.clear();
 		this.linesRead = 0;
 		this.lostBefore = 0;
-		this.planTracker.reset();
+		this.planReader?.reset();
 		this.planText = null;
 		this.planKey = '';
 	}
@@ -591,7 +647,7 @@ export class SessionModel implements SessionModelView {
 		this.delivered = true;
 		const { state, changedTurnIds, removedTurnIds } = this.reduceLines(lines);
 		this.transcript = state;
-		this.planTracker.feed(lines);
+		this.planReader?.feed(lines);
 		// The block may have come before the lines that say it is plan mode.
 		this.refreshPlan();
 		if (restart) this.emit({ changedTurnIds: [], reset: true });
@@ -605,11 +661,15 @@ export class SessionModel implements SessionModelView {
 	 * everything while the runtime says it stopped, and in a file Claude
 	 * resumed, what was running when the lines its earlier run wrote ran out.
 	 */
-	private reduceLines(lines: string[]): ReturnType<typeof reduce> {
+	private reduceLines(lines: string[]): ReduceResult {
 		const before = this.linesRead;
 		this.linesRead += lines.length;
+		const parser = this.currentFormat?.parser;
+		// No format, no path, no tail: nothing reaches here, but nothing is read either.
+		if (!parser) return { state: this.transcript, changedTurnIds: [], removedTurnIds: [] };
+		const reduce = (state: ConversationState, batch: string[]): ReduceResult => parser.reduce(state, batch);
 		const cut = this.lostBefore - before;
-		let result: ReturnType<typeof reduce>;
+		let result: ReduceResult;
 		if (cut > 0 && cut <= lines.length) {
 			const earlier = reduce(this.transcript, lines.slice(0, cut));
 			const lost = markLost(earlier.state);
@@ -648,33 +708,33 @@ export class SessionModel implements SessionModelView {
 	 * Starts the read for every finished background subagent in the turns that
 	 * just moved (#96).
 	 *
-	 * The reducer stays pure, so this is where the file is opened: a report is
+	 * The parser stays pure, so this is where the file is opened: a report is
 	 * not in the transcript at all, only the notification that names the file it
 	 * was written to. Each call is read once, and the answer comes back as an
 	 * ordinary changed turn.
 	 */
 	private readReports(changedTurnIds: readonly string[]): void {
-		if (!changedTurnIds.length) return;
+		const reports = this.currentFormat?.reports;
+		const transcript = this.currentPath;
+		if (!changedTurnIds.length || !reports || !transcript) return;
 		for (const turn of this.transcript.turns) {
 			if (!changedTurnIds.includes(turn.id)) continue;
 			for (const entry of turn.entries) {
 				if (entry.kind !== 'tool' || entry.report !== null) continue;
-				// Only a subagent has a report; a background command's output file
-				// is its stdout, which the tool group already accounts for. The
-				// notification says whose it is (#135).
-				if (!entry.notification || entry.notification.kind === 'command') continue;
-				if (toolKind(entry.name) !== 'agent') continue;
-				if (this.readingReports.has(entry.id)) continue;
+				// The format says which calls have a report and where it is.
+				const paths = reports.paths(entry, transcript);
+				if (!paths.length || this.readingReports.has(entry.id)) continue;
 				this.readingReports.add(entry.id);
-				void this.readReport(entry.id, entry.notification);
+				void this.readReport(entry, paths);
 			}
 		}
 	}
 
 	/** Reads one report and feeds it back, unless the session moved on meanwhile. */
-	private async readReport(toolUseId: string, notification: TaskNotification): Promise<void> {
+	private async readReport(call: ToolEntry, paths: readonly string[]): Promise<void> {
+		const toolUseId = call.id;
 		const generation = this.generation;
-		const report = await this.subagentReport(notification);
+		const report = await this.subagentReport(paths);
 		// The session rotated while the file was being read: that transcript is
 		// gone and so is the turn this belonged to (ADR-0003).
 		if (generation !== this.generation || !report) return;
@@ -685,19 +745,20 @@ export class SessionModel implements SessionModelView {
 	}
 
 	/**
-	 * A subagent's report: the last thing it said in the file its notification
-	 * named, falling back to its transcript beside the session's own file, which
-	 * is where Claude Code also keeps it (`docs/architecture.md`). Read through
-	 * the source the tail came from, which is the transcript's own host.
+	 * A background call's report: the first of the files its format named
+	 * that holds one, read the format's way (Claude's: the file its
+	 * notification named, then its transcript beside the session's own,
+	 * `docs/architecture.md`). Read through the source the tail came from,
+	 * which is the transcript's own host.
 	 */
-	private async subagentReport(notification: TaskNotification): Promise<string> {
+	private async subagentReport(paths: readonly string[]): Promise<string> {
 		const source = this.streamSource ?? this.source;
-		if (!source) return '';
-		for (const path of [notification.outputFile, this.subagentPath(notification.taskId)]) {
-			if (!path) continue;
+		const reports = this.currentFormat?.reports;
+		if (!source || !reports) return '';
+		for (const path of paths) {
 			const text = await source.read(path);
 			if (!text) continue;
-			const report = lastAssistantText(text.split('\n'));
+			const report = reports.read(text.split('\n'));
 			if (report) return report;
 		}
 		return '';
@@ -714,8 +775,9 @@ export class SessionModel implements SessionModelView {
 	private wantedPlan(): string {
 		if (this.status !== 'blocked' || this.pending) return '';
 		if (this.block !== null && this.block !== 'permission') return '';
-		if (!this.planTracker.planMode || !this.currentPath || !(this.streamSource ?? this.source)) return '';
-		const path = planFilePath(this.currentPath, this.planTracker.slug);
+		const plan = this.planReader;
+		if (!plan?.planMode || !this.currentPath || !(this.streamSource ?? this.source)) return '';
+		const path = plan.file(this.currentPath);
 		return path ? `${this.generation}\n${path}` : '';
 	}
 
@@ -745,11 +807,9 @@ export class SessionModel implements SessionModelView {
 		this.emit({ changedTurnIds: [], reset: false });
 	}
 
-	/** `<session>/subagents/agent-<task id>.jsonl`, beside the session's transcript. */
-	private subagentPath(taskId: string): string {
-		const path = this.currentPath;
-		if (!path || !taskId) return '';
-		return `${path.replace(/\.jsonl$/, '')}/subagents/agent-${taskId}.jsonl`;
+	/** The format for `agent`, from the registry unless the options gave another. */
+	private formatOf(agent: string): AgentFormat | null {
+		return (this.options.formats ?? agentFormat)(agent);
 	}
 
 	private emit(change: SessionChange): void {
@@ -770,6 +830,8 @@ export interface SessionModelRegistryOptions {
 	/** Where that runtime's transcripts are read, or null while they cannot be. */
 	source(endpointId: string): TranscriptSource | null;
 	home?: string;
+	/** The formats agents are read with; the registry in `../agents/format.ts` when not given. */
+	formats?: (agent: string) => AgentFormat | null;
 }
 
 /** The registry key of a pane on a runtime; a newline is in neither id. */
@@ -815,6 +877,7 @@ export class SessionModelRegistry implements SessionModels {
 					source: () => this.options.source(endpointId),
 					home: this.options.home,
 					ended: this.ended,
+					...(this.options.formats ? { formats: this.options.formats } : {}),
 				}),
 				holders: 0,
 			};

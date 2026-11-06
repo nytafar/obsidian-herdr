@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isSafeSlug, PlanTracker, planFilePath } from '../src/native/planFile';
+import { isSafeSlug, PlanTracker, planFilePath } from '../src/agents/claude/planFile';
 
 const TRANSCRIPT = '/home/lasse/.claude/projects/-home-lasse-code/363fde6f-2e65-4ff8-a20c-f30cb8777164.jsonl';
 

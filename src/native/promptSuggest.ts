@@ -8,7 +8,7 @@
  * - **`/` at the very start of the prompt** offers the command catalog
  *   (`./commandCatalog.ts`) of the pane's own machine, read here for a local
  *   runtime and over the connection for a remote herdr-core one
- *   (`../hc/commandCatalog.ts`), because that is where Claude Code reads a command
+ *   (`../hc/commandCatalog.ts`), because that is where the agent reads a command
  *   from: a leading `/command` is executed, a slash anywhere else is text
  *   (`docs/architecture.md`, "Agent prompts and session identity").
  * - **`@` at a word boundary** offers vault files, and what goes into the
@@ -34,7 +34,6 @@
 
 import { AbstractInputSuggest, type App, type TFile } from 'obsidian';
 import {
-	LocalCommandCatalog,
 	matchCommands,
 	scopeLabel,
 	type CatalogEntry,
@@ -42,9 +41,14 @@ import {
 	type CommandUsage,
 } from './commandCatalog';
 import { mentionFor, vaultFileAbsolutePath } from './promptMentions';
+import type { AgentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
 
 /** How many files a `@` offers at once. */
 const FILE_LIMIT = 50;
+
+/** What a pane whose agent has no format offers after a `/`: nothing. */
+const NO_COMMANDS: CommandCatalogSource = { catalog: () => [] };
 
 /** What is being completed, and the text it replaces. */
 export interface PromptTrigger {
@@ -103,10 +107,16 @@ export interface PromptSuggestOptions {
 	/**
 	 * Where the `/` catalog is read, asked on every `/`: the pane's machine,
 	 * which for a herdr-core runtime over SSH is another one and answers
-	 * asynchronously. Not given, or null, is this machine's files, walked by
-	 * this suggest and kept for the TTL.
+	 * asynchronously. Not given, or null, is this machine's catalogue of the
+	 * pane's agent ({@link format}), walked by this suggest and kept for the TTL.
 	 */
 	catalog?: () => CommandCatalogSource | null;
+	/**
+	 * The format of the agent the pane runs, whose catalogue this machine's
+	 * is read as (ADR-0010). Not given, or null, is the catalog's default
+	 * agent's, as before agents had formats.
+	 */
+	format?: () => AgentFormat | null | undefined;
 	/** The pane this box prompts, for a catalog that reads per pane (#132). */
 	paneId?: () => string;
 	/**
@@ -129,7 +139,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private readonly textEl: HTMLTextAreaElement;
 	private readonly options: PromptSuggestOptions;
 	/** This machine's catalog, for a suggest that was given no source. */
-	private localCatalog: LocalCommandCatalog | null = null;
+	private localCatalog: { format: AgentFormat; source: CommandCatalogSource } | null = null;
 	/** The trigger the offered suggestions were built for. */
 	private trigger: PromptTrigger | null = null;
 	/** Whether the popover is showing; see {@link PromptSuggest.isOpen}. */
@@ -240,8 +250,10 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private catalogSource(): CommandCatalogSource {
 		const given = this.options.catalog?.();
 		if (given) return given;
-		this.localCatalog ??= new LocalCommandCatalog();
-		return this.localCatalog;
+		const format = this.options.format?.() ?? defaultAgentFormat();
+		if (!format) return NO_COMMANDS;
+		if (this.localCatalog?.format !== format) this.localCatalog = { format, source: format.commands.local() };
+		return this.localCatalog.source;
 	}
 
 	/** Vault files whose path contains the query, shortest path first. */

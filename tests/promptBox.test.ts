@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { PromptBox, promptBoxState } from '../src/native/promptBox';
 import { NativePaneSurface } from '../src/native/surface';
-import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import type { PromptSender } from '../src/native/promptSender';
 import type {
 	BlockKind,

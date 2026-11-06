@@ -18,8 +18,9 @@
  * folder and real cwd — and pushes it as soon as it is known; without one, or
  * until then, the model derives the path from the pane's cwd and session.
  *
- * Only a Claude pane has a native view (#155): a pane whose `agent` names
- * another agent is {@link SessionWatcher.unavailable} with the reason, so a
+ * Only a pane whose agent the native view can read has one (#155, #137): a
+ * pane whose `agent` has no format, or a session herdr cannot vouch for, is
+ * {@link SessionWatcher.unavailable} with the reason, so a
  * Codex thread id is never read as a Claude session's.
  */
 
@@ -27,7 +28,7 @@ import type { HerdrEvent } from './client';
 import type { PaneState } from './scope';
 import type { PaneInfo } from './types.gen';
 import type { PaneSnapshot, SessionWatcher, Unsubscribe } from '../native/sessionWatcher';
-import { claudeTranscriptFile } from '../native/transcriptSource';
+import { claudeTranscriptFile } from '../agents/claude/paths';
 import type { PaneClaudeResolver } from './paneClaude';
 import { nativeAgentReason } from '../native/agentSupport';
 
@@ -119,6 +120,7 @@ export function herdrSessionWatcher(
 			return {
 				paneId,
 				cwd: pane.cwd,
+				agent: pane.agent,
 				agentSession,
 				...(path ? { transcriptPath: path } : {}),
 				agentStatus: pane.agentStatus,
@@ -173,12 +175,12 @@ export function herdrSessionWatcher(
 		unavailable(paneId: string): string | null {
 			// The scope holds agent panes only: a pane with no agent yet is not in
 			// it, and is not refused.
-			return nativeAgentReason(scope.get(paneId)?.agent);
+			return nativeAgentReason('herdr', scope.get(paneId)?.agent);
 		},
 		onAvailability(handler): Unsubscribe {
 			// A pane's agent is set when it joins the scope, and changes in place
 			// when one agent exits and another starts in the same pane.
-			const reasonOf = (pane: PaneState): string => nativeAgentReason(pane.agent) ?? '';
+			const reasonOf = (pane: PaneState): string => nativeAgentReason('herdr', pane.agent) ?? '';
 			const offAdded = scope.on('added', (pane) => {
 				if (reasonOf(pane)) handler(pane.paneId);
 			});

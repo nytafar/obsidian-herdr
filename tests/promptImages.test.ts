@@ -15,7 +15,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { emptyTranscript, reduce, transcriptImage, type ImageEntry } from '../src/native/reducer';
+import { emptyTranscript, reduce, transcriptImage } from '../src/agents/claude/transcript';
+import type { ImageEntry } from '../src/native/conversation';
 import {
 	escapedPath,
 	imageFileProblem,

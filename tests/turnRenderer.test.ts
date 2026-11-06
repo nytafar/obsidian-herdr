@@ -15,7 +15,7 @@ import { TurnRenderer } from '../src/native/turnRenderer';
 import { FoldMemory } from '../src/native/foldMemory';
 import { nameTurnItems } from '../src/native/itemKeys';
 import { turnItems, type ToolGroupPresentation } from '../src/native/toolCalls';
-import type { ToolEntry, Turn, TurnEntry } from '../src/native/reducer';
+import type { ToolEntry, Turn, TurnEntry } from '../src/native/conversation';
 
 const VAULT = '/vault';
 

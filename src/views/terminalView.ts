@@ -110,7 +110,8 @@ import {
 	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState } from '../herdr/scope';
-import type { SessionWatcher } from '../native/sessionWatcher';
+import type { PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
+import { agentFormat } from '../agents/format';
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
@@ -738,9 +739,14 @@ export class TerminalView extends ItemView {
 	 * are relative to (#98).
 	 */
 	private paneCwd(): string {
+		return this.paneSnapshot()?.cwd ?? '';
+	}
+
+	/** The pane as its runtime's session watcher last reported it, or null. */
+	private paneSnapshot(): PaneSnapshot | null {
 		const { paneId, endpointId } = this.terminal.identity;
-		if (!paneId) return '';
-		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId)?.cwd ?? '';
+		if (!paneId) return null;
+		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId) ?? null;
 	}
 
 	/**
@@ -868,6 +874,8 @@ export class TerminalView extends ItemView {
 					// The commands of the machine the agent runs on: over the
 					// runtime's connection for herdr-core over SSH (ADR-0006).
 					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
+					// Read as the catalogue of the agent the pane runs (ADR-0010).
+					format: () => agentFormat(this.paneSnapshot()?.agent),
 					paneId: () => this.paneId,
 					// The most used commands first (#149), counted in the plugin's
 					// data whatever runtime the pane is on.

@@ -15,7 +15,7 @@
  */
 
 import { Component, Notice, setIcon, setTooltip } from 'obsidian';
-import type { Turn } from './reducer';
+import type { Turn } from './conversation';
 
 /** How long a button shows that it copied, or that it could not. */
 export const COPY_FEEDBACK_MS = 1500;

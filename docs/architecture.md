@@ -1370,7 +1370,7 @@ scratch pane created with `tab create` and `agent start`.
     after approval, and the `permission-mode` lines Claude writes at each
     flush with the mode then. A rejected plan leaves the mode at `plan`.
 
-  The session model (`src/native/planFile.ts`) follows the last slug and the
+  The session model (`src/agents/claude/planFile.ts`) follows the last slug and the
   last word on the mode from the lines it reads, and while the pane is
   `blocked` in plan mode, on no runtime request and no kind other than
   `permission`, reads the plan file three levels above the transcript

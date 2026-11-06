@@ -16,7 +16,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { emptyTranscript, reduce, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
 
 /** A fixture transcript's lines, newline-split the way a tail delivers them. */
 function fixtureLines(name: string): string[] {

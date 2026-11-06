@@ -44,6 +44,9 @@ import type {
 	Unsubscribe,
 } from '../native/sessionWatcher';
 import { nativeAgentReason } from '../native/agentSupport';
+
+/** The agent whose hook writes the session label (ADR-0006). */
+const SESSION_LABEL_AGENT = 'claude';
 import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import { SeenTracker } from './seen';
@@ -125,7 +128,7 @@ export function nativeStatus(terminal: HcTerminal): { status: AgentStatus; block
 export function nativeUnavailable(terminal: HcTerminal | undefined): string | null {
 	if (!terminal || acceptedSession(terminal)) return null;
 	const agent = agentKindOf(terminal);
-	const otherAgent = nativeAgentReason(agent);
+	const otherAgent = nativeAgentReason('herdr-core', agent);
 	if (otherAgent) return otherAgent;
 	if (agent !== 'claude') return NATIVE_NO_CLAUDE_REASON;
 	const label = sessionLabelOf(terminal.labels);
@@ -244,7 +247,9 @@ export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherO
 				paneId,
 				cwd: row.cwd,
 				agentSession: session?.sessionId ?? '',
-				...(session ? { transcriptPath: session.transcriptPath } : {}),
+				// The label is the Claude hook's (ADR-0006), so the session it names
+				// is Claude's, whatever the foreground program is called.
+				...(session ? { agent: SESSION_LABEL_AGENT, transcriptPath: session.transcriptPath } : {}),
 				agentStatus: status,
 				...(blockKind ? { blockKind } : {}),
 			};
