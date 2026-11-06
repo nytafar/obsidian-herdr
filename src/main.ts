@@ -61,6 +61,7 @@ import { createHerdrCoreKind } from './runtime/herdrCoreKind';
 import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
 import { normalizeClaudeSessions } from './claude/agents';
 import { graduationArgs } from './claude/actions';
+import { isShellId } from './claude/shells';
 import type { GraduationTarget } from './views/rowMenu';
 import { ConfirmModal, RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
@@ -1031,20 +1032,28 @@ export default class HerdrPlugin extends Plugin {
 	/**
 	 * A terminal tab closed, or was pointed at another pane: when no other tab
 	 * shows `paneId` on `endpointId`, its kind is told (a `claude` shell ends
-	 * with its last tab, ADR-0008; an agent's TUI keeps running).
+	 * with its last tab, ADR-0008; an agent's TUI keeps running). A shell
+	 * whose runtime was removed while its tab was open ends the same way: it
+	 * is still this plugin's process, and nothing else would end it.
 	 */
 	terminalTabReleased(paneId: string, endpointId: string): void {
 		const endpoint = this.endpointFor(endpointId);
-		if (!endpoint) return;
-		const kind = this.kindOf(endpoint.runtime.kind);
-		if (!kind.terminalReleased) return;
+		let release: (() => void) | null = null;
+		if (endpoint) {
+			const kind = this.kindOf(endpoint.runtime.kind);
+			if (kind.terminalReleased) release = () => kind.terminalReleased?.(endpoint, paneId);
+		} else if (isShellId(paneId)) {
+			release = () => void this.claudeKind.shells?.close(paneId);
+		}
+		if (!release) return;
+		const released = release;
 		// Asked a moment later, when a closed leaf has left the workspace and a
 		// tab moved to another window has opened its view again there.
 		window.setTimeout(() => {
 			const shown = this.app.workspace
 				.getLeavesOfType(TERMINAL_VIEW_TYPE)
 				.some((leaf) => stateMatchesPane(leaf.getViewState().state, paneId, endpointId));
-			if (!shown) kind.terminalReleased?.(endpoint, paneId);
+			if (!shown) released();
 		}, RELEASE_CHECK_MS);
 	}
 

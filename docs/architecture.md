@@ -1027,7 +1027,8 @@ scope lists: a plain `$SHELL` (else `/bin/sh`) on the same pty, started when
 its first tab attaches. An initial command runs first through `/bin/sh -c`,
 printed in bold before it runs, while the line's shell traps SIGINT and
 SIGQUIT, so Ctrl-C ends the command and not the tab; then the shell starts. It survives a hidden
-or closed tab, and ends a second after its last tab is gone
+or closed tab, and ends a second after its last tab is gone, also when its
+runtime was removed while the tab was open
 (`HerdrPlugin.terminalTabReleased`, deferred so a tab moved to another
 window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
 `echo typed-$((40+2))` printed `typed-42`. Shells are not stored.

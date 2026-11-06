@@ -358,7 +358,8 @@ run and how many are stopped.
   (your `SHELL`) in that folder, in a tab of its own; Ctrl-C interrupts
   what runs in it, a command it was opened with included. It is not an agent and
   has no row. It lives while a tab shows it: hiding the tab keeps it, closing
-  its last tab ends it, and `exit` ends it until the tab reconnects, which
+  its last tab ends it (also once its runtime has been removed), and `exit`
+  ends it until the tab reconnects, which
   starts a new one in the same folder.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
