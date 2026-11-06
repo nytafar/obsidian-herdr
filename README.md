@@ -68,6 +68,15 @@ plugins. Manual install works too: put `main.js`, `manifest.json` and
 `styles.css` from a [release](https://github.com/nytafar/obsidian-herdr/releases)
 into `<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
 
+Or let your coding agent do it. It installs Herdr and BRAT into your vault
+from the release files ([docs/agent-install.md](docs/agent-install.md)):
+
+```text
+Install the Obsidian plugin Herdr for me: read
+https://raw.githubusercontent.com/nytafar/obsidian-herdr/main/docs/agent-install.md
+and follow it.
+```
+
 ## Getting started
 
 Nothing installed yet? Open the agent list (**Herdr: Show agents**). While no
