@@ -43,6 +43,7 @@ import type {
 	SessionWatcher,
 	Unsubscribe,
 } from '../native/sessionWatcher';
+import { nativeAgentReason } from '../native/agentSupport';
 import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import { SeenTracker } from './seen';
@@ -117,11 +118,16 @@ export function nativeStatus(terminal: HcTerminal): { status: AgentStatus; block
 /**
  * Why a terminal cannot be shown natively, or null when it can or is not
  * known (not connected yet, or gone): only a terminal the core reported says
- * anything, so a tab never leaves the native view for want of a snapshot.
+ * anything, so a tab never leaves the native view for want of a snapshot. A
+ * terminal running another agent names it (#155); one running none says it
+ * has no Claude session, as before.
  */
 export function nativeUnavailable(terminal: HcTerminal | undefined): string | null {
 	if (!terminal || acceptedSession(terminal)) return null;
-	if (agentKindOf(terminal) !== 'claude') return NATIVE_NO_CLAUDE_REASON;
+	const agent = agentKindOf(terminal);
+	const otherAgent = nativeAgentReason(agent);
+	if (otherAgent) return otherAgent;
+	if (agent !== 'claude') return NATIVE_NO_CLAUDE_REASON;
 	const label = sessionLabelOf(terminal.labels);
 	if (!label) return NATIVE_NO_LABEL_REASON;
 	const pid = terminal.foreground?.pid;

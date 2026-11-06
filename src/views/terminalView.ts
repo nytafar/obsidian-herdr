@@ -260,7 +260,8 @@ export function terminalHeaderActions(
  * Where a pane lives, with the pane's own reason against the native view on
  * top of its runtime's (ADR-0006): an hc terminal whose Claude has not
  * labelled it with its session stays a terminal and names the install
- * command. The runtime's reason comes first; only a connected runtime has a
+ * command, and a pane running another agent than Claude names it (#155).
+ * The runtime's reason comes first; only a connected runtime has a
  * pane reason, so a tab on one that is not keeps what it shows.
  */
 export function withPaneReason(block: PaneWhere, paneReason: string | null): PaneWhere {
@@ -1202,7 +1203,8 @@ export class TerminalView extends ItemView {
 		labels.ensure(scope.get(this.paneId)?.tabId);
 		this.scheduleHeader();
 		// A pane whose native view comes and goes with its session (an hc
-		// terminal's label, ADR-0006): mount whichever surface it can show now.
+		// terminal's label, ADR-0006) or its agent (#155): mount whichever
+		// surface it can show now.
 		const watcher = this.plugin.nativeWatcher(this.terminal.identity.endpointId);
 		const off = watcher?.onAvailability?.((paneId) => {
 			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
