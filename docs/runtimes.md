@@ -355,7 +355,8 @@ run and how many are stopped.
   a prompt you decline to move it for is not sent. A `/clear` typed in the terminal is not
   seen, so a later resume reopens the conversation from before it.
 - **Open shell here** from a folder's menu or the command opens a plain shell
-  (your `SHELL`) in that folder, in a tab of its own. It is not an agent and
+  (your `SHELL`) in that folder, in a tab of its own; Ctrl-C interrupts
+  what runs in it, a command it was opened with included. It is not an agent and
   has no row. It lives while a tab shows it: hiding the tab keeps it, closing
   its last tab ends it, and `exit` ends it until the tab reconnects, which
   starts a new one in the same folder.

@@ -5,18 +5,22 @@
  * dies with the plugin.
  *
  * - **Spawn.** `/bin/sh -c WATCHDOG oh-pty script …` over four plain pipes,
- *   in a process group of its own. `script` gets the plugin's stdin and
- *   stdout; the watchdog's `cat` reads fd 3, which the plugin never writes,
- *   so it sees EOF only when the plugin closes that pipe or dies, and then
- *   sends `script` SIGTERM. `script` ignores stdin EOF, which is why the pipe
- *   is needed (finding `direct-claude-spike` §5). An asynchronous list in a
- *   non-interactive shell gets `/dev/null` as stdin, so the real stdin is
- *   handed to `script` through fd 4.
+ *   in a process group of its own. `script` runs in the foreground with the
+ *   plugin's stdin and stdout; the watchdog's `cat` reads fd 3, which the
+ *   plugin never writes, so it sees EOF only when the plugin closes that
+ *   pipe or dies, and then sends the group SIGTERM. `script` ignores stdin
+ *   EOF, which is why the pipe is needed (finding `direct-claude-spike` §5).
+ *   `script` is not an asynchronous list: one in a non-interactive shell
+ *   starts with SIGINT and SIGQUIT ignored, and that is inherited down to
+ *   the program, where Ctrl-C then does nothing (the D2 review measured
+ *   `SigIgn: 0x6`).
  * - **Inside.** `script` runs one `/bin/sh` command line: the grid
  *   (`stty rows R cols C`, since a pty made from a pipe starts at 0x0), the
  *   user's `SHELL` put back (`script` itself is given `/bin/sh`, so the
  *   command line is parsed by a known shell), an optional command run first
- *   (a shell tab's initial command), then `exec` of the program.
+ *   (a shell tab's initial command) while the line's shell traps SIGINT and
+ *   SIGQUIT, so Ctrl-C ends the command and not the tab, then `exec` of the
+ *   program.
  * - **Platforms.** Linux: util-linux `script -qfec <cmd> /dev/null`, the
  *   slave found as `/proc/<script's child>/fd/0`, resized with `stty -F`.
  *   macOS: BSD `script -q /dev/null /bin/sh -c <cmd>`, the slave from
@@ -50,18 +54,22 @@ export function ptyPlatformOf(platform: NodeJS.Platform): PtyPlatform | null {
 }
 
 /**
- * The watchdog, run as `/bin/sh -c WATCHDOG oh-pty <script argv…>`:
+ * The watchdog, run as `/bin/sh -c WATCHDOG oh-pty <script argv…>` as the
+ * leader of its own process group (the spawn is detached):
  *
- * - `exec 4<&0` keeps the real stdin, which an asynchronous list would
- *   otherwise lose to `/dev/null`;
- * - `"$@" <&4 4<&- 3<&- &` starts `script` on it, without the watchdog's pipe;
- * - the subshell waits for EOF on fd 3 and then sends `script` SIGTERM;
- * - the shell waits for `script`, ends the subshell and exits with its status.
+ * - `trap : TERM` lets the shell outlive the group's SIGTERM, so it exits
+ *   only once `script` has, with its status; a caught signal is back to
+ *   its default in every child;
+ * - the subshell, the one asynchronous list, waits for EOF on fd 3 and then
+ *   sends SIGTERM to the group (`-$$`, the shell's own group), `script` in it;
+ * - `"$@" 3<&-` runs `script` in the foreground, without the pipe, on the
+ *   real stdin and with SIGINT and SIGQUIT at their defaults;
+ * - the shell then ends the subshell and exits with `script`'s status.
  */
 export const WATCHDOG =
-	'exec 4<&0; "$@" <&4 4<&- 3<&- & s=$!; exec 4<&-; ' +
-	'(cat <&3 >/dev/null; kill -TERM $s 2>/dev/null) </dev/null >/dev/null 2>&1 & w=$!; ' +
-	'exec 3<&-; wait $s; st=$?; kill $w 2>/dev/null; exit $st';
+	'trap : TERM; ' +
+	'(cat <&3 >/dev/null; kill -s TERM -- -$$ 2>/dev/null) </dev/null >/dev/null 2>&1 & w=$!; ' +
+	'"$@" 3<&-; st=$?; kill $w 2>/dev/null; exit $st';
 
 /** `$0` of the watchdog shell, which is how `ps` shows it. */
 export const WATCHDOG_NAME = 'oh-pty';
@@ -92,7 +100,10 @@ export function innerCommand(options: InnerCommandOptions): string {
 	if (options.program.length === 0) throw new Error('a pty needs a program');
 	const parts = [`stty rows ${clampDimension(options.rows)} cols ${clampDimension(options.cols)} 2>/dev/null`];
 	parts.push(options.shell ? `SHELL=${shellQuote(options.shell)}; export SHELL` : 'unset SHELL');
-	if (options.before?.trim()) parts.push(`/bin/sh -c ${shellQuote(options.before)}`);
+	// The line's shell catches SIGINT and SIGQUIT while the command runs, so
+	// Ctrl-C ends the command (which gets them at their defaults) and the
+	// program still starts after it.
+	if (options.before?.trim()) parts.push(`trap : INT QUIT; /bin/sh -c ${shellQuote(options.before)}; trap - INT QUIT`);
 	parts.push(`exec ${options.program.map(shellQuote).join(' ')}`);
 	return parts.join('; ');
 }

@@ -776,7 +776,7 @@ describe('shell tabs', () => {
 		const tab = openTab(h, paneId);
 		expect(h.pty.last.cwd).toBe(h.dir);
 		expect(inner(h.pty.last.argv)).toBe(
-			"stty rows 30 cols 100 2>/dev/null; SHELL='/usr/bin/zsh'; export SHELL; /bin/sh -c 'printf '\\''\\033[1m$ %s\\033[0m\\n'\\'' '\\''echo '\\''\\'\\'''\\''hi'\\''\\'\\'''\\'''\\''; echo '\\''hi'\\'''; exec '/usr/bin/zsh'",
+			"stty rows 30 cols 100 2>/dev/null; SHELL='/usr/bin/zsh'; export SHELL; trap : INT QUIT; /bin/sh -c 'printf '\\''\\033[1m$ %s\\033[0m\\n'\\'' '\\''echo '\\''\\'\\'''\\''hi'\\''\\'\\'''\\'''\\''; echo '\\''hi'\\'''; trap - INT QUIT; exec '/usr/bin/zsh'",
 		);
 		h.pty.last.emit('$ echo hi\r\nhi\r\n');
 		expect(tab.screen()).toContain('hi');

@@ -93,7 +93,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   each terminal ends it within a second if Obsidian is killed.
 - **Open shell here** for Claude, run by Obsidian: a plain shell in a
   folder, in a terminal tab of its own, from the folder menu or the command.
-  It lives while a tab shows it.
+  It lives while a tab shows it. Ctrl-C interrupts what runs in it, the
+  command it was opened with included (Get started's installer).
 - **Get started** (ADR-0008): while no runtime connects, the agent list
   shows a guided start, also behind a `Get started` command. Start at once in
   Claude, run by Obsidian (the runtime is added, made active, and an agent

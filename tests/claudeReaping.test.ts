@@ -13,7 +13,7 @@
  * and claude are checked live.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -24,6 +24,28 @@ import { setTimer, clearTimer } from '../src/timers';
 const FAKE_SCRIPT_DIR = resolve(__dirname, 'fixtures/fake-script');
 const PARENT = resolve(__dirname, 'fixtures/pty-parent.mjs');
 const posix = process.platform === 'linux';
+
+/** util-linux `script`, for the checks that need a real pty. */
+function realScript(): boolean {
+	if (!posix) return false;
+	try {
+		return execFileSync('script', ['--version'], { encoding: 'utf8' }).includes('util-linux');
+	} catch {
+		return false;
+	}
+}
+
+/** The signals a process ignores, from `/proc/<pid>/status` (`SigIgn`, a hex mask). */
+function ignored(pid: number): bigint {
+	const line = readFileSync(`/proc/${pid}/status`, 'utf8')
+		.split('\n')
+		.find((each) => each.startsWith('SigIgn:'));
+	return BigInt(`0x${line?.split(/\s+/)[1] ?? '0'}`);
+}
+
+/** SIGINT is 2 and SIGQUIT 3: bits 1 and 2 of the mask. */
+const SIGINT_BIT = 1n << 1n;
+const SIGQUIT_BIT = 1n << 2n;
 
 const dirs: string[] = [];
 const pids: number[] = [];
@@ -66,6 +88,63 @@ function program(dir: string): { argv: string[]; pidFile: string } {
 function env(): NodeJS.ProcessEnv {
 	return { ...process.env, PATH: `${FAKE_SCRIPT_DIR}:${process.env.PATH ?? ''}`, SHELL: '/bin/sh' };
 }
+
+function timers() {
+	return {
+		setTimeout: (handler: () => void, ms: number) => setTimer(handler, ms),
+		clearTimeout: (handle: unknown) => clearTimer(handle as ReturnType<typeof setTimer>),
+	};
+}
+
+describe.runIf(realScript())('signals on a real script pty', () => {
+	function pidIn(file: string): number {
+		return Number(readFileSync(file, 'utf8').trim());
+	}
+
+	async function started(file: string): Promise<number> {
+		expect(await waitFor(() => existsSync(file) && readFileSync(file, 'utf8').trim() !== '', 5000)).toBe(true);
+		const pid = pidIn(file);
+		pids.push(pid);
+		return pid;
+	}
+
+	it('gives the program and an initial command default SIGINT and SIGQUIT, so Ctrl-C ends them', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'oh-pty-sig-'));
+		dirs.push(dir);
+		const before = join(dir, 'before.pid');
+		const after = join(dir, 'program.pid');
+		const pty = new PtyProcess({
+			program: ['/bin/sh', '-c', `echo $$ > '${after}'; exec sleep 300`],
+			before: `echo $$ > '${before}'; exec sleep 300`,
+			cwd: dir,
+			env: { ...process.env, SHELL: '/bin/sh' },
+			cols: 80,
+			rows: 24,
+			platform: 'linux',
+			stopSignal: 'SIGHUP',
+			spawn: defaultPtySpawn,
+			tools: defaultPtyTools('linux'),
+			timers: timers(),
+			onData: () => undefined,
+			onExit: () => undefined,
+		});
+		pty.start();
+		try {
+			// The initial command (D3's installer runs here).
+			const first = await started(before);
+			expect(ignored(first) & (SIGINT_BIT | SIGQUIT_BIT)).toBe(0n);
+			pty.write('\x03');
+			expect(await waitFor(() => !alive(first), 2000)).toBe(true);
+			// Ctrl-C ended the command, not the tab: the program runs after it.
+			const program = await started(after);
+			expect(ignored(program) & (SIGINT_BIT | SIGQUIT_BIT)).toBe(0n);
+			pty.write('\x03');
+			expect(await waitFor(() => !alive(program), 2000)).toBe(true);
+		} finally {
+			await pty.stop();
+		}
+	});
+});
 
 describe.runIf(posix)('reaping a pty with real processes', () => {
 	it('ends the program within 1.5 s when the plugin process is SIGKILLed', async () => {

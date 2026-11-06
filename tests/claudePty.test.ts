@@ -34,11 +34,13 @@ describe('the argv around script(1)', () => {
 		expect(ptyArgv('darwin', 'CMD').slice(0, 4)).toEqual(['/bin/sh', '-c', WATCHDOG, 'oh-pty']);
 	});
 
-	it('keeps stdin for script, closes fd 3 for it, and kills it when fd 3 reaches EOF', () => {
-		// The real stdin goes through fd 4: an asynchronous list would get /dev/null.
-		expect(WATCHDOG).toContain('exec 4<&0; "$@" <&4 4<&- 3<&- &');
-		expect(WATCHDOG).toContain('(cat <&3 >/dev/null; kill -TERM $s');
-		expect(WATCHDOG).toContain('wait $s; st=$?; kill $w 2>/dev/null; exit $st');
+	it('runs script in the foreground without fd 3, and ends its group when fd 3 reaches EOF', () => {
+		// Not an asynchronous list, which would start it with SIGINT and SIGQUIT
+		// ignored (and with /dev/null for stdin).
+		expect(WATCHDOG).toContain('"$@" 3<&-; st=$?; kill $w 2>/dev/null; exit $st');
+		expect(WATCHDOG).toContain('(cat <&3 >/dev/null; kill -s TERM -- -$$');
+		// The shell outlives the group's SIGTERM, to report script's exit.
+		expect(WATCHDOG.startsWith('trap : TERM; ')).toBe(true);
 	});
 
 	it('has no pty on Windows', () => {
@@ -65,7 +67,7 @@ describe('the command line script runs', () => {
 
 	it('unsets SHELL when there was none, and runs a command first', () => {
 		expect(innerCommand({ cols: 0, rows: Number.NaN, shell: undefined, before: 'echo hi', program: ['/bin/bash'] })).toBe(
-			"stty rows 1 cols 1 2>/dev/null; unset SHELL; /bin/sh -c 'echo hi'; exec '/bin/bash'",
+			"stty rows 1 cols 1 2>/dev/null; unset SHELL; trap : INT QUIT; /bin/sh -c 'echo hi'; trap - INT QUIT; exec '/bin/bash'",
 		);
 	});
 

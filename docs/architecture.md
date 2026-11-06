@@ -932,11 +932,16 @@ the plugin's own code driving real processes and `@xterm/headless` as the
 renderer:
 
 - **Spawn.** `/bin/sh -c WATCHDOG oh-pty script -qfec <line> /dev/null`, four
-  pipes, its own process group. The watchdog keeps the real stdin on fd 4
-  (an asynchronous list in a non-interactive shell gets `/dev/null`),
-  starts `script` on it without fd 3, and a subshell `cat`s fd 3, which the
-  plugin never writes, and sends `script` SIGTERM at EOF. `script` itself
-  ignores stdin EOF. The line is `stty rows R cols C; SHELL=<user's>; export
+  pipes, its own process group. The watchdog runs `script` in the
+  foreground without fd 3, and a subshell `cat`s fd 3, which the plugin
+  never writes, and sends the group SIGTERM at EOF; the shell traps TERM
+  with a no-op so it exits only after `script`, with its status. `script`
+  itself ignores stdin EOF. `script` must not be an asynchronous list: in a
+  non-interactive shell one starts with SIGINT and SIGQUIT ignored, and the
+  D2 review measured `SigIgn: 0x6` on the program, where Ctrl-C did
+  nothing. Measured after the change (bash as `/bin/sh`): `SigIgn` 0 on
+  `script`, on a shell tab's initial command and on what its shell runs,
+  and Ctrl-C ended a `sleep` in each. The line is `stty rows R cols C; SHELL=<user's>; export
   SHELL; exec claude --permission-mode <mode> (--resume|--session-id) <id>`,
   every word single-quoted; `script` gets `SHELL=/bin/sh` so that line is
   parsed by a known shell, and the TUI gets `TERM=xterm-256color`,
@@ -1012,7 +1017,8 @@ renderer:
 **Shell tabs** (`src/claude/shells.ts`, ADR-0008). A pane id `sh-…` that no
 scope lists: a plain `$SHELL` (else `/bin/sh`) on the same pty, started when
 its first tab attaches. An initial command runs first through `/bin/sh -c`,
-printed in bold before it runs, then the shell starts. It survives a hidden
+printed in bold before it runs, while the line's shell traps SIGINT and
+SIGQUIT, so Ctrl-C ends the command and not the tab; then the shell starts. It survives a hidden
 or closed tab, and ends a second after its last tab is gone
 (`HerdrPlugin.terminalTabReleased`, deferred so a tab moved to another
 window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
