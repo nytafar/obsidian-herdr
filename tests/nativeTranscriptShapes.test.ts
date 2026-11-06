@@ -139,3 +139,54 @@ describe('a picture sent with a prompt (#129)', () => {
 		expect(toc.rows()).toEqual(['Image']);
 	});
 });
+
+describe('a compaction (#130)', () => {
+	const summary = 'Summary:\n1. **Primary request**';
+
+	it('draws a slim divider that opens to the summary, rendered on the first open', async () => {
+		const model = new FakeModel();
+		const el = await surfaceOn(model);
+
+		model.push(
+			[
+				turn('u1', 'Refactor it', [
+					{ kind: 'text', messageId: 'm1', text: 'Starting.' },
+					{ kind: 'compaction', summary },
+					{ kind: 'text', messageId: 'm2', text: 'Carrying on.' },
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		const divider = el.find('herdr-native-compaction');
+		expect(divider.tag).toBe('details');
+		expect(divider.find('herdr-native-compaction-summary').textContent).toBe('Context compacted');
+		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual(['Starting.', 'Carrying on.']);
+
+		(divider as unknown as { open: boolean }).open = true;
+		divider.dispatch('toggle');
+		divider.dispatch('toggle');
+
+		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual([
+			'Starting.',
+			'Carrying on.',
+			summary,
+		]);
+		expect(divider.find('herdr-native-compaction-body').textContent).toBe(summary);
+	});
+
+	it('opens no TOC row, inside a turn or before the first prompt', () => {
+		const model = new FakeModel();
+		const toc = tocOn(model);
+
+		model.push(
+			[
+				turn('m0', '', [{ kind: 'compaction', summary }]),
+				turn('u1', 'Refactor it', [{ kind: 'compaction', summary }]),
+			],
+			{ changedTurnIds: ['m0', 'u1'], reset: false },
+		);
+
+		expect(toc.rows()).toEqual(['Refactor it']);
+	});
+});

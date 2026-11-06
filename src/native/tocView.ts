@@ -203,8 +203,13 @@ export class TocPanel {
 
 	/** One turn: its prompt, then the headings of its prose, nested under it. */
 	private renderTurn(listEl: HTMLElement, turn: Turn): void {
+		// A turn nobody prompted — what a compaction or the runtime's notices
+		// open before the first prompt (#130, #133) — has no row of its own;
+		// its headings, if it has any, still do.
+		const label = turnLabel(turn);
+		if (!label && turn.headings.length === 0) return;
 		const turnEl = listEl.createDiv({ cls: 'herdr-toc-turn' });
-		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], turnLabel(turn), turn.id);
+		if (label) this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], label, turn.id);
 		turn.headings.forEach((heading, index) => {
 			this.renderRow(
 				turnEl,

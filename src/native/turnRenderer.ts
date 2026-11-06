@@ -16,7 +16,14 @@
  */
 
 import { Component } from 'obsidian';
-import type { ImageEntry, TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
+import type {
+	CompactionEntry,
+	ImageEntry,
+	TextEntry,
+	ThinkingEntry,
+	ToolEntry,
+	Turn,
+} from './reducer';
 import {
 	changedPath,
 	changeLine,
@@ -270,7 +277,28 @@ export class TurnRenderer {
 			case 'image':
 				renderImage(turnEl, item.entry);
 				return;
+			case 'compaction':
+				this.renderCompaction(turnEl, item.entry, component);
+				return;
 		}
+	}
+
+	/**
+	 * A compaction (#130): a slim divider, "Context compacted", that opens to
+	 * the summary the agent continued from. The summary is rendered on the
+	 * first open only — it runs to pages, and most readers never open it — and
+	 * is not prose as far as the headings go (#118).
+	 */
+	private renderCompaction(turnEl: HTMLElement, entry: CompactionEntry, component: Component): void {
+		const details = turnEl.createEl('details', { cls: 'herdr-native-compaction' });
+		details.createEl('summary', { cls: 'herdr-native-compaction-summary', text: 'Context compacted' });
+		const bodyEl = details.createDiv({ cls: 'herdr-native-compaction-body' });
+		let rendered = false;
+		component.registerDomEvent(details, 'toggle', () => {
+			if (rendered || !details.open || !entry.summary) return;
+			rendered = true;
+			void this.options.renderMarkdown(entry.summary, bodyEl, component);
+		});
 	}
 
 	private renderPrompt(el: HTMLElement, prompt: string): void {

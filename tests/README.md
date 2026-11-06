@@ -425,6 +425,8 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 
 - `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
   (no 2.1.318 transcript on this machine has one).
+- `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
+  2.1.318 lines have the same shape.
 
 ## Smoking live updates and session following (#94)
 

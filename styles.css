@@ -863,6 +863,40 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: nowrap;
 }
 
+/*
+ * A compaction (#130): a slim rule across the turn with its label in the
+ * middle, folded over the summary the agent continued from.
+ */
+.herdr-native-compaction {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-4) 0;
+}
+
+.herdr-native-compaction-summary {
+	align-items: center;
+	cursor: var(--cursor);
+	display: flex;
+	gap: var(--size-4-2);
+	list-style: none;
+}
+
+.herdr-native-compaction-summary::-webkit-details-marker {
+	display: none;
+}
+
+.herdr-native-compaction-summary::before,
+.herdr-native-compaction-summary::after {
+	border-top: 1px solid var(--background-modifier-border);
+	content: '';
+	flex: 1 1 0;
+}
+
+.herdr-native-compaction-body {
+	color: var(--text-muted);
+	margin-top: var(--size-4-2);
+}
+
 /* A thought, once the reader opens it: prose, like the rest of the turn. */
 .herdr-native-thought {
 	border-left: 2px solid var(--background-modifier-border);

@@ -95,3 +95,74 @@ describe('a prompt sent as content blocks (#129)', () => {
 		expect(live(lines)).toEqual(cold(lines));
 	});
 });
+
+describe('a compaction (#130)', () => {
+	// Recorded on Claude Code 2.1.286: an idle compaction after a finished turn
+	// — the `compact_boundary` system line, the summary as a string `user` line
+	// with `isCompactSummary: true`, the attachments re-read after it, the
+	// "Compacted while idle" notice — and the next prompt. 2.1.318 writes the
+	// same lines (checked against a local transcript).
+	const lines = fixtureLines('compaction');
+
+	it('is a divider in the turn it happened in, never a prompt', () => {
+		const state = cold(lines);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['', 'now let us address font matching']);
+		const kinds = state.turns[0]?.entries.map((entry) => entry.kind);
+		expect(kinds).toEqual(['thinking', 'text', 'compaction']);
+	});
+
+	it('keeps the summary readable, without the reminders meant for the model', () => {
+		const state = cold(lines);
+
+		const compaction = state.turns[0]?.entries.find((entry) => entry.kind === 'compaction');
+		expect(compaction?.kind === 'compaction' && compaction.summary).toBe(
+			'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. **Primary Request and Intent**\n   - Build a font catalog browser.\n2. **Pending Tasks**\n   - None.',
+		);
+		const withReminder = cold([
+			JSON.stringify({
+				type: 'user',
+				uuid: 'c1',
+				isCompactSummary: true,
+				message: {
+					role: 'user',
+					content:
+						'Continued.\n\n<system-reminder>\n<tools-used-before-summary>Bash</tools-used-before-summary>\n</system-reminder>\nSummary: done.',
+				},
+			}),
+		]);
+		const entry = withReminder.turns[0]?.entries[0];
+		expect(entry?.kind === 'compaction' && entry.summary).toBe('Continued.\n\nSummary: done.');
+	});
+
+	it('leaves the work after a compaction mid-turn in the same turn, after the divider', () => {
+		// An automatic compaction while the agent works: the summary, then the
+		// agent carrying on (the shape of 2.1.286 sessions on this machine).
+		const state = cold([
+			JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Refactor it' } }),
+			JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'Starting.' }] } }),
+			JSON.stringify({
+				type: 'system',
+				subtype: 'compact_boundary',
+				uuid: 'b1',
+				parentUuid: null,
+				content: 'Conversation compacted',
+			}),
+			JSON.stringify({
+				type: 'user',
+				uuid: 'c1',
+				parentUuid: 'b1',
+				isCompactSummary: true,
+				message: { role: 'user', content: 'Summary.' },
+			}),
+			JSON.stringify({ type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'Carrying on.' }] } }),
+		]);
+
+		expect(state.turns).toHaveLength(1);
+		expect(state.turns[0]?.entries.map((entry) => entry.kind)).toEqual(['text', 'compaction', 'text']);
+	});
+
+	it('reads the same live as cold', () => {
+		expect(live(lines)).toEqual(cold(lines));
+	});
+});

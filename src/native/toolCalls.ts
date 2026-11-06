@@ -21,6 +21,7 @@
 
 import {
 	isAsyncLaunchNotice,
+	type CompactionEntry,
 	type ImageEntry,
 	type ThinkingEntry,
 	type TextEntry,
@@ -343,12 +344,15 @@ export type TurnItem =
 
 /**
  * The entries that are neither the agent speaking nor a call it made, each
- * drawn as an item of its own kind: a picture sent with the prompt (#129).
+ * drawn as an item of its own kind: a picture sent with the prompt (#129), a
+ * compaction (#130).
  */
-export type MarkEntry = ImageEntry;
+export type MarkEntry = ImageEntry | CompactionEntry;
 
 /** One {@link MarkEntry} as an item, under its own kind. */
-export type MarkItem = { kind: 'image'; entry: ImageEntry };
+export type MarkItem =
+	| { kind: 'image'; entry: ImageEntry }
+	| { kind: 'compaction'; entry: CompactionEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -367,6 +371,8 @@ function markItem(entry: MarkEntry): MarkItem {
 	switch (entry.kind) {
 		case 'image':
 			return { kind: 'image', entry };
+		case 'compaction':
+			return { kind: 'compaction', entry };
 	}
 }
 

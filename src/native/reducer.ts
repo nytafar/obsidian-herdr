@@ -147,7 +147,25 @@ export interface ImageEntry {
 	mediaType: string;
 }
 
-export type TurnEntry = TextEntry | ThinkingEntry | ToolEntry | SteerEntry | ImageEntry;
+/**
+ * Where the agent's context was compacted (#130): the conversation before it
+ * was folded into a summary, which the agent continues from. Shown as a
+ * divider with the summary folded, at the point it happened, never as a
+ * prompt.
+ */
+export interface CompactionEntry {
+	kind: 'compaction';
+	/** The summary the agent continued from, as Markdown. */
+	summary: string;
+}
+
+export type TurnEntry =
+	| TextEntry
+	| ThinkingEntry
+	| ToolEntry
+	| SteerEntry
+	| ImageEntry
+	| CompactionEntry;
 
 /** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
 export interface TurnHeading {
@@ -360,6 +378,20 @@ function blockPrompt(
 	return { text: texts.join('\n'), images };
 }
 
+/** What the runtime writes for the model's eyes only, inside a summary. */
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>\s*/g;
+
+/**
+ * The summary of a compaction, from its `user` line (#130): Claude Code
+ * writes it as a string `user` line with `isCompactSummary: true` (measured on
+ * 2.1.286 and 2.1.318), sometimes as text blocks. The reminders inside it are
+ * the model's, not the reader's.
+ */
+function compactionSummary(content: unknown): string {
+	const text = typeof content === 'string' ? content : resultText(content);
+	return text.replace(SYSTEM_REMINDER, '').trim();
+}
+
 /** True for a `user` line that is a local command's own output, not a prompt. */
 function isLocalCommandOutput(content: string): boolean {
 	return content.startsWith('<local-command-stdout>');
@@ -557,6 +589,14 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'user': {
 				const message = isRecord(parsed.message) ? parsed.message : null;
 				const content = message?.content;
+				if (parsed.isCompactSummary === true) {
+					// Not the human speaking, however much it reads like a prompt: a
+					// divider in the turn it happened in (#130).
+					const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, '');
+					turn.entries.push({ kind: 'compaction', summary: compactionSummary(content) });
+					draft.touch(turn.id);
+					continue;
+				}
 				if (Array.isArray(content)) {
 					let attached = false;
 					for (const block of content) {
