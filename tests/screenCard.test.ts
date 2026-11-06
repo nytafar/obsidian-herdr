@@ -16,7 +16,6 @@ import { REFUSAL_TEXT, type AnswerOutcome, type ScreenExpectation } from '../src
 import {
 	findReceipt,
 	inputAgrees,
-	knownCalls,
 	optionFromRow,
 	outcomeView,
 	ownCall,
@@ -25,6 +24,7 @@ import {
 	questionFromScreen,
 	screenRequests,
 	screenWidth,
+	transcriptMark,
 	type CallKind,
 	type ScreenCardContext,
 } from '../src/native/screenCard';
@@ -121,6 +121,27 @@ describe('screen card: the requests a screen may be', () => {
 		expect(optionFromRow({ number: 1, lines: ['Solo'], ticked: null }, 10)).toEqual({ label: 'Solo', description: '' });
 	});
 
+	it('counts a wide emoji in the basic plane as two cells, and leaves a width it cannot be sure of to the terminal', () => {
+		// "❯ 1. [ ] " is 9 cells; ☕ (U+2615) is East Asian Wide, so this line
+		// takes 50 cells and "A" did not fit after it at 60: it is the label's.
+		const first = 'Hot drinks ☕ for the whole afternoon meeting team';
+		const row = { number: 1, lines: [first, 'A', 'Crisp'], ticked: false };
+		expect(optionFromRow(row, 60)).toBeNull();
+		expect(optionFromRow(row, 61)).toEqual({ label: first, description: 'A Crisp' });
+		for (const wide of ['⚡', '✅', '❌', '⭐', '🫠']) {
+			const line = `${'x'.repeat(48)}${wide}`;
+			expect(optionFromRow({ number: 1, lines: [line, 'A', 'B'], ticked: false }, 60)).toBeNull();
+			expect(optionFromRow({ number: 1, lines: [line, 'A', 'B'], ticked: false }, 61)).not.toBeNull();
+		}
+		// A narrow symbol is one cell.
+		expect(optionFromRow({ number: 1, lines: [`${'x'.repeat(48)}✔`, 'A', 'B'], ticked: false }, 60)).not.toBeNull();
+		// An emoji sequence (a presentation selector, a joiner, a flag) is drawn
+		// one or two cells depending on the terminal: not offered at any width.
+		for (const unsure of ['❤️', '👩‍💻', '🇳🇴', '👍🏽']) {
+			expect(optionFromRow({ number: 1, lines: [`Tea ${unsure}`, 'A', 'B'], ticked: null }, 200)).toBeNull();
+		}
+	});
+
 	it('measures the screen by its rule, else its widest line', () => {
 		expect(screenWidth('a long line of text\n────\nx')).toBe(4);
 		expect(screenWidth('ab\nxyz')).toBe(3);
@@ -185,7 +206,8 @@ describe('screen card: what the transcript says Claude received', () => {
 	it('finds the card’s call by its id', () => {
 		const turns = [turnOf('t1', tool('toolu_b', 'Bash', { command: 'ls' }, 'a.txt'))];
 		const expectation: ScreenExpectation = { kind: 'permission', toolUseId: 'toolu_b', tool: 'Bash', input: { command: 'ls' }, cwd: '/tmp' };
-		expect(findReceipt(turns, expectation, new Set(['toolu_b']), callKind)).toEqual({
+		const mark = transcriptMark([turnOf('t1', tool('toolu_b', 'Bash', { command: 'ls' }))]);
+		expect(findReceipt(turns, expectation, mark, callKind)).toEqual({
 			receipt: { kind: 'result', text: 'a.txt', isError: false },
 			turnId: 't1',
 		});
@@ -195,7 +217,7 @@ describe('screen card: what the transcript says Claude received', () => {
 		const answered = tool('toolu_new', 'AskUserQuestion', DRINK_CALL.input, 'The user answered: "Which drink do you want?"="Coffee". Go on.');
 		const old = tool('toolu_old', 'AskUserQuestion', DRINK_CALL.input, 'The user answered: "Which drink do you want?"="Tea".');
 		const turns = [turnOf('t1', old), turnOf('t2', answered)];
-		const found = findReceipt(turns, fromScreen, new Set(['toolu_old']), callKind);
+		const found = findReceipt(turns, fromScreen, transcriptMark([turnOf('t1', old)]), callKind);
 		expect(found?.turnId).toBe('t2');
 		expect(found?.receipt).toMatchObject({ text: 'The user answered: "Which drink do you want ?"="Coffee". Go on.' });
 	});
@@ -210,7 +232,7 @@ describe('screen card: what the transcript says Claude received', () => {
 		};
 		const other = tool('toolu_1', 'Write', { file_path: '/tmp/x/c.txt' }, 'ok');
 		const mine = tool('toolu_2', 'Write', { file_path: '/tmp/x/b.txt' }, 'File created');
-		const found = findReceipt([turnOf('t1', other, mine)], expectation, new Set(), callKind);
+		const found = findReceipt([turnOf('t1', other, mine)], expectation, transcriptMark([]), callKind);
 		expect(found?.receipt).toMatchObject({ text: 'File created' });
 		expect(inputAgrees({ file_path: '/tmp/x/b.txt' }, expectation)).toBe(true);
 		expect(ownCall(mine, expectation, callKind)).toBe(true);
@@ -220,9 +242,52 @@ describe('screen card: what the transcript says Claude received', () => {
 	it('finds a plan’s new ExitPlanMode result, and nothing for trust', () => {
 		const plan = tool('toolu_p', 'ExitPlanMode', { plan: 'x' }, 'User has approved your plan.');
 		const expectation: ScreenExpectation = { kind: 'plan', slug: 's', plan: ['x'] };
-		expect(findReceipt([turnOf('t1', plan)], expectation, new Set(), callKind)?.receipt).toMatchObject({ text: 'User has approved your plan.' });
-		expect(findReceipt([turnOf('t1', plan)], expectation, knownCalls([turnOf('t1', plan)]), callKind)).toBeNull();
-		expect(findReceipt([], { kind: 'trust', cwd: '/x' }, new Set(), callKind)).toBeNull();
+		expect(findReceipt([turnOf('t1', plan)], expectation, transcriptMark([]), callKind)?.receipt).toMatchObject({ text: 'User has approved your plan.' });
+		expect(findReceipt([turnOf('t1', plan)], expectation, transcriptMark([turnOf('t1', plan)]), callKind)).toBeNull();
+		expect(findReceipt([], { kind: 'trust', cwd: '/x' }, transcriptMark([]), callKind)).toBeNull();
+	});
+
+	describe('only what the transcript wrote after the press (#166 review)', () => {
+		const ls: Extract<ScreenExpectation, { kind: 'permission' }> = {
+			kind: 'permission',
+			toolUseId: null,
+			tool: 'Bash',
+			input: { command: 'ls' },
+			cwd: '/tmp/x',
+		};
+		const prose = { kind: 'text', text: 'ok' } as unknown as ToolEntry;
+
+		it('takes no call from before the press, though the loaded page did not hold it then', () => {
+			// The press: the newest turn held one entry, and no call was open.
+			const mark = transcriptMark([turnOf('t5', prose)]);
+			// "Load earlier turns" brings an older, identical request and its denial.
+			const earlier = turnOf('t1', tool('toolu_old', 'Bash', { command: 'ls' }, 'The user doesn’t want to proceed'));
+			expect(findReceipt([earlier, turnOf('t5', prose)], ls, mark, callKind)).toBeNull();
+			const mine = tool('toolu_new', 'Bash', { command: 'ls' }, 'a.txt');
+			expect(findReceipt([earlier, turnOf('t5', prose, mine)], ls, mark, callKind)?.receipt).toMatchObject({ text: 'a.txt' });
+			expect(findReceipt([earlier, turnOf('t5', prose), turnOf('t6', mine)], ls, mark, callKind)?.turnId).toBe('t6');
+		});
+
+		it('takes no identical request answered in the terminal before the press', () => {
+			const elsewhere = tool('toolu_1', 'Bash', { command: 'ls' }, 'The user doesn’t want to proceed');
+			const mark = transcriptMark([turnOf('t1', elsewhere)]);
+			expect(findReceipt([turnOf('t1', elsewhere)], ls, mark, callKind)).toBeNull();
+			const mine = tool('toolu_2', 'Bash', { command: 'ls' }, 'a.txt');
+			expect(findReceipt([turnOf('t1', elsewhere, mine)], ls, mark, callKind)?.receipt).toMatchObject({ text: 'a.txt' });
+		});
+
+		it('takes the call that was open at the press once its result lands, and the first of two after it', () => {
+			const open = tool('toolu_d', 'Bash', { command: 'ls' });
+			const mark = transcriptMark([turnOf('t1', open)]);
+			const answered = tool('toolu_d', 'Bash', { command: 'ls' }, 'mine');
+			const next = tool('toolu_e', 'Bash', { command: 'ls' }, 'next');
+			expect(findReceipt([turnOf('t1', answered, next)], ls, mark, callKind)?.receipt).toMatchObject({ text: 'mine' });
+		});
+
+		it('takes nothing once the turn it was pressed in is gone: a rewind', () => {
+			const mark = transcriptMark([turnOf('t5', prose)]);
+			expect(findReceipt([turnOf('t9', tool('toolu_n', 'Bash', { command: 'ls' }, 'x'))], ls, mark, callKind)).toBeNull();
+		});
 	});
 
 	it('takes a newer question as another request', () => {

@@ -335,7 +335,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	async detach(): Promise<void> {
 		this.unbind();
-		this.waiting.clear();
+		this.waiting.detach();
 		this.promptBox?.destroy();
 		this.promptBox = null;
 		this.sessionBar?.destroy();

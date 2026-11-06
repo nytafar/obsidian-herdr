@@ -1933,8 +1933,15 @@ these are the facts it relies on.
   shows the screen's lines. hc's status `msg` reaches the card as
   `PaneSnapshot.blockMessage`. A press runs through one driver per runtime
   and agent, shared by every tab (`ScreenAnswerers`); its receipt is the
-  session model's transcript: the card's call by id, else a call the
-  transcript did not hold when the card was built with the same request.
+  session model's transcript: the card's call by id, else the first call
+  with the same request written after the press, or open at it
+  (`transcriptMark`: the newest turn and its entry count at the press, a
+  position, since the model holds a page of turns and an older identical
+  call can enter it later). A label read off a question's screen is counted
+  in cells by xterm.js's Unicode 11 table, raised for later wide ranges
+  (`src/native/cellWidth.ts`); one with an emoji sequence is not read. The
+  card's reads and timers are window timers, cancelled with the card, and a
+  view that detaches drops the card, so the next attach reads afresh.
 - **The trust prompt's folder, measured 2026-11-06** (Claude Code 2.1.318,
   herdr 0.9.5, hc 0.1.18): the prompt names the folder absolute, never with
   `~` (a folder in the home directory read `/home/lasse/oh-test-…`), and with
@@ -1952,14 +1959,24 @@ these are the facts it relies on.
   until the prompt has been read on reads at least 1.5 s apart.
 - **Trust through the driver, as built (#167).** "Trust new folders
   automatically" is the tab's (`src/native/trustWatch.ts`): while the pane
-  has no session and is `blocked` (herdr) or reports nothing (hc), the tab
-  reads its screen once a second, at most 60 times per start, and answers
-  `down` `enter` through the shared driver when `inspect` found the prompt
-  for the pane's folder, exactly, as above; one answer per pane start,
-  claimed across tabs (`ScreenAnswerers.claimTrust`). The receipt is the
-  session starting (a session, or `idle`, `working`, `done`); a key that did
-  not take is a notice, never a second press. The waiting card's trust button
-  is offered only once its read found the prompt for the pane's folder.
+  runs Claude, has no session and is `blocked` (herdr) or reports nothing
+  (hc), the tab reads its screen once a second, at most 60 times per start of
+  the agent, and answers `down` `enter` through the shared driver when
+  `inspect` found the prompt for the pane's folder, exactly, as above. It
+  reads the pane by `SessionWatcher.glance`, what the runtime last reported
+  and nothing else: herdr's `snapshot` reads the Claude process
+  (`pane.process_info`, then its environment) of a pane with a session,
+  which only a followed pane may cost. With the setting off it reads nothing.
+  The agent is the one running now: on hc the foreground program (a shell
+  once Claude exits, whatever status hc kept), else the row's kind; a pane
+  with none is not read and starts the next count. One press per prompt,
+  claimed plugin-wide (`ScreenAnswerers.claimTrust`) by the watch or a
+  card's button, whichever presses first; the claim goes back only when
+  nothing was sent, the session starts, or the agent is gone. The receipt is
+  the session starting (a session, or `idle`, `working`, `done`); a key that
+  did not take is a notice, never a second press from either. The waiting
+  card's trust button is offered only once its reads found the prompt for the
+  pane's folder on two reads 1.5 s apart, with none between that did not.
 - **Run live through the card's own code (#166, #167), 2026-11-06**, herdr
   0.9.5 and hc 0.1.18, Claude Code 2.1.318 (haiku), the native surface and
   its waiting card driven by a session model read from the real transcript:

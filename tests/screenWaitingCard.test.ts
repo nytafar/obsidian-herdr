@@ -8,7 +8,7 @@
  * card whose request is no longer on screen presses nothing.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
@@ -16,7 +16,8 @@ import { NativePaneSurface } from '../src/native/surface';
 import { parseClaudeScreen } from '../src/agents/claude/screenDialog';
 import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import { REFUSAL_TEXT, ScreenAnswerer, type AnswerTiming } from '../src/native/screenAnswer';
-import type { ScreenAnswering } from '../src/native/screenAnswerers';
+import { ScreenAnswerers, type ScreenAnswering } from '../src/native/screenAnswerers';
+import { TRUST_CLAIMED_TEXT } from '../src/native/waitingCardView';
 import type { ToolEntry, Turn } from '../src/native/conversation';
 import type { BlockKind, SessionChange, SessionHandleOf, SessionModels, SessionModelView } from '../src/native/sessionModel';
 import type { AgentStatus } from '../src/herdr/types.gen';
@@ -126,7 +127,12 @@ interface Setup {
 	el: FakeElement;
 	notices: string[];
 	answering: ScreenAnswering;
+	surface: NativePaneSurface;
+	/** The plugin-wide trust claims, as the tabs share them. */
+	claims: ScreenAnswerers;
 }
+
+const PANE_KEY = 'local\nw4:p1';
 
 async function setup(dialog: SimDialog, options: SimOptions = {}, statusMessage: string | null = null): Promise<Setup> {
 	const model = new FakeModel();
@@ -150,12 +156,15 @@ async function setup(dialog: SimDialog, options: SimOptions = {}, statusMessage:
 			}
 		},
 	});
+	const claims = new ScreenAnswerers();
 	const answering: ScreenAnswering = {
 		answerer: new ScreenAnswerer({ screen: sim, parse: parseClaudeScreen, timing: FAST }),
 		screen: sim,
 		parse: parseClaudeScreen,
 		statusMessage: () => statusMessage,
 		cwd: () => CWD,
+		claimTrust: () => claims.claimTrust(PANE_KEY),
+		releaseTrust: () => claims.releaseTrust(PANE_KEY),
 		retryMs: 1,
 		nextReadMs: 60_000,
 	};
@@ -176,7 +185,7 @@ async function setup(dialog: SimDialog, options: SimOptions = {}, statusMessage:
 		vaultPath: () => '/vault',
 	});
 	await surface.attach(host);
-	return { model, sim, el, notices, answering };
+	return { model, sim, el, notices, answering, surface, claims };
 }
 
 function title(el: FakeElement): string {
@@ -224,6 +233,12 @@ async function outcome(el: FakeElement, text: RegExp | string): Promise<void> {
 
 beforeEach(() => {
 	MarkdownRenderer.reset();
+	// The card times its reads on the window, as view code does.
+	vi.stubGlobal('window', globalThis);
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
 });
 
 describe('screen card: questions', () => {
@@ -434,5 +449,120 @@ describe('screen card: the trust prompt (#167)', () => {
 		await vi.waitFor(() => expect(labels(s.el)).toEqual(['Read the terminal again', 'Open in terminal']));
 		expect(s.el.find('herdr-native-waiting-hint').textContent).toMatch(/names another folder/);
 		expect(s.sim.keys).toEqual([]);
+	});
+});
+
+describe('screen card: a view detached and attached again (#166 review)', () => {
+	it('draws the card afresh when a read was under way as the view detached', async () => {
+		const s = await setup(bashDialog('ls -la'));
+		const sim = s.sim;
+		let release: (() => void) | null = null;
+		s.answering.screen = {
+			read: async () => {
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				return sim.read();
+			},
+			press: (paneId, key) => sim.press(paneId, key),
+			type: (paneId, text) => sim.type(paneId, text),
+		};
+		s.model.setStatus('blocked');
+		await vi.waitFor(() => expect(release).not.toBeNull());
+		await s.surface.detach();
+		const held = release as unknown as () => void;
+		s.answering.screen = sim;
+		held();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const again = hostEl();
+		await s.surface.attach(again.host);
+		await ready(again.el, 'Claude wants to use Bash');
+		expect(s.el.findAll('herdr-native-waiting')).toHaveLength(0);
+		expect(again.el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(true);
+	});
+
+	it('cancels the reads it was waiting to make: none runs once the view is gone', async () => {
+		const s = await setup(trustDialog(CWD));
+		s.answering.retryMs = 40;
+		s.model.path = null;
+		s.model.agentSession = '';
+		s.model.setStatus('blocked');
+		// The first read showed the prompt; the card waits to read it again.
+		await vi.waitFor(() => expect(s.sim.reads).toBe(1));
+		await s.surface.detach();
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		expect(s.sim.reads).toBe(1);
+		expect(s.sim.keys).toEqual([]);
+	});
+});
+
+describe('screen card: the trust prompt, one press per prompt (#167 review)', () => {
+	function atPrompt(s: Setup): void {
+		s.model.path = null;
+		s.model.agentSession = '';
+		s.model.setStatus('blocked');
+	}
+
+	it('waits from the first read that shows the prompt, though a torn read came before it', async () => {
+		const trust = trustDialog(CWD);
+		const shown: number[] = [];
+		const s = await setup({ kind: 'composer' }, {
+			onRead: (sim) => {
+				if (sim.reads === 2) sim.dialog = trust;
+				if (sim.dialog === trust) shown.push(sim.reads);
+			},
+		});
+		atPrompt(s);
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		// A torn first read, then the prompt twice, the wait between them.
+		expect(shown.length).toBeGreaterThanOrEqual(3);
+	});
+
+	it('waits again when a read between showed no prompt', async () => {
+		const trust = trustDialog(CWD);
+		const s = await setup(trust, {
+			onRead: (sim) => {
+				sim.dialog = sim.reads === 2 ? { kind: 'composer' } : trust;
+			},
+		});
+		atPrompt(s);
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		// The prompt, a read without it, then the prompt on two reads.
+		expect(s.sim.reads).toBeGreaterThanOrEqual(4);
+	});
+
+	it('presses nothing when the prompt is already claimed by a press elsewhere, and says so', async () => {
+		const s = await setup(trustDialog(CWD));
+		atPrompt(s);
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		// The trust watch, or another tab, pressed first.
+		expect(s.claims.claimTrust(PANE_KEY)).toBe(true);
+		press(s.el, 'Yes, I trust this folder');
+		await outcome(s.el, /already answered this prompt once/);
+		expect(said(s.el)).toBe(TRUST_CLAIMED_TEXT);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(s.sim.keys).toEqual([]);
+	});
+
+	it('keeps the claim after a key that did not take, so nothing presses the prompt again', async () => {
+		const s = await setup(trustDialog(CWD), { drop: (key) => key === 'enter' });
+		atPrompt(s);
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		press(s.el, 'Yes, I trust this folder');
+		await outcome(s.el, /did not take/);
+		expect(s.claims.claimTrust(PANE_KEY)).toBe(false);
+		expect(s.sim.keys.filter((key) => key === 'enter')).toHaveLength(1);
+	});
+
+	it('gives the claim back when the press sent nothing', async () => {
+		const s = await setup(trustDialog(CWD));
+		atPrompt(s);
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		// The prompt went before the press: refused with nothing sent.
+		s.sim.dialog = { kind: 'composer' };
+		press(s.el, 'Yes, I trust this folder');
+		await vi.waitFor(() => expect(said(s.el)).toMatch(/different dialog|Could not read|Stopped/));
+		expect(s.sim.keys).toEqual([]);
+		expect(s.claims.claimTrust(PANE_KEY)).toBe(true);
 	});
 });

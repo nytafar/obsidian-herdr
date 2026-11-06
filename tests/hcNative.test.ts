@@ -879,3 +879,23 @@ describe('a native session model on an SSH herdr-core runtime, over a fake hc co
 		rig.coordinator.dispose();
 	});
 });
+
+describe('the herdr-core session watcher: a glance (#167 review)', () => {
+	it('says what runs now: Claude in the foreground before its session, nothing once a shell is back', () => {
+		// Claude at its trust prompt: no status yet, no label.
+		const { scope, send } = scopeWith(terminal('t1', { status: null, reported: false }));
+		const watcher = hcSessionWatcher(scope);
+		expect(watcher.glance?.('t1')).toEqual({
+			paneId: 't1',
+			cwd: CWD,
+			agent: 'claude',
+			agentSession: '',
+			agentStatus: 'unknown',
+		});
+		// Claude exits to the shell; the status hc kept still names it.
+		send('status', 't1', { status: { state: 'idle', app: 'claude-code' }, reported: true });
+		send('foreground', 't1', { name: 'bash', argv: ['bash'], cwd: CWD, pid: 100 });
+		expect(watcher.glance?.('t1')).toMatchObject({ agent: null, agentSession: '' });
+		expect(watcher.glance?.('t9')).toBeNull();
+	});
+});

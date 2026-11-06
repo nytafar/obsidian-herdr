@@ -21,6 +21,7 @@ import { withPaneReason } from '../src/views/terminalView';
 import type { HerdrEvent } from '../src/herdr/client';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus, PaneInfo } from '../src/herdr/types.gen';
+import type { PaneClaudeResolver } from '../src/herdr/paneClaude';
 
 /** A `pane_updated` push, in the shape herdr really sends it. */
 function paneUpdated(paneId: string, agentSession: string | null): HerdrEvent {
@@ -318,5 +319,46 @@ describe('herdrSessionWatcher: only a Claude pane has a native view (#155)', () 
 		changed[0]?.('w4:p1', codex, claude);
 
 		expect(seen).toEqual(['w4:p2', 'w4:p1', 'w4:p1']);
+	});
+});
+
+describe('herdrSessionWatcher: a glance reads no process (#167 review)', () => {
+	it('gives the pane as reported without asking the pane-Claude reader, which snapshot does', () => {
+		const scope = {
+			get: (paneId: string) =>
+				paneId === 'w4:p1'
+					? ({ paneId, cwd: '/home/lasse/hvelv', agent: 'claude', agentStatus: 'idle' } as PaneState)
+					: undefined,
+			paneInfo: () =>
+				({ pane_id: 'w4:p1', agent_session: { agent: 'claude', kind: 'id', source: 'screen', value: 'session-1' } }) as PaneInfo,
+			on: () => () => {},
+		};
+		const calls: string[] = [];
+		const resolver = {
+			known: () => null,
+			stale: () => {
+				calls.push('stale');
+				return true;
+			},
+			resolve: () => {
+				calls.push('resolve');
+				return new Promise(() => {});
+			},
+			tracked: () => false,
+			forget: () => {},
+		} as unknown as PaneClaudeResolver;
+		const watcher = herdrSessionWatcher({ scope, client: recordingClient().client }, resolver);
+		expect(watcher?.glance?.('w4:p1')).toEqual({
+			paneId: 'w4:p1',
+			cwd: '/home/lasse/hvelv',
+			agent: 'claude',
+			agentSession: 'session-1',
+			agentStatus: 'idle',
+		});
+		expect(watcher?.glance?.('w4:p9')).toBeNull();
+		expect(calls).toEqual([]);
+		// The snapshot, which only a followed pane's model asks for, does read it.
+		watcher?.snapshot('w4:p1');
+		expect(calls).toEqual(['stale', 'resolve']);
 	});
 });

@@ -39,12 +39,13 @@ import type { PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 import type {
 	BlockKind,
+	PaneGlance,
 	PaneSnapshot,
 	SessionWatcher,
 	Unsubscribe,
 } from '../native/sessionWatcher';
 import { nativeAgentReason } from '../native/agentSupport';
-import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
+import { agentKindOf, foregroundAgent, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import { SeenTracker } from './seen';
 
@@ -253,6 +254,25 @@ export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherO
 				agentStatus: status,
 				...(blockKind ? { blockKind } : {}),
 				// Claude's words for what it waits on (ADR-0009 §1), while blocked.
+				...(status === 'blocked' && terminal?.status?.msg ? { blockMessage: terminal.status.msg } : {}),
+			};
+		},
+		glance(paneId: string): PaneGlance | null {
+			const row = scope.get(paneId);
+			if (!row) return null;
+			const terminal = scope.terminal(paneId);
+			const session = acceptedSession(terminal);
+			const { status } = terminal ? nativeStatus(terminal) : { status: row.agentStatus };
+			// What runs now: a session is Claude's; else the foreground program,
+			// which is a shell again once the agent exits, whatever status hc
+			// last kept; else the row's kind.
+			const now = terminal ? foregroundAgent(terminal) : undefined;
+			return {
+				paneId,
+				cwd: row.cwd,
+				agent: session ? SESSION_LABEL_AGENT : now === undefined ? row.agent : now,
+				agentSession: session?.sessionId ?? '',
+				agentStatus: status,
 				...(status === 'blocked' && terminal?.status?.msg ? { blockMessage: terminal.status.msg } : {}),
 			};
 		},

@@ -37,17 +37,17 @@ import {
 import type { ScreenAnswering } from './screenAnswerers';
 import {
 	findReceipt,
-	knownCalls,
 	outcomeView,
 	ownCall,
 	permissionOption2,
 	planAgrees,
 	screenRequests,
+	transcriptMark,
 	type CallKind,
 	type FoundReceipt,
+	type TranscriptMark,
 } from './screenCard';
-import { sessionStarted } from './trustWatch';
-import { setTimer } from '../timers';
+import { sentNothing, sessionStarted } from './trustWatch';
 import {
 	projectGrantText,
 	type PendingQuestion,
@@ -253,6 +253,15 @@ const TRUST_SETTLE_MS = 1500;
 const NEXT_READ_MS = 1500;
 
 /**
+ * What the card says when its trust button is pressed after Gjetr already
+ * answered this prompt once, from a card or "Trust new folders
+ * automatically": one press per prompt (ADR-0009 §3), so a key that did not
+ * take is never followed by a second one that may land elsewhere.
+ */
+export const TRUST_CLAIMED_TEXT =
+	'Gjetr has already answered this prompt once and does not answer it twice. Check the terminal and answer it there.';
+
+/**
  * A card read off the pane's screen (ADR-0009), for one block: kept while the
  * card is the same block, so what was chosen and typed on it stays.
  */
@@ -272,8 +281,15 @@ interface ScreenState {
 	expectation: ScreenExpectation | null;
 	/** That read's dialog: what the card shows and offers. */
 	dialog: ScreenDialog | null;
-	/** The calls the transcript held when the card was built: none of them is the answer. */
-	known: Set<string>;
+	/**
+	 * Where the transcript stood when the last answer was pressed: only what
+	 * Claude wrote after it (or a call open then) is that answer's receipt.
+	 * Null before a press, and for a press made while the transcript was not
+	 * read yet, whose receipt then never comes from the transcript.
+	 */
+	mark: TranscriptMark | null;
+	/** Whether a read has shown the trust prompt and the card waited before reading it again (#167). */
+	trustSeen: boolean;
 	callKind: CallKind;
 	/** The card as described before the screen was read; its title changes with what was read. */
 	card: WaitingCardModel;
@@ -319,8 +335,14 @@ export class WaitingCardView {
 	private foldedFor = '';
 	/** The card read off the screen, while the block is one (ADR-0009); null otherwise. */
 	private screenState: ScreenState | null = null;
-	/** Where the card was last drawn, for a redraw an answer or a read asks for. */
+	/** Where the card was last drawn, for a redraw an answer or a read asks for; null while detached. */
 	private rootEl: HTMLElement | null = null;
+	/**
+	 * The screen card's pending reads (a retry, the trust prompt's wait, the
+	 * read after an answer), as window timers: cleared whenever the screen
+	 * card is dropped, so none of them reads or draws for a card that is gone.
+	 */
+	private readonly timers = new Set<number>();
 
 	constructor(private readonly options: WaitingCardViewOptions) {}
 
@@ -335,7 +357,7 @@ export class WaitingCardView {
 		if (status !== 'blocked') {
 			// ADR-0009 §5: an answer still before its first commit key stops.
 			this.screenState?.run?.cancel('Claude is no longer waiting');
-			this.screenState = null;
+			this.dropScreen();
 			this.clear();
 			// The block is over: the next one is an answer of its own.
 			this.trustSent = false;
@@ -349,7 +371,7 @@ export class WaitingCardView {
 		const screen = request ? null : (this.options.screen?.() ?? null);
 		if (screen && this.updateScreen(root, model, screen)) return;
 		this.screenState?.run?.cancel('the card changed');
-		this.screenState = null;
+		this.dropScreen();
 		// The same request still waiting: the card on screen is already it.
 		if (request && request === this.waitingRequest && this.waitingEl) {
 			this.options.setPromptHidden(true);
@@ -373,6 +395,36 @@ export class WaitingCardView {
 		this.render(root, card);
 		this.options.setPromptHidden(true);
 		this.autoTrust(card);
+	}
+
+	/**
+	 * The surface is detaching: stops the screen card's answer before its next
+	 * key (ADR-0009 §5), cancels its reads and timers, and forgets it and the
+	 * element it was drawn in, so nothing still under way draws into the old
+	 * root and the next attach reads the screen afresh. The guards about the
+	 * block itself (an answer already sent) are kept.
+	 */
+	detach(): void {
+		this.screenState?.run?.cancel('the view was closed');
+		this.dropScreen();
+		this.clear();
+		this.rootEl = null;
+	}
+
+	/** Forgets the screen card and cancels its pending reads; a read already under way finds it gone. */
+	private dropScreen(): void {
+		this.screenState = null;
+		for (const timer of this.timers) window.clearTimeout(timer);
+		this.timers.clear();
+	}
+
+	/** Runs `run` after `ms`, while `state` is still the screen card. */
+	private later(state: ScreenState, run: () => void, ms: number): void {
+		const timer = window.setTimeout(() => {
+			this.timers.delete(timer);
+			if (this.screenState === state) run();
+		}, ms);
+		this.timers.add(timer);
 	}
 
 	/** Drops the card and its listeners. Safe to call when there is none. */
@@ -899,13 +951,15 @@ export class WaitingCardView {
 			reason: '',
 			expectation: null,
 			dialog: null,
-			known: knownCalls(turns),
+			mark: null,
+			trustSeen: false,
 			callKind: (call) => format.pendingCall(call)?.kind ?? null,
 			card,
 			run: null,
 			outcome: null,
 			found: null,
 		};
+		this.dropScreen();
 		this.screenState = fresh;
 		this.render(root, card);
 		this.options.setPromptHidden(true);
@@ -928,9 +982,7 @@ export class WaitingCardView {
 				this.screenNone(state, reason);
 				return;
 			}
-			setTimer(() => {
-				if (this.screenState === state) void this.readScreen(state, screen, attempt + 1);
-			}, screen.retryMs ?? READ_RETRY_MS);
+			this.later(state, () => void this.readScreen(state, screen, attempt + 1), screen.retryMs ?? READ_RETRY_MS);
 		};
 		let raw: string;
 		try {
@@ -941,6 +993,9 @@ export class WaitingCardView {
 		}
 		if (this.screenState !== state) return;
 		const dialog = screen.parse(raw);
+		// The trust prompt's wait counts from a read that showed it, with none
+		// between that did not.
+		if (dialog.kind !== 'trust') state.trustSeen = false;
 		const requests = screenRequests(dialog, raw, {
 			dangling: danglingToolUse(this.options.model()?.state.turns ?? []),
 			callKind: state.callKind,
@@ -952,12 +1007,13 @@ export class WaitingCardView {
 			else this.screenNone(state, requests.reason);
 			return;
 		}
-		if (dialog.kind === 'trust' && attempt === 0) {
+		if (dialog.kind === 'trust' && !state.trustSeen) {
 			// Claude draws the trust prompt twice at startup, the cursor back on
-			// "No, exit" the second time (#167): offer it once it has stayed up.
-			setTimer(() => {
-				if (this.screenState === state) void this.readScreen(state, screen, attempt + 1);
-			}, screen.retryMs ?? TRUST_SETTLE_MS);
+			// "No, exit" the second time (#167): offer it once it has stayed up,
+			// counted from the first read that showed it, a torn one before it
+			// or not.
+			state.trustSeen = true;
+			this.later(state, () => void this.readScreen(state, screen, attempt + 1), screen.retryMs ?? TRUST_SETTLE_MS);
 			return;
 		}
 		let detail = '';
@@ -1010,7 +1066,7 @@ export class WaitingCardView {
 	/** Builds the card again from a fresh read: "Read the terminal again", and after an answer went. */
 	private rereadScreen(state: ScreenState): void {
 		if (this.screenState !== state || state.run || !this.rootEl) return;
-		this.screenState = null;
+		this.dropScreen();
 		this.update(this.rootEl, this.options.model()?.agentStatus ?? 'unknown');
 	}
 
@@ -1189,8 +1245,17 @@ export class WaitingCardView {
 		const screen = this.options.screen?.() ?? null;
 		const expectation = state.expectation;
 		if (!screen || !expectation || state.run) return;
+		// One press per trust prompt, shared with the trust watch and every
+		// other tab on the pane (ADR-0009 §3): taken before any key, kept
+		// unless nothing reached the terminal.
+		if (answer.kind === 'trust' && !screen.claimTrust()) {
+			ui.feedback.failed(TRUST_CLAIMED_TEXT);
+			return;
+		}
 		for (const control of ui.controls) control.disabled = true;
 		ui.feedback.sending();
+		const model = this.options.model();
+		state.mark = model?.loaded ? transcriptMark(model.state.turns) : null;
 		const run = screen.answerer.answer({
 			paneId: this.options.paneId(),
 			expectation,
@@ -1200,6 +1265,7 @@ export class WaitingCardView {
 		});
 		state.run = run;
 		const outcome = await run.done;
+		if (answer.kind === 'trust' && sentNothing(outcome)) screen.releaseTrust();
 		state.run = null;
 		state.outcome = outcome;
 		const view = outcomeView(outcome);
@@ -1208,7 +1274,7 @@ export class WaitingCardView {
 		if (view.tone === 'done') {
 			ui.feedback.sent(view.text);
 			// The next dialog may follow without the block ending: read what is up then.
-			setTimer(() => this.rereadScreen(state), screen.nextReadMs ?? NEXT_READ_MS);
+			this.later(state, () => this.rereadScreen(state), screen.nextReadMs ?? NEXT_READ_MS);
 			return;
 		}
 		if (view.retry) {
@@ -1245,7 +1311,8 @@ export class WaitingCardView {
 					resolve({ kind: 'started' });
 					return;
 				}
-				const found = findReceipt(model.state.turns, expectation, state.known, state.callKind);
+				const mark = state.mark;
+				const found = mark ? findReceipt(model.state.turns, expectation, mark, state.callKind) : null;
 				if (!found) return;
 				off?.();
 				off = null;
