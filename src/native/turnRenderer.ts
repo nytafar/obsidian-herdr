@@ -24,6 +24,8 @@ import { nameTurnItems } from './itemKeys';
 import type {
 	CompactionEntry,
 	ImageEntry,
+	NoticeEntry,
+	ShellEntry,
 	TextEntry,
 	ThinkingEntry,
 	ToolEntry,
@@ -262,6 +264,14 @@ const ITEM_KINDS: ItemKinds = {
 	compaction: {
 		signature: (item) => item.entry.summary,
 		render: (item, context) => renderCompaction(item.entry, context),
+	},
+	notice: {
+		signature: (item) => item.entry.text,
+		render: (item, context) => renderNotice(item.entry, context),
+	},
+	shell: {
+		signature: (item) => JSON.stringify([item.entry.command, item.entry.stdout, item.entry.stderr]),
+		render: (item, context) => renderShell(item.entry, context),
 	},
 };
 
@@ -760,4 +770,22 @@ function renderCompaction(entry: CompactionEntry, context: ItemContext): ItemDra
 	context.disclose(details, false);
 	renderOnce();
 	return { el: details };
+}
+
+/** The runtime's own notice (#133), a muted line where it was written. */
+function renderNotice(entry: NoticeEntry, context: ItemContext): ItemDraw {
+	return { el: context.parent.createDiv({ cls: 'herdr-native-notice', text: entry.text }) };
+}
+
+/**
+ * A bash-mode command and what it printed (#133): the command as the human
+ * typed it after the `!`, then its output as the terminal showed it, stderr
+ * marked as such. Nothing yet while the command is still running.
+ */
+function renderShell(entry: ShellEntry, context: ItemContext): ItemDraw {
+	const el = context.parent.createDiv({ cls: 'herdr-native-shell' });
+	el.createDiv({ cls: 'herdr-native-shell-command', text: `! ${entry.command}` });
+	if (entry.stdout) el.createEl('pre', { cls: 'herdr-native-shell-output', text: entry.stdout });
+	if (entry.stderr) el.createEl('pre', { cls: ['herdr-native-shell-output', 'is-error'], text: entry.stderr });
+	return { el };
 }

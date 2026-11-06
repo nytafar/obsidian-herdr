@@ -428,6 +428,9 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 - `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
   2.1.318 lines have the same shape.
 - `resend.jsonl` — a prompt cancelled before any reply and sent again, 2.1.318.
+- `unknown-command.jsonl` — an unknown slash command's two notices, 2.1.286.
+- `usage-limit.jsonl` — a usage limit reached and later reset, 2.1.286.
+- `bash-mode.jsonl` — a `!` command, its output and the agent's answer, 2.1.318.
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:

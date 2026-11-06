@@ -159,13 +159,39 @@ export interface CompactionEntry {
 	summary: string;
 }
 
+/**
+ * The runtime speaking to the human, not the agent (#133): an unknown
+ * command, a usage limit reached or reset, a connection dropped. Shown where
+ * it was written, in the turn running then, and never as a turn of its own.
+ */
+export interface NoticeEntry {
+	kind: 'notice';
+	text: string;
+	/** When it was written, '' when the line did not say; lines a moment apart join. */
+	at: string;
+}
+
+/**
+ * A command the human ran in the agent's shell (bash mode, `!` in Claude
+ * Code), and what it printed (#133). It opens a turn as a prompt does.
+ */
+export interface ShellEntry {
+	kind: 'shell';
+	command: string;
+	/** What it printed, null until the output has arrived. */
+	stdout: string | null;
+	stderr: string;
+}
+
 export type TurnEntry =
 	| TextEntry
 	| ThinkingEntry
 	| ToolEntry
 	| SteerEntry
 	| ImageEntry
-	| CompactionEntry;
+	| CompactionEntry
+	| NoticeEntry
+	| ShellEntry;
 
 /** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
 export interface TurnHeading {
@@ -436,6 +462,54 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>\s*/g;
 function compactionSummary(content: unknown): string {
 	const text = typeof content === 'string' ? content : resultText(content);
 	return text.replace(SYSTEM_REMINDER, '').trim();
+}
+
+/** Notices written this close together are one notice (#133). */
+const NOTICE_JOIN_MS = 1000;
+
+/** A notice is not a log: past this, the rest stays in the terminal. */
+const NOTICE_MAX_CHARS = 4000;
+
+/** Terminal escape sequences and other controls, which a notice or a shell's output may carry. */
+// eslint-disable-next-line no-control-regex
+const TERMINAL_CONTROLS = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+
+/** Text as the terminal showed it, without its escape codes, cut to a notice's length. */
+function plainText(text: string): string {
+	const plain = text.replace(TERMINAL_CONTROLS, '');
+	return plain.length > NOTICE_MAX_CHARS ? `${plain.slice(0, NOTICE_MAX_CHARS)}\u2026` : plain;
+}
+
+/** Whether two lines were written together; never when either has no readable time. */
+function writtenTogether(a: string, b: string): boolean {
+	const first = Date.parse(a);
+	const second = Date.parse(b);
+	return !Number.isNaN(first) && !Number.isNaN(second) && Math.abs(first - second) <= NOTICE_JOIN_MS;
+}
+
+/**
+ * Whether a string `user` line is the human's own, as bash mode writes it:
+ * a typed prompt carries `origin` and `permissionMode`, a bash-mode line
+ * neither (measured on 2.1.286 and 2.1.318), so a prompt that merely quotes
+ * the tags is not taken for one.
+ */
+function bashModeLine(line: Json): boolean {
+	return !('origin' in line) && !('permissionMode' in line);
+}
+
+/** The command of a bash-mode line: the whole line is `<bash-input>…</bash-input>`. */
+const BASH_INPUT = /^\s*<bash-input>([\s\S]*)<\/bash-input>\s*$/;
+
+/** What a bash-mode command printed: `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`. */
+const BASH_OUTPUT = /^\s*<bash-stdout>([\s\S]*)<\/bash-stdout>\s*(?:<bash-stderr>([\s\S]*)<\/bash-stderr>)?\s*$/;
+
+/** The newest shell entry still waiting for what its command printed, or null. */
+function waitingShell(entries: readonly TurnEntry[]): ShellEntry | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry?.kind === 'shell' && entry.stdout === null) return entry;
+	}
+	return null;
 }
 
 /** True for a `user` line that is a local command's own output, not a prompt. */
@@ -857,6 +931,27 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
+				if (bashModeLine(parsed)) {
+					// Bash mode (#133): the command opens a turn as a prompt does,
+					// and the line after it holds what it printed.
+					const command = BASH_INPUT.exec(content);
+					if (command) {
+						const turn = openPrompt(parsed, '');
+						turn.entries.push({ kind: 'shell', command: (command[1] ?? '').trim(), stdout: null, stderr: '' });
+						continue;
+					}
+					const printed = BASH_OUTPUT.exec(content);
+					if (printed) {
+						const turn = draft.current();
+						const shell = turn ? waitingShell(turn.entries) : null;
+						if (turn && shell) {
+							shell.stdout = plainText((printed[1] ?? '').replace(/\n+$/, ''));
+							shell.stderr = plainText((printed[2] ?? '').replace(/\n+$/, ''));
+							draft.touch(turn.id);
+						} else countRaw(type);
+						continue;
+					}
+				}
 				openPrompt(parsed, commandPrompt(content) ?? content);
 				continue;
 			}
@@ -909,6 +1004,31 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						});
 					}
 				}
+				draft.touch(turn.id);
+				continue;
+			}
+			case 'system': {
+				// The runtime's own notices (#133). A slash command's output, the
+				// `local_command` subtype, stays hidden as its `user` form does: the
+				// command itself is the turn, and what it set is the session
+				// chrome's to show.
+				if (stringField(parsed, 'subtype') !== 'informational') {
+					countRaw(type);
+					continue;
+				}
+				const text = plainText(stringField(parsed, 'content')).trim();
+				if (!text) {
+					countRaw(type);
+					continue;
+				}
+				const at = stringField(parsed, 'timestamp');
+				const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `notice-${draft.length}`, '');
+				const last = turn.entries[turn.entries.length - 1];
+				// Claude Code writes one notice as several lines a moment apart
+				// ("Unknown command" and the arguments it dropped).
+				if (last?.kind === 'notice' && writtenTogether(last.at, at)) {
+					last.text = plainText(`${last.text}\n${text}`);
+				} else turn.entries.push({ kind: 'notice', text, at });
 				draft.touch(turn.id);
 				continue;
 			}

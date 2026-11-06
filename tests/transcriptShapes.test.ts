@@ -108,7 +108,8 @@ describe('a compaction (#130)', () => {
 
 		expect(state.turns.map((turn) => turn.prompt)).toEqual(['', 'now let us address font matching']);
 		const kinds = state.turns[0]?.entries.map((entry) => entry.kind);
-		expect(kinds).toEqual(['thinking', 'text', 'compaction']);
+		// The "Compacted while idle" notice after it is the runtime's (#133).
+		expect(kinds).toEqual(['thinking', 'text', 'compaction', 'notice']);
 	});
 
 	it('keeps the summary readable, without the reminders meant for the model', () => {
@@ -253,5 +254,97 @@ describe('a rewind and a cancelled re-send (#131)', () => {
 	it('hides nothing for a parent it never saw', () => {
 		const state = cold([user('u1', 'p', 'first'), answer('a1', 'u1', 'one'), user('u2', 'elsewhere', 'second')]);
 		expect(prompts(state)).toEqual(['first', 'second']);
+	});
+});
+
+describe('the runtime’s notices and bash mode (#133)', () => {
+	const notices = (state: TranscriptState): string[] =>
+		state.turns.flatMap((turn) => turn.entries.flatMap((entry) => (entry.kind === 'notice' ? [entry.text] : [])));
+
+	it('shows an unknown command as one notice, its two lines joined, and opens no turn for it', () => {
+		// Recorded on 2.1.286: "Unknown command" and the arguments it dropped,
+		// two `system` `informational` lines written in the same millisecond.
+		const lines = fixtureLines('unknown-command');
+		const state = cold(lines);
+
+		expect(notices(state)).toEqual([
+			'Unknown command: /github-expfind\nArgs from unknown skill: find a way to switch accounts',
+		]);
+		expect(state.turns).toHaveLength(2);
+		expect(live(lines)).toEqual(state);
+	});
+
+	it('shows a usage limit reached and reset as notices in the turns they were written in', () => {
+		// Recorded on 2.1.286.
+		const lines = fixtureLines('usage-limit');
+		const state = cold(lines);
+
+		expect(notices(state)).toEqual([
+			'Usage limit reached · continuing automatically at 3:10am · esc to cancel',
+			'Usage limit reset · continuing automatically',
+		]);
+		expect(state.turns).toHaveLength(1);
+		expect(live(lines)).toEqual(state);
+	});
+
+	it('keeps notices written apart as two', () => {
+		const notice = (uuid: string, timestamp: string, content: string): string =>
+			JSON.stringify({ type: 'system', subtype: 'informational', uuid, timestamp, content });
+		const state = cold([
+			JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Go' } }),
+			notice('n1', '2026-11-06T10:00:00.000Z', 'Remote Control disconnected'),
+			notice('n2', '2026-11-06T10:00:05.000Z', '\u001b[1mCompacted\u001b[22m while idle'),
+		]);
+
+		expect(notices(state)).toEqual(['Remote Control disconnected', 'Compacted while idle']);
+	});
+
+	it('opens a turn for a bash-mode command and puts what it printed in it', () => {
+		// Recorded on 2.1.318: `<bash-input>` and then `<bash-stdout>…<bash-stderr>`,
+		// neither line carrying `origin` or `permissionMode`, and the agent
+		// answering what it printed.
+		const lines = fixtureLines('bash-mode');
+		const state = cold(lines);
+
+		const shellTurn = state.turns.at(-1);
+		expect(shellTurn?.id).toBe('3203531b-51ee-400e-b1d8-e4dc66840907');
+		expect(shellTurn?.prompt).toBe('');
+		expect(shellTurn?.entries[0]).toEqual({
+			kind: 'shell',
+			command: './issues.sh',
+			stdout: 'A #126 (exists)\nB #127 (exists)\n./issues.sh: line 461: native: command not found\nPARENT #153',
+			stderr: '',
+		});
+		expect(shellTurn?.entries.some((entry) => entry.kind === 'text')).toBe(true);
+		expect(state.turns).toHaveLength(2);
+		expect(live(lines)).toEqual(state);
+	});
+
+	it('takes a typed prompt that quotes the tags for a prompt', () => {
+		const state = cold([
+			JSON.stringify({
+				type: 'user',
+				uuid: 'u1',
+				permissionMode: 'auto',
+				origin: { kind: 'human' },
+				message: { role: 'user', content: '<bash-input>ls</bash-input>' },
+			}),
+		]);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['<bash-input>ls</bash-input>']);
+	});
+
+	it('still hides a slash command’s own output', () => {
+		const state = cold([
+			JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: '<command-name>/model</command-name>' } }),
+			JSON.stringify({
+				type: 'system',
+				subtype: 'local_command',
+				uuid: 's1',
+				content: '<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>',
+			}),
+		]);
+
+		expect(state.turns[0]?.entries).toEqual([]);
 	});
 });

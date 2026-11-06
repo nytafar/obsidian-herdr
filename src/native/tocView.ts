@@ -270,13 +270,16 @@ export class TocPanel {
 }
 
 /**
- * What a turn's row says: its prompt's first line, or for a prompt that was
- * only a picture, that it was one (#129).
+ * What a turn's row says: its prompt's first line, for a bash-mode command
+ * the command (#133), or for a prompt that was only a picture, that it was
+ * one (#129). Empty for a turn nobody prompted.
  */
 export function turnLabel(turn: Turn): string {
 	const line = firstLine(turn.prompt);
 	if (line) return line;
-	return turn.entries[0]?.kind === 'image' ? 'Image' : '';
+	const first = turn.entries[0];
+	if (first?.kind === 'shell') return `! ${first.command}`;
+	return first?.kind === 'image' ? 'Image' : '';
 }
 
 /** A prompt's first line, which is all a one-line row can say. */

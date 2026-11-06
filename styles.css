@@ -646,6 +646,41 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/* The runtime's own notice (#133): not the agent speaking, so muted and small. */
+.herdr-native-notice {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+	margin: var(--size-4-2) 0;
+	white-space: pre-wrap;
+}
+
+/* A bash-mode command and its output (#133), set as the terminal showed it. */
+.herdr-native-shell {
+	border-left: 3px solid var(--interactive-accent);
+	margin-bottom: var(--size-4-3);
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-shell-command {
+	font-family: var(--font-monospace);
+	white-space: pre-wrap;
+}
+
+.herdr-native-shell-output {
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-1) 0 0;
+	max-height: 20em;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
+.herdr-native-shell-output.is-error {
+	color: var(--text-error);
+}
+
 /* A picture sent with the prompt, as a placeholder under it (#129). */
 .herdr-native-image {
 	color: var(--text-muted);

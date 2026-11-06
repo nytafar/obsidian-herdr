@@ -23,6 +23,8 @@ import {
 	isAsyncLaunchNotice,
 	type CompactionEntry,
 	type ImageEntry,
+	type NoticeEntry,
+	type ShellEntry,
 	type ThinkingEntry,
 	type TextEntry,
 	type SteerEntry,
@@ -178,14 +180,14 @@ export function toolGroupState(
 /**
  * The index of the turn's open run among its items, or -1: the last group,
  * when nothing that ends a run comes after it. A call that escaped the group
- * (a vault change, a source) does not end it (`turnItems`), so it does not
- * end it here either; anything else does.
+ * (a vault change, a source) or the runtime's notice does not end it
+ * (`turnItems`), so it does not end it here either; anything else does.
  */
 export function openRunIndex(items: readonly TurnItem[]): number {
 	for (let index = items.length - 1; index >= 0; index--) {
 		const kind = items[index]?.kind;
 		if (kind === 'group') return index;
-		if (kind !== 'change' && kind !== 'source' && kind !== 'todo') return -1;
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo' && kind !== 'notice') return -1;
 	}
 	return -1;
 }
@@ -524,14 +526,16 @@ export type TurnItem =
 /**
  * The entries that are neither the agent speaking nor a call it made, each
  * drawn as an item of its own kind: a picture sent with the prompt (#129), a
- * compaction (#130).
+ * compaction (#130), the runtime's notice and a bash-mode command (#133).
  */
-export type MarkEntry = ImageEntry | CompactionEntry;
+export type MarkEntry = ImageEntry | CompactionEntry | NoticeEntry | ShellEntry;
 
 /** One {@link MarkEntry} as an item, under its own kind. */
 export type MarkItem =
 	| { kind: 'image'; entry: ImageEntry }
-	| { kind: 'compaction'; entry: CompactionEntry };
+	| { kind: 'compaction'; entry: CompactionEntry }
+	| { kind: 'notice'; entry: NoticeEntry }
+	| { kind: 'shell'; entry: ShellEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -552,6 +556,10 @@ function markItem(entry: MarkEntry): MarkItem {
 			return { kind: 'image', entry };
 		case 'compaction':
 			return { kind: 'compaction', entry };
+		case 'notice':
+			return { kind: 'notice', entry };
+		case 'shell':
+			return { kind: 'shell', entry };
 	}
 }
 
@@ -589,6 +597,12 @@ export function turnItems(
 		if (entry.kind === 'steer') {
 			group = null;
 			items.push({ kind: 'steer', entry });
+			continue;
+		}
+		if (entry.kind === 'notice') {
+			// The runtime speaking mid-work is not the agent stopping: like a
+			// vault change, it is drawn where it was written and the run goes on.
+			items.push(markItem(entry));
 			continue;
 		}
 		if (entry.kind !== 'tool') {

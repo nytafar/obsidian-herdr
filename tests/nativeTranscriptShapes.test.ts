@@ -243,3 +243,68 @@ describe('a dropped turn in the renderer (#131)', () => {
 		expect(renderer.size).toBe(0);
 	});
 });
+
+describe('the runtime’s notices and bash mode (#133)', () => {
+	it('draws a notice where it was written, without splitting the tool group around it', async () => {
+		const model = new FakeModel();
+		const el = await surfaceOn(model);
+		const read = (id: string): Turn['entries'][number] => ({
+			kind: 'tool',
+			id,
+			name: 'Read',
+			input: { file_path: '/vault/a.md' },
+			result: 'ok',
+			status: 'done',
+			notification: null,
+			report: null,
+		});
+
+		model.push(
+			[
+				turn('u1', 'Look', [
+					read('t1'),
+					{ kind: 'notice', text: 'Usage limit reached', at: '' },
+					read('t2'),
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		const turnEl = el.find('herdr-native-turn');
+		expect(turnEl.findAll('herdr-native-tools')).toHaveLength(1);
+		expect(turnEl.find('herdr-native-notice').textContent).toBe('Usage limit reached');
+	});
+
+	it('draws a bash-mode command and its output, stderr apart', async () => {
+		const model = new FakeModel();
+		const el = await surfaceOn(model);
+
+		model.push(
+			[turn('u1', '', [{ kind: 'shell', command: 'ls', stdout: 'a\nb', stderr: 'ls: c: no such file' }])],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		const shell = el.find('herdr-native-shell');
+		expect(shell.find('herdr-native-shell-command').textContent).toBe('! ls');
+		const outputs = shell.findAll('herdr-native-shell-output');
+		expect(outputs.map((output) => output.textContent)).toEqual(['a\nb', 'ls: c: no such file']);
+		expect(outputs[1]?.hasClass('is-error')).toBe(true);
+		expect(el.findAll('herdr-native-prompt')).toEqual([]);
+	});
+
+	it('lists a bash-mode command in the TOC, and nothing for notices', () => {
+		const model = new FakeModel();
+		const toc = tocOn(model);
+
+		model.push(
+			[
+				turn('n0', '', [{ kind: 'notice', text: 'Your organization may apply configuration', at: '' }]),
+				turn('u1', 'Look', [{ kind: 'notice', text: 'Usage limit reached', at: '' }]),
+				turn('u2', '', [{ kind: 'shell', command: 'ls -la', stdout: null, stderr: '' }]),
+			],
+			{ changedTurnIds: ['n0', 'u1', 'u2'], reset: false },
+		);
+
+		expect(toc.rows()).toEqual(['Look', '! ls -la']);
+	});
+});
