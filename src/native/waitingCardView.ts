@@ -38,6 +38,13 @@ export const QUESTION_IN_TERMINAL =
 	'Answer it in the terminal, where you can also type an answer of your own: this runtime does not take answers from the view.';
 
 /**
+ * What a plan card says when the view cannot answer it (#148): approving
+ * picks a permission mode, and changing the plan is typed, both in the
+ * terminal.
+ */
+export const PLAN_IN_TERMINAL = 'Approve the plan or tell Claude what to change in the terminal.';
+
+/**
  * One option as the card draws it, inside `parent` (a button or a line): the
  * label with Claude's "(Recommended)" suffix drawn as a tag, and the
  * description on the line under it — never a tooltip alone, which neither a
@@ -191,6 +198,7 @@ export class WaitingCardView {
 			hasTranscript: model?.path != null,
 			turns: model?.state.turns ?? [],
 			vaultPath: this.options.vaultPath(),
+			plan: model?.plan ?? null,
 		});
 		this.render(root, card);
 		this.options.setPromptHidden(true);
@@ -307,7 +315,15 @@ export class WaitingCardView {
 			this.renderRequest(el, card, card.request, component, feedback);
 			return;
 		}
-		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		if (card.kind === 'plan') {
+			// A plan is Markdown, as the runtime's own plan card draws it (#148).
+			if (card.body) {
+				void this.options.renderMarkdown(card.body, el.createDiv({ cls: 'herdr-native-waiting-plan' }), component);
+			}
+			el.createDiv({ cls: 'herdr-native-waiting-hint', text: PLAN_IN_TERMINAL });
+		} else if (card.body) {
+			el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		}
 		for (const option of card.options) {
 			drawOption(el.createDiv({ cls: 'herdr-native-waiting-option' }), option);
 		}

@@ -934,3 +934,154 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		expect(reportOf(handle.model)).toBeNull();
 	});
 });
+
+describe('SessionModel: the plan file of a pane in plan approval (#148)', () => {
+	/** Where Claude writes the plan of PATH_1's session, by its slug. */
+	const planOf = (slug: string): string => `/home/lasse/.claude/plans/${slug}.md`;
+	/** The lines 2.1.286 writes up to its plan approval: plan mode entered, the slug on every line. */
+	const planning = (slug: string): string =>
+		[
+			'{"type":"permission-mode","permissionMode":"auto","sessionId":"session-1"}',
+			'{"type":"user","message":{"role":"user","content":"Plan it"},"uuid":"u1","permissionMode":"auto"}',
+			`{"type":"attachment","attachment":{"type":"plan_mode","planFilePath":"${planOf(slug)}","planExists":false},"slug":"${slug}"}`,
+			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Planning."}]},"uuid":"a1","slug":"${slug}"}`,
+			'',
+		].join('\n');
+	/** Lets the read the model started land. */
+	const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+	it('reads the plan file the slug names when the pane blocks in plan mode', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, planning('mellow-purring-pike')], [planOf('mellow-purring-pike'), '# Plan\n\n1. Step one\n']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		expect(handle.model.plan).toBeNull();
+
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([planOf('mellow-purring-pike')]);
+		expect(handle.model.plan).toBe('# Plan\n\n1. Step one\n');
+		// The status, then the plan once it was read.
+		expect(changes).toHaveLength(2);
+
+		// The block is over: the plan goes, and the next block reads it again,
+		// since a rejected plan comes back revised.
+		watcher.statusChanged('w4:p1', 'working');
+		expect(handle.model.plan).toBeNull();
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toHaveLength(2);
+		expect(handle.model.plan).toBe('# Plan\n\n1. Step one\n');
+		handle.release();
+	});
+
+	it('reads it for a block the runtime calls a permission, as herdr-core may', async () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, planning('a-slug')], [planOf('a-slug'), 'Plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked', 'permission');
+		await settle();
+		expect(handle.model.plan).toBe('Plan');
+		handle.release();
+	});
+
+	it('follows the session to its new slug', async () => {
+		const files = filesWith([PATH_1, planning('old-slug')], [planOf('old-slug'), 'old'], [planOf('new-slug'), 'new']);
+		const { registry, source, watcher } = registryWith(files);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(handle.model.plan).toBe('old');
+
+		source.openTails[0]?.emit([
+			'{"type":"assistant","message":{"id":"m2","role":"assistant","content":[]},"uuid":"a2","slug":"new-slug"}',
+		]);
+		await settle();
+		expect(source.reads.at(-1)).toBe(planOf('new-slug'));
+		expect(handle.model.plan).toBe('new');
+		handle.release();
+	});
+
+	it('reads the plan once the lines saying plan mode land after the block', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, TRANSCRIPT_1], [planOf('late-slug'), 'Late plan']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+
+		source.openTails[0]?.emit(planning('late-slug').split('\n').filter(Boolean));
+		await settle();
+		expect(handle.model.plan).toBe('Late plan');
+		handle.release();
+	});
+
+	it('never reads outside the plans folder', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith(
+				[PATH_1, planning('fine-slug').replace(/fine-slug/g, '../../secret')],
+				['/home/lasse/secret.md', 'not a plan'],
+			),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('reads nothing once plan mode is over', async () => {
+		const done = `${planning('a-slug')}{"type":"attachment","attachment":{"type":"plan_mode_exit"},"slug":"a-slug"}\n`;
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, done], [planOf('a-slug'), 'Stale plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('reads nothing for a block the runtime names a question', async () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, planning('a-slug')], [planOf('a-slug'), 'Plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked', 'question');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('has no plan when the file is missing or blank', async () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, planning('no-file')]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([planOf('no-file')]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+
+		const blank = registryWith(filesWith([PATH_1, planning('blank')], [planOf('blank'), '  \n']));
+		const other = blank.registry.acquire(LOCAL, 'w4:p1');
+		blank.watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(other.model.plan).toBeNull();
+		other.release();
+	});
+
+	it('drops a read that lands after the block ended', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, planning('slow-slug')], [planOf('slow-slug'), 'Slow plan']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		source.hold = true;
+		watcher.statusChanged('w4:p1', 'blocked');
+		watcher.statusChanged('w4:p1', 'working');
+		source.release();
+		await settle();
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+});
