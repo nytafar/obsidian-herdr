@@ -97,8 +97,8 @@ export class AgentListView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('herdr-agent-list');
-		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 		this.renderToolbar(container);
+		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 
 		// One delegated listener beats one per row: rows are rebuilt on every
 		// scope event, and per-row registrations would pile up on the component.
@@ -123,16 +123,17 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
-	 * The row of controls under the rows (issues #41, #44): sort and group, start
+	 * The row of controls above the rows (issues #41, #44): sort and group, start
 	 * an agent at the vault root, and the quick settings menu. Built once in
 	 * `onOpen`, outside `listEl`, so a repaint never touches it.
 	 *
-	 * Below the list rather than above it, and without a title: the view already
-	 * carries "Herdr agents" in its tab, and a toolbar at the bottom keeps the
-	 * first row of agents at the top of the pane where the eye starts.
+	 * Above the list, in Obsidian's own `nav-header` like the file explorer's
+	 * and bookmarks' buttons, so it stays put however many rows there are. It
+	 * sat under the rows once and moved with every agent added or removed.
 	 */
 	private renderToolbar(container: HTMLElement): void {
-		const bar = container.createDiv({ cls: 'herdr-list-toolbar' });
+		const header = container.createDiv({ cls: 'nav-header herdr-list-toolbar' });
+		const bar = header.createDiv({ cls: 'nav-buttons-container' });
 		// Leftmost, apart from the three menu buttons: it changes what the whole
 		// list shows rather than how. Hidden while there is one runtime.
 		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch runtime', (event) => {
@@ -162,7 +163,7 @@ export class AgentListView extends ItemView {
 		onClick: (event: MouseEvent) => void,
 	): HTMLElement {
 		const button = bar.createEl('button', {
-			cls: 'clickable-icon herdr-list-menu-button',
+			cls: 'clickable-icon nav-action-button herdr-list-menu-button',
 			attr: { type: 'button' },
 		});
 		setIcon(button, icon);

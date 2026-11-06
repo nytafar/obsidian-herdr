@@ -22,29 +22,17 @@
 
 /* Agent list view ---------------------------------------------------------- */
 
-.herdr-agent-list {
-	padding: var(--size-4-2);
+.workspace-leaf-content[data-type='herdr-agents'] .view-content {
+	padding-top: 0;
 }
 
-/* One control above the rows: the sort and group-by menu (issue #41). Right
-   aligned and muted, like the file explorer's own header icons, so it reads as
-   chrome rather than as the first row of the list. */
-/* Toolbar under the list (issue #44): sort and group, start an agent, quick
-   settings. Below the rows so the first agent sits at the top of the pane. */
-.herdr-list-toolbar {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-	gap: var(--size-2-1);
-	margin-top: var(--size-2-2);
-	padding-top: var(--size-2-2);
-	border-top: 1px solid var(--background-modifier-border);
-}
-
-.herdr-list-menu-button {
-	color: var(--text-muted);
-}
-
+/* Toolbar above the list (issues #41, #44): runtime switch, sort and group,
+   start an agent, quick settings. Built from core `nav-header` and
+   `nav-action-button`, like the file explorer's header, so spacing, hover and
+   muted colour come from the theme and the bar never moves with the rows.
+   The core view-content top padding goes, so the header's own padding is the
+   only space above it, as in the file explorer where the header sits outside
+   the padded content. */
 /* Local/remote switch (issue #54): accent colour while the remote herdr is the
    connected one, hidden entirely when no remote host is configured. */
 .herdr-endpoint-toggle.is-active {
