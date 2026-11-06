@@ -39,10 +39,27 @@ export interface PendingGrant {
 	lines: string[];
 }
 
-/** The project-wide grant: what is written, and to which file. */
+/** The project-wide grant: what is written, to which file, and how far it reaches. */
 export interface PendingProjectGrant extends PendingGrant {
-	/** The settings file the grant is written to, absolute. */
+	/** The settings file the grant is written to, absolute: the one the runtime itself writes. */
 	file: string;
+	/** The folder that file belongs to. */
+	root: string;
+	/**
+	 * `repository`: the rule applies to every agent in the git repository at
+	 * `root`, its worktrees included, not just the agent's own folder.
+	 * `folder`: only to agents started in `root` itself.
+	 */
+	scope: 'repository' | 'folder';
+}
+
+/** The line under "Always allow in this project": the file, the rule, and its reach. */
+export function projectGrantText(grant: PendingProjectGrant): string {
+	const reach =
+		grant.scope === 'repository'
+			? `It applies to the whole project at ${grant.root}, every agent in it and its worktrees, not just this folder.`
+			: 'It applies to agents started in this folder.';
+	return `Writes ${grant.file}: ${grant.lines.join('; ')}. ${reach}`;
 }
 
 /** A request the runtime is waiting on. */

@@ -51,7 +51,13 @@ import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { waitingCard, type WaitingCardModel } from './waitingCard';
-import type { PendingQuestion, PendingRequest, WaitingAnswer, WaitingResponder } from './pendingRequest';
+import {
+	projectGrantText,
+	type PendingQuestion,
+	type PendingRequest,
+	type WaitingAnswer,
+	type WaitingResponder,
+} from './pendingRequest';
 import { HOVER_LINK_SOURCE, fillUriLink, linkVaultUris, openLinkBeside } from './noteLinks';
 import { findObsidianUris, resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
@@ -1393,7 +1399,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			}));
 			grant.createSpan({
 				cls: 'herdr-native-waiting-grant-text',
-				text: `Writes ${request.project.file}: ${request.project.lines.join('; ')}`,
+				text: projectGrantText(request.project),
 			});
 		}
 	}

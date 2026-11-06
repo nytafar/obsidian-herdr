@@ -88,7 +88,12 @@ const WRITE: PendingRequest = {
 	questions: [],
 	plan: '',
 	session: { lines: ['accept file edits'] },
-	project: { lines: ['allow Bash(touch two.txt)'], file: `${VAULT}/.claude/settings.local.json` },
+	project: {
+		lines: ['allow Bash(touch two.txt)'],
+		file: `${VAULT}/.claude/settings.local.json`,
+		root: VAULT,
+		scope: 'repository',
+	},
 };
 
 const QUESTION: PendingRequest = {
@@ -214,7 +219,9 @@ describe('the waiting card answers the runtime’s request', () => {
 			'Allow for this session',
 			'Always allow in this project',
 		]);
-		expect(el.find('herdr-native-waiting').textContent).toContain(`Writes ${VAULT}/.claude/settings.local.json`);
+		expect(el.find('herdr-native-waiting').textContent).toContain(
+			`Writes ${VAULT}/.claude/settings.local.json: allow Bash(touch two.txt). It applies to the whole project at ${VAULT}, every agent in it and its worktrees, not just this folder.`,
+		);
 		// No terminal and no trust here, whatever the auto-trust setting says.
 		expect(el.findAll('herdr-native-waiting-terminal')).toEqual([]);
 		expect(el.findAll('herdr-native-waiting-trust')).toEqual([]);

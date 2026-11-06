@@ -52,6 +52,7 @@ import {
 	type ToolPermissionRequest,
 } from './protocol';
 import { ClaudeProcess, type ClaudeSpawn, type ClaudeTimers } from './process';
+import type { LocalSettingsTarget } from './projectRoot';
 
 /** One stored row, as `data.json` keeps it under `claudeSessions[runtimeId]`. */
 export interface StoredClaudeSession {
@@ -135,11 +136,19 @@ export interface ClaudeAgentsHost {
 	extraArgs?(): readonly string[];
 	/** Home of this machine, for the transcript path; defaults to `os.homedir()`. */
 	home?: string;
+	/**
+	 * Where Claude writes a project rule for an agent in `cwd`
+	 * (`./projectRoot.ts`), or null when that is not known; asked once per
+	 * process start. Absent, no project grant is offered.
+	 */
+	localSettings?(cwd: string): LocalSettingsTarget | null;
 }
 
 interface AgentRecord {
 	stored: StoredClaudeSession;
 	process: ClaudeProcess | null;
+	/** Where the running process writes a project rule; null when not known. */
+	settings: LocalSettingsTarget | null;
 	/** Prompts written whose `result` has not come yet. */
 	turns: number;
 	/** The last turn ended and nobody has looked or prompted since. */
@@ -197,6 +206,7 @@ export class ClaudeAgents {
 		const record: AgentRecord = {
 			stored: { id, sessionId: this.host.newSessionId(), cwd, name },
 			process: null,
+			settings: null,
 			turns: 0,
 			finished: false,
 			pending: new Map(),
@@ -241,7 +251,8 @@ export class ClaudeAgents {
 		const record = this.record(runtimeId, agentId);
 		const request = record.pending.get(requestId);
 		if (!request || !record.process?.alive) throw new Error('that request is no longer waiting');
-		const response = permissionResponse(request, answer);
+		// The project grant is only offered where its file is known.
+		const response = answer.type === 'allow-project' && !record.settings ? null : permissionResponse(request, answer);
 		if (!response) throw new Error('that answer does not fit the request');
 		record.process.send(controlResponse(requestId, response));
 		record.pending.delete(requestId);
@@ -300,6 +311,7 @@ export class ClaudeAgents {
 				table.set(stored.id, {
 					stored: { ...stored },
 					process: null,
+					settings: null,
 					turns: 0,
 					finished: false,
 					pending: new Map(),
@@ -350,6 +362,7 @@ export class ClaudeAgents {
 			onExit: (info) => this.onExit(runtimeId, record, process, info),
 		});
 		record.process = process;
+		record.settings = this.host.localSettings?.(cwd) ?? null;
 		record.turns = 0;
 		record.finished = false;
 		record.pending.clear();
@@ -445,7 +458,7 @@ export class ClaudeAgents {
 		const first = record.pending.values().next();
 		let request: PendingRequest | null = null;
 		if (!first.done) {
-			request = this.requestViews.get(first.value) ?? pendingRequestOf(first.value, record.stored.cwd);
+			request = this.requestViews.get(first.value) ?? pendingRequestOf(first.value, record.settings);
 			this.requestViews.set(first.value, request);
 		}
 		const status = this.statusOf(record);

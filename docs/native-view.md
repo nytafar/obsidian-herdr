@@ -100,9 +100,18 @@ the agent as blocked. Stopping the agent denies whatever it was waiting on.
   **Deny** answer this one call. When Claude suggests them, two more:
   - **Allow for this session**, with what it grants on the line beside it
     (accept file edits, access to a folder), until the agent stops.
-  - **Always allow in this project**, with the rule and the file it is
-    written to, `<folder>/.claude/settings.local.json`, inside the vault.
-    Claude reads that file from then on, in every session in that folder.
+  - **Always allow in this project**, with the rule, the exact file Claude
+    writes it to, and how far it reaches. Claude keeps these rules per
+    repository, not per folder: for an agent anywhere inside a git
+    repository the file is `<repository root>/.claude/settings.local.json`,
+    and the rule then applies to every agent in that repository and its
+    worktrees. If your vault is a git repository, that is the vault's root,
+    whatever folder the agent started in. A linked worktree writes to its
+    main checkout. Outside git, and where the repository root is your home
+    folder or not yours, the file is `<folder>/.claude/settings.local.json`
+    and the rule applies to agents started in that folder. Where the file
+    cannot be told for sure (a `.git` that is a link, a worktree of a bare
+    repository), the button is not offered.
   A grant for your user-wide settings is never offered, and the tool's input
   is never changed: what Claude asked to run is what runs.
 - **A question** shows its options as buttons. One question with one answer

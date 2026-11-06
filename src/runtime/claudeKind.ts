@@ -31,6 +31,7 @@ import { ClaudeActions } from '../claude/actions';
 import { ClaudeAgents, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
 import { ClaudeClient, ClaudeScope, NoTabLabels } from '../claude/scope';
+import { localSettingsTarget, nodeProjectRootEnv, type LocalSettingsTarget } from '../claude/projectRoot';
 import { claudeSessionWatcher } from '../claude/sessionWatcher';
 import { NO_CONNECTION_MESSAGE } from '../native/promptSender';
 import type { SessionWatcher } from '../native/sessionWatcher';
@@ -110,6 +111,8 @@ export interface ClaudeKindHost {
 	exists?: (path: string) => boolean;
 	extraArgs?: () => readonly string[];
 	home?: string;
+	/** Where Claude writes a project rule for a cwd; the real resolution (`../claude/projectRoot.ts`) otherwise. */
+	localSettings?: (cwd: string) => LocalSettingsTarget | null;
 	/** Skips the login shell in discovery (tests). */
 	skipLoginShell?: boolean;
 }
@@ -148,6 +151,9 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		timers: host.timers ?? DEFAULT_TIMERS,
 		extraArgs: host.extraArgs,
 		home: host.home,
+		localSettings:
+			host.localSettings ??
+			((cwd) => localSettingsTarget(cwd, { ...nodeProjectRootEnv(), ...(host.home ? { home: host.home } : {}) })),
 	});
 	const localTranscripts = new LocalTranscriptSource();
 	const watchers = new WeakMap<ClaudeScope, SessionWatcher>();

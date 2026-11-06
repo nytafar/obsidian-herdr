@@ -310,8 +310,12 @@ run and how many are stopped.
 - **This machine only.** Over SSH, use herdr or herdr-core.
 - **No tabs, splits, focus or rename.** The row name is the folder's, made
   unique like herdr's agent names.
-- **"Always allow in this project"** writes `<folder>/.claude/settings.local.json`
-  inside the vault; the card names the file before you press it.
+- **"Always allow in this project"** writes to the `.claude/settings.local.json`
+  of the agent's git repository, not of its folder: in a vault that is a git
+  repository, that is the vault's root, and the rule applies to every agent
+  in the vault. Outside git it is the folder's own file. The card names the
+  exact file and says how far the rule reaches before you press it, and the
+  button is left out where the file cannot be told for sure.
 - Sign-in, API key and model errors show as a notice with Claude's own words
   and its reason, such as `api_error`; the agent stays usable after them.
 

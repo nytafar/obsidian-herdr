@@ -841,7 +841,7 @@ surface answers it through the kind's optional `responder` with a
 |---|---|
 | Allow, Approve plan | `{behavior:"allow", updatedInput:<input as sent>}` |
 | Allow for this session | the same plus `updatedPermissions`: the suggestions with `destination:"session"` |
-| Always allow in this project | the same plus the `destination:"localSettings"` suggestions, which write `<cwd>/.claude/settings.local.json` |
+| Always allow in this project | the same plus the `destination:"localSettings"` suggestions, which Claude writes to `<root>/.claude/settings.local.json` (below) |
 | Deny, Dismiss, Reject | `{behavior:"deny", message}`, a reject carrying the feedback |
 | A question's answers | `{behavior:"allow", updatedInput:{...input, answers:{<question>:<label>}}}` |
 
@@ -852,6 +852,29 @@ the prompt box shows **Stop** for a sender that has one. The kind's
 `terminalUnavailable` is set, and `PaneWhere.terminalReason` makes a tab on it
 show the native view whatever its stored view or the default says; D2 adds
 the terminal through `script(1)`.
+
+**Where a project rule is written** (`src/claude/projectRoot.ts`). Claude Code
+canonicalises `localSettings` to the repository, so the file is
+`<root>/.claude/settings.local.json`, and the card names that file and its
+reach. Read from the 2.1.318 bundle and measured with real Claude on haiku
+under `/tmp/oh-d1f-*` on 2026-11-06:
+
+| Agent's cwd | File written (measured) |
+|---|---|
+| a subfolder of a git repository | the git root's (`/tmp/x/sub` wrote `/tmp/x/.claude/…`) |
+| a linked worktree | the main checkout's: a rule granted in the main repository needed no prompt in the worktree, and a new one landed in the main repository's file |
+| a repository nested in another | the innermost repository's |
+| outside git | the cwd's own |
+| a symlink to a folder | the real folder's (Claude's cwd, the init's `cwd` and the transcript folder are all the real path) |
+| a subfolder of a git repository whose root is the home directory | the cwd's own |
+
+From the bundle, not measured: the root is used only on a platform with uids,
+and only when the root, its `.git` and its `.claude` (when present) belong to
+the current user; otherwise the cwd's file. A `.git` file with no `commondir`
+(a submodule) keeps its own folder. `projectSettings` (`settings.json`) stays
+in the cwd. The plugin resolves this once per process start and returns no
+file, and so offers no button, for a `.git` that is a link or a worktree of a
+bare repository, which Claude reads with checks not mirrored here.
 
 **Row actions.** `capabilities.resumable` turns close into **Stop agent**
 (the row stays), adds **Forget agent** for a stopped row, and graduation:

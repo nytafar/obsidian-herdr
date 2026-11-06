@@ -12,7 +12,6 @@ import {
 	describeUpdate,
 	encodeLine,
 	interruptRequest,
-	localSettingsFile,
 	parseStreamLine,
 	pendingRequestOf,
 	permissionResponse,
@@ -190,16 +189,23 @@ describe('parseStreamLine', () => {
 
 describe('the waiting card model of a request', () => {
 	it('offers the session grants and names the local settings file for the project one', () => {
-		const pending = pendingRequestOf(permission(BASH_REQUEST), CWD);
+		// The file is the one Claude writes, which for a git subfolder is the root's.
+		const settings = { file: '/tmp/repo/.claude/settings.local.json', root: '/tmp/repo', scope: 'repository' as const };
+		const pending = pendingRequestOf(permission(BASH_REQUEST), settings);
 		expect(pending.kind).toBe('permission');
 		expect(pending.session?.lines).toEqual([`allow access to ${CWD}`, 'accept file edits']);
-		expect(pending.project).toEqual({ lines: ['allow Bash(touch one.txt)'], file: `${CWD}/.claude/settings.local.json` });
+		expect(pending.project).toEqual({ lines: ['allow Bash(touch one.txt)'], ...settings });
 		expect(pending.reason).toContain(`${CWD}/one.txt`);
-		expect(localSettingsFile(`${CWD}/`)).toBe(`${CWD}/.claude/settings.local.json`);
+	});
+
+	it('offers no project grant where the file Claude would write is not known', () => {
+		const pending = pendingRequestOf(permission(BASH_REQUEST), null);
+		expect(pending.project).toBeNull();
+		expect(pending.session).not.toBeNull();
 	});
 
 	it('reads the questions and the plan, and offers no grants for them', () => {
-		const question = pendingRequestOf(permission(QUESTION_REQUEST), CWD);
+		const question = pendingRequestOf(permission(QUESTION_REQUEST), null);
 		expect(question.kind).toBe('question');
 		expect(question.questions).toEqual([
 			{
@@ -213,7 +219,7 @@ describe('the waiting card model of a request', () => {
 			},
 		]);
 		expect(question.session).toBeNull();
-		const plan = pendingRequestOf(permission(PLAN_REQUEST), CWD);
+		const plan = pendingRequestOf(permission(PLAN_REQUEST), null);
 		expect(plan.kind).toBe('plan');
 		expect(plan.plan).toBe('1. Write hello.txt.\n2. Read it back.');
 	});

@@ -12,7 +12,7 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -23,7 +23,13 @@ import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import type { WaitingAnswer } from '../src/native/pendingRequest';
-import { claudeEnv, createClaudeKind, newClaudeAgentId, type ClaudeKind } from '../src/runtime/claudeKind';
+import {
+	claudeEnv,
+	createClaudeKind,
+	newClaudeAgentId,
+	type ClaudeKind,
+	type ClaudeKindHost,
+} from '../src/runtime/claudeKind';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { newRuntime } from '../src/runtimes';
 
@@ -89,7 +95,15 @@ function starts(log: string): string[][] {
 		.map((entry) => entry.argv as string[]);
 }
 
-function harness(options: { stored?: Record<string, StoredClaudeSession[]>; runtimeId?: string; dir?: string } = {}): Harness {
+interface HarnessOptions {
+	stored?: Record<string, StoredClaudeSession[]>;
+	runtimeId?: string;
+	dir?: string;
+	/** Host fields to put in place of the harness's own. */
+	host?: Partial<ClaudeKindHost>;
+}
+
+function harness(options: HarnessOptions = {}): Harness {
 	const dir = options.dir ?? tempDir();
 	const log = join(dir, 'fake.log');
 	const stored: Record<string, StoredClaudeSession[]> = options.stored ?? {};
@@ -111,6 +125,7 @@ function harness(options: { stored?: Record<string, StoredClaudeSession[]>; runt
 				stdio: ['pipe', 'pipe', 'pipe'],
 			}),
 		home: dir,
+		...options.host,
 	});
 	kinds.push(kind);
 	const runtime = newRuntime('claude', 'local', []);
@@ -154,10 +169,10 @@ function actionHost(h: Harness, opened: string[] = []): ActionHost {
 	};
 }
 
-/** Starts an agent in the harness's directory and waits for its process. */
-async function started(h: Harness): Promise<string> {
+/** Starts an agent in the harness's directory (or `folder`) and waits for its process. */
+async function started(h: Harness, folder = h.dir): Promise<string> {
 	const actions = h.kind.createActions(actionHost(h));
-	const result = (await actions.startAgentHere(h.dir)) as { paneId: string } | null;
+	const result = (await actions.startAgentHere(folder)) as { paneId: string } | null;
 	if (!result) throw new Error(`no agent: ${h.notices.join(' | ')}`);
 	await waitFor(() => starts(h.log).length === 1, 'the first start');
 	return result.paneId;
@@ -270,6 +285,32 @@ describe('the claude kind over a fake claude', () => {
 		expect(sent).toContain('"destination":"localSettings"');
 		expect(sent).not.toContain('userSettings');
 		expect(sent).not.toContain('"destination":"session"');
+	});
+
+	it('names the git root’s settings file for an agent in a subfolder, as Claude writes it', async () => {
+		const h = harness();
+		// Below the harness's home, which as a git root would keep the file in the folder.
+		const vault = join(h.dir, 'vault');
+		mkdirSync(join(vault, '.git'), { recursive: true });
+		const notes = join(vault, 'notes');
+		mkdirSync(notes);
+		const paneId = await started(h, notes);
+		await prompt(h, paneId, 'BASH');
+		await waitFor(() => status(h, paneId) === 'blocked', 'blocked');
+		const request = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.request;
+		const root = realpathSync(vault);
+		expect(request?.project).toMatchObject({ file: `${root}/.claude/settings.local.json`, root, scope: 'repository' });
+	});
+
+	it('offers no project grant, and refuses one, where the file is not known', async () => {
+		const h = harness({ host: { localSettings: () => null } });
+		const paneId = await started(h);
+		await prompt(h, paneId, 'BASH');
+		await waitFor(() => status(h, paneId) === 'blocked', 'blocked');
+		const request = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.request;
+		expect(request?.project).toBeNull();
+		await expect(answer(h, paneId, { type: 'allow-project' })).rejects.toThrow('that answer does not fit the request');
+		expect(status(h, paneId)).toBe('blocked');
 	});
 
 	it('answers a question with updatedInput.answers, and reports it as a question block', async () => {

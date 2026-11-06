@@ -19,8 +19,10 @@
  *
  * **Grants are scoped by destination.** Only `session` suggestions back
  * "Allow for this session", and only `localSettings` ones back "Always allow
- * in this project", which writes `<cwd>/.claude/settings.local.json`. A
- * `userSettings` or `projectSettings` suggestion is never sent.
+ * in this project", which Claude writes to the `settings.local.json` of the
+ * agent's repository (`./projectRoot.ts`), and which is offered only where
+ * that file is known. A `userSettings` or `projectSettings` suggestion is
+ * never sent.
  */
 
 import type {
@@ -31,6 +33,7 @@ import type {
 	WaitingAnswer,
 } from '../native/pendingRequest';
 import type { ClaudePermissionMode } from '../runtimes';
+import type { LocalSettingsTarget } from './projectRoot';
 
 /** What starts one agent process. */
 export interface ClaudeArgvOptions {
@@ -293,11 +296,6 @@ export function projectSuggestions(request: ToolPermissionRequest): PermissionUp
 	return request.suggestions.filter((update) => update.destination === 'localSettings');
 }
 
-/** The file a `localSettings` grant is written to (spike: measured). */
-export function localSettingsFile(cwd: string): string {
-	return `${cwd.replace(/\/+$/, '')}/.claude/settings.local.json`;
-}
-
 function rule(entry: { toolName?: unknown; ruleContent?: unknown }): string {
 	const tool = text(entry.toolName);
 	const content = text(entry.ruleContent);
@@ -348,8 +346,12 @@ function questionsOf(input: Record<string, unknown>): PendingQuestion[] {
 	return questions;
 }
 
-/** A `can_use_tool` request as the waiting card shows it. */
-export function pendingRequestOf(request: ToolPermissionRequest, cwd: string): PendingRequest {
+/**
+ * A `can_use_tool` request as the waiting card shows it. `settings` is where
+ * Claude writes a project rule for this agent (`./projectRoot.ts`); null
+ * when that is not known, and then the project grant is not offered.
+ */
+export function pendingRequestOf(request: ToolPermissionRequest, settings: LocalSettingsTarget | null): PendingRequest {
 	const kind =
 		request.toolName === ASK_USER_QUESTION
 			? 'question'
@@ -357,7 +359,8 @@ export function pendingRequestOf(request: ToolPermissionRequest, cwd: string): P
 				? 'plan'
 				: 'permission';
 	const project = grant(projectSuggestions(request));
-	const projectGrant: PendingProjectGrant | null = project && cwd ? { ...project, file: localSettingsFile(cwd) } : null;
+	const projectGrant: PendingProjectGrant | null =
+		project && settings ? { ...project, file: settings.file, root: settings.root, scope: settings.scope } : null;
 	const reason = [request.decisionReason, request.blockedPath ? `Path: ${request.blockedPath}` : '']
 		.filter(Boolean)
 		.join(' ');
