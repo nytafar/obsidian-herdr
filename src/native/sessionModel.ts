@@ -31,6 +31,13 @@
  * background reports and the plan file. Nothing here knows which agent it
  * is; a pane whose agent changes is a new session, read from the start.
  *
+ * **A page at a time** (#152): the state holds the session's newest turns,
+ * within a page of turns and transcript bytes (`TurnWindow`), and names the
+ * earlier ones; what a session costs is a page, not its length. "Load
+ * earlier turns" ({@link SessionModel.loadEarlier}) reads the file again
+ * beside the tail with one more page and takes the tail's place once it has
+ * caught up, so nothing is shown twice or lost between the two.
+ *
  * No Obsidian here: the view layer subscribes, and `src/main.ts` holds the
  * registry and hands it each runtime's watcher and source through its kind.
  */
@@ -38,11 +45,15 @@
 import {
 	attachSubagentProgress,
 	attachSubagentReport,
+	DEFAULT_PAGE,
+	earlierTurnCount,
 	emptyConversation,
 	markLost,
 	mergeSessionInfo,
 	previewTail,
+	turnWindow,
 	type ConversationState,
+	type TurnPage,
 	type ImageBytes,
 	type ImageEntry,
 	type ReduceResult,
@@ -71,6 +82,12 @@ export interface SessionChange {
 	removedTurnIds?: string[];
 	/** The whole view is stale: reloaded, replaced, or the session rotated. */
 	reset: boolean;
+	/**
+	 * With `reset`: the same session, with earlier turns loaded (#152). The
+	 * reader is somewhere in it, so the view keeps their place rather than
+	 * going to the end.
+	 */
+	earlier?: boolean;
 }
 
 /**
@@ -174,6 +191,16 @@ export interface SessionModelView {
 	 * need not have any.
 	 */
 	subagentTranscript?(callId: string): SubagentTranscript | null;
+	/**
+	 * Holds one more page of the session's turns (#152): the transcript is
+	 * read again from its start beside the tail, and once it has caught up the
+	 * state is swapped for one with the earlier turns, as a `reset` change with
+	 * `earlier` set. What is not held is `earlierTurnCount(state)`. Optional so
+	 * a fake need not load any.
+	 */
+	loadEarlier?(): void;
+	/** Whether a {@link loadEarlier} is reading. Optional, like it. */
+	readonly loadingEarlier?: boolean;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
 }
 
@@ -226,6 +253,32 @@ export interface SessionModelOptions {
 	subagentGraceMs?: number;
 	/** The timers subagents are followed with; the real ones when left out. */
 	subagentTimers?: SubagentTimers;
+	/**
+	 * How much of a session one page holds (#152): {@link DEFAULT_PAGE} when
+	 * left out. A model holds one page, and one more per {@link
+	 * SessionModel.loadEarlier}.
+	 */
+	page?: TurnPage;
+}
+
+/**
+ * A read of the transcript from its start, beside the tail, holding one more
+ * page (#152). It folds what the tail folds; once it has read as far, it
+ * takes the tail's place.
+ */
+interface EarlierLoad {
+	stream: TranscriptStream | null;
+	state: ConversationState;
+	/** Lines it has folded. */
+	lines: number;
+	/** The unended line after them, as it last said. */
+	tail: string;
+	/** Lines it folded that the tail had not yet when it caught up, for the plan reader. */
+	ahead: string[];
+	/** Whether it has read as far as the tail. */
+	caughtUp: boolean;
+	/** Whether it has taken the tail's place, and what it delivers is the tail's. */
+	adopted: boolean;
 }
 
 /** How long subagents stay followed once no view shows them. */
@@ -329,6 +382,10 @@ export class SessionModel implements SessionModelView {
 	private showingSubagents = false;
 	/** The wait before subagents stop being followed, once no view shows them. */
 	private subagentGrace: unknown = null;
+	/** How many pages of the session are held (#152); back to one for every new file. */
+	private pages = 1;
+	/** The read that loads earlier turns, while one runs (#152). */
+	private earlierLoad: EarlierLoad | null = null;
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -495,6 +552,65 @@ export class SessionModel implements SessionModelView {
 		return this.subagentFollower()?.open(callId) ?? null;
 	}
 
+	get loadingEarlier(): boolean {
+		return this.earlierLoad !== null;
+	}
+
+	/**
+	 * Holds one more page of the session (#152). Nothing the tail holds is
+	 * thrown away meanwhile: the file is read again beside it, through the same
+	 * source, in the source's own pieces, and the state is swapped once that
+	 * read has folded as many lines as the tail has. Both read the same lines
+	 * in the same order, and a window drops turns at the line that fills it,
+	 * so the two agree on everything but how much is held.
+	 */
+	loadEarlier(): void {
+		if (this.earlierLoad || !this.stream || !this.streamSource || !this.currentPath) return;
+		if (earlierTurnCount(this.transcript) === 0) return;
+		this.pages++;
+		this.startEarlier();
+		// Said once, however the read went: loading, or loaded at once.
+		if (this.earlierLoad) this.emit({ changedTurnIds: [], reset: false });
+	}
+
+	/** Opens the read that holds {@link pages} pages, beside the tail (#152). */
+	private startEarlier(): void {
+		const source = this.streamSource;
+		const path = this.currentPath;
+		if (!source || !path) return;
+		const load: EarlierLoad = {
+			stream: null,
+			state: this.emptyState(),
+			lines: 0,
+			tail: '',
+			ahead: [],
+			caughtUp: false,
+			adopted: false,
+		};
+		this.earlierLoad = load;
+		const stream = source.open(
+			path,
+			(lines, restart, tail) => {
+				// Once it has caught up, it is the tail.
+				if (load.adopted) this.onLines(lines, restart === true, tail ?? '');
+				else this.onEarlierLines(load, lines, restart === true, tail ?? '');
+			},
+			{
+				onProblem: (problem) => {
+					if (load.adopted) this.onProblem(problem);
+					else if (problem !== null && this.earlierLoad === load) this.cancelEarlier(true);
+				},
+			},
+		);
+		// A source may deliver while it opens, and a restart may have ended the read.
+		if (this.earlierLoad !== load) {
+			stream.close();
+			return;
+		}
+		load.stream = stream;
+		if (load.caughtUp) this.finishEarlier(load);
+	}
+
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
 	on(listener: (change: SessionChange) => void): Unsubscribe {
 		this.listeners.add(listener);
@@ -562,6 +678,7 @@ export class SessionModel implements SessionModelView {
 	}
 
 	private closeStream(): void {
+		this.cancelEarlier(false);
 		// The subagents were read through the same source.
 		this.dropSubagents();
 		this.stream?.close();
@@ -725,7 +842,10 @@ export class SessionModel implements SessionModelView {
 
 	/** Empties everything read so far, for another file or the same one replaced. */
 	private restart(): void {
-		this.transcript = this.currentFormat?.parser.empty() ?? emptyConversation();
+		// Another file, or the same one replaced, is read from one page again.
+		this.cancelEarlier(false);
+		this.pages = 1;
+		this.transcript = this.emptyState();
 		this.tailLine = '';
 		this.preview = null;
 		// Nothing of the new file has been read, whatever was read of the old one.
@@ -805,14 +925,25 @@ export class SessionModel implements SessionModelView {
 	private reduceLines(lines: string[]): ReduceResult {
 		const before = this.linesRead;
 		this.linesRead += lines.length;
+		return this.foldLines(this.transcript, before, lines);
+	}
+
+	/**
+	 * Folds a batch into `state`, which has folded `before` lines of the file
+	 * so far: the tail's state, or a read loading earlier turns (#152). The
+	 * same lines fold the same into either.
+	 */
+	private foldLines(state: ConversationState, before: number, lines: string[]): ReduceResult {
 		const parser = this.currentFormat?.parser;
 		// No format, no path, no tail: nothing reaches here, but nothing is read either.
-		if (!parser) return { state: this.transcript, changedTurnIds: [], removedTurnIds: [] };
-		const reduce = (state: ConversationState, batch: string[]): ReduceResult => parser.reduce(state, batch);
+		if (!parser) return { state, changedTurnIds: [], removedTurnIds: [] };
+		const reduce = (into: ConversationState, batch: string[]): ReduceResult => parser.reduce(into, batch);
+		// Kept for the file, not spent once crossed: a read from the start
+		// crosses it again (#152), and past it the cut is never in a batch.
 		const cut = this.lostBefore - before;
 		let result: ReduceResult;
 		if (cut > 0 && cut <= lines.length) {
-			const earlier = reduce(this.transcript, lines.slice(0, cut));
+			const earlier = reduce(state, lines.slice(0, cut));
 			const lost = markLost(earlier.state);
 			const later = reduce(lost.state, lines.slice(cut));
 			const changed = new Set([...earlier.changedTurnIds, ...lost.changedTurnIds, ...later.changedTurnIds]);
@@ -822,12 +953,103 @@ export class SessionModel implements SessionModelView {
 				changedTurnIds: [...changed].filter((id) => kept.has(id)),
 				removedTurnIds: [...earlier.removedTurnIds, ...later.removedTurnIds].filter((id) => !kept.has(id)),
 			};
-			this.lostBefore = 0;
-		} else result = reduce(this.transcript, lines);
+		} else result = reduce(state, lines);
 		if (!this.stopped) return result;
 		const lost = markLost(result.state);
 		const changed = new Set([...result.changedTurnIds, ...lost.changedTurnIds]);
 		return { ...result, state: lost.state, changedTurnIds: [...changed] };
+	}
+
+	/** An empty state of the session's format, holding {@link pages} pages (#152). */
+	private emptyState(): ConversationState {
+		const state = this.currentFormat?.parser.empty() ?? emptyConversation();
+		state.window = turnWindow(this.pages, this.options.page ?? DEFAULT_PAGE);
+		return state;
+	}
+
+	/**
+	 * A batch of the read loading earlier turns (#152). It folds as the tail
+	 * does, and has caught up once it has folded as many lines: the tail's
+	 * place is then its own. A file replaced under it is the tail's to start
+	 * again on, and with it this read.
+	 */
+	private onEarlierLines(load: EarlierLoad, lines: string[], restart: boolean, tail: string): void {
+		if (this.earlierLoad !== load) return;
+		if (restart) {
+			this.cancelEarlier(true);
+			return;
+		}
+		const before = load.lines;
+		load.lines += lines.length;
+		load.tail = tail;
+		load.state = this.foldLines(load.state, before, lines).state;
+		if (load.caughtUp || load.lines < this.linesRead) return;
+		load.caughtUp = true;
+		load.ahead = lines.slice(lines.length - (load.lines - this.linesRead));
+		if (load.stream) this.finishEarlier(load);
+	}
+
+	/**
+	 * The read holding more has caught up with the tail (#152): it becomes the
+	 * tail, and its state the session's. What the model wrote onto the calls
+	 * it held, reports read and subagents followed, is carried over; the
+	 * turns it did not hold have their reports read now.
+	 */
+	private finishEarlier(load: EarlierLoad): void {
+		if (this.earlierLoad !== load || !load.stream) return;
+		this.earlierLoad = null;
+		const old = this.transcript;
+		const state = load.state;
+		// A rewind past the turns held drops the earlier ones it went back over
+		// for good, and only a read holding everything before it brings them
+		// back (#131): one more page can hold no more than one did.
+		if (state.turns.length <= old.turns.length && Number.isFinite(this.pages)) {
+			load.stream.close();
+			this.pages = Infinity;
+			this.startEarlier();
+			return;
+		}
+		load.adopted = true;
+		const carried = new Map<string, ToolEntry>();
+		for (const turn of old.turns) {
+			for (const entry of turn.entries) if (entry.kind === 'tool') carried.set(entry.id, entry);
+		}
+		for (const turn of state.turns) {
+			for (const entry of turn.entries) {
+				const was = entry.kind === 'tool' ? carried.get(entry.id) : undefined;
+				if (entry.kind !== 'tool' || !was) continue;
+				if (was.report !== null && entry.report === null) entry.report = was.report;
+				if (was.subagent) entry.subagent = was.subagent;
+			}
+		}
+		// A report read for a call no longer held is read again if it comes back.
+		for (const id of [...this.readingReports]) if (!carried.has(id)) this.readingReports.delete(id);
+		this.stream?.close();
+		this.stream = load.stream;
+		this.transcript = state;
+		this.linesRead = load.lines;
+		this.tailLine = load.tail;
+		this.preview = null;
+		this.planReader?.feed(load.ahead);
+		this.refreshPlan();
+		this.repreview();
+		this.emit({ changedTurnIds: [], reset: true, earlier: true });
+		this.readReports(state.turns.map((turn) => turn.id));
+		this.syncSubagents();
+	}
+
+	/**
+	 * Stops a read loading earlier turns, if one runs. `giveBack` is for one
+	 * that failed: the page it was to hold is not held, and the view hears so.
+	 */
+	private cancelEarlier(giveBack: boolean): void {
+		const load = this.earlierLoad;
+		if (!load) return;
+		this.earlierLoad = null;
+		load.stream?.close();
+		if (!giveBack) return;
+		this.pages = Math.max(1, this.pages - 1);
+		this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	/**
@@ -1065,6 +1287,8 @@ export interface SessionModelRegistryOptions {
 	subagentGraceMs?: number;
 	/** See {@link SessionModelOptions.subagentTimers}. */
 	subagentTimers?: SubagentTimers;
+	/** See {@link SessionModelOptions.page}. */
+	page?: TurnPage;
 }
 
 /** The registry key of a pane on a runtime; a newline is in neither id. */
@@ -1113,6 +1337,7 @@ export class SessionModelRegistry implements SessionModels {
 					...(this.options.formats ? { formats: this.options.formats } : {}),
 					subagentGraceMs: this.options.subagentGraceMs,
 					subagentTimers: this.options.subagentTimers,
+					...(this.options.page ? { page: this.options.page } : {}),
 				}),
 				holders: 0,
 			};

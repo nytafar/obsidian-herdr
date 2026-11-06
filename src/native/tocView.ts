@@ -27,7 +27,8 @@ import { Component, ItemView, type App, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { TerminalView, TERMINAL_VIEW_TYPE } from '../views/terminalView';
 import type { SessionHandleOf, SessionModels, SessionModelView } from './sessionModel';
-import type { Turn } from './conversation';
+import { earlierTurnCount, type Turn } from './conversation';
+import { EarlierTurnsBar } from './earlierTurns';
 
 export const TOC_VIEW_TYPE = 'herdr-toc';
 
@@ -94,6 +95,13 @@ export interface TocPanelOptions {
 		turnId: string,
 		index: number,
 	): void;
+	/**
+	 * Whether any open native view shows the pane (#152), asked when the
+	 * layout changes. A list left following a pane no view shows lets its
+	 * model go: nothing would scroll to its turns, and the model is a whole
+	 * session held for nobody. Left out, the list holds on.
+	 */
+	shown?(endpointId: string, paneId: string): boolean;
 }
 
 /**
@@ -161,6 +169,20 @@ export class TocPanel {
 		this.activeLeafChanged(leaf);
 	}
 
+	/**
+	 * Leaves were opened, closed or moved: a pane no native view shows any
+	 * more is not followed (#152), and the list says no native view is active.
+	 */
+	layoutChanged(): void {
+		if (!this.paneId || !this.options.shown) return;
+		if (this.options.shown(this.endpointId, this.paneId)) return;
+		this.release();
+		this.paneId = '';
+		this.endpointId = '';
+		this.followedLeaf = null;
+		this.render();
+	}
+
 	/** Gives the model and the row listeners back. */
 	unmount(): void {
 		this.release();
@@ -189,12 +211,22 @@ export class TocPanel {
 		this.component = new Component();
 		this.component.load();
 
-		const turns = this.handle?.model.state.turns ?? [];
+		const model = this.handle?.model;
+		const turns = model?.state.turns ?? [];
 		if (!this.paneId) {
 			listEl.createDiv({ cls: 'herdr-toc-empty', text: 'No native view is active.' });
 			return;
 		}
-		if (turns.length === 0) {
+		// The turns the model does not hold, ahead of the ones it does (#152).
+		const earlier = model ? earlierTurnCount(model.state) : 0;
+		if (earlier > 0) {
+			new EarlierTurnsBar(listEl, {
+				component: this.component,
+				onLoad: () => this.handle?.model.loadEarlier?.(),
+				cls: 'herdr-toc-earlier',
+			}).update(earlier, model?.loadingEarlier ?? false);
+		}
+		if (turns.length === 0 && earlier === 0) {
 			listEl.createDiv({ cls: 'herdr-toc-empty', text: 'Nothing in this session yet.' });
 			return;
 		}
@@ -320,6 +352,7 @@ export class TocView extends ItemView {
 				this.scrollNative(leaf, endpointId, paneId, (view) =>
 					view.scrollNativeToHeading(turnId, index),
 				),
+			shown: (endpointId, paneId) => this.nativeLeaves(endpointId, paneId).length > 0,
 		});
 	}
 
@@ -343,6 +376,9 @@ export class TocView extends ItemView {
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (leaf) => this.panel.activeLeafChanged(leaf)),
 		);
+		// A native tab closed with the focus going to a sidebar says nothing
+		// as a leaf change; the layout change does (#152).
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.panel.layoutChanged()));
 		// A tab that swapped its surface where it stands (#105): no leaf became
 		// active, so the leaf change above is silent about it.
 		this.register(
@@ -377,7 +413,15 @@ export class TocView extends ItemView {
 		paneId: string,
 		move: (view: TerminalView) => void,
 	): void {
-		const showing = this.app.workspace
+		const showing = this.nativeLeaves(endpointId, paneId);
+		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
+		const view = leaf?.view;
+		if (view instanceof TerminalView) move(view);
+	}
+
+	/** The leaves showing the pane in native mode, looked up now. */
+	private nativeLeaves(endpointId: string, paneId: string): WorkspaceLeaf[] {
+		return this.app.workspace
 			.getLeavesOfType(TERMINAL_VIEW_TYPE)
 			.filter(
 				(leaf) =>
@@ -385,9 +429,6 @@ export class TocView extends ItemView {
 					leaf.view.nativePaneId() === paneId &&
 					leaf.view.nativeEndpointId() === endpointId,
 			);
-		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
-		const view = leaf?.view;
-		if (view instanceof TerminalView) move(view);
 	}
 }
 

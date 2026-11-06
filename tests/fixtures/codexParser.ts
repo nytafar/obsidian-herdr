@@ -56,7 +56,8 @@ export const codexParser: ConversationParser<CodexState> = {
 	empty: () => ({ turns: [], raw: {}, cells: {}, info: {} }),
 	fork: (state) => ({ ...forkConversation(state), cells: { ...state.cells } }),
 	reduce(state: CodexState, lines: string[]): ReduceResult<CodexState> {
-		const draft = new TurnDraft(state.turns);
+		// Held by its turn count alone when windowed (#152): it weighs no line.
+		const draft = new TurnDraft(state.turns, state.window ?? null);
 		const raw = state.raw;
 		const cells = state.cells;
 		let info = state.info;

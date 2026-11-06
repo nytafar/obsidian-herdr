@@ -17,6 +17,7 @@
 
 import { SuggestModal, type App } from 'obsidian';
 import type { Turn } from './conversation';
+import { earlierLine } from './earlierTurns';
 
 /** How many matches the picker lists at most. */
 export const FIND_LIMIT = 50;
@@ -88,6 +89,16 @@ export function findInTurns(turns: readonly Turn[], query: string, limit = FIND_
 		}
 	});
 	return hits;
+}
+
+/**
+ * What the picker says when nothing matched: that nothing did, and, when the
+ * session model holds only its newest turns (#152), that the earlier ones
+ * were not searched.
+ */
+export function findEmptyText(earlier: number): string {
+	if (earlier === 0) return 'No matches.';
+	return `No matches. ${earlierLine(earlier)} Load them to search them.`;
 }
 
 /** The classes of the drawn parts that {@link findInTurns} searches. */
@@ -194,14 +205,20 @@ function partLabel(part: FindPart): string {
 export class ConversationFindModal extends SuggestModal<FindHit> {
 	private query = '';
 
+	/**
+	 * `earlier` is how many turns before `turns` the session model does not
+	 * hold (#152): they are not searched, the picker says so, and a match's
+	 * turn is counted from the session's first.
+	 */
 	constructor(
 		app: App,
 		private readonly turns: () => readonly Turn[],
 		private readonly onPick: (hit: FindHit, query: string) => void,
+		private readonly earlier = 0,
 	) {
 		super(app);
 		this.setPlaceholder('Find in conversation…');
-		this.emptyStateText = 'No matches.';
+		this.emptyStateText = findEmptyText(earlier);
 	}
 
 	getSuggestions(query: string): FindHit[] {
@@ -216,7 +233,7 @@ export class ConversationFindModal extends SuggestModal<FindHit> {
 		line.appendText(hit.after);
 		el.createDiv({
 			cls: 'herdr-native-find-where',
-			text: `Turn ${hit.turnIndex + 1}, ${partLabel(hit.part)}`,
+			text: `Turn ${this.earlier + hit.turnIndex + 1}, ${partLabel(hit.part)}`,
 		});
 	}
 

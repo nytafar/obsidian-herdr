@@ -856,6 +856,32 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
+ * The turns a long session's model does not hold (#152): one line above the
+ * first turn in the view, and above the first row in the table of contents,
+ * with the button that loads another page. Scoped to the view and the TOC to
+ * outrank the readable-width sizer it sits in.
+ */
+.herdr-native-earlier {
+	align-items: center;
+	color: var(--text-muted);
+	display: flex;
+	flex-wrap: wrap;
+	font-size: var(--font-ui-small);
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-4);
+}
+
+.herdr-toc .herdr-native-earlier {
+	margin-bottom: 0;
+	padding: var(--size-4-2);
+}
+
+.herdr-native-view .herdr-native-earlier.herdr-is-hidden,
+.herdr-toc .herdr-native-earlier.herdr-is-hidden {
+	display: none;
+}
+
+/*
  * One turn: the human prompt, then what the agent did (#93). `content-visibility`
  * lets the browser skip laying out turns that are scrolled away, which is what
  * makes a whole session's history affordable (native-view-design.md).
