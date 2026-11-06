@@ -106,6 +106,8 @@ export interface PromptSuggestOptions {
 	 * this suggest and kept for the TTL.
 	 */
 	catalog?: () => CommandCatalogSource | null;
+	/** The pane this box prompts, for a catalog that reads per pane (#132). */
+	paneId?: () => string;
 	/**
 	 * The vault's base path on the pane's machine (an SSH runtime's remote
 	 * vault path), or '' when it has none: where a mentioned file is opened.
@@ -174,7 +176,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		if (trigger.kind === 'command') {
 			const offer = (entries: CatalogEntry[]): PromptSuggestion[] =>
 				matchCommands(entries, trigger.query).map((entry) => ({ kind: 'command' as const, entry }));
-			const entries = this.catalogSource().catalog(this.options.cwd());
+			const entries = this.catalogSource().catalog(this.options.cwd(), this.options.paneId?.());
 			return Array.isArray(entries) ? offer(entries) : entries.then(offer);
 		}
 		return this.files(trigger.query).map((file) => ({ kind: 'file' as const, file }));

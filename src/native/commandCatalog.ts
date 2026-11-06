@@ -415,22 +415,35 @@ export interface CommandCatalogSource {
 	/**
 	 * The catalog for a pane's cwd on that runtime's machine: at once when it
 	 * is known, else a promise that settles on what could be read in time.
+	 * `paneId` names the pane, for a source whose user scope depends on the
+	 * pane's own Claude (a herdr pane's `CLAUDE_CONFIG_DIR`, issue #132).
 	 */
-	catalog(cwd: string): CatalogEntry[] | Promise<CatalogEntry[]>;
+	catalog(cwd: string, paneId?: string): CatalogEntry[] | Promise<CatalogEntry[]>;
 }
 
-/** This machine's catalog: the synchronous walk, reused for {@link CATALOG_TTL_MS} per cwd. */
+/**
+ * This machine's catalog: the synchronous walk, reused for {@link
+ * CATALOG_TTL_MS} per cwd and configuration folder.
+ */
 export class LocalCommandCatalog implements CommandCatalogSource {
-	private cached: { cwd: string; at: number; entries: CatalogEntry[] } | null = null;
+	private cached: { cwd: string; configDir: string | undefined; at: number; entries: CatalogEntry[] } | null =
+		null;
 
 	constructor(private readonly now: () => number = Date.now) {}
 
 	catalog(cwd: string): CatalogEntry[] {
+		return this.catalogIn(cwd);
+	}
+
+	/** The catalog with `configDir` as Claude's configuration folder; `~/.claude` when not given. */
+	catalogIn(cwd: string, configDir?: string): CatalogEntry[] {
 		const now = this.now();
 		const cached = this.cached;
-		if (cached && cached.cwd === cwd && now - cached.at < CATALOG_TTL_MS) return cached.entries;
-		const entries = loadCommandCatalog({ cwd });
-		this.cached = { cwd, at: now, entries };
+		if (cached && cached.cwd === cwd && cached.configDir === configDir && now - cached.at < CATALOG_TTL_MS) {
+			return cached.entries;
+		}
+		const entries = loadCommandCatalog({ cwd, ...(configDir === undefined ? {} : { configDir }) });
+		this.cached = { cwd, configDir, at: now, entries };
 		return entries;
 	}
 }

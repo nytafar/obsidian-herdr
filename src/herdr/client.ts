@@ -31,6 +31,7 @@ import {
 	type HerdrMethod,
 	type PaneInfo,
 	type SessionSnapshot,
+	type PaneProcessInfo,
 	type Subscription,
 	type WorkspaceInfo,
 } from './types.gen';
@@ -483,6 +484,18 @@ export class HerdrClient {
 			workspace_id: workspaceId ?? null,
 		});
 		return result.panes ?? [];
+	}
+
+	/**
+	 * `pane.process_info`: a pane's shell and foreground processes, each with
+	 * pid, name, argv and cwd (issue #132). Null when herdr does not have the
+	 * method; other errors reject.
+	 */
+	async paneProcessInfo(paneId: string): Promise<PaneProcessInfo | null> {
+		const result = await this.requestOptional<{ process_info?: PaneProcessInfo }>('pane.process_info', {
+			pane_id: paneId,
+		});
+		return result?.process_info ?? null;
 	}
 
 	/**
