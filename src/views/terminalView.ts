@@ -873,9 +873,13 @@ export class TerminalView extends ItemView {
 					cwd: () => this.paneCwd(),
 					// The commands of the machine the agent runs on: over the
 					// runtime's connection for herdr-core over SSH (ADR-0006).
-					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
-					// Read as the catalogue of the agent the pane runs (ADR-0010).
-					format: () => agentFormat(this.paneSnapshot()?.agent),
+					catalog: (agent) => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId, agent),
+					// The catalogue of the agent the pane runs (ADR-0010): none
+					// named is the default agent's, one without a format has none.
+					format: () => {
+						const agent = this.paneSnapshot()?.agent;
+						return agent ? agentFormat(agent) : undefined;
+					},
 					paneId: () => this.paneId,
 					// The most used commands first (#149), counted in the plugin's
 					// data whatever runtime the pane is on.

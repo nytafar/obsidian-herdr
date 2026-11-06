@@ -210,7 +210,11 @@ export class SessionModel implements SessionModelView {
 	readonly paneId: string;
 	private readonly options: SessionModelOptions;
 	/** The format of the session being shown: the pane's agent's (ADR-0010). */
-	private currentFormat: AgentFormat | null = null;
+	/**
+	 * Undefined until a pane has been read; null for a pane whose agent has
+	 * no format (ADR-0010).
+	 */
+	private currentFormat: AgentFormat | null | undefined = undefined;
 	/**
 	 * What the runtime itself said of the session when the model last read the
 	 * pane (a follow or a status transition), put over the format's reading.
@@ -313,8 +317,11 @@ export class SessionModel implements SessionModelView {
 		return this.transcript;
 	}
 
-	/** The format the session is read with, or null while there is none to read. */
-	get format(): AgentFormat | null {
+	/**
+	 * The format the session is read with: undefined while no pane has been
+	 * read (the agent is not known yet), null for an agent with no format.
+	 */
+	get format(): AgentFormat | null | undefined {
 		return this.currentFormat;
 	}
 

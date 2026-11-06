@@ -216,13 +216,16 @@ describe('the herdr kind (ADR-0004)', () => {
 				scope: { paneInfo: () => undefined },
 			}) as unknown as Parameters<NonNullable<NonNullable<typeof kind.native>['commandCatalog']>>[1];
 		const here = connection(local);
-		const catalog = kind.native?.commandCatalog?.(local, here);
+		const catalog = kind.native?.commandCatalog?.(local, here, 'claude');
 		expect(catalog).toBeInstanceOf(HerdrCommandCatalog);
 		// One per connection, so its cache lasts across `/`s.
-		expect(kind.native?.commandCatalog?.(local, here)).toBe(catalog);
+		expect(kind.native?.commandCatalog?.(local, here, 'claude')).toBe(catalog);
 		// Without the connection, this machine's `~/.claude` as before.
-		expect(kind.native?.commandCatalog?.(local, null)).toBeNull();
-		expect(kind.native?.commandCatalog?.(remote, connection(remote))).toBeNull();
+		expect(kind.native?.commandCatalog?.(local, null, 'claude')).toBeNull();
+		expect(kind.native?.commandCatalog?.(remote, connection(remote), 'claude')).toBeNull();
+		// The pane-Claude reader is Claude's (ADR-0010): another agent's list
+		// is its own format's, read by the prompt box.
+		expect(kind.native?.commandCatalog?.(local, here, 'codex')).toBeNull();
 	});
 });
 

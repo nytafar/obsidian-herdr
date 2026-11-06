@@ -249,6 +249,7 @@ export default class HerdrPlugin extends Plugin {
 		settings: () => this.settings,
 		probe: (connection, programs) =>
 			this.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
+		nativeReachable: (runtime) => this.nativeReachable(runtime),
 		changed: () => this.refreshAgentList(),
 		notice: (message) => {
 			new Notice(message);
@@ -287,6 +288,15 @@ export default class HerdrPlugin extends Plugin {
 	/** The adapter of a kind (ADR-0004). */
 	kindOf(kind: RuntimeKind): RuntimeKindAdapter {
 		return this.kinds[kind];
+	}
+
+	/**
+	 * Whether a runtime's transcripts can be read from here (its kind's native
+	 * adapter on that target): the runtime half of the native view's gate,
+	 * which the agent catalog's native flag reads beside the agent seam's.
+	 */
+	nativeReachable(runtime: Readonly<RuntimeConfig>): boolean {
+		return nativeAdapterFor(this.kindOf(runtime.kind), endpointOf(runtime)) !== null;
 	}
 
 	/** Why runtimes of this kind cannot connect in this build, or null. */
@@ -394,16 +404,17 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Where a native tab's `/` list is read (#98): its runtime's machine, by
-	 * the same connection rule as {@link nativeTranscripts}. Null is this
-	 * machine's files, which the tab's suggest walks itself, as it always has.
+	 * Where a native tab's `/` list is read for the pane's agent (#98,
+	 * ADR-0010): its runtime's machine, by the same connection rule as
+	 * {@link nativeTranscripts}. Null is this machine's files, which the tab's
+	 * suggest walks itself, as it always has.
 	 */
-	nativeCommandCatalog(endpointId: string): CommandCatalogSource | null {
+	nativeCommandCatalog(endpointId: string, agent: string): CommandCatalogSource | null {
 		const endpoint = this.endpointFor(endpointId);
 		const native = endpoint ? nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint) : null;
 		if (!endpoint || !native?.commandCatalog) return null;
 		const current = this.connection.current;
-		return native.commandCatalog(endpoint, current?.endpoint.id === endpointId ? current : null);
+		return native.commandCatalog(endpoint, current?.endpoint.id === endpointId ? current : null, agent);
 	}
 
 	/** What a native view's prompt and key senders go through: its own runtime's client. */

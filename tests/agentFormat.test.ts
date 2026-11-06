@@ -14,7 +14,9 @@ import {
 	nativeSupport,
 	offersNativeView,
 	toolKindOf,
+	type AgentFormat,
 } from '../src/agents/format';
+import { waitingCard } from '../src/native/waitingCard';
 import { CLAUDE_FORMAT } from '../src/agents/claude/format';
 import { emptyTranscript, reduce } from '../src/agents/claude/transcript';
 import { AGENT_SESSIONS, sessionBinding } from '../src/runtime/kind';
@@ -80,6 +82,17 @@ describe('the catalog’s native flag', () => {
 		expect(byId.get('codex')?.native).toBe(false);
 	});
 
+	it('is off for every entry where the runtime cannot reach its transcripts, as the view is', () => {
+		// herdr over SSH: the gate says yes for Claude, but the view needs the
+		// transcript too, and that is on another machine (ADR-0002).
+		const runtime = { id: 'ssh:xl', kind: 'herdr' as const, target: 'ssh' as const, host: 'xl' };
+		const catalog = buildCatalog({ runtime, settings: SETTINGS, probe: null, nativeReachable: false });
+		expect(catalog.find((entry) => entry.profile.id === 'claude')?.native).toBe(false);
+		expect(buildCatalog({ runtime, settings: SETTINGS, probe: null }).find((e) => e.profile.id === 'claude')?.native).toBe(
+			true,
+		);
+	});
+
 	it('follows the agent of a user entry, on every kind that can start it', () => {
 		const settings: AgentCatalogSettings = {
 			...SETTINGS,
@@ -92,6 +105,16 @@ describe('the catalog’s native flag', () => {
 		const catalog = buildCatalog({ runtime, settings, probe: null });
 		expect(catalog.find((entry) => entry.profile.id === 'user-a')?.native).toBe(true);
 		expect(catalog.find((entry) => entry.profile.id === 'user-b')?.native).toBe(false);
+	});
+});
+
+describe('an agent not reported, and an agent with no format, are two cases (ADR-0010)', () => {
+	it('titles the waiting card with the default agent only when no agent was named', () => {
+		const card = (format: AgentFormat | null | undefined) =>
+			waitingCard({ blockKind: 'auth', hasTranscript: true, turns: [], vaultPath: '/vault', format }).title;
+		expect(card(undefined)).toBe('Claude needs you to sign in');
+		expect(card(CLAUDE_FORMAT)).toBe('Claude needs you to sign in');
+		expect(card(null)).toBe('The agent needs you to sign in');
 	});
 });
 
@@ -156,6 +179,28 @@ describe('Claude’s format', () => {
 		});
 		expect(CLAUDE_FORMAT.efforts).toContain('xhigh');
 		expect(CLAUDE_FORMAT.modes).toContain('plan');
+	});
+
+	it('keeps the context in use over an answer no model gave (an API error)', () => {
+		const answer = (uuid: string, model: string, input: number) =>
+			JSON.stringify({
+				type: 'assistant',
+				uuid,
+				...(model === '<synthetic>' ? { isApiErrorMessage: true } : {}),
+				message: {
+					id: `msg_${uuid}`,
+					model,
+					content: [{ type: 'text', text: 'x' }],
+					usage: { input_tokens: input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+				},
+			});
+		// The shape Claude writes on an API error: `<synthetic>`, every count 0.
+		const { state } = reduce(emptyTranscript(), [answer('a1', 'claude-opus-5-5', 30000), answer('a2', '<synthetic>', 0)]);
+		expect(CLAUDE_FORMAT.sessionInfo(state)).toMatchObject({
+			model: { id: 'claude-opus-5-5' },
+			contextUsed: 30000,
+			usage: { input: 30000, output: 0 },
+		});
 	});
 
 	it('lets the runtime’s word win per field, and keeps the reading where it says nothing', () => {

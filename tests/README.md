@@ -397,7 +397,8 @@ matches what the view spawns in observe mode; the first line is a
 
 ## Smoking the native view's history inside Obsidian (#93)
 
-The reducer, the transcript source, the session model and what the surface draws
+Claude's transcript parser (`src/agents/claude/transcript.ts`), the transcript
+source, the session model and what the surface draws
 are unit tested (`tests/transcriptReducer.test.ts`, `tests/transcriptSource.test.ts`,
 `tests/sessionModel.test.ts`, `tests/nativeSurface.test.ts`, the first of them
 against the live transcript of whatever session runs them). What needs Obsidian
@@ -421,7 +422,8 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
 transcripts on this machine and scrubbed: prose, commands, tool input and
 output replaced, paths moved under `/home/user`, image bytes cut to a stub,
 bookkeeping lines (`api-request`, `ai-title`, …) dropped. Ids, parents,
-timestamps, types and the tags the reducer reads are kept as recorded.
+timestamps, types and the tags the parser (`src/agents/claude/transcript.ts`)
+reads are kept as recorded.
 
 - `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
   (no 2.1.318 transcript on this machine has one).
@@ -445,6 +447,15 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 - `subagent-notification.jsonl` — a background subagent's notification taken
   in mid-turn: its enqueue, a `remove` and the `queued_command` attachment,
   with no `user` line, 2.1.318.
+- `queued-own-turn.jsonl` — prompts queued while Claude worked that ran as
+  turns of their own: one behind an interrupted command, one behind a
+  tool-less answer (`enqueue`, `dequeue`, a `promptSource: "queued"` line),
+  and two pulled back with Up (`popAll`) and never sent, 2.1.318 (#157).
+- `queue-pull-back.jsonl` — a queued prompt pulled back with Up, edited and
+  taken in as a steer, then its first words typed again at idle, 2.1.318.
+- `queue-cancel.jsonl` — `claude -p` in stream-json: two messages written
+  while a command ran, one cancelled (a bare `dequeue`) and one taken in
+  mid-turn as an attachment with no `origin`, 2.1.318.
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:

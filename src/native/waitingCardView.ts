@@ -200,7 +200,8 @@ export class WaitingCardView {
 			vaultPath: this.options.vaultPath(),
 			plan: model?.plan ?? null,
 			// What a dangling call asks, and what the card calls the agent (ADR-0010).
-			format: model?.format ?? null,
+			// Undefined while no pane has named its agent yet: the default's.
+			format: model?.format,
 		});
 		this.render(root, card);
 		this.options.setPromptHidden(true);

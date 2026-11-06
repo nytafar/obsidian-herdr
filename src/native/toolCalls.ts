@@ -33,22 +33,11 @@ import {
 	type Turn,
 	type TurnEntry,
 } from './conversation';
-import { toolKindOf } from '../agents/format';
+import { toolKindOf, type ToolTable } from '../agents/format';
 import { trimTrailingSlashes } from '../paths';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { ToolKind } from './conversation';
-
-/**
- * The kind a tool name is shown as; `other` for one no agent format knows.
- * Each format names its own tools (`AgentFormat.toolKinds`): an agent's tool
- * names change between releases and a vault picks up MCP tools with names of
- * their own, so a table is an alias table over a small set of kinds, and
- * anything it does not know is `other` rather than a gap.
- */
-export function toolKind(name: string): ToolKind {
-	return toolKindOf(name);
-}
 
 /** One kind's share of a summary line: "ran 2 commands", "read 1 file". */
 interface ToolPhrase {
@@ -81,8 +70,8 @@ const TOOL_PHRASES: Readonly<Record<ToolKind, ToolPhrase>> = {
  * appear: "Read 4 files, ran 2 commands". Only the first letter is capitalised,
  * so the parts read as one sentence however they are ordered.
  */
-export function toolGroupSummary(tools: readonly ToolEntry[]): string {
-	const line = toolGroupCounts(tools);
+export function toolGroupSummary(tools: readonly ToolEntry[], table?: ToolTable): string {
+	const line = toolGroupCounts(tools, table);
 	return line ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : '';
 }
 
@@ -90,10 +79,10 @@ export function toolGroupSummary(tools: readonly ToolEntry[]): string {
  * The counts by kind as they read after a title, all lower case: "read 4
  * files, ran 2 commands". Empty for a group with no calls.
  */
-export function toolGroupCounts(tools: readonly ToolEntry[]): string {
+export function toolGroupCounts(tools: readonly ToolEntry[], table?: ToolTable): string {
 	const counts = new Map<ToolKind, number>();
 	for (const entry of tools) {
-		const kind = toolKind(entry.name);
+		const kind = toolKindOf(entry.name, table);
 		counts.set(kind, (counts.get(kind) ?? 0) + 1);
 	}
 	const parts: string[] = [];
@@ -174,7 +163,11 @@ export interface ToolGroupHeader {
 }
 
 /** A group's header for where it stands (#128). */
-export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupState): ToolGroupHeader {
+export function toolGroupHeader(
+	tools: readonly ToolEntry[],
+	state: ToolGroupState,
+	table?: ToolTable,
+): ToolGroupHeader {
 	const title = state === 'live' ? 'Working…' : state === 'waiting' ? 'Needs you' : 'Worked';
 	const failures = tools.filter((entry) => entry.status === 'error').length;
 	// Work the agent left running when it went away (#135) is as much a thing
@@ -189,7 +182,7 @@ export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupSta
 	].filter(Boolean);
 	return {
 		title,
-		counts: toolGroupCounts(tools),
+		counts: toolGroupCounts(tools, table),
 		failed: parts.length ? parts.join(', ') : null,
 	};
 }
@@ -254,8 +247,8 @@ export interface TodoItem {
  * item would read as further along than it is. A status this build does not
  * know reads as pending.
  */
-export function todoList(entry: ToolEntry): TodoItem[] | null {
-	if (toolKind(entry.name) !== 'todo') return null;
+export function todoList(entry: ToolEntry, table?: ToolTable): TodoItem[] | null {
+	if (toolKindOf(entry.name, table) !== 'todo') return null;
 	const todos = entry.input.todos;
 	if (!Array.isArray(todos)) return null;
 	const items: TodoItem[] = [];
@@ -300,12 +293,12 @@ export interface LatestTodo extends TurnTodo {
 }
 
 /** The last readable list in one turn, or null when it left none. */
-export function turnTodo(turn: Turn): TurnTodo | null {
+export function turnTodo(turn: Turn, table?: ToolTable): TurnTodo | null {
 	const entries = turn.entries;
 	for (let e = entries.length - 1; e >= 0; e--) {
 		const entry = entries[e];
 		if (entry?.kind !== 'tool') continue;
-		const items = todoList(entry);
+		const items = todoList(entry, table);
 		if (items) return { entryId: entry.id, items };
 	}
 	return null;
@@ -329,8 +322,8 @@ export function latestTodo(
 }
 
 /** {@link latestTodo}'s items alone. */
-export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
-	return latestTodo(turns)?.items ?? null;
+export function latestTodoList(turns: readonly Turn[], table?: ToolTable): TodoItem[] | null {
+	return latestTodo(turns, (turn) => turnTodo(turn, table))?.items ?? null;
 }
 
 /**
@@ -343,11 +336,12 @@ export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
 export class TodoIndex {
 	private readonly byTurn = new Map<string, { turn: Turn; todo: TurnTodo | null }>();
 
-	latest(turns: readonly Turn[]): LatestTodo | null {
+	/** `table` is the session's format's; the index is cleared when the session changes. */
+	latest(turns: readonly Turn[], table?: ToolTable): LatestTodo | null {
 		return latestTodo(turns, (turn) => {
 			const known = this.byTurn.get(turn.id);
 			if (known?.turn === turn) return known.todo;
-			const todo = turnTodo(turn);
+			const todo = turnTodo(turn, table);
 			this.byTurn.set(turn.id, { turn, todo });
 			return todo;
 		});
@@ -549,8 +543,8 @@ export function sourceText(entry: ToolEntry): {
  * and between the launch and that moment the notice would otherwise read as
  * the report.
  */
-export function subagentReport(entry: ToolEntry): string {
-	if (toolKind(entry.name) !== 'agent') return '';
+export function subagentReport(entry: ToolEntry, table?: ToolTable): string {
+	if (toolKindOf(entry.name, table) !== 'agent') return '';
 	const background = entry.notification !== null || entry.status === 'running' || entry.status === 'lost';
 	const report = background ? entry.report : entry.report ?? entry.result;
 	return report?.trim() ? report : '';
@@ -627,6 +621,7 @@ function markItem(entry: MarkEntry): MarkItem {
 export function turnItems(
 	entries: readonly TurnEntry[],
 	presentation: ToolGroupPresentation,
+	table?: ToolTable,
 ): TurnItem[] {
 	const items: TurnItem[] = [];
 	let group: { kind: 'group'; tools: ToolEntry[] } | null = null;
@@ -660,7 +655,7 @@ export function turnItems(
 			items.push(markItem(entry));
 			continue;
 		}
-		const kind = toolKind(entry.name);
+		const kind = toolKindOf(entry.name, table);
 		if (escapesToolGroup(kind, presentation)) {
 			if (kind === 'todo') items.push({ kind: 'todo', entry });
 			else items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
@@ -674,7 +669,7 @@ export function turnItems(
 		// The call itself folds into the group; what the subagent reported is
 		// prose, and reads after it (#96).
 		// Prose ends the run, as a text block does, so a later call reads after it.
-		if (subagentReport(entry)) {
+		if (subagentReport(entry, table)) {
 			items.push({ kind: 'report', entry });
 			group = null;
 		}

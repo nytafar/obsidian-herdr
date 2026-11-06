@@ -656,11 +656,17 @@ describe('herdr-core’s native adapter and gate', () => {
 		// The `/` list follows the same rule (#98): this machine's files for a
 		// local runtime, the remote's over its connection, the built-ins only
 		// without one, and never this machine's for a remote.
-		expect(native.commandCatalog?.(local, null)).toBeNull();
-		expect(native.commandCatalog?.(remote, null)).toBe(BUILTIN_CATALOG_SOURCE);
-		const catalog = native.commandCatalog?.(remote, connection);
+		expect(native.commandCatalog?.(local, null, 'claude')).toBeNull();
+		expect(native.commandCatalog?.(remote, null, 'claude')).toBe(BUILTIN_CATALOG_SOURCE);
+		const catalog = native.commandCatalog?.(remote, connection, 'claude');
 		expect(catalog).toBeInstanceOf(HcCommandCatalog);
-		expect(native.commandCatalog?.(remote, connection)).toBe(catalog);
+		expect(native.commandCatalog?.(remote, connection, 'claude')).toBe(catalog);
+		// The reader over the connection is Claude's (ADR-0010): an agent
+		// without a format there gets no list, never Claude's.
+		const other = native.commandCatalog?.(remote, connection, 'codex');
+		expect(other).not.toBeInstanceOf(HcCommandCatalog);
+		expect(other?.catalog('/srv')).toEqual([]);
+		expect(native.commandCatalog?.(local, connection, 'codex')).toBeNull();
 		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).available).toBe(true);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
 		coordinator.dispose();

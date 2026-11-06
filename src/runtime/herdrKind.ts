@@ -39,7 +39,7 @@ import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { herdrScreenAccess } from '../native/screenAccess';
 import { LocalTranscriptSource } from '../native/transcriptSource';
-import { herdrSessionWatcher } from '../herdr/sessionWatcher';
+import { herdrSessionWatcher, sessionBelongsTo } from '../herdr/sessionWatcher';
 import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
 import { TabLabelCache } from '../tabLabels';
 import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
@@ -128,18 +128,20 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 			// A local file needs no connection, so a tab on a local herdr keeps
 			// following its transcript while another runtime is active.
 			transcripts: (endpoint) => (endpoint.runtime.target === 'local' ? localTranscripts : null),
-			// The pane's own Claude's configuration folder, read over the
-			// connection; without it, this machine's `~/.claude` as before.
-			commandCatalog: (_endpoint, connection) => {
+			// A Claude pane's: its own Claude's configuration folder, read over
+			// the connection; without it, this machine's `~/.claude` as before.
+			// Any other agent's is its format's, read here (ADR-0010).
+			commandCatalog: (_endpoint, connection, agent) => {
+				if (agent !== 'claude') return null;
 				const resolver = connection ? resolverFor(connection) : null;
 				if (!connection || !resolver) return null;
 				let catalog = paneCatalogs.get(connection.client);
 				if (!catalog) {
 					const { scope } = connection;
-					catalog = new HerdrCommandCatalog(
-						resolver,
-						(paneId) => scope.paneInfo(paneId)?.agent_session?.value ?? '',
-					);
+					catalog = new HerdrCommandCatalog(resolver, (paneId) => {
+						const session = scope.paneInfo(paneId)?.agent_session;
+						return sessionBelongsTo(scope.get(paneId)?.agent, session?.agent) ? (session?.value ?? '') : '';
+					});
 					paneCatalogs.set(connection.client, catalog);
 				}
 				return catalog;

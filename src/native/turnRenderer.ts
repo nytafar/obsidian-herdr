@@ -55,6 +55,7 @@ import { fillUriLink } from './noteLinks';
 import { progressText, renderChecklist } from './todoList';
 import { findObsidianUris } from './obsidianUri';
 import { copyButton, defaultCopier, renderReplyActions, replyMarkdown, type Copier } from './copyActions';
+import type { ToolTable } from '../agents/format';
 
 /**
  * One piece of a human prompt: literal text, a wikilink to a note, or an
@@ -188,6 +189,11 @@ export interface TurnRendererOptions {
 	readImage?: (image: ImageEntry) => Promise<ImageBytes | null>;
 	/** Shows an image full size, on a click on its thumbnail (#144). */
 	openImage?: (image: ShownImage) => void;
+	/**
+	 * The tool table of the session's format, which says what each call is
+	 * shown as (ADR-0010); read on every draw. Left out, every format's.
+	 */
+	toolTable?: () => ToolTable;
 }
 
 /** An image as the view shows it: a source an `img` takes, and what it is. */
@@ -213,6 +219,8 @@ export interface ItemFacts {
 	latestTodo: boolean;
 	/** Where an `obsidian://` URI resolves in the vault now (#114). */
 	resolveUri: (uri: string) => string | null;
+	/** The session's format's tool table, as `TurnRendererOptions.toolTable` gives it. */
+	toolTable: ToolTable;
 }
 
 /** What a render function is handed for one item. */
@@ -297,11 +305,11 @@ const ITEM_KINDS: ItemKinds = {
 		render: (item, context) => renderSource(item.entry, context),
 	},
 	report: {
-		signature: (item) => subagentReport(item.entry),
+		signature: (item, facts) => subagentReport(item.entry, facts.toolTable),
 		render: (item, context) => renderSubagentReport(item.entry, context),
 	},
 	todo: {
-		signature: (item, facts) => JSON.stringify([facts.latestTodo, todoList(item.entry)]),
+		signature: (item, facts) => JSON.stringify([facts.latestTodo, todoList(item.entry, facts.toolTable)]),
 		render: (item, context) => renderTodo(item.entry, context.facts.latestTodo, context),
 	},
 	image: {
@@ -515,7 +523,8 @@ export class TurnRenderer {
 
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
 		// folded into groups with the vault changes and sources left outside.
-		const items = turnItems(turn.entries, this.options.presentation());
+		const toolTable = this.options.toolTable?.();
+		const items = turnItems(turn.entries, this.options.presentation(), toolTable);
 		const folds = this.folds.turn(turn.id);
 		const names = nameTurnItems(items, folds.names);
 		folds.names.clear();
@@ -540,6 +549,7 @@ export class TurnRenderer {
 			openRun: index === openRun,
 			latestTodo: item.kind === 'todo' && item.entry.id === latestTodo,
 			resolveUri: this.options.resolveUri,
+			toolTable,
 		}));
 		const signatures = items.map((item, index) => itemSignature(item, facts[index] as ItemFacts));
 		const kept = new Set<string>();
@@ -769,7 +779,7 @@ function renderThinking(entry: ThinkingEntry, context: ItemContext): ItemDraw {
 function renderToolGroup(tools: readonly ToolEntry[], context: ItemContext): ItemDraw {
 	const { activity, openRun, vaultPath } = context.facts;
 	const state = toolGroupState(tools, activity, openRun);
-	const header = toolGroupHeader(tools, state);
+	const header = toolGroupHeader(tools, state, context.facts.toolTable);
 	const details = context.parent.createEl('details', { cls: 'herdr-native-tools' });
 	if (state !== 'settled') details.addClass(state === 'live' ? 'is-live' : 'is-waiting');
 	// The header in three parts (#128): where the group stands, the counts,
@@ -836,7 +846,7 @@ function renderVaultChange(entry: ToolEntry, context: ItemContext): ItemDraw {
  * it at all. The call that launched it stays folded in the tool group.
  */
 function renderSubagentReport(entry: ToolEntry, context: ItemContext): ItemDraw {
-	const report = subagentReport(entry);
+	const report = subagentReport(entry, context.facts.toolTable);
 	if (!report) return { el: null };
 	const el = context.parent.createDiv({ cls: 'herdr-native-report' });
 	// Not prose either, as far as the headings go (#118).
@@ -853,7 +863,7 @@ function renderSubagentReport(entry: ToolEntry, context: ItemContext): ItemDraw 
  * A list that cannot be read is the line alone.
  */
 function renderTodo(entry: ToolEntry, latest: boolean, context: ItemContext): ItemDraw {
-	const items = todoList(entry);
+	const items = todoList(entry, context.facts.toolTable);
 	if (!items) {
 		const el = context.parent.createDiv({ cls: 'herdr-native-todo', text: 'Updated the to-do list' });
 		return { el };

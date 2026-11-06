@@ -278,6 +278,31 @@ describe('herdrSessionWatcher with a resolver: the transcript path herdr does no
 		]);
 	});
 
+	it('reads no Claude process for a pane running another agent, and names no path for it', async () => {
+		// The pane-Claude reader is a herdr × Claude pair: a path it works out
+		// is a Claude transcript's, and would win over the pane's own format.
+		const scope: WatchableScope = {
+			get: (paneId: string) =>
+				paneId === 'w1:p1' ? ({ paneId, cwd: '/srv', agent: 'codex', agentStatus: 'idle' } as PaneState) : undefined,
+			paneInfo: (paneId: string) =>
+				paneId === 'w1:p1'
+					? ({
+							pane_id: paneId,
+							agent: 'codex',
+							agent_session: { agent: 'codex', kind: 'id', source: 'herdr:codex', value: '019a-thread' },
+						} as PaneInfo)
+					: undefined,
+			on: () => () => {},
+		};
+		const deps = fakeDeps({ info: processInfo('/srv') });
+		const watcher = herdrSessionWatcher({ scope, client: { on: () => () => {} } }, new PaneClaudeResolver(deps));
+
+		expect(watcher?.snapshot('w1:p1')?.transcriptPath).toBeUndefined();
+		await settle();
+		expect(watcher?.snapshot('w1:p1')?.transcriptPath).toBeUndefined();
+		expect(deps.calls.info).toBe(0);
+	});
+
 	it('pushes nothing for an answer that came back after the session moved on', async () => {
 		let session = 'session-1';
 		const scope = oneSessionScope('/srv', () => session);

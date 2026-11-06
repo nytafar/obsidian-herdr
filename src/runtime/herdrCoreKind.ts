@@ -45,6 +45,7 @@ import { hcSessionWatcher } from '../hc/sessionWatcher';
 import { HcTranscriptSource } from '../hc/transcriptSource';
 import { HcCommandCatalog } from '../hc/commandCatalog';
 import { BUILTIN_CATALOG_SOURCE } from '../agents/claude/commands';
+import { agentFormat } from '../agents/format';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
@@ -172,8 +173,11 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 			// The `/` list of the machine the agent runs on: this one's files on
 			// a local runtime, one `machine.exec` over the connection on an SSH
 			// one, and only the built-ins while that connection is not there.
-			commandCatalog: (endpoint, connection) => {
+			// The reader over the connection is Claude's directory layout; any
+			// other agent on an SSH runtime gets its format's built-ins (ADR-0010).
+			commandCatalog: (endpoint, connection, agent) => {
 				if (endpoint.runtime.target !== 'ssh') return null;
+				if (agent !== 'claude') return { catalog: () => agentFormat(agent)?.commands.builtin() ?? [] };
 				if (!connection) return BUILTIN_CATALOG_SOURCE;
 				const scope = connection.scope;
 				let catalog = remoteCatalogs.get(scope);

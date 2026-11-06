@@ -97,7 +97,12 @@ export function defaultAgentChoices(catalog: readonly CatalogEntry[]): { id: str
 
 /** The catalog a runtime's settings show: its probe when it is the active one. */
 function catalogFor(runtime: RuntimeConfig, settings: HerdrSettings, callbacks: SettingsCallbacks): CatalogEntry[] {
-	return buildCatalog({ runtime, settings, probe: callbacks.agents?.probe(runtime.id) ?? null });
+	return buildCatalog({
+		runtime,
+		settings,
+		probe: callbacks.agents?.probe(runtime.id) ?? null,
+		nativeReachable: callbacks.nativeReachable?.(runtime) ?? true,
+	});
 }
 
 /** "Default agent" in a runtime's form. */
@@ -143,7 +148,8 @@ export function buildAgentCatalogSettings(
 	const runtime = activeRuntimeOf(settings);
 	const agents = callbacks.agents;
 	const probe = agents?.probe(runtime.id) ?? null;
-	const catalog = buildCatalog({ runtime, settings, probe });
+	const reachable = callbacks.nativeReachable?.(runtime) ?? true;
+	const catalog = buildCatalog({ runtime, settings, probe, nativeReachable: reachable });
 
 	// Every machine of every runtime, each asked once per opening of the tab.
 	const probes = agents?.machines?.() ?? null;
@@ -169,7 +175,7 @@ export function buildAgentCatalogSettings(
 				found: null,
 				hidden: settings.hiddenAgents.includes(profile.id),
 				isDefault: false,
-				native: offersNativeView(runtime.kind, profile.agent),
+				native: reachable && offersNativeView(runtime.kind, profile.agent),
 			}));
 
 	const baseDesc = `What the + button offers on ${runtimeDisplayName(runtime)} (${RUNTIME_KIND_LABELS[runtime.kind]}): a left click starts the default, a right click lists them all. Agent CLIs not installed ${machinePhrase(runtime)} are left out; your own entries always show. Each row says which of your runtimes' machines have it, checked once each time settings open.`;

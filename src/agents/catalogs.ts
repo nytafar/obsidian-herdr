@@ -54,6 +54,12 @@ export interface AgentCatalogsHost {
 	 * none (the `claude` kind, whose catalog is Claude alone).
 	 */
 	probe(connection: Connection, programs: readonly string[]): Promise<AgentProbe> | null;
+	/**
+	 * Whether a runtime's transcripts can be read from here, so its entries
+	 * can say they have the native view (`BuildCatalogInput.nativeReachable`).
+	 * Not given reads as true.
+	 */
+	nativeReachable?(runtime: Readonly<RuntimeConfig>): boolean;
 	/** A probe of the published connection landed: repaint what shows it. */
 	changed?(): void;
 	/** Something the user should see, like a start waiting on a probe. */
@@ -191,7 +197,13 @@ export class AgentCatalogs {
 
 	/** The catalog as far as it is known now, without probing. */
 	cachedCatalog(): CatalogEntry[] {
-		return buildCatalog({ runtime: this.runtime(), settings: this.host.settings(), probe: this.cachedProbe() });
+		const runtime = this.runtime();
+		return buildCatalog({
+			runtime,
+			settings: this.host.settings(),
+			probe: this.cachedProbe(),
+			nativeReachable: this.host.nativeReachable?.(runtime) ?? true,
+		});
 	}
 
 	/**
@@ -210,7 +222,13 @@ export class AgentCatalogs {
 		const probe = await this.waitFor(connection);
 		// The connection may have been replaced meanwhile; the catalog is the
 		// one of the runtime it was asked about.
-		return buildCatalog({ runtime: connection.endpoint.runtime, settings: this.host.settings(), probe });
+		const runtime = connection.endpoint.runtime;
+		return buildCatalog({
+			runtime,
+			settings: this.host.settings(),
+			probe,
+			nativeReachable: this.host.nativeReachable?.(runtime) ?? true,
+		});
 	}
 
 	/** The connection's probe, saying so when it takes a moment. */

@@ -722,6 +722,12 @@ export interface SettingsCallbacks {
 	refreshRuntimes: () => void;
 	/** Why runtimes of this kind cannot connect in this build, or null when they can. */
 	kindUnavailable: (kind: RuntimeKind) => string | null;
+	/**
+	 * Whether a runtime's transcripts can be read from here, which the agent
+	 * catalog's native flag needs beside the agent seam's gate (ADR-0010).
+	 * Not given reads as true.
+	 */
+	nativeReachable?: (runtime: RuntimeConfig) => boolean;
 	/** The runtime whose form is open, or null. Held by the tab across redisplays. */
 	editingRuntime: () => string | null;
 	/** Opens the form for a runtime, or closes it with null, and redisplays. */
@@ -1701,6 +1707,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 				}
 			},
 			kindUnavailable: (kind) => plugin.kindUnavailable(kind),
+			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
 			editingRuntime: () => this.editing,
 			editRuntime: (id) => {
 				this.editing = id;
