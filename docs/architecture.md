@@ -1759,6 +1759,14 @@ these are the facts it relies on.
   grid it named. Text with a line break or any C0, DEL or C1 character is
   refused before anything is sent. Remote (herdr over SSH, hc on another
   machine) is the same calls over the runtime's own client; not run live.
+  **The typing attach does not keep a size the terminal was started at.**
+  Measured 2026-11-06 (hc 0.1.18, Claude Code 2.1.318, `npm run
+  record-screens`, #168): a terminal started with `terminal.run {size: 60x40}`
+  and no viewer read 60 columns wide until the first `HcClient.input`, and
+  200 wide from then on: when the resumed attach closed, the terminal went
+  back to hc's headless size, 200x120. One started at 200x120 is unaffected.
+  Whether a viewer that leads the size keeps it across the typing attach was
+  not measured.
 - **Narrow screens (#163).** Measured 2026-11-06 at 60 and 90 columns
   (herdr 0.9.5 pane held at size by a `terminal session control` client, hc
   0.1.18 terminals started with `terminal.run {size}`; fixtures `*-60-*`,

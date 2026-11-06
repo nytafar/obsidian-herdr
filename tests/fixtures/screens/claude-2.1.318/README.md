@@ -78,3 +78,22 @@ Scrubbed as above.
 | File | Dialog | State when read |
 | --- | --- | --- |
 | `*-write-after-plan` | Write `d.txt`, the plan's step | as opened; under its hint a titled rule, `──── create-d-txt-file ─` (herdr) and `──── create-d-txt-plan ─` (hc), is the screen's last line |
+
+## Re-recording for a new Claude (issue #168)
+
+`npm run record-screens` re-records this set for the Claude Code on the PATH
+(its own binary, never a mise shim) into `../claude-<version>/` and prints
+how each screen differs from the newest set before it, the dialog under its
+rule by default (`-- --full` for whole screens, `-- --help` for the rest).
+It runs the prompts and keys above in `oh-test-*` herdr tabs and hc
+terminals, in the folders these screens name, and removes every tab,
+terminal and folder, and what its Claude sessions wrote under `~/.claude`,
+when it ends, also on failure or Ctrl+C. It will not start while one of
+those folders exists, or while Claude already trusts a trust screen's
+folder; `-- --dry-run` checks both and runs nothing. The scenario is
+`scripts/record-screens/scenario.ts`. Two differences from the recordings
+here: the wide trust screens come from `/var/tmp/oh-test-trust-wide-*`,
+because Claude trusts the folders above for good; and every text on hc is
+typed through the plugin's own attach, except on the 60- and 90-column
+terminals, which are typed key by key as before (the attach puts such a
+terminal back to 200x120).

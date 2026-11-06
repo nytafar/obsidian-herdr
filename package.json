@@ -12,7 +12,8 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"gen:types": "node scripts/gen-types.mjs",
-		"install-dev": "node scripts/install-dev.mjs"
+		"install-dev": "node scripts/install-dev.mjs",
+		"record-screens": "node scripts/record-screens.mjs"
 	},
 	"keywords": [
 		"obsidian",
