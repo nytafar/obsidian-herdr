@@ -952,7 +952,7 @@ and, while it runs, its process. Status is the stream's:
 
 | Row | When |
 |---|---|
-| working | a prompt was written and its `result` has not come (one per message, queued ones too) |
+| working | a prompt was written and its `result` has not come (one per message, queued ones too; not so when a queued one is absorbed into the running turn, which then answers both with one `result`: "Queued prompts" below) |
 | blocked | a `can_use_tool` request waits; kind `question` for `AskUserQuestion`, `permission` for the rest; never `trust` |
 | done | the last turn's `result` came, until a native view of it is looked at or it is prompted; a turn that ends while a view is being looked at (its window focused and visible, the view drawn) is seen at once, counted per viewer as herdr-core's `herdr.seen` is |
 | idle | the process runs and nothing is pending |
@@ -1212,7 +1212,9 @@ scratch pane created with `tab create` and `agent start`.
   `remove`) and a `queued_command` attachment, never as a `user` line, so a
   reducer that only starts turns at `user` lines never shows the queued
   prompt. The `--wait` result of the second prompt is the end of the turn
-  already in flight. Only `blocked` rejects, with `agent_blocked`.
+  already in flight. Only `blocked` rejects, with `agent_blocked`. (On
+  2.1.318 a queued prompt that finds no further tool boundary runs as a turn
+  of its own instead: "Queued prompts" below.)
 - **`agent_session` appears after the first prompt, not at startup.** A freshly
   started Claude sits `idle` with no `agent_session` field until the first
   turn begins; the transcript file is created at that moment.
@@ -1442,6 +1444,79 @@ and one-word prompts, checked against Claude's answers and the transcript.
   stand-ins from the prompt it shows, and an image entry records only the
   line's uuid and the image's index there; the view reads the bytes from the
   file when the thumbnail comes into view (`transcriptImage`).
+
+## Queued prompts
+
+Measured 2026-11-06 (#150) against herdr 0.9.5, hc 0.1.18 and Claude Code
+2.1.318 on haiku: a TUI Claude in an `oh-test-*` herdr tab and hc terminal
+(cwd under `/tmp`), and `claude -p` in stream-json, each running a long
+foreground Bash call while prompts were sent behind it. Details and the
+probes are in the docs root, `findings/queued-prompts.md`.
+
+- **herdr and herdr-core have no queue.** A prompt sent while Claude works
+  (`agent.prompt`, `terminal.send`) is typed into the TUI at once, and from
+  then on it is Claude's. Neither has a method to list, cancel or reorder
+  input. herdr's `agent.prompt` has no idle guard; hc's `terminal.send` takes
+  `if: "idle"`, which refuses a working terminal with `status_mismatch` and
+  types nothing.
+- **The TUI shows what it has queued.** Each queued prompt is a `❯ <text>`
+  row above the spinner, followed by `ctrl+enter to send now`; the empty
+  input reads `Press up to edit queued messages`.
+- **Up takes every queued prompt back into the input**, joined by newlines,
+  and the transcript writes one `queue-operation` `popAll` per prompt with
+  its content. There is no way to take back one. Enter queues the input again
+  as a single prompt.
+- **Clearing the input is no discard while Claude works.** Esc, and Ctrl+C,
+  interrupt the turn even with text in the input; `Esc Esc` in one
+  `send-keys` call clears the input only at idle (and on an empty input opens
+  the rewind menu); two separate `esc` calls are not a double Esc. `ctrl+u`
+  deletes to the start of the current line only.
+- **Esc does not take a queued prompt back.** It interrupts the turn, and the
+  queued prompt runs next as a turn of its own.
+- **Ctrl+Enter sends the queue in now**, through `agent.send_keys
+  ["ctrl+enter"]` and `terminal.keys ["ctrl+enter"]` alike. It does not
+  interrupt: a running foreground Bash call was moved to the background (its
+  `tool_result`: "Command was moved to the background … so that a message
+  that arrived while it was running can reach you; it was not interrupted")
+  and the prompt taken in at once.
+- **Where a queued prompt goes.** Taken in at the next tool boundary: a
+  `remove` with `reason: "absorbed_mid_turn"` and a `queued_command`
+  attachment, the steer. When the turn ends with no further tool call (a
+  tool-less answer, an interrupt) it runs as a turn of its own: `enqueue`,
+  `dequeue` (no content), then a string `user` line with `promptSource:
+  "queued"` and `origin.kind: "human"`, and no attachment. Over all
+  transcripts on this machine (2.1.263–2.1.318): 331 such lines; `remove`
+  reasons `absorbed_mid_turn` (996), `delivered_to_agent` (26),
+  `agent_stopped` (1); `popAll` 9. A prompt typed at an idle TUI has
+  `promptSource: "typed"`, a stream-json one `"sdk"`. The reducer today
+  drops the `"queued"` line, because its enqueue is pending, and keeps the
+  enqueues of a `popAll` (both found by this spike, not yet fixed).
+- **Stream-json addresses queued messages by uuid.** `system:init` lists
+  `interrupt_receipt_v1`, `interrupt_cancel_queued_v1`,
+  `interrupt_send_now_v1`, `interrupt_requeue_taken_v1` and
+  `msg_lifecycle_v1`. A user line carrying `uuid` gets `command_lifecycle`
+  lines with `command_uuid` and `state` `queued`, `started`, `completed` or
+  `cancelled`; a `result` names what it answers in `user_message_uuids`.
+  - A message absorbed into the running turn shares its `result`: prompts A
+    and B gave one `result` with `user_message_uuids: [A, B]`, so results
+    are not one per message.
+  - `control_request {subtype: "cancel_async_message", message_uuid}`
+    answered `{cancelled: true}` and a `cancelled` lifecycle, and the message
+    never ran; asked again, `{cancelled: false}`. The transcript records the
+    cancel as a bare `dequeue`.
+  - `control_request {subtype: "interrupt", send_now: true, message_uuid}`
+    answered `{still_queued: [B], send_now: "stopped"}`: the running turn was
+    aborted (`aborted_tools`, the Bash call killed) and B started as its own
+    turn.
+  - A plain `interrupt` answered `{still_queued: [B]}`, and B ran next.
+  - Edit has no operation: cancel, then write the new text, which joins the
+    back. User lines also take `priority: 'now' | 'next' | 'later'` (SDK
+    0.3.318 types; not measured).
+
+So Edit and Discard of a prompt already handed over exist only on the
+`claude` kind. On herdr and herdr-core a queue the user can act on has to be
+held by the plugin, sent when the agent leaves `working`, with Send now as
+the one act that hands a prompt over during a turn.
 
 ## Answering Claude's dialogs from the screen
 
