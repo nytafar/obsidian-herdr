@@ -32,6 +32,7 @@ import type {
 	SessionModels,
 	SessionModelView,
 } from './sessionModel';
+import { FoldMemory } from './foldMemory';
 import { ScrollFollower } from './scrollFollower';
 import { TurnRenderer } from './turnRenderer';
 import { WaitingCardView } from './waitingCardView';
@@ -146,6 +147,13 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private promptBox: PromptBox | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
+	/**
+	 * What the reader opened and closed in the turns (#127). Here, not in the
+	 * turn renderer: that is rebuilt on every attach and its turns on every
+	 * full draw, and a reader's choice must outlive both. Not in the session
+	 * model either, which every tab on the pane shares.
+	 */
+	private readonly folds = new FoldMemory();
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -197,6 +205,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			vaultPath: this.options.vaultPath,
 			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
 			resolveUri: (uri) => this.resolveUri(uri),
+			folds: this.folds,
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
 		this.lines = new SessionLines(root);
@@ -264,6 +273,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// Another pane is another session: let the old model go and start over.
 		// The new one is pinned to the identity's runtime, never the published one.
 		this.unbind();
+		this.folds.clear();
 		this.bind();
 	}
 
