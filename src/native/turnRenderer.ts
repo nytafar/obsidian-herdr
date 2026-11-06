@@ -33,6 +33,7 @@ import {
 	toolGroupHeader,
 	toolGroupStartsOpen,
 	toolGroupState,
+	todoList,
 	turnItems,
 	vaultNoteLink,
 	type ToolGroupPresentation,
@@ -40,6 +41,7 @@ import {
 	type TurnItem,
 } from './toolCalls';
 import { fillUriLink } from './noteLinks';
+import { progressText, renderChecklist } from './todoList';
 import { findObsidianUris } from './obsidianUri';
 
 /**
@@ -241,6 +243,10 @@ const ITEM_KINDS: ItemKinds = {
 	report: {
 		signature: (item) => subagentReport(item.entry),
 		render: (item, context) => renderSubagentReport(item.entry, context),
+	},
+	todo: {
+		signature: (item) => JSON.stringify([item.latest, todoList(item.entry)]),
+		render: (item, context) => renderTodo(item.entry, item.latest, context),
 	},
 };
 
@@ -641,6 +647,29 @@ function renderSubagentReport(entry: ToolEntry, context: ItemContext): ItemDraw 
 	// Not prose either, as far as the headings go (#118).
 	void context.options.renderMarkdown(report, el, context.component);
 	return { el };
+}
+
+/**
+ * A to-do list update, where the turn made it (#143): the list as a
+ * checklist under a line that says how far it has got. The turn's latest
+ * update starts open and every earlier one folded, so a long turn shows
+ * where it has got to and keeps how it got there; the reader's choice wins.
+ * A list that cannot be read is the line alone.
+ */
+function renderTodo(entry: ToolEntry, latest: boolean, context: ItemContext): ItemDraw {
+	const items = todoList(entry);
+	if (!items) {
+		const el = context.parent.createDiv({ cls: 'herdr-native-todo', text: 'Updated the to-do list' });
+		return { el };
+	}
+	const details = context.parent.createEl('details', { cls: 'herdr-native-todo' });
+	details.createEl('summary', {
+		cls: 'herdr-native-todo-summary',
+		text: items.length ? `Updated the to-do list · ${progressText(items)}` : 'Cleared the to-do list',
+	});
+	if (items.length) renderChecklist(details, items);
+	context.disclose(details, latest);
+	return { el: details };
 }
 
 /**

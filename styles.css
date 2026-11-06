@@ -888,6 +888,109 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	color: var(--text-error);
 }
 
+/*
+ * The agent's to-do list (#143): an update where the turn made it, and the
+ * chip with the current list between the turns and the prompt box. One row per
+ * item; the glyph says its state to the eye and a hidden span to a screen
+ * reader.
+ */
+.herdr-native-todo {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+}
+
+.herdr-native-todo-summary {
+	color: var(--text-faint);
+	cursor: var(--cursor);
+}
+
+.herdr-native-checklist {
+	list-style: none;
+	margin: var(--size-4-1) 0 0;
+	padding-left: var(--size-4-4);
+}
+
+.herdr-native-checklist-item {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-checklist-glyph {
+	flex: 0 0 1em;
+	text-align: center;
+}
+
+.herdr-native-checklist-item.is-completed {
+	color: var(--text-faint);
+}
+
+.herdr-native-checklist-item.is-completed .herdr-native-checklist-text {
+	text-decoration: line-through;
+}
+
+.herdr-native-checklist-item.is-in-progress {
+	color: var(--text-normal);
+}
+
+.herdr-native-checklist-item.is-in-progress .herdr-native-checklist-glyph {
+	color: var(--text-accent);
+}
+
+.herdr-native-sr-only {
+	clip-path: inset(50%);
+	height: 1px;
+	overflow: hidden;
+	position: absolute;
+	white-space: nowrap;
+	width: 1px;
+}
+
+.herdr-native-plan {
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+	order: 3;
+	padding: var(--size-4-1) 0;
+}
+
+.herdr-native-plan.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-plan-summary {
+	cursor: var(--cursor);
+}
+
+.herdr-native-plan-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-plan-title,
+.herdr-native-plan-separator,
+.herdr-native-plan-progress {
+	flex: 0 0 auto;
+}
+
+.herdr-native-plan-current {
+	color: var(--text-normal);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Opened, the list scrolls inside the strip rather than pushing the turns away. */
+.herdr-native-plan-body {
+	max-height: 30vh;
+	overflow-y: auto;
+}
+
 .herdr-native-tool {
 	color: var(--text-muted);
 	font-family: var(--font-monospace);

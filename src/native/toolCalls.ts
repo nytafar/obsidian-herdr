@@ -26,6 +26,7 @@ import {
 	type SteerEntry,
 	type ToolEntry,
 	type ToolStatus,
+	type Turn,
 	type TurnEntry,
 } from './reducer';
 import { trimTrailingSlashes } from '../paths';
@@ -182,7 +183,7 @@ export function openRunIndex(items: readonly TurnItem[]): number {
 	for (let index = items.length - 1; index >= 0; index--) {
 		const kind = items[index]?.kind;
 		if (kind === 'group') return index;
-		if (kind !== 'change' && kind !== 'source') return -1;
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo') return -1;
 	}
 	return -1;
 }
@@ -241,10 +242,87 @@ const CHANGE_KINDS: readonly ToolKind[] = ['write', 'edit'];
 /** The kinds shown as a source. */
 const SOURCE_KINDS: readonly ToolKind[] = ['websearch', 'webfetch'];
 
-/** Whether this call renders on its own instead of inside the group. */
+/**
+ * Whether this call renders on its own instead of inside the group: a vault
+ * change, a source, and a to-do list update (#143), which is where a long
+ * turn has got to.
+ */
 export function escapesToolGroup(kind: ToolKind, presentation: ToolGroupPresentation): boolean {
 	if (presentation === 'collapse') return false;
-	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind);
+	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind) || kind === 'todo';
+}
+
+/** Where one item of the agent's to-do list stands, as `TodoWrite` says it. */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/** One item of the agent's to-do list. */
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	/** What the item says while it is being done ("Writing the tests"), if given. */
+	activeForm: string | null;
+}
+
+/**
+ * The to-do list a `TodoWrite` call left, or null when it is not one or its
+ * list cannot be read (#143).
+ *
+ * Claude Code sends the whole list on every update, as `todos: [{ content,
+ * status, activeForm }]`, so the input is the list as it stands. An item with
+ * no words makes the list unreadable rather than shorter, as Ovis reads it
+ * (devswha/ovis, MIT, `src/lib/todos.ts`); a status this build does not know
+ * reads as pending.
+ */
+export function todoList(entry: ToolEntry): TodoItem[] | null {
+	if (toolKind(entry.name) !== 'todo') return null;
+	const todos = entry.input.todos;
+	if (!Array.isArray(todos)) return null;
+	const items: TodoItem[] = [];
+	for (const todo of todos as unknown[]) {
+		if (typeof todo !== 'object' || todo === null) return null;
+		const { content, status, activeForm } = todo as Record<string, unknown>;
+		if (typeof content !== 'string' || !content.trim()) return null;
+		items.push({
+			content: content.trim(),
+			status: status === 'completed' || status === 'in_progress' ? status : 'pending',
+			activeForm: typeof activeForm === 'string' && activeForm.trim() ? activeForm.trim() : null,
+		});
+	}
+	return items;
+}
+
+/** How far a list has got: done of total, and the item being worked on. */
+export interface TodoProgress {
+	done: number;
+	total: number;
+	/** The first item in progress, else null. */
+	current: TodoItem | null;
+}
+
+export function todoProgress(items: readonly TodoItem[]): TodoProgress {
+	return {
+		done: items.filter((item) => item.status === 'completed').length,
+		total: items.length,
+		current: items.find((item) => item.status === 'in_progress') ?? null,
+	};
+}
+
+/**
+ * The session's current to-do list: the one the latest readable `TodoWrite`
+ * left, or null when the agent has kept none (#143). Read from the end, so a
+ * session that keeps a list finds it at once.
+ */
+export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
+	for (let t = turns.length - 1; t >= 0; t--) {
+		const entries = turns[t]?.entries ?? [];
+		for (let e = entries.length - 1; e >= 0; e--) {
+			const entry = entries[e];
+			if (entry?.kind !== 'tool') continue;
+			const list = todoList(entry);
+			if (list) return list;
+		}
+	}
+	return null;
 }
 
 /**
@@ -436,7 +514,9 @@ export type TurnItem =
 	| { kind: 'group'; tools: ToolEntry[] }
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
-	| { kind: 'report'; entry: ToolEntry };
+	| { kind: 'report'; entry: ToolEntry }
+	/** A to-do list update (#143); `latest` for the turn's last one. */
+	| { kind: 'todo'; entry: ToolEntry; latest: boolean };
 
 /**
  * Whether this entry draws nothing at all.
@@ -488,7 +568,8 @@ export function turnItems(
 		}
 		const kind = toolKind(entry.name);
 		if (escapesToolGroup(kind, presentation)) {
-			items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
+			if (kind === 'todo') items.push({ kind: 'todo', entry, latest: false });
+			else items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
 			continue;
 		}
 		if (!group) {
@@ -503,6 +584,14 @@ export function turnItems(
 			items.push({ kind: 'report', entry });
 			group = null;
 		}
+	}
+	// The turn's last list is the one shown open; every update before it folds
+	// (#143).
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item?.kind !== 'todo') continue;
+		item.latest = true;
+		break;
 	}
 	return items;
 }

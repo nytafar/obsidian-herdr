@@ -19,7 +19,8 @@
 import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
 import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
-import { turnActivity, type ToolGroupPresentation } from './toolCalls';
+import { latestTodoList, turnActivity, type ToolGroupPresentation } from './toolCalls';
+import { TodoChip } from './todoList';
 import type { Turn } from './reducer';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
@@ -142,6 +143,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private follower: ScrollFollower | null = null;
 	/** The empty line and the status line; null while detached. */
 	private lines: SessionLines | null = null;
+	/** The current to-do list under the turns (#143); null while detached. */
+	private todo: TodoChip | null = null;
 	/** The waiting card (#99), kept across attaches for its answer guards. */
 	private readonly waiting: WaitingCardView;
 	/** The prompt box under the transcript (#97); null while detached. */
@@ -211,6 +214,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			folds: this.folds,
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
+		this.todo = new TodoChip(root);
 		this.lines = new SessionLines(root);
 		this.rootEl = root;
 		this.component.load();
@@ -249,6 +253,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.rootEl = null;
 		this.turns = null;
 		this.lines = null;
+		this.todo = null;
 	}
 
 	/**
@@ -377,6 +382,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 				if (turn) this.renderTurn(turn, turn.id === latest);
 			}
 			this.activeTurnId = latest ?? null;
+			this.todo?.update(latestTodoList(turns));
 			this.updateEmpty();
 			this.follower?.settle();
 		}
@@ -389,6 +395,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		const turns = this.model?.state.turns ?? [];
 		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
 		this.activeTurnId = turns.at(-1)?.id ?? null;
+		this.todo?.update(latestTodoList(turns));
 		this.updateEmpty();
 		this.updateStatus();
 		this.follower?.settle();

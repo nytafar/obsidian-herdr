@@ -1019,6 +1019,30 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 	});
 });
 
+describe('NativePaneSurface: the current to-do list (#143)', () => {
+	it('keeps it under the turns, out of their scroll, and follows the latest update', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const plan = el.find('herdr-native-plan');
+		expect(plan.hasClass('herdr-is-hidden')).toBe(true);
+		// Reachable without scrolling: not inside the one scroll container.
+		expect(el.find('herdr-native-turns').findAll('herdr-native-plan')).toEqual([]);
+
+		const todos = (status: string) => [{ content: 'Ship it', status, activeForm: 'Shipping it' }];
+		const first = turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos: todos('in_progress') }, 'ok')]);
+		model.push([first], { changedTurnIds: ['u1'], reset: false });
+		expect(plan.hasClass('herdr-is-hidden')).toBe(false);
+		expect(plan.find('herdr-native-plan-current').textContent).toBe('Shipping it');
+
+		model.push(
+			[first, turn('u2', 'Next', [tool('t2', 'TodoWrite', { todos: todos('completed') }, 'ok')])],
+			{ changedTurnIds: ['u2'], reset: false },
+		);
+		expect(plan.hasClass('herdr-is-hidden')).toBe(true);
+	});
+});
+
 describe('NativePaneSurface: where a tool group stands (#128)', () => {
 	/** The title of every tool group on screen, in order. */
 	function titles(el: FakeElement): string[] {
