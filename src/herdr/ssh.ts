@@ -10,8 +10,9 @@
  *   - The **terminal bridge** talks to a *different* socket (`herdr-client.sock`)
  *     inside the herdr CLI process, so forwarding the API socket gives no
  *     terminals. Remote terminals therefore run the CLI on the far side:
- *     `ssh -T host <remoteBinary> terminal session control|observe …`
- *     (`terminalArgvPrefix`). Same NDJSON contract, different spawn.
+ *     `ssh -T host sh -c '<find herdr, exec it>' herdr terminal session
+ *     control|observe …` (`terminalArgvPrefix`, `remoteHerdrCommand`). Same
+ *     NDJSON contract, different spawn.
  *
  * Gotchas encoded here, each measured:
  *   - Unix socket paths are capped around 104 bytes on macOS; a long local path
@@ -25,8 +26,9 @@
  *   - `ssh -L local:~/x` does **not** expand the tilde: the forward binds, and
  *     every connection through it then dies silently. Verified on `xl`. So a
  *     `~` in the remote socket path is expanded by asking the remote `$HOME`.
- *   - `~/.local/bin` is not on the non-interactive SSH PATH on `xl`, hence the
- *     absolute remote binary path from settings.
+ *   - `~/.local/bin` is not on the non-interactive SSH PATH on `xl`, so an
+ *     empty remote binary is searched for in fixed directories after the PATH,
+ *     the same ones as the local search (`BINARY_DIRECTORIES`).
  *
  * Everything with a side effect (spawn, socket probe, unlink, timers) is
  * injectable, so the unit tests never invoke `ssh`.
@@ -36,6 +38,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { connect } from 'node:net';
+import { shellQuote } from '../hc/client';
 import type { RuntimeConfig } from '../runtimes';
 
 import { clearTimer, setTimer } from '../timers';
@@ -634,11 +637,41 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * The remote command that runs herdr with the arguments ssh appends after it
+ * (the `sh -c` script's `"$@"`). A binary that names one is used as given, a
+ * leading `~/` being the remote home; an empty one is searched for: `command
+ * -v herdr`, then `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`,
+ * the order of the local search, because non-interactive SSH rarely has the
+ * login PATH. Nothing found exits 127 with a message on stderr. Wrapped in
+ * `sh -c` so a fish or nu login shell parses it the same way; the search
+ * script holds no single quote or backslash for either to read differently.
+ */
+export function remoteHerdrCommand(binary: string): string {
+	const trimmed = binary.trim();
+	let script: string;
+	if (trimmed) {
+		const path = trimmed.startsWith('~/') ? `"$HOME"/${shellQuote(trimmed.slice(2))}` : shellQuote(trimmed);
+		script = `exec ${path} "$@"`;
+	} else {
+		script =
+			'p=$(command -v herdr) || p=; ' +
+			'for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do ' +
+			'[ -n "$p" ] && break; [ -x "$d/herdr" ] && p=$d/herdr; done; ' +
+			'[ -n "$p" ] || { echo "herdr is not installed here: not on the PATH, nor in /opt/homebrew/bin, /usr/local/bin or ~/.local/bin" >&2; exit 127; }; ' +
+			'exec "$p" "$@"';
+	}
+	// `$0` is `herdr`, so sh names it in its own errors.
+	return `sh -c ${shellQuote(script)} herdr`;
+}
+
+/**
  * Argv prefix for the terminal bridge (PRD S17). The API socket forward is no
  * help here: the bridge speaks to herdr's separate client socket, so the CLI
  * must run on the machine the panes live on.
  *
  * `-T` disables PTY allocation — the bridge is NDJSON over pipes, not a PTY.
+ * Over SSH the bridge's own arguments follow the remote command and reach
+ * herdr as the `sh -c` script's positional parameters.
  */
 export function terminalArgvPrefix(
 	runtime: Pick<RuntimeConfig, 'target' | 'host' | 'binary'>,
@@ -646,10 +679,8 @@ export function terminalArgvPrefix(
 ): string[] {
 	if (runtime.target === 'ssh') {
 		const host = runtime.host.trim();
-		const binary = runtime.binary.trim();
 		if (host.length === 0) throw new Error('the runtime has no SSH host');
-		if (binary.length === 0) throw new Error('the runtime has no remote herdr binary');
-		return ['ssh', '-T', host, binary];
+		return ['ssh', '-T', host, remoteHerdrCommand(runtime.binary)];
 	}
 	if (localHerdrPath.trim().length === 0) throw new Error('the herdr binary path is empty');
 	return [localHerdrPath];

@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
 	buildTunnelArgv,
 	localSocketPathFor,
 	MAX_LOCAL_SOCKET_PATH,
+	remoteHerdrCommand,
 	SshTunnel,
 	terminalArgvPrefix,
 	type SshTunnelDeps,
@@ -11,7 +16,7 @@ import {
 } from '../src/herdr/ssh';
 // Type-only: `src/settings.ts` imports the `obsidian` module, which has no
 // runtime entry point outside the app, so nothing from it may be imported here.
-import { DEFAULT_REMOTE_HERDR_BINARY, type RuntimeConfig } from '../src/runtimes';
+import type { RuntimeConfig } from '../src/runtimes';
 
 const HOST = 'lasse@xl';
 const REMOTE_SOCKET = '/home/lasse/.config/herdr/herdr.sock';
@@ -111,7 +116,7 @@ function harness(
 function runtime(
 	fields: Partial<Pick<RuntimeConfig, 'target' | 'host' | 'binary'>>,
 ): Pick<RuntimeConfig, 'target' | 'host' | 'binary'> {
-	return { target: 'local', host: '', binary: DEFAULT_REMOTE_HERDR_BINARY, ...fields };
+	return { target: 'local', host: '', binary: '', ...fields };
 }
 
 describe('localSocketPathFor (S5)', () => {
@@ -581,7 +586,7 @@ describe('terminalArgvPrefix (S17)', () => {
 		]);
 	});
 
-	it('goes over ssh -T with the absolute remote binary, never through the tunnel', () => {
+	it('goes over ssh -T with the remote binary, never through the tunnel', () => {
 		expect(
 			terminalArgvPrefix(
 				runtime({
@@ -591,16 +596,123 @@ describe('terminalArgvPrefix (S17)', () => {
 				}),
 				'/opt/homebrew/bin/herdr',
 			),
-		).toEqual(['ssh', '-T', HOST, '/home/lasse/.local/bin/herdr']);
+		).toEqual(['ssh', '-T', HOST, `sh -c 'exec /home/lasse/.local/bin/herdr "$@"' herdr`]);
 	});
 
-	it('refuses an incomplete SSH runtime rather than spawning a broken command', () => {
+	it('searches the remote host when the binary is empty', () => {
+		expect(terminalArgvPrefix(runtime({ target: 'ssh', host: HOST, binary: ' ' }), '/bin/herdr')).toEqual([
+			'ssh',
+			'-T',
+			HOST,
+			remoteHerdrCommand(''),
+		]);
+	});
+
+	it('refuses an SSH runtime without a host rather than spawning a broken command', () => {
 		expect(() => terminalArgvPrefix(runtime({ target: 'ssh', host: '' }), '/bin/herdr')).toThrow(
 			/SSH host/,
 		);
-		expect(() =>
-			terminalArgvPrefix(runtime({ target: 'ssh', host: HOST, binary: '' }), '/bin/herdr'),
-		).toThrow(/remote herdr binary/);
+	});
+});
+
+describe('remoteHerdrCommand', () => {
+	it('runs a named binary as given, a leading ~/ being the remote home', () => {
+		expect(remoteHerdrCommand('/opt/homebrew/bin/herdr')).toBe(
+			`sh -c 'exec /opt/homebrew/bin/herdr "$@"' herdr`,
+		);
+		expect(remoteHerdrCommand(' ~/.local/bin/herdr ')).toBe(
+			`sh -c 'exec "$HOME"/.local/bin/herdr "$@"' herdr`,
+		);
+	});
+
+	it('searches the PATH, then Homebrew, /usr/local/bin and ~/.local/bin, in that order', () => {
+		const command = remoteHerdrCommand('');
+		expect(command.startsWith(`sh -c 'p=$(command -v herdr)`)).toBe(true);
+		expect(command).toContain('for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do');
+		expect(command).toContain('exit 127');
+		expect(command.endsWith(`exec "$p" "$@"' herdr`)).toBe(true);
+	});
+
+	it('quotes the script once, with nothing a fish or nu shell reads differently', () => {
+		// The only single quotes are the outer pair, and no backslash at all:
+		// fish and nu then hand sh the script byte for byte.
+		const command = remoteHerdrCommand('');
+		const script = command.slice('sh -c '.length, -' herdr'.length);
+		expect(script.startsWith("'") && script.endsWith("'")).toBe(true);
+		expect(script.slice(1, -1)).not.toMatch(/['\\]/);
+	});
+});
+
+/**
+ * The remote command run by a local `/bin/sh`, as the remote login shell runs
+ * what `ssh` hands it: the bridge's arguments appended to the command line.
+ * No `ssh` is involved, and the PATH is a directory the test owns.
+ */
+describe('remoteHerdrCommand under sh', () => {
+	let home: string;
+	let path: string;
+	// The fixed directories are the machine's own; a herdr in one of them would
+	// be found before the test's `~/.local/bin`.
+	const systemHerdr = ['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr'].some((file) => existsSync(file));
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), 'oh-remote-herdr-'));
+		path = join(home, 'path');
+		mkdirSync(path);
+	});
+
+	afterEach(() => {
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	/** A herdr that prints its own path and its arguments, one per line. */
+	function fakeHerdr(dir: string): string {
+		mkdirSync(dir, { recursive: true });
+		const file = join(dir, 'herdr');
+		writeFileSync(file, '#!/bin/sh\nprintf "%s\\n" "$0" "$@"\n');
+		chmodSync(file, 0o755);
+		return file;
+	}
+
+	function run(binary: string) {
+		// The PATH holds the test's directory and a `sh`, nothing else.
+		const shell = join(home, 'shell');
+		mkdirSync(shell, { recursive: true });
+		if (!existsSync(join(shell, 'sh'))) symlinkSync('/bin/sh', join(shell, 'sh'));
+		const line = `${remoteHerdrCommand(binary)} terminal session observe w1:p2 --cols 80`;
+		return spawnSync('/bin/sh', ['-c', line], {
+			env: { HOME: home, PATH: `${path}:${shell}` },
+			encoding: 'utf8',
+		});
+	}
+
+	it('finds herdr on the PATH first', () => {
+		const onPath = fakeHerdr(path);
+		fakeHerdr(join(home, '.local', 'bin'));
+		const result = run('');
+		expect(result.status).toBe(0);
+		expect(result.stdout.split('\n')).toEqual([onPath, 'terminal', 'session', 'observe', 'w1:p2', '--cols', '80', '']);
+	});
+
+	it.skipIf(systemHerdr)('falls back to ~/.local/bin when the PATH has none', () => {
+		const local = fakeHerdr(join(home, '.local', 'bin'));
+		const result = run('');
+		expect(result.status).toBe(0);
+		expect(result.stdout.split('\n')[0]).toBe(local);
+	});
+
+	it.skipIf(systemHerdr)('fails with exit 127 and says where it looked', () => {
+		const result = run('');
+		expect(result.status).toBe(127);
+		expect(result.stderr).toContain('herdr is not installed here');
+		expect(result.stderr).toContain('/opt/homebrew/bin, /usr/local/bin or ~/.local/bin');
+	});
+
+	it('runs a named binary under the remote home, with a space in its path', () => {
+		const named = fakeHerdr(join(home, 'my tools'));
+		const result = run('~/my tools/herdr');
+		expect(result.status).toBe(0);
+		expect(result.stdout.split('\n').slice(0, 3)).toEqual([named, 'terminal', 'session']);
 	});
 });
 

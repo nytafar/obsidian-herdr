@@ -95,8 +95,18 @@ export const LOCAL_RUNTIME_ID = 'local';
 /** Where herdr puts its API socket unless told otherwise, on any host. */
 export const DEFAULT_HERDR_SOCKET = '~/.config/herdr/herdr.sock';
 
-/** Where the herdr installer puts the binary on a remote host. */
-export const DEFAULT_REMOTE_HERDR_BINARY = '~/.local/bin/herdr';
+/**
+ * What an SSH herdr runtime's binary defaulted to before an empty one meant
+ * "search the remote host" (`remoteHerdrCommand`). A stored value equal to it
+ * was never the user's choice, so loading reads it as empty; the search still
+ * finds herdr there.
+ */
+export const LEGACY_REMOTE_HERDR_BINARY = '~/.local/bin/herdr';
+
+/** A stored SSH herdr binary as the runtime uses it: the old default becomes the search. */
+function remoteHerdrBinary(binary: string): string {
+	return binary.trim() === LEGACY_REMOTE_HERDR_BINARY ? '' : binary;
+}
 
 /** One entry of the registry, as `data.json` stores it. */
 export interface RuntimeConfig {
@@ -201,18 +211,15 @@ export function newRuntime(
 		kind,
 		target: kindTargets(kind).includes(target) ? target : 'local',
 		host: '',
-		binary: defaultBinary(kind, target),
+		// Empty on every kind and target: each searches for its binary,
+		// locally or on the remote host.
+		binary: '',
 		socketPath: kind === 'herdr' ? DEFAULT_HERDR_SOCKET : '',
 		remoteVaultPath: '',
 		workspace: '',
 	};
 	if (kind === 'claude') runtime.permissionMode = DEFAULT_CLAUDE_PERMISSION_MODE;
 	return runtime;
-}
-
-/** What the binary field starts at for a kind on a target. */
-export function defaultBinary(kind: RuntimeKind, target: RuntimeTarget): string {
-	return kind === 'herdr' && target === 'ssh' ? DEFAULT_REMOTE_HERDR_BINARY : '';
 }
 
 function isKind(value: unknown): value is RuntimeKind {
@@ -245,13 +252,14 @@ export function normalizeRuntime(value: unknown): RuntimeConfig | null {
 	// A `claude` runtime only runs here (ADR-0007); a hand-edited `ssh` one is
 	// read as the local runtime it can only be.
 	const target = kindTargets(kind).includes(record.target) ? record.target : 'local';
+	const binary = stringOr(record.binary, '');
 	const runtime: RuntimeConfig = {
 		id,
 		name: stringOr(record.name, ''),
 		kind,
 		target,
 		host: stringOr(record.host, ''),
-		binary: stringOr(record.binary, defaultBinary(kind, target)),
+		binary: kind === 'herdr' && target === 'ssh' ? remoteHerdrBinary(binary) : binary,
 		socketPath: stringOr(record.socketPath, kind === 'herdr' ? DEFAULT_HERDR_SOCKET : ''),
 		remoteVaultPath: stringOr(record.remoteVaultPath, ''),
 		workspace: stringOr(record.workspace, ''),
@@ -322,7 +330,7 @@ function legacyRemoteRuntime(
 			kind: 'herdr',
 			target: 'ssh',
 			host,
-			binary: stringOr(remote.remoteBinary, DEFAULT_REMOTE_HERDR_BINARY),
+			binary: remoteHerdrBinary(stringOr(remote.remoteBinary, '')),
 			socketPath,
 			remoteVaultPath: stringOr(remote.remoteVaultPath, ''),
 			workspace,
@@ -507,13 +515,9 @@ export function runtimeIssues(runtime: RuntimeConfig): string[] {
 	const issues: string[] = [];
 	if (runtime.target !== 'ssh') return issues;
 	if (runtime.host.trim().length === 0) issues.push('the runtime has no SSH host');
-	if (runtime.kind === 'herdr') {
-		if (runtime.socketPath.trim().length === 0) {
-			issues.push('the runtime has no remote socket path');
-		}
-		if (runtime.binary.trim().length === 0) {
-			issues.push('the runtime has no remote herdr binary');
-		}
+	// An empty remote binary is searched for on the remote host, not missing.
+	if (runtime.kind === 'herdr' && runtime.socketPath.trim().length === 0) {
+		issues.push('the runtime has no remote socket path');
 	}
 	const vault = remoteVaultPathIssue(runtime);
 	if (vault) issues.push(vault);

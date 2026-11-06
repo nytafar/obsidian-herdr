@@ -59,8 +59,10 @@ again from the list.
 remote socket path. Verify with `ssh <host> <remote binary> status server --json`.
 
 **Remote: terminals fail while the list works.** The forwarded socket does not
-carry terminals. Check **Remote herdr binary** is an absolute path that exists on
-the remote host.
+carry terminals. With **Remote herdr binary** empty, herdr must be on the
+non-interactive SSH PATH or in `/opt/homebrew/bin`, `/usr/local/bin` or
+`~/.local/bin` on the remote host; otherwise the terminal reports "herdr is not
+installed here". Elsewhere, set the field to its path.
 
 **A leftover `herdr terminal session` process.** Closing the tab ends it;
 `pgrep -fa 'terminal session'` should show one process per open terminal tab and

@@ -387,14 +387,15 @@ describe('runtimes section (ADR-0004)', () => {
 		expect(calls).toEqual(['save', 'refreshRuntimes']);
 	});
 
-	it('moves the binary default along with the target, and redisplays', async () => {
+	it('keeps the binary a search across a target change, and redisplays', async () => {
 		const settings = settingsOf();
 		const el = settingsContainer();
 		const { calls, callbacks } = recorder({ editing: 'local' });
 		buildRuntimesSection(el, settings, callbacks);
 
 		await dropdownOf(el, 'Target').change('ssh');
-		expect(settings.runtimes[0]).toMatchObject({ target: 'ssh', binary: '~/.local/bin/herdr' });
+		// Empty: an SSH herdr runtime searches the remote host for herdr.
+		expect(settings.runtimes[0]).toMatchObject({ target: 'ssh', binary: '' });
 		expect(calls).toEqual(['saveAndReconnect', 'refreshRuntimes', 'redisplay']);
 
 		await dropdownOf(el, 'Kind').change('herdr-core');

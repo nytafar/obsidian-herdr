@@ -20,7 +20,7 @@ editing, removing and switching, and for every field.
 | Claude binary | Claude run by Obsidian only. An override for auto-discovery of `claude`, empty to search. |
 | Permission mode | Claude run by Obsidian only. What its agents may do without asking; the default asks for every tool that needs a permission, on the native view's waiting card. |
 | Socket path / Remote socket path | herdr only. The server's socket on the target. Default `~/.config/herdr/herdr.sock`. |
-| Herdr binary / Remote herdr binary | Locally an override for auto-discovery, empty to search; over SSH an absolute path on the remote host. |
+| Herdr binary / Remote herdr binary | An override for discovery, empty to search: locally Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH; over SSH the remote PATH, then Homebrew, /usr/local/bin and ~/.local/bin on the remote host. |
 | SSH host, Remote vault path | SSH targets only. The vault path is required for folder actions. |
 | Workspace ID / Space | Pins the workspace (herdr) or space (herdr-core). Empty resolves by the vault folder's name, then by working directories inside the vault. |
 | Problems | What the runtime still lacks, or "None.". |

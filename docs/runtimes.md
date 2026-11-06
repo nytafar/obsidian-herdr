@@ -129,9 +129,11 @@ a mirrored vault on 2026-09-06; it works.
   without a prompt; the plugin runs `ssh` non-interactively.
 - **Remote socket path**: the herdr server's socket on the remote host, usually
   `~/.config/herdr/herdr.sock`. A `~` is fine here (see below).
-- **Remote herdr binary**: an **absolute** path such as
-  `/home/you/.local/bin/herdr`. Non-interactive SSH has a minimal `PATH`, so a
-  bare `herdr` will not be found.
+- **Remote herdr binary**: leave it empty to have the plugin find herdr on the
+  remote host: the non-interactive SSH `PATH` first, then `/opt/homebrew/bin`,
+  `/usr/local/bin` and `~/.local/bin`, since non-interactive SSH usually has a
+  minimal `PATH`. Set a path, such as `/home/you/bin/herdr` or `~/bin/herdr`
+  (`~/` is the remote home), only when herdr lives somewhere else.
 - **Remote vault path**: where the mirror lives on the remote host. Required:
   without it the folder actions refuse rather than send a local path to the
   remote host.
@@ -151,14 +153,19 @@ socket path** is safe even though it would not be in a hand-typed command.
 
 **Terminals do not use the forward.** herdr's terminal bridge talks to a
 different socket inside the CLI process, so remote terminals run the CLI on the
-far side: `ssh -T <host> <remote binary> terminal session control|observe …`.
-That is why the remote binary path matters even when the tunnel is healthy.
+far side: `ssh -T <host> sh -c '…' herdr terminal session control|observe …`,
+where the script runs the remote binary or searches for it. That is why herdr
+must be findable on the remote host even when the tunnel is healthy.
 
 ### Checking by hand
 
 ```bash
 ssh <host> <remote binary> status server --json
 ```
+
+With the binary field empty, `ssh <host> 'command -v herdr; ls
+/opt/homebrew/bin/herdr /usr/local/bin/herdr ~/.local/bin/herdr'` shows where
+the search will look.
 
 proves the server is up and prints its socket path. Nothing is created on the
 remote host by the plugin unless you start an agent.

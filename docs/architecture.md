@@ -239,8 +239,17 @@ a leading `~` expanded (the bridge spawns without a shell), else what that
 kind's own last discovery of that runtime found, else a discovery run when
 the tab starts (`resolveCommand` on the herdr bridge, an argv thunk on the hc
 session). The active connection's discovery is never borrowed: it may be the
-other kind's binary, or none at all for an SSH runtime. Over SSH the binary is
-passed as typed, and the remote shell expands a `~`.
+other kind's binary, or none at all for an SSH runtime. Over SSH each kind
+wraps its remote command in `sh -c`, so a fish or nu login shell parses it
+the same way: a binary the runtime names is used as given, a leading `~/`
+being the remote `$HOME`, and an empty one is searched for on the remote
+host. herdr's search (`remoteHerdrCommand`, `src/herdr/ssh.ts`) is `command
+-v herdr`, then `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`, the
+local search's directories in its order, because non-interactive SSH rarely
+has the login PATH (`~/.local/bin` is not on it on `xl`); nothing found exits
+127 with a message on stderr. The bridge's own arguments follow the script as
+its positional parameters, so the NDJSON seam is unchanged. A stored SSH
+herdr binary equal to the old default `~/.local/bin/herdr` loads as empty.
 
 What the coordinator, the sessions and the views hold is the shared slice:
 `ConnectionClient` (ping, request, the `connected`/`disconnected` edges,

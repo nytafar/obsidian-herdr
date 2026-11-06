@@ -14,7 +14,7 @@ import { endpointOf } from '../src/connection';
 import type { DiscoveryDeps, DiscoveryResult } from '../src/herdr/binary';
 import type { TerminalSession } from '../src/bridge/terminalSession';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
-import { SshTunnel } from '../src/herdr/ssh';
+import { remoteHerdrCommand, SshTunnel } from '../src/herdr/ssh';
 import { WorkspaceScope } from '../src/herdr/scope';
 import { createHerdrKind, type HerdrKindHost } from '../src/runtime/herdrKind';
 import {
@@ -126,7 +126,7 @@ describe('the herdr kind (ADR-0004)', () => {
 			'ssh',
 			'-T',
 			'lasse@xl',
-			'/home/lasse/.local/bin/herdr',
+			remoteHerdrCommand('/home/lasse/.local/bin/herdr'),
 		]);
 	});
 
@@ -137,7 +137,16 @@ describe('the herdr kind (ADR-0004)', () => {
 			'ssh',
 			'-T',
 			'lasse@xl',
-			'~/.local/bin/herdr',
+			`sh -c 'exec "$HOME"/.local/bin/herdr "$@"' herdr`,
+		]);
+	});
+
+	it('searches the remote host for herdr when an SSH runtime names no binary', () => {
+		expect(kind.terminalCommand(endpointOf({ ...XL, binary: '' }))).toEqual([
+			'ssh',
+			'-T',
+			'lasse@xl',
+			remoteHerdrCommand(''),
 		]);
 	});
 

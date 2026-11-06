@@ -128,6 +128,11 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   newer build's) is kept in `data.json` rather than erased.
 - A runtime keeps its id when you edit its host, so pins and saved tabs
   survive the edit.
+- An SSH herdr runtime finds herdr on the remote host by itself when **Remote
+  herdr binary** is empty, the new default: the remote PATH, then
+  `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`. A Mac remote with
+  Homebrew's herdr works without typing its path. A binary left at the old
+  default `~/.local/bin/herdr` becomes the search; a path you chose is kept.
 - `unknown_method` errors now count as unsupported methods. herdr 0.9.5
   answers removed methods that way.
 - **Trust new folders automatically** only answers a trust prompt the runtime

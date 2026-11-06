@@ -13,8 +13,8 @@ import { describe, expect, it } from 'vitest';
 import {
 	activeRuntimeOf,
 	DEFAULT_HERDR_SOCKET,
-	DEFAULT_REMOTE_HERDR_BINARY,
 	defaultLocalRuntime,
+	LEGACY_REMOTE_HERDR_BINARY,
 	issueSentence,
 	LOCAL_RUNTIME_ID,
 	migrateRuntimes,
@@ -127,8 +127,20 @@ describe('migrateRuntimes: a pre-registry data.json (ADR-0004)', () => {
 		const migration = migrateRuntimes({ remote: { enabled: true, host: ' xl ' } });
 		expect(migration.activeRuntime).toBe(`ssh:xl:${DEFAULT_HERDR_SOCKET}`);
 		const xl = migration.runtimes[1];
-		expect(xl?.binary).toBe(DEFAULT_REMOTE_HERDR_BINARY);
+		// No binary stored: the remote host is searched.
+		expect(xl?.binary).toBe('');
 		expect(xl?.host).toBe('xl');
+	});
+
+	it('reads a remote binary left at the old default as the search, and keeps a chosen one', () => {
+		const old = migrateRuntimes({
+			remote: { enabled: true, host: 'mac', remoteBinary: LEGACY_REMOTE_HERDR_BINARY },
+		});
+		expect(old.runtimes[1]?.binary).toBe('');
+		const chosen = migrateRuntimes({
+			remote: { enabled: true, host: 'mac', remoteBinary: '~/bin/herdr' },
+		});
+		expect(chosen.runtimes[1]?.binary).toBe('~/bin/herdr');
 	});
 
 	it('drops an enabled remote without a host, which could never connect', () => {
@@ -255,13 +267,25 @@ describe('migrateRuntimes: a stored registry', () => {
 	it('fills missing fields with the kind and target defaults', () => {
 		expect(normalizeRuntime({ id: 'r', kind: 'herdr', target: 'ssh' })).toMatchObject({
 			name: '',
-			binary: DEFAULT_REMOTE_HERDR_BINARY,
+			binary: '',
 			socketPath: DEFAULT_HERDR_SOCKET,
 		});
 		expect(normalizeRuntime({ id: 'r', kind: 'herdr-core', target: 'ssh' })).toMatchObject({
 			binary: '',
 			socketPath: '',
 		});
+	});
+
+	it('reads a stored SSH herdr binary left at the old default as the remote search', () => {
+		const stored = (kind: string, target: string, binary: string) =>
+			normalizeRuntime({ id: 'r', kind, target, binary })?.binary;
+		expect(stored('herdr', 'ssh', LEGACY_REMOTE_HERDR_BINARY)).toBe('');
+		expect(stored('herdr', 'ssh', ` ${LEGACY_REMOTE_HERDR_BINARY} `)).toBe('');
+		// A path the user chose, and the same path on another kind or target, stay.
+		expect(stored('herdr', 'ssh', '/opt/homebrew/bin/herdr')).toBe('/opt/homebrew/bin/herdr');
+		expect(stored('herdr', 'ssh', '/home/lasse/.local/bin/herdr')).toBe('/home/lasse/.local/bin/herdr');
+		expect(stored('herdr', 'local', LEGACY_REMOTE_HERDR_BINARY)).toBe(LEGACY_REMOTE_HERDR_BINARY);
+		expect(stored('herdr-core', 'ssh', LEGACY_REMOTE_HERDR_BINARY)).toBe(LEGACY_REMOTE_HERDR_BINARY);
 	});
 });
 
@@ -282,7 +306,7 @@ describe('new runtimes', () => {
 			name: '',
 			kind: 'herdr',
 			target: 'ssh',
-			binary: DEFAULT_REMOTE_HERDR_BINARY,
+			binary: '',
 			socketPath: DEFAULT_HERDR_SOCKET,
 		});
 		expect(newRuntime('herdr-core', 'local', [])).toMatchObject({ binary: '', socketPath: '' });
@@ -303,11 +327,11 @@ describe('names and validation', () => {
 	});
 
 	it('names everything an SSH herdr runtime lacks, in the old messages', () => {
+		// An empty binary is not one of them: the remote host is searched.
 		const empty = { ...newRuntime('herdr', 'ssh', []), binary: ' ', socketPath: '' };
 		expect(runtimeIssues(empty)).toEqual([
 			'the runtime has no SSH host',
 			'the runtime has no remote socket path',
-			'the runtime has no remote herdr binary',
 			'the runtime has no remote vault path, so folder paths cannot be resolved on the remote host',
 		]);
 		const ready = { ...newRuntime('herdr', 'ssh', []), host: 'xl', remoteVaultPath: '/v' };

@@ -9,9 +9,7 @@ import type { TerminalSetting } from './views/paneTerminal';
 import {
 	activeRuntimeOf,
 	defaultRuntimeSettings,
-	defaultBinary,
 	DEFAULT_HERDR_SOCKET,
-	DEFAULT_REMOTE_HERDR_BINARY,
 	issueSentence,
 	newRuntime,
 	remoteVaultPathIssue,
@@ -609,7 +607,12 @@ export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus
 		if (!remote) return;
 	}
 	if (remote) {
-		line(`Remote terminals: ssh -T ${runtime.host} ${runtime.binary}`);
+		const remoteBinary = runtime.binary.trim();
+		line(
+			remoteBinary
+				? `Remote terminals: ssh -T ${runtime.host} ${remoteBinary}`
+				: `Remote terminals: ssh -T ${runtime.host}, herdr searched for on the remote host`,
+		);
 		// Without it the folder actions refuse rather than send a local path to
 		// the remote host (see `remoteVaultPathIssue`).
 		const issue = remoteVaultPathIssue(runtime);
@@ -950,9 +953,9 @@ function buildRuntimeForm(
 		text(
 			herdr ? 'Remote herdr binary' : 'Remote hc binary',
 			herdr
-				? 'Absolute path to herdr on the remote host. Non-interactive SSH usually has a minimal PATH, so a full path is safest.'
+				? 'Path to herdr on the remote host; a leading ~/ is the remote home. Leave empty to search the non-interactive SSH PATH, then Homebrew, /usr/local/bin and ~/.local/bin on the remote host.'
 				: 'Path to hc on the remote host. Leave empty to use hc or herdr-core from the non-interactive SSH PATH, then ~/.local/bin.',
-			herdr ? DEFAULT_REMOTE_HERDR_BINARY : 'hc',
+			herdr ? 'Search the remote host' : 'hc',
 			() => runtime.binary,
 			(value) => {
 				runtime.binary = value;
@@ -1078,14 +1081,11 @@ function buildSessionHookSetting(containerEl: HTMLElement, isActive: boolean, ca
 }
 
 /**
- * A kind or target change: the binary and socket fields follow when they
- * still hold the old combination's default, and keep what the user typed
- * otherwise.
+ * A kind or target change: the socket field follows when it still holds the
+ * old combination's default, and keeps what the user typed otherwise. The
+ * binary keeps what was typed: its default is empty (a search) everywhere.
  */
 function retarget(runtime: RuntimeConfig, kind: RuntimeKind, target: RuntimeTarget): void {
-	if (runtime.binary.trim() === defaultBinary(runtime.kind, runtime.target)) {
-		runtime.binary = defaultBinary(kind, target);
-	}
 	if (kind !== 'herdr') runtime.socketPath = '';
 	else if (runtime.socketPath.trim() === '') runtime.socketPath = DEFAULT_HERDR_SOCKET;
 	// Claude run by Obsidian runs here only, and has a permission mode (ADR-0007).
