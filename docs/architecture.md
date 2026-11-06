@@ -809,14 +809,15 @@ processes belong to the kind's table, not to it.
 
 **The agent table** (`src/claude/agents.ts`), one per plugin lifetime,
 per runtime: the stored row (`claudeSessions[runtimeId]` in `data.json`: a
-stable `cl-…` row id that tabs and pins key on, the session id, cwd and name)
+stable `cl-…` row id that tabs and pins key on, the session id, cwd, name and
+whether the session has `started`)
 and, while it runs, its process. Status is the stream's:
 
 | Row | When |
 |---|---|
 | working | a prompt was written and its `result` has not come (one per message, queued ones too) |
 | blocked | a `can_use_tool` request waits; kind `question` for `AskUserQuestion`, `permission` for the rest; never `trust` |
-| done | the last turn's `result` came, until a native view of it is looked at or it is prompted |
+| done | the last turn's `result` came, until a native view of it is looked at or it is prompted; a turn that ends while a view is being looked at (its window focused and visible, the view drawn) is seen at once, counted per viewer as herdr-core's `herdr.seen` is |
 | idle | the process runs and nothing is pending |
 | stopped | no process: `idle` with `PaneState.stopped`, which the row shows as **Stopped** |
 

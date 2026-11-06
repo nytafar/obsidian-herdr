@@ -242,6 +242,29 @@ describe('the claude kind over a fake claude', () => {
 		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' } });
 	});
 
+	it('marks a turn that ends while a view looks as seen, and stops when the last view looks away', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const watcher = h.kind.native?.watcher(h.connection);
+		const first = {};
+		const second = {};
+		watcher?.looking?.(paneId, first, true);
+		watcher?.looking?.(paneId, second, true);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) !== 'working', 'the end of the turn');
+		expect(status(h, paneId)).toBe('idle');
+		// One view looking away leaves the other one looking.
+		watcher?.looking?.(paneId, first, false);
+		await prompt(h, paneId, 'again');
+		await waitFor(() => status(h, paneId) !== 'working', 'the end of the second turn');
+		expect(status(h, paneId)).toBe('idle');
+		// Nobody looking: done stays until someone does.
+		watcher?.looking?.(paneId, second, false);
+		await prompt(h, paneId, 'unseen');
+		await waitFor(() => status(h, paneId) !== 'working', 'the end of the third turn');
+		expect(status(h, paneId)).toBe('done');
+	});
+
 	it('blocks on a Write permission and allows it with the input unchanged', async () => {
 		const h = harness();
 		const paneId = await started(h);

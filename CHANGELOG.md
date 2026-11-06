@@ -53,7 +53,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   needs no multiplexer. The plugin starts Claude Code itself on this machine,
   in Claude's own stream-json mode, and its agents open in the native view.
   Status comes straight from Claude: working, done, or blocked with what it
-  waits for. After a restart the agents come back as **stopped** rows;
+  waits for. Done clears once you look at the agent in the native view,
+  including a turn that ends while you are watching it. After a restart the agents come back as **stopped** rows;
   opening one or sending it a prompt resumes the conversation, in a symlinked
   folder and with `CLAUDE_CONFIG_DIR` set too. The waiting
   card answers Claude's dialogs itself: Allow, Deny, **Allow for this

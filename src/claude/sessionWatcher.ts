@@ -14,6 +14,13 @@
  *
  * A stopped agent reads as `idle`, so its prompt box sends, and sending
  * resumes it. `trust` is never reported.
+ *
+ * **Seen.** "Done" lasts until a person looks. A native view says when a
+ * person is in front of it (`looking`, per viewer, as herdr-core's
+ * `herdr.seen` rules have it): the agent is marked seen then, and so is a
+ * turn that ends while any view of it is still being looked at, since the
+ * view's look does not change when the agent's status does. The pane stops
+ * being looked at when its last viewer looks away.
  */
 
 import type { AgentStatus } from '../herdr/types.gen';
@@ -23,6 +30,13 @@ import type { ClaudeAgents } from './agents';
 import { paneStatusOf } from './scope';
 
 export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): SessionWatcher {
+	/** Who is looking at which agent; an agent with nobody has no entry. */
+	const lookers = new Map<string, Set<object>>();
+	let offLooks: Unsubscribe | null = null;
+	const seenIfLooked = (runtime: string, agentId: string): void => {
+		if (runtime !== runtimeId || !lookers.has(agentId)) return;
+		if (agents.get(runtimeId, agentId)?.status === 'done') agents.seen(runtimeId, agentId);
+	};
 	const snapshot = (paneId: string): PaneSnapshot | null => {
 		const agent = agents.get(runtimeId, paneId);
 		if (!agent) return null;
@@ -71,9 +85,27 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 				if (runtime === runtimeId && (change === 'added' || change === 'removed')) handler(agentId);
 			});
 		},
-		// A person in front of a native view has seen a finished turn.
-		looking(paneId, _viewer, looking): void {
-			if (looking) agents.seen(runtimeId, paneId);
+		// A person in front of a native view has seen a finished turn, and
+		// sees the next one finish too while still there.
+		looking(paneId, viewer, looking): void {
+			if (looking) {
+				const viewers = lookers.get(paneId) ?? new Set<object>();
+				viewers.add(viewer);
+				lookers.set(paneId, viewers);
+				offLooks ??= agents.on((runtime, agentId, change) => {
+					if (change === 'removed') return;
+					seenIfLooked(runtime, agentId);
+				});
+				agents.seen(runtimeId, paneId);
+				return;
+			}
+			const viewers = lookers.get(paneId);
+			if (!viewers?.delete(viewer) || viewers.size > 0) return;
+			lookers.delete(paneId);
+			if (lookers.size === 0) {
+				offLooks?.();
+				offLooks = null;
+			}
 		},
 	};
 }
