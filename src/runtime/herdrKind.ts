@@ -39,6 +39,7 @@ import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
 import { herdrAgentStatus, herdrScreenAccess } from '../native/screenAccess';
 import { screenSettingsSender } from '../native/screenSettings';
+import { gatePromptSender } from '../native/paneGate';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { herdrSessionWatcher, sessionBelongsTo } from '../herdr/sessionWatcher';
 import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
@@ -241,7 +242,9 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 					: await probeLocal(programs, { extraPath: host.extraPath(), vaultRoot: host.vaultPath() }, deps());
 			return { ...probe, herdrVersion: connection.client.serverVersion };
 		},
-		promptSender: (client) => clientPromptSender(client),
+		// Behind the pane gate: nothing is typed into a picker the session bar
+		// opened (review of #169). The settings driver sends unwrapped.
+		promptSender: (client) => gatePromptSender(clientPromptSender(client), () => client()),
 		keySender: (client) => clientKeySender(client),
 		screen: (client) => herdrScreenAccess(client),
 		// The session bar's pickers (#169, #170): Claude's own pickers and

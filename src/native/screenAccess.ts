@@ -71,6 +71,13 @@ export interface ScreenAccess {
 	 */
 	read(paneId: string): Promise<string>;
 	/**
+	 * The visible screen with its styles (ANSI SGR), where the runtime reads
+	 * them: herdr's `pane.read {format: ansi}`. hc reads text only. The
+	 * session settings driver uses it to tell Claude's dim suggestion in the
+	 * input from the same words typed (review of #169).
+	 */
+	readStyled?(paneId: string): Promise<string>;
+	/**
 	 * Presses one key, alone in its call. Rejects a key outside
 	 * {@link SCREEN_KEYS} before anything is sent.
 	 */
@@ -113,6 +120,11 @@ export function paneReadVisibleParams(paneId: string): PaneReadParams {
 	return { pane_id: paneId, source: 'visible', format: 'text' };
 }
 
+/** The `pane.read` request for the visible screen with its styles. */
+export function paneReadStyledParams(paneId: string): PaneReadParams {
+	return { pane_id: paneId, source: 'visible', format: 'ansi' };
+}
+
 /** The `agent.send_keys` request for one key, never more. */
 export function oneKeyParams(paneId: string, key: ScreenKey): AgentSendKeysParams {
 	return { target: paneId, keys: [key] };
@@ -143,6 +155,9 @@ export function herdrScreenAccess(client: () => PromptClient | null): ScreenAcce
 	return {
 		async read(paneId: string): Promise<string> {
 			return readText(await connected().request<unknown>('pane.read', paneReadVisibleParams(paneId)));
+		},
+		async readStyled(paneId: string): Promise<string> {
+			return readText(await connected().request<unknown>('pane.read', paneReadStyledParams(paneId)));
 		},
 		async press(paneId: string, key: ScreenKey): Promise<void> {
 			const checked = checkScreenKey(key);

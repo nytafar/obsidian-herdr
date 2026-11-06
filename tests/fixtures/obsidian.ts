@@ -233,7 +233,21 @@ export class AbstractInputSuggest<T> extends PopoverSuggest<T> {
 }
 
 export class Modal {
+	/** What `setTitle` set; a test calls `onOpen` itself and reads the rows (`builtSettings(contentEl)`). */
+	title = '';
+	readonly contentEl = {
+		paragraphs: [] as string[],
+		createEl(_tag: string, options?: { text?: string }): unknown {
+			this.paragraphs.push(options?.text ?? '');
+			return {};
+		},
+		empty(): void {},
+	};
 	constructor(public app: unknown) {}
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
 }
 
 /** Stand-in for the palette-style picker; only constructible here. */

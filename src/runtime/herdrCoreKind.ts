@@ -36,6 +36,7 @@ import { defaultDeps, expandHome, resolveHerdrBinary, type DiscoveryDeps, type D
 import { probeLocal, probeOverHc, readHcTemplates } from '../agents/probe';
 import { HcActions, hcAgentStatus, hcKeySender, hcPromptSender, hcScreenAccess } from '../hc/actions';
 import { screenSettingsSender } from '../native/screenSettings';
+import { gatePromptSender } from '../native/paneGate';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
@@ -316,7 +317,8 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 			]);
 			return { ...probe, templates };
 		},
-		promptSender: (client) => hcPromptSender(client),
+		// Behind the pane gate, as on herdr (review of #169).
+		promptSender: (client) => gatePromptSender(hcPromptSender(client), () => client()),
 		keySender: (client) => hcKeySender(client),
 		screen: (client) => hcScreenAccess(client),
 		// The session bar's pickers (#169, #170), as on herdr.

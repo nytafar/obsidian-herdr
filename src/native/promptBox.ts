@@ -26,6 +26,13 @@
  * A failed send is a Notice and the text stays in the box, because the text is
  * the only copy of what the user wrote.
  *
+ * **The pane gate** (review of #169, `./paneGate.ts`): while the session bar
+ * drives one of Claude's pickers on a herdr or herdr-core pane, or one may
+ * still be open there, the sender says why ({@link PromptSender.blocked});
+ * the button is disabled with that as its label, a send is refused with it,
+ * and the session bar says it under the pickers. Typed text in a picker
+ * would be taken by it, and its Enter saves the user's default.
+ *
  * **Enter sends** (#103), which reverses #97's "enter is a newline, mod+enter
  * sends": the box reads as a chat input, not as a form, and that is what every
  * chat the user already has does. Shift+enter is the newline, mod+enter still
@@ -496,6 +503,14 @@ export class PromptBox {
 			this.renderImages();
 			return;
 		}
+		// The pane gate (review of #169): while the session bar drives one of
+		// Claude's pickers, or one may still be open, nothing is typed into
+		// the pane. The text stays; the bar says why.
+		const blocked = this.blocked();
+		if (blocked) {
+			this.notify(sendFailureMessage(new Error(blocked)));
+			return;
+		}
 		this.sending = true;
 		this.render();
 		try {
@@ -541,6 +556,16 @@ export class PromptBox {
 		if (this.canFocus()) inputEl.focus();
 	}
 
+	/** Draws the button again: the pane gate opened or shut (review of #169). */
+	refresh(): void {
+		this.render();
+	}
+
+	/** Why nothing may be typed into the pane now, from the sender; null when it may. */
+	private blocked(): string | null {
+		return this.options.sender.blocked?.(this.options.paneId()) ?? null;
+	}
+
 	/**
 	 * Gives an emptied box its usual size back.
 	 *
@@ -572,8 +597,11 @@ export class PromptBox {
 		// Only a running turn has anything to stop.
 		this.stopEl?.toggleClass('herdr-is-hidden', this.status !== 'working');
 		if (this.buttonEl) {
+			const blocked = this.blocked();
 			this.buttonEl.setText(state.label);
-			this.buttonEl.disabled = !state.enabled || this.sending;
+			this.buttonEl.disabled = !state.enabled || this.sending || blocked !== null;
+			if (blocked) this.buttonEl.setAttr('aria-label', blocked);
+			else this.buttonEl.removeAttribute('aria-label');
 		}
 		// A blocked agent can still be typed at, so only "no agent" locks the
 		// text itself.

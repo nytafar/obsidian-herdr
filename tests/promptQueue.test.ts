@@ -20,6 +20,7 @@ import {
 	type PromptSendOptions,
 } from '../src/native/promptSender';
 import { hcPromptSender } from '../src/hc/actions';
+import { CHANGING_REASON, gatePromptSender, PaneGate } from '../src/native/paneGate';
 import { HcError } from '../src/hc/connection';
 import { HerdrError } from '../src/herdr/client';
 import type { ImageFiles, PromptImage } from '../src/native/promptImages';
@@ -328,6 +329,40 @@ describe('PromptQueues', () => {
 		model.setStatus('done');
 		await settle();
 		expect(queue.rows[0]?.error).toBe('Not connected to herdr.');
+		queues.dispose();
+	});
+});
+
+describe('PromptQueues behind the pane gate (review of #169)', () => {
+	it('holds a row back while the session bar drives a picker, and sends it once the gate opens', async () => {
+		const model = new FakeModel();
+		const inner = recordingSender();
+		const gate = new PaneGate({ now: () => 0, later: () => {} });
+		const owner = {};
+		const sender = gatePromptSender(inner, () => owner, gate);
+		const queues = new PromptQueues({
+			models: new FakeModels(model),
+			sender: () => sender,
+			timers: manualTimers(),
+			gateChanges: (listener) => gate.on(listener),
+		});
+		const queue = queues.queue('local', 'w1:p1');
+		model.setStatus('working');
+		queue.add('first');
+		const claim = gate.claim(owner, 'w1:p1');
+		// The turn ends while the change runs: the row stays, quietly.
+		model.setStatus('done');
+		await settle();
+		expect(inner.sent).toEqual([]);
+		expect(queue.rows.map((row) => [row.text, row.error])).toEqual([['first', null]]);
+		// Send now refuses with the gate's words, typing nothing.
+		await queue.sendNow(queue.rows[0]?.id ?? '');
+		expect(inner.sent).toEqual([]);
+		expect(queue.rows[0]?.error).toBe(CHANGING_REASON);
+		queue.add('second');
+		claim.release(false);
+		await settle();
+		expect(inner.sent.map((sent) => sent.text)).toEqual(['second']);
 		queues.dispose();
 	});
 });

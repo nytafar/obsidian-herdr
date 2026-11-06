@@ -905,6 +905,9 @@ export class TerminalView extends ItemView {
 				// Whether images can go with a prompt (#144), asked of the kind as
 				// it is now: herdr-core's answer depends on the core's version.
 				imagesUnavailable: (paneId) => imagesUnavailable(this.kind().promptSender(nativeClient), paneId),
+				// The pane gate (review of #169): nothing typed into a picker the
+				// session bar opened, nor one that may still be open.
+				blocked: (paneId) => this.kind().promptSender(nativeClient).blocked?.(paneId) ?? null,
 				// Stop, for a kind with a real interrupt (ADR-0007).
 				...(this.kind().promptSender(nativeClient).interrupt
 					? {

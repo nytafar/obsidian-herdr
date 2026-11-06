@@ -239,6 +239,13 @@ export interface WaitingCardViewOptions {
 	renderMarkdown: (markdown: string, el: HTMLElement, component: Component) => Promise<void>;
 	/** Hides or shows the prompt box, whose place the card takes while blocked. */
 	setPromptHidden: (hidden: boolean) => void;
+	/**
+	 * Whether the pane's screen is the session bar's now, or was a moment
+	 * ago (review of #169): herdr calls Claude's model and effort pickers
+	 * `blocked` while the bar drives them and for about a second after, and
+	 * that is no block for the card to read or draw.
+	 */
+	screenHeld?: () => boolean;
 	/** How a failure reaches the user. */
 	notify: (message: string) => void;
 }
@@ -363,6 +370,16 @@ export class WaitingCardView {
 			this.trustSent = false;
 			this.foldedFor = '';
 			this.folded = false;
+			this.options.setPromptHidden(false);
+			return;
+		}
+		if (this.options.screenHeld?.()) {
+			// The session bar's own picker: no card, no read. The block's
+			// guards are left as they are; the next update after the hold
+			// reads the screen afresh.
+			this.screenState?.run?.cancel('the session bar is changing a setting');
+			this.dropScreen();
+			this.clear();
 			this.options.setPromptHidden(false);
 			return;
 		}

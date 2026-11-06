@@ -74,12 +74,18 @@ export function contextBlock(input: {
 	paneId: string;
 	reader: boolean;
 	command: string | undefined;
+	/**
+	 * Why nothing may be typed into the pane now (the pane gate, review of
+	 * #169), for a context command, which is typed; null or absent when it may.
+	 */
+	sendBlock?: string | null;
 }): string | null {
 	const { status } = input;
 	if (!input.connected || status === 'unknown' || !input.paneId) return NO_AGENT_REASON;
 	if (!input.reader && !input.command) return NO_BREAKDOWN_REASON;
 	if (status === 'blocked') return BLOCKED_REASON;
 	if (!input.reader && status !== 'idle' && status !== 'done') return WORKING_REASON;
+	if (!input.reader && input.sendBlock) return input.sendBlock;
 	return null;
 }
 

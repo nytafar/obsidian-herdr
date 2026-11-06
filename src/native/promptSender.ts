@@ -85,6 +85,13 @@ export interface PromptSender {
 	 * request, ADR-0007); the prompt box shows its Stop button only then.
 	 */
 	interrupt?(paneId: string): Promise<void>;
+	/**
+	 * Why nothing may be typed into the pane now, or null: on herdr and
+	 * herdr-core, while the session bar drives one of Claude's pickers there,
+	 * or one may still be open (`./paneGate.ts`). A send then refuses with the
+	 * same words; the prompt box shows them and keeps the text.
+	 */
+	blocked?(paneId: string): string | null;
 }
 
 /**
