@@ -823,7 +823,13 @@ the scope (`src/claude/scope.ts`) from the stored rows. The client's
 tabs.
 
 **The native view.** The transcript stays the content (ADR-0003), from this
-machine's files, path derived from cwd and session. The watcher
+machine's files, path derived from cwd and session. Measured 2026-11-06: a
+prompt sent over stream-json is written as a `queue-operation` enqueue, a
+dequeue, then its `user` line with `promptSource: "sdk"` and `entrypoint:
+"sdk-cli"`, where a prompt typed in a terminal has no enqueue. The reducer
+takes such a line for a prompt (`isStreamPrompt`); an enqueued line without
+that source, or any task notification, is still injected content, so herdr's
+transcripts read as before. The watcher
 (`src/claude/sessionWatcher.ts`) reports session, status, block kind and,
 new in the contract, `PaneSnapshot.request`: the pending request as a
 kind-neutral `PendingRequest` (`src/native/pendingRequest.ts`). The session

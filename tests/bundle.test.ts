@@ -56,7 +56,7 @@ const GHOSTTY_WASM = path.join(ROOT, 'node_modules/ghostty-web/dist/ghostty-vt.w
  * after #63 (Brotli-compressing the inlined ghostty wasm) landed: the bundle we
  * actually intend to ship, not the pre-#63 one (issue #64).
  */
-const MAIN_JS_BASELINE_BYTES = 846_253;
+const MAIN_JS_BASELINE_BYTES = 846_466;
 
 /**
  * About 15% above the baseline, rounded. Leaves room for ordinary feature

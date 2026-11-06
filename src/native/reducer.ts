@@ -14,7 +14,10 @@
  *   string, that is not `isMeta`, and that no queue enqueue of the same content
  *   preceded. That last clause is the whole of the difference between a prompt
  *   and a background subagent's `<task-notification>`, which also arrives as a
- *   string `user` line.
+ *   string `user` line. One exception: a prompt sent over stream-json (the
+ *   `claude` kind, ADR-0007) is enqueued and dequeued before its `user` line
+ *   as a matter of course, and that line says where it came from
+ *   (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`), so it is a prompt.
  * - A **steer** — a prompt accepted while the agent was working — never becomes
  *   a `user` line at all. It shows as a `queued_command` attachment with
  *   `origin.kind: "human"`, and belongs inline in the turn already running.
@@ -30,6 +33,19 @@
  * What is deliberately *not* here: status (that is herdr's `agent_status`, and
  * the session model's), following (also the session model's), and rendering.
  */
+
+/**
+ * A human prompt written by a stream-json host rather than typed in a
+ * terminal: Claude Code 2.1.318 enqueues and dequeues every such prompt
+ * before its `user` line (measured 2026-11-06, ADR-0007), so the enqueue that
+ * marks injected content elsewhere says nothing here. The line names its
+ * source; a task notification is still one, whatever carried it.
+ */
+function isStreamPrompt(line: Record<string, unknown>, content: string): boolean {
+	const origin = isRecord(line.origin) ? line.origin : null;
+	if (origin?.kind === 'task-notification' || taskNotification(content)) return false;
+	return line.promptSource === 'sdk' || line.entrypoint === 'sdk-cli';
+}
 
 /** One assistant message's prose, merged across every line that carried it. */
 export interface TextEntry {
@@ -522,7 +538,10 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				const queued = pendingQueue.indexOf(content);
-				if (queued !== -1) {
+				if (queued !== -1 && isStreamPrompt(parsed, content)) {
+					// Its own enqueue, spent; then an ordinary prompt below.
+					pendingQueue.splice(queued, 1);
+				} else if (queued !== -1) {
 					// Enqueued before it arrived: a subagent's task notification, or a
 					// steer that has already been rendered from its attachment.
 					pendingQueue.splice(queued, 1);

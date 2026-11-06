@@ -674,7 +674,9 @@ export default class HerdrPlugin extends Plugin {
 		const name = runtimeDisplayName(target);
 		await this.switchRuntime(runtimeId);
 		if (!(await this.scopeReady(runtimeId))) {
-			new Notice(`Herdr: ${name} did not connect, so the agent was left stopped here. Switch back to resume it.`);
+			new Notice(
+				`Herdr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
+			);
 			return;
 		}
 		const started = await this.actions.startAgentHere(released.cwd, {
