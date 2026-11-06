@@ -135,6 +135,7 @@ import {
 } from '../native/paneSurface';
 import { NativePaneSurface } from '../native/surface';
 import { PromptSuggest } from '../native/promptSuggest';
+import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { linkSourcePath } from '../native/noteLinks';
 
@@ -864,6 +865,16 @@ export class TerminalView extends ItemView {
 					// runtime's connection for herdr-core over SSH (ADR-0006).
 					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
 					paneId: () => this.paneId,
+					// The most used commands first (#149), counted in the plugin's
+					// data whatever runtime the pane is on.
+					usage: () => normalizeCommandUsage(this.plugin.settings.commandUsage),
+					onCommandUsed: (name) => {
+						this.plugin.settings.commandUsage = withCommandUsed(
+							normalizeCommandUsage(this.plugin.settings.commandUsage),
+							name,
+						);
+						void this.plugin.saveSettings();
+					},
 					// The agent opens a mention on its own machine: on an SSH
 					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {

@@ -102,3 +102,52 @@ describe('PromptSuggest: whose commands a `/` offers', () => {
 		expect((await result).map((s) => (s.kind === 'command' ? s.entry.name : ''))).toEqual(['remote-only']);
 	});
 });
+
+describe('PromptSuggest: commands ranked by use (#149)', () => {
+	const entry = (name: string): CatalogEntry => ({
+		name,
+		scope: 'user',
+		kind: 'command',
+		description: '',
+		argumentHint: '',
+		path: null,
+	});
+
+	function suggestOver(text: string, usage: Record<string, number>, used: string[]) {
+		const area = {
+			value: text,
+			selectionStart: text.length,
+			setSelectionRange: () => {},
+			focus: () => {},
+		} as unknown as HTMLTextAreaElement;
+		const app = { vault: { getFiles: () => [] } } as unknown as App;
+		const suggest = new PromptSuggest(area, {
+			app,
+			cwd: () => '/repo',
+			vaultPath: () => '',
+			catalog: () => ({ catalog: () => [entry('review'), entry('release'), entry('rewind')] }),
+			usage: () => usage,
+			onCommandUsed: (name) => used.push(name),
+		});
+		const access = suggest as unknown as { getSuggestions(): PromptSuggestion[] };
+		const names = (): string[] =>
+			access.getSuggestions().map((s) => (s.kind === 'command' ? s.entry.name : ''));
+		return { suggest, names };
+	}
+
+	it('offers the most used command first', () => {
+		const { names } = suggestOver('/re', { rewind: 3, release: 1 }, []);
+		expect(names()).toEqual(['rewind', 'release', 'review']);
+	});
+
+	it('reports a picked command, and never a picked file', () => {
+		const used: string[] = [];
+		const { suggest, names } = suggestOver('/re', {}, used);
+		names();
+
+		suggest.selectSuggestion({ kind: 'command', entry: entry('review') });
+		suggest.selectSuggestion({ kind: 'file', file: { path: 'a.md' } as never });
+
+		expect(used).toEqual(['review']);
+	});
+});

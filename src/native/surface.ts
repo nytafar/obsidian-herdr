@@ -190,7 +190,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		const sizerEl = turnsEl.createDiv({
 			cls: ['herdr-native-sizer', 'markdown-preview-sizer', 'markdown-preview-section'],
 		});
-		const follower = new ScrollFollower(turnsEl);
+		const follower = new ScrollFollower(turnsEl, root);
 		this.follower = follower;
 		this.turns = new TurnRenderer(sizerEl, {
 			presentation: this.options.presentation,
@@ -360,6 +360,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 				if (turn) this.turns?.render(turn);
 			}
 			this.updateEmpty();
+			// Written while the reader is away from the end: the jump button
+			// says so (#149). A status change alone writes nothing.
+			if (change.changedTurnIds.length > 0) this.follower?.arrived();
 			this.follower?.settle();
 		}
 		this.updateStatus();

@@ -587,6 +587,44 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	order: 3;
 }
 
+/*
+ * The jump back to the end (#149): a row of no height straight under the
+ * transcript, so the button floats over the transcript's bottom edge without
+ * taking room from it or changing what scrolls. Same order as the turns, and
+ * appended after them, so it is the next thing down.
+ */
+.herdr-native-jump-row {
+	flex: 0 0 0;
+	height: 0;
+	order: 2;
+	position: relative;
+}
+
+.herdr-native-jump {
+	align-items: center;
+	bottom: var(--size-4-2);
+	box-shadow: var(--shadow-s);
+	display: flex;
+	gap: var(--size-4-1);
+	inset-inline-end: var(--size-4-2);
+	position: absolute;
+	transition: opacity 120ms ease-out;
+	z-index: 1;
+}
+
+.herdr-native-jump.is-new {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.herdr-native-view .herdr-native-jump.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-jump-icon {
+	display: flex;
+}
+
 .herdr-native-prompt-box {
 	flex: 0 0 auto;
 	order: 4;

@@ -260,6 +260,13 @@ export interface HerdrSettings extends RuntimeSettings {
 	 * `native/waitingCard.ts`.
 	 */
 	nativeAutoTrustFolders: boolean;
+	/**
+	 * How often each `/` command was picked in the native prompt box, by name
+	 * (issue #149), so the popover offers the most used first. Read through
+	 * `normalizeCommandUsage` (`native/commandCatalog.ts`), since a hand-edited
+	 * file may hold anything here.
+	 */
+	commandUsage: Record<string, number>;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -448,6 +455,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
 	nativeAutoTrustFolders: false,
+	commandUsage: {},
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,

@@ -9,7 +9,12 @@
  * rule or a "new messages" control (#149) has one place to live.
  */
 
-import type { Component } from 'obsidian';
+import { setIcon, type Component } from 'obsidian';
+
+/** What the jump button says while the reader is away from the end (#149). */
+export const JUMP_TO_LATEST = 'Jump to latest';
+/** What it says once something was written there since they left. */
+export const NEW_MESSAGES = 'New messages';
 
 /**
  * How far from the bottom still counts as the bottom (#106).
@@ -38,6 +43,16 @@ export function isAtBottom(geometry: {
  */
 export class ScrollFollower {
 	private following = true;
+	/** Something was written at the end while the reader was away from it (#149). */
+	private unseen = false;
+	/**
+	 * The button that takes the reader back to the end (#149): hidden while
+	 * following, "Jump to latest" while away, "New messages" once something
+	 * arrived there. Null until attached, and where no host was given.
+	 */
+	private jumpEl: HTMLElement | null = null;
+	/** What the button shows, so the DOM is touched only when that changes. */
+	private jumpShown: 'hidden' | 'away' | 'new' = 'hidden';
 	/** Watches the scroll container and the turn being written; null where there is none. */
 	private resizeObserver: ResizeObserver | null = null;
 	/** The turn the observer is watching, so only one ever is. */
@@ -47,24 +62,90 @@ export class ScrollFollower {
 	/** Set on dispose: a render or a resize that lands later pins nothing. */
 	private disposed = false;
 
-	constructor(private readonly scrollEl: HTMLElement) {}
+	/**
+	 * @param jumpHost where the jump button goes (#149): the view's root, so the
+	 * button sits over the bottom of the transcript without being part of what
+	 * scrolls. Left out, there is no button.
+	 */
+	constructor(
+		private readonly scrollEl: HTMLElement,
+		private readonly jumpHost?: HTMLElement,
+	) {}
 
 	/**
 	 * Starts listening. The only thing a scroll does is say whether the view is
 	 * still following: nothing is drawn, measured or unmounted here, because
-	 * this runs on every frame of a flick through a long session (#101).
+	 * this runs on every frame of a flick through a long session (#101). The
+	 * jump button is touched only on the scroll that changes the answer.
 	 */
 	attach(component: Component): void {
 		const scrollEl = this.scrollEl;
+		this.mountJump(component);
 		component.registerDomEvent(scrollEl, 'scroll', () => {
-			this.following = isAtBottom(scrollEl);
+			const following = isAtBottom(scrollEl);
+			if (following === this.following) return;
+			this.following = following;
+			if (following) this.unseen = false;
+			this.showJump();
 		});
 		this.watchForGrowth(scrollEl);
+	}
+
+	/** Whether the view is following the end of the session. */
+	get isFollowing(): boolean {
+		return this.following;
+	}
+
+	/**
+	 * Something new was drawn at the end (#149). Following, the pins take the
+	 * reader to it; away, the jump button says there is something to come back to.
+	 */
+	arrived(): void {
+		if (this.following || this.unseen) return;
+		this.unseen = true;
+		this.showJump();
+	}
+
+	/** Back to the end and following it, which is what the jump button does. */
+	jumpToEnd(): void {
+		this.follow();
+		this.pin();
+	}
+
+	/** The jump button, in an overlay row under the transcript that takes no room. */
+	private mountJump(component: Component): void {
+		if (!this.jumpHost) return;
+		const row = this.jumpHost.createDiv({ cls: 'herdr-native-jump-row' });
+		const button = row.createEl('button', {
+			cls: ['herdr-native-jump', 'herdr-is-hidden'],
+			attr: { type: 'button' },
+		});
+		component.registerDomEvent(button, 'click', () => this.jumpToEnd());
+		this.jumpEl = button;
+		this.jumpShown = 'hidden';
+		this.showJump();
+	}
+
+	/** Brings the button in line with the state, writing only what changed. */
+	private showJump(): void {
+		const el = this.jumpEl;
+		if (!el) return;
+		const shown = this.following ? 'hidden' : this.unseen ? 'new' : 'away';
+		if (shown === this.jumpShown) return;
+		this.jumpShown = shown;
+		el.toggleClass('herdr-is-hidden', shown === 'hidden');
+		el.toggleClass('is-new', shown === 'new');
+		if (shown === 'hidden') return;
+		el.empty();
+		el.setAttr('aria-label', shown === 'new' ? NEW_MESSAGES : JUMP_TO_LATEST);
+		if (shown === 'new') el.createSpan({ cls: 'herdr-native-jump-text', text: NEW_MESSAGES });
+		setIcon(el.createSpan({ cls: 'herdr-native-jump-icon' }), 'arrow-down');
 	}
 
 	/** Lets go of the observer and of every render still in flight. */
 	dispose(): void {
 		this.disposed = true;
+		this.jumpEl = null;
 		this.resizeObserver?.disconnect();
 		this.resizeObserver = null;
 		this.observedTurnEl = null;
@@ -74,6 +155,8 @@ export class ScrollFollower {
 	/** Follows the end again: on open, on another pane, after a rotation. */
 	follow(): void {
 		this.following = true;
+		this.unseen = false;
+		this.showJump();
 	}
 
 	/**
@@ -82,6 +165,7 @@ export class ScrollFollower {
 	 */
 	scrollTo(el: HTMLElement): void {
 		this.following = false;
+		this.showJump();
 		el.scrollIntoView({ block: 'start' });
 	}
 
