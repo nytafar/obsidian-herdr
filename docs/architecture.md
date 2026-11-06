@@ -949,7 +949,17 @@ renderer:
   D2 review measured `SigIgn: 0x6` on the program, where Ctrl-C did
   nothing. Measured after the change (bash as `/bin/sh`): `SigIgn` 0 on
   `script`, on a shell tab's initial command and on what its shell runs,
-  and Ctrl-C ended a `sleep` in each. The line is `stty rows R cols C; SHELL=<user's>; export
+  and Ctrl-C ended a `sleep` in each. busybox ash as `/bin/sh` (python:3.13-alpine,
+  2026-11-06, `--network none`): the shell ignores SIGQUIT in itself, as
+  bash does, so a shell's own `/proc/<pid>/status` reads `SigIgn: 0x4`
+  (what the final review saw, reading `$$` of an `sh -c`); what it runs
+  starts with SIGQUIT at its default (`SigIgn` without bit 3 on the
+  watchdog's foreground program). Through a pty below the watchdog (Python's
+  `pty.fork` standing in for `script`, which the image lacks), Ctrl-\ ended
+  an `exec`'d `sleep` with signal 3 and a `sleep` under a further `sh -c`
+  ("Quit (core dumped)"), under ash and under dash alike, and the watchdog
+  still reaped on EOF. A `trap - QUIT` changed none of it, so the watchdog
+  has none. The line is `stty rows R cols C; SHELL=<user's>; export
   SHELL; exec claude --permission-mode <mode> (--resume|--session-id) <id>`,
   every word single-quoted; `script` gets `SHELL=/bin/sh` so that line is
   parsed by a known shell, and the TUI gets `TERM=xterm-256color`,
