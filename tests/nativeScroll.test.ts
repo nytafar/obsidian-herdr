@@ -21,7 +21,8 @@ import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
 import { isAtBottom, JUMP_TO_LATEST, NEW_MESSAGES } from '../src/native/scrollFollower';
-import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,

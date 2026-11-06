@@ -136,6 +136,45 @@ export const CLAUDE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze(
 	nativeView: true,
 });
 
+/**
+ * How far a runtime's report of an agent's session can be trusted (#137,
+ * ADR-0010):
+ *
+ * - `trusted` — the session the runtime puts on a pane is that pane's agent's.
+ * - `hint` — the runtime reports one, but it may belong to another pane: herdr
+ *   hears Codex's session from a hook that runs in Codex's shared daemon and
+ *   reports to the pane that started the daemon (finding `agent-codex`), and
+ *   nothing tells such a report from a right one.
+ * - `absent` — the runtime reports no session for that agent at all.
+ *
+ * The native view is offered only on a trusted binding: a hint would show
+ * another pane's conversation as this one's.
+ */
+export type SessionBinding = 'trusted' | 'hint' | 'absent';
+
+/**
+ * Each kind's session bindings, by the agent catalog's ids; an agent not
+ * listed is `absent`, since nothing measured says its sessions can be taken.
+ *
+ * - **herdr** reports Claude's session from Claude's own `SessionStart` hook,
+ *   per pane; Codex's only correctly under `--no-daemon`, which herdr cannot
+ *   tell apart (measured 2026-11-06, `docs/architecture.md`, "A second agent:
+ *   Codex").
+ * - **herdr-core** has the plugin's Claude session hook label (ADR-0006) and
+ *   nothing for any other agent.
+ * - **claude** runs Claude and holds its session itself (ADR-0007).
+ */
+export const AGENT_SESSIONS: Readonly<Record<RuntimeKind, Readonly<Record<string, SessionBinding>>>> = Object.freeze({
+	herdr: Object.freeze({ claude: 'trusted', codex: 'hint' }),
+	'herdr-core': Object.freeze({ claude: 'trusted' }),
+	claude: Object.freeze({ claude: 'trusted' }),
+});
+
+/** How far a runtime of `kind` can be trusted on `agent`'s session. */
+export function sessionBinding(kind: RuntimeKind, agent: string): SessionBinding {
+	return AGENT_SESSIONS[kind]?.[agent] ?? 'absent';
+}
+
 /** Why the native view is not offered for a kind without agent sessions. */
 export const NATIVE_NO_SESSION_REASON = 'no agent session for this runtime kind';
 

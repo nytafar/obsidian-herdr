@@ -15,7 +15,7 @@ import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus } from '../src/herdr/types.gen';
 import type { PendingRequest, WaitingAnswer } from '../src/native/pendingRequest';
 import { PromptBox } from '../src/native/promptBox';
-import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import type { BlockKind, SessionChange, SessionHandleOf, SessionModels, SessionModelView } from '../src/native/sessionModel';
 import { NativePaneSurface } from '../src/native/surface';
 import { effectivePaneView, paneViewAvailability } from '../src/native/paneSurface';

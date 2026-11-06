@@ -20,7 +20,7 @@
  */
 
 import {
-	isAsyncLaunchNotice,
+	type ToolKind,
 	type CompactionEntry,
 	type ImageEntry,
 	type NoticeEntry,
@@ -32,55 +32,22 @@ import {
 	type ToolStatus,
 	type Turn,
 	type TurnEntry,
-} from './reducer';
+} from './conversation';
+import { toolKindOf } from '../agents/format';
 import { trimTrailingSlashes } from '../paths';
 import type { AgentStatus } from '../herdr/types.gen';
 
-/**
- * The kinds a tool call is shown as. Claude Code's tool names change between
- * releases and a vault picks up MCP tools with names of their own, so the table
- * below is an alias table over a small set of kinds, and anything it does not
- * know is `other` rather than a gap.
- */
-export type ToolKind =
-	| 'bash'
-	| 'read'
-	| 'edit'
-	| 'write'
-	| 'grep'
-	| 'glob'
-	| 'webfetch'
-	| 'websearch'
-	| 'todo'
-	| 'agent'
-	| 'question'
-	| 'other';
+export type { ToolKind } from './conversation';
 
 /**
- * Tool name (lower-cased) to kind. The names are the ones Claude Code 2.1.266
- * writes, counted over every transcript on this machine on 2026-09-15, plus the
- * older `Task` spelling of `Agent` and the edit variants.
+ * The kind a tool name is shown as; `other` for one no agent format knows.
+ * Each format names its own tools (`AgentFormat.toolKinds`): an agent's tool
+ * names change between releases and a vault picks up MCP tools with names of
+ * their own, so a table is an alias table over a small set of kinds, and
+ * anything it does not know is `other` rather than a gap.
  */
-const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
-	bash: 'bash',
-	read: 'read',
-	edit: 'edit',
-	multiedit: 'edit',
-	notebookedit: 'edit',
-	write: 'write',
-	grep: 'grep',
-	glob: 'glob',
-	webfetch: 'webfetch',
-	websearch: 'websearch',
-	todowrite: 'todo',
-	agent: 'agent',
-	task: 'agent',
-	askuserquestion: 'question',
-};
-
-/** The kind a tool name is shown as; `other` for one this build does not know. */
 export function toolKind(name: string): ToolKind {
-	return TOOL_KINDS[name.trim().toLowerCase()] ?? 'other';
+	return toolKindOf(name);
 }
 
 /** One kind's share of a summary line: "ran 2 commands", "read 1 file". */
@@ -213,7 +180,13 @@ export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupSta
 	// Work the agent left running when it went away (#135) is as much a thing
 	// a glance must not miss as a failure.
 	const lost = tools.filter((entry) => entry.status === 'lost').length;
-	const parts = [failures > 0 ? `${failures} failed` : '', lost > 0 ? `${lost} lost` : ''].filter(Boolean);
+	// A call the user refused, where the agent tells that from a failure.
+	const declined = tools.filter((entry) => entry.status === 'declined').length;
+	const parts = [
+		failures > 0 ? `${failures} failed` : '',
+		declined > 0 ? `${declined} declined` : '',
+		lost > 0 ? `${lost} lost` : '',
+	].filter(Boolean);
 	return {
 		title,
 		counts: toolGroupCounts(tools),
@@ -362,7 +335,7 @@ export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
 
 /**
  * {@link latestTodo} over a session that changes a few turns at a time: each
- * turn's own list is read once and kept until the turn changes. The reducer
+ * turn's own list is read once and kept until the turn changes. The parser
  * replaces a turn it changes and shares the rest (`reduce`), so a turn object
  * seen before still says what it said; only a changed turn's entries are read
  * again, and the rest of the walk is one lookup per turn.
@@ -468,14 +441,17 @@ export function vaultNoteLink(path: string, vaultPath: string): string | null {
  */
 export function changeLine(status: ToolStatus): { lead: string; trail: string } {
 	if (status === 'error') return { lead: 'Could not update ', trail: '' };
+	if (status === 'declined') return { lead: 'Declined to update ', trail: '' };
 	if (status === 'done') return { lead: 'Updated ', trail: '' };
+	// Answered, and no record says whether it landed (#137): never "Updated".
+	if (status === 'unknown') return { lead: 'Tried to update ', trail: '' };
 	return { lead: 'Updating ', trail: '…' };
 }
 
 /** The class a vault-change line carries beside its own, for a state worth showing. */
 export function changeStateClass(status: ToolStatus): string | null {
-	if (status === 'error') return 'is-error';
-	if (status === 'done') return null;
+	if (status === 'error' || status === 'declined') return 'is-error';
+	if (status === 'done' || status === 'unknown') return null;
 	return 'is-pending';
 }
 
@@ -567,13 +543,16 @@ export function sourceText(entry: ToolEntry): {
  * (`docs/architecture.md`, issue #96), so until that read lands there is
  * nothing to show and the notice is never shown at all.
  *
- * The notice, not the notification, is what tells the two apart: the
- * notification arrives only when the subagent finishes, and between the launch
- * and that moment the notice would otherwise read as the report.
+ * The parser's status is what tells the two apart, with no agent's notice text
+ * read here: a call whose work went on after its result is `running` (or
+ * `lost`, when the agent went away meanwhile) until a notification ends it,
+ * and between the launch and that moment the notice would otherwise read as
+ * the report.
  */
 export function subagentReport(entry: ToolEntry): string {
 	if (toolKind(entry.name) !== 'agent') return '';
-	const report = isAsyncLaunchNotice(entry.result) ? entry.report : entry.report ?? entry.result;
+	const background = entry.notification !== null || entry.status === 'running' || entry.status === 'lost';
+	const report = background ? entry.report : entry.report ?? entry.result;
 	return report?.trim() ? report : '';
 }
 

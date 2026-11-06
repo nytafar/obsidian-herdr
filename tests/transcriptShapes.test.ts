@@ -12,7 +12,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { emptyTranscript, markLost, reduce, type ToolEntry, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
+import { markLost, type ToolEntry } from '../src/native/conversation';
 
 /** A fixture transcript's lines, newline-split the way a tail delivers them. */
 function fixtureLines(name: string): string[] {

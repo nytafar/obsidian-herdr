@@ -13,14 +13,12 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, realpathSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-	BUILTIN_COMMANDS,
-	loadCommandCatalog,
 	matchCommands,
 	normalizeCommandUsage,
-	projectCommandRoots,
 	withCommandUsed,
 	type CatalogEntry,
 } from '../src/native/commandCatalog';
+import { BUILTIN_COMMANDS, loadCommandCatalog, projectCommandRoots } from '../src/agents/claude/commands';
 
 let root = '';
 let home = '';

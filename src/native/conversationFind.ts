@@ -16,7 +16,7 @@
  */
 
 import { SuggestModal, type App } from 'obsidian';
-import type { Turn } from './reducer';
+import type { Turn } from './conversation';
 
 /** How many matches the picker lists at most. */
 export const FIND_LIMIT = 50;

@@ -18,6 +18,7 @@
 
 import type { AgentStatus } from '../herdr/types.gen';
 import type { PendingRequest } from './pendingRequest';
+import type { SessionInfo } from './conversation';
 
 export type Unsubscribe = () => void;
 
@@ -49,13 +50,20 @@ export interface PaneSnapshot {
 	 * `/` and `@` are relative to it.
 	 */
 	cwd: string;
+	/**
+	 * The agent the pane runs, by the agent catalog's ids (`claude`), which
+	 * picks the format its session is read with (`../agents/format.ts`).
+	 * Absent where the runtime does not say, which is read as the catalog's
+	 * default agent, as before agents had formats.
+	 */
+	agent?: string;
 	/** The agent session the runtime reports for the pane, empty until it has one. */
 	agentSession: string;
 	/**
 	 * The transcript's path on the transcript's own host, when the runtime
 	 * reports it (herdr-core's session label holds the hook's
-	 * `transcript_path`). Absent, the model derives it from cwd and session
-	 * with Claude Code's own layout (`./transcriptSource.ts`).
+	 * `transcript_path`). Absent, the model asks the agent's format for it,
+	 * from cwd and session (`AgentFormat.transcriptPath`).
 	 */
 	transcriptPath?: string;
 	agentStatus: AgentStatus;
@@ -74,6 +82,13 @@ export interface PaneSnapshot {
 	 * card shows it and answers it. Absent everywhere else.
 	 */
 	request?: PendingRequest;
+	/**
+	 * What the runtime itself knows of the session, sooner than the transcript
+	 * says it (#110, #111): the `claude` kind hears model, mode, effort and the
+	 * context window from its process. Put over the format's reading per field
+	 * by the session model; absent where the runtime knows nothing of its own.
+	 */
+	sessionInfo?: SessionInfo;
 }
 
 /**
@@ -114,9 +129,9 @@ export interface SessionWatcher {
 	/**
 	 * Why this pane cannot be shown in the native view although its runtime
 	 * can, or null when it can or the runtime does not know the pane. A pane
-	 * running another agent than Claude says so on herdr and herdr-core
-	 * (`./agentSupport.ts`, #155); the `claude` kind runs only Claude and
-	 * leaves this out. herdr-core says more, since its session is the Claude
+	 * running an agent with no format, or one whose session the runtime
+	 * cannot vouch for, says so on herdr and herdr-core (`./agentSupport.ts`,
+	 * #155, #137); the `claude` kind runs only Claude and leaves this out. herdr-core says more, since its session is the Claude
 	 * hook's label (ADR-0006): a terminal without one stays a terminal and
 	 * names the install command.
 	 */

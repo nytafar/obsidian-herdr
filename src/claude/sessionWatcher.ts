@@ -45,6 +45,8 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 		const pane: PaneSnapshot = {
 			paneId,
 			cwd: agent.cwd,
+			// The `claude` kind runs Claude Code and nothing else (ADR-0007).
+			agent: 'claude',
 			agentSession: agent.sessionId,
 			transcriptPath: agent.transcriptPath,
 			agentStatus: agent.status === 'unknown' ? 'idle' : paneStatusOf(agent.status),

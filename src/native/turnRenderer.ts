@@ -31,8 +31,8 @@ import type {
 	ThinkingEntry,
 	ToolEntry,
 	Turn,
-} from './reducer';
-import { turnHeadings } from './reducer';
+} from './conversation';
+import { turnHeadings } from './conversation';
 import {
 	changedPath,
 	changeLine,
@@ -239,7 +239,7 @@ export interface ItemDraw {
 	 * counts (#118). Nothing else in a turn is prose for that purpose.
 	 */
 	prose?: Promise<void>;
-	/** How many headings the reducer counts in that prose (`turnHeadings`). */
+	/** How many headings the parser counts in that prose (`turnHeadings`). */
 	headingCount?: number;
 }
 
@@ -343,7 +343,7 @@ interface DrawnItem {
 	component: Component;
 	/** Its prose render (#118), or null when it is not prose. */
 	prose: Promise<void> | null;
-	/** How many headings the reducer counts in its prose (#118); 0 when it is not prose. */
+	/** How many headings the parser counts in its prose (#118); 0 when it is not prose. */
 	headingCount: number;
 	/**
 	 * The heading elements its prose rendered, in document order, once that
@@ -678,7 +678,7 @@ export class TurnRenderer {
 	/**
 	 * Writes the anchors a heading click aims at (#118): the turn's id and the
 	 * heading's place in the turn, on every `h1`-`h6` of its prose, block by
-	 * block, each block's first heading numbered after the headings the reducer
+	 * block, each block's first heading numbered after the headings the parser
 	 * counts in the blocks before it.
 	 *
 	 * Obsidian's rendered output carries nothing of this plugin's, and the
@@ -760,7 +760,7 @@ function renderThinking(entry: ThinkingEntry, context: ItemContext): ItemDraw {
 	const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
 	context.disclose(details, false);
 	// Not prose as far as the headings go: only text entries are paired with
-	// the reducer's headings (#118).
+	// the parser's headings (#118).
 	void context.options.renderMarkdown(entry.text, bodyEl, context.component);
 	return { el: details };
 }
@@ -798,7 +798,7 @@ function renderToolGroup(tools: readonly ToolEntry[], context: ItemContext): Ite
 			cls: 'herdr-native-tool',
 			text: detail ? `${entry.name} ${detail}` : entry.name,
 		});
-		if (entry.status === 'error') rowEl.addClass('is-error');
+		if (entry.status === 'error' || entry.status === 'declined') rowEl.addClass('is-error');
 		if (entry.status === 'lost') rowEl.addClass('is-lost');
 	}
 	context.disclose(details, toolGroupStartsOpen(state));
@@ -994,9 +994,11 @@ function renderCompaction(entry: CompactionEntry, context: ItemContext): ItemDra
 	const bodyEl = details.createDiv({ cls: 'herdr-native-compaction-body' });
 	let rendered = false;
 	const renderOnce = (): void => {
-		if (rendered || !details.open || !entry.summary) return;
+		if (rendered || !details.open) return;
 		rendered = true;
-		void context.options.renderMarkdown(entry.summary, bodyEl, context.component);
+		// An agent that keeps its summary unreadable (#137) still compacted.
+		if (!entry.summary) bodyEl.setText('No readable summary.');
+		else void context.options.renderMarkdown(entry.summary, bodyEl, context.component);
 	};
 	context.component.registerDomEvent(details, 'toggle', renderOnce);
 	context.disclose(details, false);
