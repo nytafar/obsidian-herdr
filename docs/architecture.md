@@ -1382,6 +1382,67 @@ scratch pane created with `tab create` and `agent start`.
   and reads nothing; herdr-core over SSH reads the file with `file.read` on
   its own machine, as it reads the transcript.
 
+## Images in prompts
+
+Measured 2026-11-06 (#144) against herdr 0.9.5, hc 0.1.18 and Claude Code
+2.1.318, in `oh-test-*` panes in a `/tmp` folder with 64x64 one-colour PNGs
+and one-word prompts, checked against Claude's answers and the transcript.
+
+- **A terminal Claude attaches an image when a bracketed paste is exactly
+  paths to image files.** `ESC[200~/tmp/x/blue.png ESC[201~` became
+  `[Image #1]` in the input within a second. Two paths separated by a space
+  in one paste became two images; a path with a space in it attached when
+  the space was escaped with a backslash (`/tmp/x/sp\ ace/x.png`), the way a
+  terminal writes a dropped file. A paste of a path followed by words stayed
+  text.
+- **A path in an ordinary prompt is not an attachment.** `herdr agent prompt`
+  with "… this image: /tmp/x/red.png" was typed as text; Claude read the file
+  with its `Read` tool and the image arrived as a `tool_result`, not in the
+  prompt.
+- **The text after the paste lands in the same input, and its Enter sends
+  both as one prompt.** herdr: `pane.send_text` with the paste, then
+  `agent.prompt` with the text, back to back with no wait (the second call
+  took about 400 ms). `agent.prompt` with empty text is refused
+  (`empty_agent_prompt`, "agent prompt must not be empty"); a picture alone is
+  sent with `agent.send_keys ["Enter"]`. While Claude worked, the same pair
+  was queued: the enqueue's `content` is the text block as written
+  (`[Image #5]Queued: …`), and the steer arrives as a `queued_command`
+  attachment whose `prompt` is an array of blocks, the image among them.
+- **Claude reads the file when the paste lands.** A file removed right after
+  `agent.prompt` returned was in the transcript all the same. The plugin
+  writes herdr's images to `<tmpdir>/obsidian-herdr-images/` (mode 0600) and
+  removes them a minute after the send. Only a local herdr shows the native
+  view, so that folder is the agent's machine.
+- **herdr-core has no raw-input method, and `terminal.send` cannot carry the
+  paste**: it presses the submit key itself and strips an embedded
+  `ESC[201~` (finding `herdr-core-api`). What worked: `terminal.put
+  {terminal, name, data}` writes the image beside the terminal on its own
+  machine and answers `{path, bytes}`
+  (`~/.local/state/herdr-core/default/files/<terminal>/<name>`, removed with
+  the terminal by `terminal.rm`); one `terminal.attach {cols, rows, history:
+  0, resumed: true}` at the terminal's own grid, an AUTOMATIC_INPUT frame
+  with the bracketed paste of the paths, CLOSE; then `terminal.send {text}`.
+  Back to back with no waits the images still attached, though Claude placed
+  their `[Image #N]` after the text (it resolves a paste asynchronously).
+  `terminal.send` with empty text pastes nothing and presses Enter, which sent
+  the picture alone. A core whose `hello` lacks `automatic_input` (0.1.17)
+  gets the paste as DATA, which counts as a person typing, so hc holds the
+  following `terminal.send` for its 3 s quiet period; not measured there, and
+  whether 0.1.17 has `terminal.put` is not known (the plugin asks `hello`'s
+  `methods` and says why not when it is missing).
+- **`claude -p` in stream-json takes image content blocks** in the user
+  message, `[{type: "text", text}, {type: "image", source: {type: "base64",
+  media_type, data}}]`; the answer named the colour.
+- **What the transcript holds.** The prompt is a `user` line of blocks: the
+  text (with the `[Image #N]` stand-ins where the TUI showed them; none for
+  stream-json), then one `image` block each, base64 with `media_type`. The
+  next line is an `isMeta` `user` line of `[Image: source: <path>]` text
+  blocks, one per image (stream-json: a path under
+  `/tmp/claude-<uid>/<project>/<session>/images/`). The reducer drops the
+  stand-ins from the prompt it shows, and an image entry records only the
+  line's uuid and the image's index there; the view reads the bytes from the
+  file when the thumbnail comes into view (`transcriptImage`).
+
 ## Answering Claude's dialogs from the screen
 
 Measured 2026-11-06 for issue #151 against Claude Code 2.1.318, herdr 0.9.5

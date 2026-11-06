@@ -23,6 +23,7 @@ import { FoldMemory } from './foldMemory';
 import { nameTurnItems } from './itemKeys';
 import type {
 	CompactionEntry,
+	ImageBytes,
 	ImageEntry,
 	NoticeEntry,
 	ShellEntry,
@@ -180,6 +181,19 @@ export interface TurnRendererOptions {
 	copier?: Copier;
 	/** A turn element was created: it is the one Claude is writing. */
 	onTurnCreated?: (turnEl: HTMLElement) => void;
+	/**
+	 * An image's bytes, read from the transcript when its thumbnail comes into
+	 * view (#144). Left out, an image is its label alone.
+	 */
+	readImage?: (image: ImageEntry) => Promise<ImageBytes | null>;
+	/** Shows an image full size, on a click on its thumbnail (#144). */
+	openImage?: (image: ShownImage) => void;
+}
+
+/** An image as the view shows it: a source an `img` takes, and what it is. */
+export interface ShownImage {
+	src: string;
+	label: string;
 }
 
 /**
@@ -291,7 +305,7 @@ const ITEM_KINDS: ItemKinds = {
 		render: (item, context) => renderTodo(item.entry, context.facts.latestTodo, context),
 	},
 	image: {
-		signature: (item) => item.entry.mediaType,
+		signature: (item) => JSON.stringify([item.entry.mediaType, item.entry.record, item.entry.index]),
 		render: (item, context) => renderImage(item.entry, context),
 	},
 	compaction: {
@@ -881,16 +895,91 @@ function renderSource(entry: ToolEntry, context: ItemContext): ItemDraw {
 }
 
 /**
- * A picture sent with the prompt, as a placeholder (#129): the bytes stay in
- * the transcript, and the line says one was there and of what type.
+ * A picture sent with the prompt (#129): what it is, as a label, which is all
+ * the view shows until its bytes are read and where they cannot be.
  */
 export function imageLabel(entry: ImageEntry): string {
 	const subtype = entry.mediaType.split('/')[1]?.trim();
 	return subtype ? `Image (${subtype.toUpperCase()})` : 'Image';
 }
 
+/**
+ * Calls `load` once `el` comes near the visible part of the view, or at once
+ * where nothing can say when that is. The observer goes with the component.
+ */
+function whenVisible(el: HTMLElement, component: Component, load: () => void): void {
+	// The element's own window, so a view in a popout watches its own viewport.
+	const win = el.win as (Window & { IntersectionObserver?: typeof IntersectionObserver }) | undefined;
+	const Observer = win?.IntersectionObserver;
+	if (!Observer) {
+		load();
+		return;
+	}
+	const observer = new Observer(
+		(entries) => {
+			if (!entries.some((entry) => entry.isIntersecting)) return;
+			observer.disconnect();
+			load();
+		},
+		{ rootMargin: '400px 0px' },
+	);
+	observer.observe(el);
+	component.register(() => observer.disconnect());
+}
+
+/**
+ * A picture sent with the prompt (#144): a thumbnail, read from the
+ * transcript only when it comes into view, so a long session's pictures are
+ * not all read at open and none is held by the session model; a click shows
+ * it full size. Until the bytes are there, and where they cannot be read, it
+ * is the label.
+ */
 function renderImage(entry: ImageEntry, context: ItemContext): ItemDraw {
-	return { el: context.parent.createDiv({ cls: 'herdr-native-image', text: imageLabel(entry) }) };
+	const label = imageLabel(entry);
+	const el = context.parent.createEl('button', {
+		cls: 'herdr-native-image',
+		attr: { type: 'button', 'aria-label': `Show ${label.toLowerCase()} full size` },
+	});
+	el.createSpan({ cls: 'herdr-native-image-label', text: label });
+	const read = context.options.readImage;
+	if (!read || !entry.record) {
+		el.disabled = true;
+		return { el };
+	}
+	let live = true;
+	context.component.register(() => {
+		live = false;
+	});
+	let shown: Promise<ShownImage | null> | null = null;
+	const load = (): Promise<ShownImage | null> => {
+		shown ??= read(entry).then(
+			(bytes) => {
+				if (!live) return null;
+				// Not there (yet): a click asks again.
+				if (!bytes) {
+					shown = null;
+					return null;
+				}
+				const image = { src: `data:${bytes.mediaType || entry.mediaType};base64,${bytes.data}`, label };
+				el.empty();
+				el.createEl('img', { cls: 'herdr-native-image-thumb', attr: { src: image.src, alt: label } });
+				el.addClass('herdr-has-thumb');
+				return image;
+			},
+			() => {
+				shown = null;
+				return null;
+			},
+		);
+		return shown;
+	};
+	whenVisible(el, context.component, () => void load());
+	context.component.registerDomEvent(el, 'click', () => {
+		void load().then((image) => {
+			if (image && live) context.options.openImage?.(image);
+		});
+	});
+	return { el };
 }
 
 /**

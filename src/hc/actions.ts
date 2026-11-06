@@ -35,6 +35,7 @@ import {
 	type PromptClient,
 	type PromptSender,
 } from '../native/promptSender';
+import { imageExtension, imagePaste, type PromptImage } from '../native/promptImages';
 import { HcError } from './connection';
 import { LABEL_AGENT, LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
 
@@ -253,18 +254,75 @@ export class HcActions implements RuntimeActions {
 	}
 }
 
-/** The prompt box over `terminal.send`: pasted, then Enter, one call. */
-export function hcPromptSender(client: () => PromptClient | null): PromptSender {
+/** What images need of an hc client beyond `request` (`HcClient` has both). */
+export interface HcImageClient extends PromptClient {
+	/** Types text into a terminal's program with no Enter. */
+	input(terminal: string, text: string): Promise<void>;
+	/** Whether the core lists a method in its `hello`. */
+	hasMethod(method: string): boolean;
+}
+
+function imageClient(client: PromptClient | null): HcImageClient | null {
+	const candidate = client as Partial<HcImageClient> | null;
+	return candidate && typeof candidate.input === 'function' && typeof candidate.hasMethod === 'function'
+		? (candidate as HcImageClient)
+		: null;
+}
+
+/** Why images cannot go out over this herdr-core connection, or null (#144). */
+export function hcImagesUnavailable(client: PromptClient | null): string | null {
+	if (!client) return 'herdr-core is not connected';
+	const images = imageClient(client);
+	if (!images) return 'this herdr-core connection cannot type into a terminal';
+	if (!images.hasMethod('terminal.put')) return 'this herdr-core has no terminal.put; a newer hc sends images';
+	return null;
+}
+
+/** A file name for one image `terminal.put` writes beside the terminal. */
+export function hcImageName(image: PromptImage, index: number, now: number): string {
+	return `image-${now}-${index + 1}.${imageExtension(image.mediaType)}`;
+}
+
+/**
+ * The prompt box over `terminal.send`: pasted, then Enter, one call.
+ *
+ * Images (#144) go as a dropped file does on Claude's terminal: each is put
+ * beside the terminal with `terminal.put` (on the terminal's own machine,
+ * removed with the terminal), the paths are typed as one bracketed paste with
+ * no Enter ({@link HcImageClient.input}), which Claude turns into image
+ * attachments, and `terminal.send` then pastes the text and presses the Enter
+ * that sends both — an empty text included (measured 2026-11-06, hc 0.1.18,
+ * `docs/architecture.md`, "Images in prompts").
+ */
+export function hcPromptSender(client: () => PromptClient | null, now: () => number = Date.now): PromptSender {
 	return {
-		async send(paneId: string, text: string): Promise<void> {
+		async send(paneId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
 			const connected = client();
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
 			try {
+				if (images.length) {
+					const reason = hcImagesUnavailable(connected);
+					const typer = imageClient(connected);
+					if (reason || !typer) throw new Error(reason ?? 'images cannot be sent');
+					const stamp = now();
+					const paths: string[] = [];
+					for (const [index, image] of images.entries()) {
+						const put = await connected.request<{ path?: unknown } | null>('terminal.put', {
+							terminal: paneId,
+							name: hcImageName(image, index, stamp),
+							data: image.data,
+						});
+						if (typeof put?.path !== 'string' || !put.path) throw new Error('herdr-core did not say where the image went');
+						paths.push(put.path);
+					}
+					await typer.input(paneId, imagePaste(paths));
+				}
 				await connected.request('terminal.send', { terminal: paneId, text });
 			} catch (error) {
 				throw new Error(describe(error));
 			}
 		},
+		imagesUnavailable: () => hcImagesUnavailable(client()),
 	};
 }
 

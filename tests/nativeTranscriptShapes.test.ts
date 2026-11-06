@@ -113,7 +113,7 @@ describe('a picture sent with a prompt (#129)', () => {
 		model.push(
 			[
 				turn('u1', '[Image #3]', [
-					{ kind: 'image', mediaType: 'image/png' },
+					{ kind: 'image', id: 'u1#0', record: 'u1', index: 0, mediaType: 'image/png' },
 					{ kind: 'text', messageId: 'm1', text: 'It works.' },
 				]),
 			],
@@ -134,7 +134,7 @@ describe('a picture sent with a prompt (#129)', () => {
 		const model = new FakeModel();
 		const toc = tocOn(model);
 
-		model.push([turn('u1', '', [{ kind: 'image', mediaType: 'image/jpeg' }])], {
+		model.push([turn('u1', '', [{ kind: 'image', id: 'u1#0', record: 'u1', index: 0, mediaType: 'image/jpeg' }])], {
 			changedTurnIds: ['u1'],
 			reset: false,
 		});

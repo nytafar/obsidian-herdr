@@ -26,6 +26,7 @@ import {
 } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 import type { WaitingAnswer } from '../native/pendingRequest';
+import { promptImages } from '../native/promptImages';
 import type { TabLabels } from '../tabLabels';
 import type { ClaudeAgents, ClaudeAgentStatus, ClaudeAgentView, ClaudeRuntimeSetup } from './agents';
 
@@ -228,7 +229,12 @@ export class ClaudeClient implements ConnectionClient {
 					// Settles once the prompt is written, which a switch from the
 					// terminal view can take a moment to allow, or never will be.
 					return this.agents
-						.prompt(this.runtimeId, target, typeof args.text === 'string' ? args.text : '')
+						.prompt(
+							this.runtimeId,
+							target,
+							typeof args.text === 'string' ? args.text : '',
+							promptImages(args.images),
+						)
 						.then(() => null as T);
 				case 'agent.interrupt':
 					this.agents.interrupt(this.runtimeId, target);

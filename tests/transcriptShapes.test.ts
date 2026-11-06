@@ -44,11 +44,18 @@ describe('a prompt sent as content blocks (#129)', () => {
 		expect(state.turns.map((turn) => turn.prompt)).toEqual([
 			'both work now',
 			'can the screenshot key copy the image path so I can paste it here?',
-			'[Image #3]',
+			// The stand-in is the picture's, which is drawn instead (#144).
+			'',
 		]);
 		const pictured = state.turns[2];
 		expect(pictured?.id).toBe('d19a1ed3-34b4-4edf-8422-90a8069b701f');
-		expect(pictured?.entries[0]).toEqual({ kind: 'image', mediaType: 'image/png' });
+		expect(pictured?.entries[0]).toEqual({
+			kind: 'image',
+			id: 'd19a1ed3-34b4-4edf-8422-90a8069b701f#0',
+			record: 'd19a1ed3-34b4-4edf-8422-90a8069b701f',
+			index: 0,
+			mediaType: 'image/png',
+		});
 		const prose = pictured?.entries.flatMap((entry) => (entry.kind === 'text' ? [entry.text] : []));
 		expect(prose).toEqual([
 			'It works: the path was read and the image shown.',

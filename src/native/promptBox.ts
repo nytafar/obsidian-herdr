@@ -39,12 +39,22 @@
  * writing a height on the element, and it wins — until the box is emptied,
  * when that height is dropped so the next prompt starts at the usual size.
  *
+ * **Images** (#144) are pasted or dropped onto the box and wait in a strip
+ * above the text, each with a thumbnail and a remove button, until the prompt
+ * goes with them; a prompt may then be a picture alone. A paste takes images
+ * only when the clipboard holds no plain text, so copying from a spreadsheet
+ * or a document (which also puts a picture of the selection there) still
+ * pastes the text. Whether images can go at all is the sender's to say
+ * (`imagesUnavailable`): where they cannot, a paste or drop of one says why
+ * in a notice and attaches nothing.
+ *
  * Guidelines: no `innerHTML`, no inline styles (`styles.css` has the classes),
  * every listener goes through a `Component` that is unloaded on `destroy`.
  */
 
 import { Component, Notice } from 'obsidian';
-import type { PromptSender } from './promptSender';
+import { imagesUnavailable, type PromptSender } from './promptSender';
+import { imageFileProblem, MAX_PROMPT_IMAGES, type PromptImage } from './promptImages';
 import type { AgentStatus } from '../herdr/types.gen';
 
 /** What the box shows for one agent status. */
@@ -85,6 +95,62 @@ export interface PromptBoxOptions {
 	 * the enter belongs to it while it is (#103).
 	 */
 	onInput?: (inputEl: HTMLTextAreaElement) => PromptInputAttachment;
+	/**
+	 * Reads a pasted or dropped file as base64. Defaults to the file's own
+	 * bytes; a test passes a fake.
+	 */
+	readFile?: (file: ImageFile) => Promise<string>;
+}
+
+/** What the box reads of a pasted or dropped file: a browser `File`, narrowed. */
+export interface ImageFile {
+	name: string;
+	type: string;
+	size: number;
+	arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/** The bytes of a file, base64. */
+async function fileBase64(file: ImageFile): Promise<string> {
+	return Buffer.from(await file.arrayBuffer()).toString('base64');
+}
+
+/** What a paste or drop event carries, narrowed to what the box reads. */
+interface TransferLike {
+	files?: ArrayLike<ImageFile> | null;
+	types?: ArrayLike<string> | null;
+	getData?: (format: string) => string;
+}
+
+/** The files a paste or drop carries. */
+function transferFiles(transfer: TransferLike | null | undefined): ImageFile[] {
+	return transfer?.files ? Array.from(transfer.files) : [];
+}
+
+/** Whether a drag carries files at all, which is all `dragover` may ask. */
+export function carriesFiles(transfer: TransferLike | null | undefined): boolean {
+	return Array.from(transfer?.types ?? []).includes('Files');
+}
+
+/**
+ * The images a paste should attach: the clipboard's image files, but none
+ * when it also holds plain text, which is then what is pasted.
+ */
+export function pastedImages(transfer: TransferLike | null | undefined): ImageFile[] {
+	const images = transferFiles(transfer).filter((file) => file.type.startsWith('image/'));
+	if (!images.length) return [];
+	const text = transfer?.getData?.('text/plain') ?? '';
+	return text.trim() ? [] : images;
+}
+
+/** A data URL for an image's bytes, for a thumbnail. */
+export function imageDataUrl(mediaType: string, data: string): string {
+	return `data:${mediaType};base64,${data}`;
+}
+
+/** What a paste or drop says when the pane's runtime cannot take images. */
+export function imagesRefusedMessage(reason: string): string {
+	return `Herdr: images cannot be sent here (${reason}).`;
 }
 
 /** What something hung on the text area tells the box about itself (#103). */
@@ -147,6 +213,12 @@ export class PromptBox {
 	private hintEl: HTMLElement | null = null;
 	/** What `onInput` hung on the text area; null when nothing did. */
 	private attachment: PromptInputHandle | null = null;
+	/** Images waiting to go with the next prompt (#144), in the order added. */
+	private images: PromptImage[] = [];
+	/** The strip that shows them, above the text area. */
+	private imagesEl: HTMLElement | null = null;
+	/** The strip's remove buttons' listeners, replaced on every draw. */
+	private imagesComponent: Component | null = null;
 	private status: AgentStatus = 'unknown';
 	/** True from the moment a send starts until herdr has answered it. */
 	private sending = false;
@@ -161,6 +233,8 @@ export class PromptBox {
 		// `herdr-native-sizer`: the box sits at the width of the prose above it
 		// when the vault asks for a readable line width (#117).
 		const root = parentEl.createDiv({ cls: ['herdr-native-prompt-box', 'herdr-native-sizer'] });
+		// Images waiting to be sent (#144), above the text they go with.
+		this.imagesEl = root.createDiv({ cls: ['herdr-native-prompt-images', 'herdr-is-hidden'] });
 		// The text area and the button share a row, the way a chat input does
 		// (#103); the hint, when there is one, comes under them.
 		const row = root.createDiv({ cls: 'herdr-native-prompt-row' });
@@ -199,6 +273,38 @@ export class PromptBox {
 			void this.send();
 		});
 		this.component.registerDomEvent(inputEl, 'input', () => this.dropManualHeight());
+		this.component.registerDomEvent(inputEl, 'paste', (event: ClipboardEvent) => {
+			const files = pastedImages(event.clipboardData);
+			if (!files.length) return;
+			const reason = this.imagesRefused();
+			if (reason) {
+				this.notify(imagesRefusedMessage(reason));
+				return;
+			}
+			event.preventDefault();
+			void this.attachImages(files);
+		});
+		// A file dragged over the box may be dropped on it. Anything else
+		// dragged (text, a note's link) is the text area's, as always.
+		this.component.registerDomEvent(root, 'dragover', (event: DragEvent) => {
+			if (!carriesFiles(event.dataTransfer)) return;
+			event.preventDefault();
+			root.addClass('herdr-is-drop-target');
+		});
+		this.component.registerDomEvent(root, 'dragleave', () => root.removeClass('herdr-is-drop-target'));
+		this.component.registerDomEvent(root, 'drop', (event: DragEvent) => {
+			root.removeClass('herdr-is-drop-target');
+			const files = transferFiles(event.dataTransfer);
+			if (!files.length) return;
+			// Never the browser's own drop: it would type the file's path.
+			event.preventDefault();
+			const reason = this.imagesRefused();
+			if (reason) {
+				this.notify(imagesRefusedMessage(reason));
+				return;
+			}
+			void this.attachImages(files);
+		});
 		this.render();
 		const attachment = this.options.onInput?.(inputEl);
 		this.attachment =
@@ -209,6 +315,10 @@ export class PromptBox {
 	destroy(): void {
 		this.attachment?.close();
 		this.attachment = null;
+		this.imagesComponent?.unload();
+		this.imagesComponent = null;
+		this.imagesEl = null;
+		this.images = [];
 		this.component.unload();
 		this.rootEl?.remove();
 		this.rootEl = null;
@@ -271,6 +381,89 @@ export class PromptBox {
 		return this.inputEl?.value ?? '';
 	}
 
+	/** The images waiting to go with the next prompt, for tests. */
+	get attachedImages(): readonly PromptImage[] {
+		return this.images;
+	}
+
+	/**
+	 * Why no image may be attached now, or null when one may: the sender's
+	 * reason first, then a box that is locked because there is no agent.
+	 */
+	imagesRefused(): string | null {
+		const reason = imagesUnavailable(this.options.sender, this.options.paneId());
+		if (reason) return reason;
+		const hint = promptBoxState(this.status).hint;
+		return hint ? hint.replace(/\.$/, '').toLowerCase() : null;
+	}
+
+	/**
+	 * Reads pasted or dropped files and puts the images among them in the
+	 * strip. A file that is no image Claude takes, or too large, is a notice
+	 * and is left out; the others are attached.
+	 */
+	async attachImages(files: readonly ImageFile[]): Promise<void> {
+		const read = this.options.readFile ?? fileBase64;
+		for (const file of files) {
+			const problem = imageFileProblem(file);
+			if (problem) {
+				this.notify(`Herdr: ${problem}.`);
+				continue;
+			}
+			if (this.images.length >= MAX_PROMPT_IMAGES) {
+				this.notify(`Herdr: a prompt takes at most ${MAX_PROMPT_IMAGES} images.`);
+				break;
+			}
+			let data: string;
+			try {
+				data = await read(file);
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				this.notify(`Herdr: could not read ${file.name || 'the image'} (${reason})`);
+				continue;
+			}
+			// The box went while the file was read.
+			if (!this.imagesEl) return;
+			this.images = [...this.images, { mediaType: file.type, data, name: file.name || 'Pasted image' }];
+			this.renderImages();
+		}
+	}
+
+	/** Takes one waiting image out of the strip. */
+	removeImage(image: PromptImage): void {
+		const next = this.images.filter((candidate) => candidate !== image);
+		if (next.length === this.images.length) return;
+		this.images = next;
+		this.renderImages();
+	}
+
+	/** Draws the strip of waiting images; hidden while there are none. */
+	private renderImages(): void {
+		const stripEl = this.imagesEl;
+		if (!stripEl) return;
+		this.imagesComponent?.unload();
+		this.imagesComponent = null;
+		stripEl.empty();
+		stripEl.toggleClass('herdr-is-hidden', this.images.length === 0);
+		if (!this.images.length) return;
+		const component = new Component();
+		component.load();
+		this.imagesComponent = component;
+		for (const image of this.images) {
+			const itemEl = stripEl.createDiv({ cls: 'herdr-native-prompt-image' });
+			itemEl.createEl('img', {
+				cls: 'herdr-native-prompt-image-thumb',
+				attr: { src: imageDataUrl(image.mediaType, image.data), alt: image.name },
+			});
+			const removeEl = itemEl.createEl('button', {
+				cls: 'herdr-native-prompt-image-remove',
+				text: '×',
+				attr: { 'aria-label': `Remove ${image.name}` },
+			});
+			component.registerDomEvent(removeEl, 'click', () => this.removeImage(image));
+		}
+	}
+
 	/**
 	 * Sends what is in the box, if anything, and if the status allows it.
 	 *
@@ -282,11 +475,14 @@ export class PromptBox {
 		if (!inputEl || this.sending) return;
 		if (!promptBoxState(this.status).enabled) return;
 		const text = inputEl.value;
-		if (text.trim() === '') return;
+		// A picture may go alone (#144); nothing at all is no prompt.
+		const images = this.images;
+		if (text.trim() === '' && !images.length) return;
 		this.sending = true;
 		this.render();
 		try {
-			await this.options.sender.send(this.options.paneId(), text);
+			if (images.length) await this.options.sender.send(this.options.paneId(), text, images);
+			else await this.options.sender.send(this.options.paneId(), text);
 			// Nothing is echoed into the view: the prompt appears when the
 			// transcript says it did (ADR-0003). Only what went out is taken out
 			// of the box: typing stays enabled during the request, so anything
@@ -294,6 +490,11 @@ export class PromptBox {
 			if (this.inputEl) {
 				this.inputEl.value = remainingDraft(this.inputEl.value, text);
 				this.dropManualHeight();
+			}
+			// The same for images: one added while this went out stays.
+			if (images.length) {
+				this.images = this.images.filter((image) => !images.includes(image));
+				this.renderImages();
 			}
 		} catch (error) {
 			this.notify(sendFailureMessage(error));

@@ -849,11 +849,53 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /* A picture sent with the prompt, as a placeholder under it (#129). */
+/*
+ * A prompt's image (#144): its label until the thumbnail is read, then the
+ * thumbnail, which opens full size on a click. A button, so it takes the
+ * keyboard; its own chrome is dropped so it reads as the picture.
+ */
 .herdr-native-image {
+	background: none;
+	border: none;
+	box-shadow: none;
 	color: var(--text-muted);
+	cursor: zoom-in;
+	display: inline-flex;
 	font-size: var(--font-ui-small);
-	margin: calc(-1 * var(--size-4-2)) 0 var(--size-4-3);
-	padding-left: calc(var(--size-4-3) + 3px);
+	height: auto;
+	margin: calc(-1 * var(--size-4-2)) var(--size-4-2) var(--size-4-3) 0;
+	padding: 0 0 0 calc(var(--size-4-3) + 3px);
+	vertical-align: top;
+}
+
+.herdr-native-image:disabled {
+	cursor: default;
+}
+
+.herdr-native-image-thumb {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: block;
+	max-height: 160px;
+	max-width: min(240px, 100%);
+	object-fit: contain;
+}
+
+.herdr-native-image:focus-visible .herdr-native-image-thumb {
+	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* The full-size view: the picture scaled down to fit, never up. */
+.herdr-image-modal {
+	width: auto;
+	max-width: 90vw;
+}
+
+.herdr-image-modal-img {
+	display: block;
+	max-height: 80vh;
+	max-width: 100%;
+	margin: 0 auto;
 }
 
 /* What the agent is doing between blocks, from herdr's status (#94). */
@@ -1141,6 +1183,47 @@ svg.svg-icon[class*='herdr-kind-'] text {
 /* Stop, beside Send, only while a turn runs on a kind that can interrupt. */
 .herdr-native-prompt-stop.herdr-is-hidden {
 	display: none;
+}
+
+/* Images waiting to go with the next prompt (#144), above the text area. */
+.herdr-native-prompt-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	padding-bottom: var(--size-4-2);
+}
+
+.herdr-native-prompt-images.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-prompt-image {
+	position: relative;
+}
+
+.herdr-native-prompt-image-thumb {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: block;
+	height: 56px;
+	max-width: 112px;
+	object-fit: cover;
+}
+
+.herdr-native-prompt-image-remove {
+	font-size: var(--font-ui-smaller);
+	height: auto;
+	line-height: 1;
+	padding: 2px 5px;
+	position: absolute;
+	right: 2px;
+	top: 2px;
+}
+
+/* A file dragged over the box may be dropped on it. */
+.herdr-native-prompt-box.herdr-is-drop-target {
+	outline: 2px dashed var(--interactive-accent);
+	outline-offset: 2px;
 }
 
 /* Why the box is disabled, when the view does not say it already. */

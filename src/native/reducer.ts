@@ -19,7 +19,8 @@
  *   as a matter of course, and that line says where it came from
  *   (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`), so it is a prompt.
  *   A prompt written as content blocks — a pasted image — is a prompt too
- *   (#129): its text blocks are the prompt and each image a placeholder entry.
+ *   (#129): its text blocks are the prompt and each image an entry that
+ *   says where its bytes are (#144), never the bytes.
  * - A **steer** — a prompt accepted while the agent was working — never becomes
  *   a `user` line at all. It shows as a `queued_command` attachment with
  *   `origin.kind: "human"`, and belongs inline in the turn already running.
@@ -145,13 +146,21 @@ export interface SteerEntry {
 }
 
 /**
- * A picture the human sent with a prompt (#129), kept as a placeholder: the
- * bytes stay in the transcript, and the view says only that one was there.
- * Placed first in its turn's entries, so it reads under the prompt it came
- * with.
+ * A picture the human sent with a prompt (#129). The bytes stay in the
+ * transcript: the entry says where they are, the record and which of its
+ * images, and the view reads them when it shows the thumbnail (#144), so a
+ * session's pictures are never all held at once. Placed first in its turn's
+ * entries, so it reads under the prompt it came with; a steer's follow the
+ * steer.
  */
 export interface ImageEntry {
 	kind: 'image';
+	/** Stable within the session: the record and the index, for the view's item names. */
+	id: string;
+	/** The uuid of the transcript record that carries the bytes, '' when it had none. */
+	record: string;
+	/** Which of that record's images this is, from 0. */
+	index: number;
 	/** The picture's media type as the transcript gave it, '' when it gave none. */
 	mediaType: string;
 }
@@ -467,32 +476,71 @@ function isBackgroundLaunch(result: string): boolean {
 const INTERRUPTED = /^\[Request interrupted by user/;
 
 /**
- * A prompt written as content blocks rather than a string (#129): what a TUI
- * prompt with a pasted image is (`[{text: "[Image #3]"}, {image}]`, measured
- * on 2.1.283), with no `isMeta`. The text blocks are the prompt; each image is
- * kept as a placeholder. Null for a line that is no prompt: one that carries
- * nothing but tool results, an interruption marker, or a task notification.
+ * The text block Claude Code 2.1.318 writes after a prompt's images, naming
+ * the file each came from (`[Image: source: /tmp/a.png]`, measured
+ * 2026-11-06 for a pasted path and for a stream-json image block alike). It is
+ * the runtime's note for the model, not anything the human typed.
  */
-function blockPrompt(
-	line: Json,
+const IMAGE_SOURCE = /^\[Image: source: [^\n]*\]$/;
+
+/**
+ * Where a terminal Claude's input showed a pasted image (`[Image #3]`): the
+ * picture's stand-in in the text, which the thumbnail replaces.
+ */
+const IMAGE_MARKER = /\[Image #\d+\]/g;
+
+/**
+ * The text and the images of a prompt written as content blocks (#129,
+ * #144). `raw` is the text blocks joined as written, which is what a queue
+ * enqueue holds; `text` is what the human typed, without the stand-ins and
+ * the source notes the images brought along. Each image says where its bytes
+ * are: `record` and its index among the record's images.
+ */
+function promptBlocks(
 	content: readonly unknown[],
-): { text: string; images: ImageEntry[] } | null {
-	if (line.isMeta === true || typeof line.interruptedMessageId === 'string') return null;
+	record: string,
+): { raw: string; text: string; images: ImageEntry[] } {
 	const texts: string[] = [];
 	const images: ImageEntry[] = [];
 	for (const block of content) {
 		if (!isRecord(block)) continue;
 		if (block.type === 'text') {
 			const text = stringField(block, 'text');
-			if (INTERRUPTED.test(text) || taskNotification(text)) continue;
+			if (INTERRUPTED.test(text) || taskNotification(text) || IMAGE_SOURCE.test(text.trim())) continue;
 			if (text.trim()) texts.push(text);
 		} else if (block.type === 'image') {
 			const source = isRecord(block.source) ? block.source : {};
-			images.push({ kind: 'image', mediaType: stringField(source, 'media_type') });
+			const index = images.length;
+			images.push({
+				kind: 'image',
+				id: `${record}#${index}`,
+				record,
+				index,
+				mediaType: stringField(source, 'media_type'),
+			});
 		}
 	}
-	if (texts.length === 0 && images.length === 0) return null;
-	return { text: texts.join('\n'), images };
+	const raw = texts.join('\n');
+	const text = images.length ? raw.replace(IMAGE_MARKER, '').trim() : raw;
+	return { raw, text, images };
+}
+
+/**
+ * A prompt written as content blocks rather than a string (#129): what a TUI
+ * prompt with a pasted image is (`[{text: "[Image #3]"}, {image}]`, measured
+ * on 2.1.283; 2.1.318 adds a `[Image: source: …]` text block per image), with
+ * no `isMeta`. The text blocks are the prompt; each image is an entry. Null
+ * for a line that is no prompt: one that carries nothing but tool results,
+ * an interruption marker, or a task notification.
+ */
+function blockPrompt(
+	line: Json,
+	content: readonly unknown[],
+): { raw: string; text: string; images: ImageEntry[] } | null {
+	if (line.isMeta === true || typeof line.interruptedMessageId === 'string') return null;
+	const blocks = promptBlocks(content, stringField(line, 'uuid'));
+	if (!blocks.raw.trim() && blocks.images.length === 0) return null;
+	return blocks;
 }
 
 /**
@@ -964,22 +1012,32 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
-				const text = stringField(attachment, 'prompt');
+				// A steer with a picture carries content blocks rather than a
+				// string (measured 2026-11-06, 2.1.318): its enqueue holds the text
+				// blocks as written, and the images are entries after it (#144).
+				const blocks = Array.isArray(attachment.prompt)
+					? promptBlocks(attachment.prompt as unknown[], stringField(parsed, 'uuid'))
+					: null;
+				const enqueuedText = blocks ? blocks.raw : stringField(attachment, 'prompt');
+				const text = blocks ? blocks.text : enqueuedText;
+				const images = blocks?.images ?? [];
 				// The steer's own enqueue is spent here: it was pushed when the
 				// prompt was accepted and no `user` line will ever pair with it.
 				// Left behind, it would swallow the next ordinary prompt of the
 				// same words as injected content (#93, #96).
-				const enqueued = pendingQueue.indexOf(text);
+				const enqueued = pendingQueue.indexOf(enqueuedText);
 				if (enqueued !== -1) pendingQueue.splice(enqueued, 1);
 				const turn = draft.current();
 				if (turn) {
 					// A steer is consumed inside the turn already running, and shows
 					// where it entered the context (CONTEXT.md, native-view-design.md).
-					turn.entries.push({ kind: 'steer', text });
+					if (text) turn.entries.push({ kind: 'steer', text });
+					turn.entries.push(...images);
 					draft.touch(turn.id);
 				} else {
 					// Nothing is running: the prompt is simply this turn's prompt.
-					draft.open(stringField(parsed, 'uuid') || `steer-${text.slice(0, 32)}`, text);
+					const opened = draft.open(stringField(parsed, 'uuid') || `steer-${text.slice(0, 32)}`, text);
+					opened.entries.push(...images);
 				}
 				continue;
 			}
@@ -1038,6 +1096,10 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// carries no text of the human's and opens nothing.
 					const sent = blockPrompt(parsed, content);
 					if (sent) {
+						// A prompt queued while Claude worked and sent as a prompt of its
+						// own afterwards: its enqueue, written as the text blocks, is spent.
+						const queued = pendingQueue.indexOf(sent.raw);
+						if (queued !== -1) pendingQueue.splice(queued, 1);
 						const turn = openPrompt(parsed, sent.text);
 						turn.entries.push(...sent.images);
 						continue;
@@ -1263,4 +1325,51 @@ export function lastAssistantText(lines: readonly string[]): string {
 		if (text) return text;
 	}
 	return '';
+}
+
+/** An image's bytes as the transcript holds them (#144). */
+export interface ImageBytes {
+	mediaType: string;
+	/** base64, as written. */
+	data: string;
+}
+
+/**
+ * The bytes of one image a prompt carried (#144): the `index`-th image block
+ * of the record whose uuid is `record`, in a `user` line's content or a
+ * steer's `queued_command` attachment, or null when the transcript has no
+ * such image.
+ *
+ * Only that record is parsed: the file is searched for the uuid as a JSON
+ * string and the line around each hit tried in turn (the uuid also appears as
+ * the next record's `parentUuid`), so reading a thumbnail costs one search,
+ * not a parse of the session.
+ */
+export function transcriptImage(text: string, record: string, index: number): ImageBytes | null {
+	if (!record) return null;
+	const needle = JSON.stringify(record);
+	for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) {
+		const start = text.lastIndexOf('\n', at) + 1;
+		const end = text.indexOf('\n', at);
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text.slice(start, end === -1 ? text.length : end));
+		} catch {
+			continue;
+		}
+		if (!isRecord(parsed) || parsed.uuid !== record) continue;
+		const message = isRecord(parsed.message) ? parsed.message : null;
+		const attachment = isRecord(parsed.attachment) ? parsed.attachment : null;
+		const blocks: unknown[] = Array.isArray(message?.content)
+			? (message.content as unknown[])
+			: Array.isArray(attachment?.prompt)
+				? (attachment.prompt as unknown[])
+				: [];
+		const block = blocks.filter((candidate) => isRecord(candidate) && candidate.type === 'image')[index];
+		const source = isRecord(block) && isRecord(block.source) ? block.source : null;
+		const data = source ? stringField(source, 'data') : '';
+		if (!source || !data) return null;
+		return { mediaType: stringField(source, 'media_type'), data };
+	}
+	return null;
 }

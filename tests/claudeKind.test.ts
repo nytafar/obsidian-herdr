@@ -255,6 +255,28 @@ describe('the claude kind over a fake claude', () => {
 		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' } });
 	});
 
+	it('sends a prompt’s images as image blocks after its text, and says images can go (#144)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const sender = h.kind.promptSender(() => h.client);
+		const image = { mediaType: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' };
+
+		expect(sender.imagesUnavailable?.(paneId)).toBeNull();
+		await sender.send(paneId, 'What is this?', [image]);
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+
+		expect(stdin(h.log)[0]).toEqual({
+			type: 'user',
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'What is this?' },
+					{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+				],
+			},
+		});
+	});
+
 	it('marks a turn that ends while a view looks as seen, and stops when the last view looks away', async () => {
 		const h = harness();
 		const paneId = await started(h);
