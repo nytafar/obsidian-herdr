@@ -165,6 +165,52 @@ export function parseCloseReason(payload: Buffer): HcCloseReason | null {
 	}
 }
 
+/**
+ * hc's headless size, 200x120 unless its config says otherwise: what a
+ * terminal goes back to when its last viewer that is not an observer closes
+ * (#172, `docs/architecture.md`, "Screen access, as built").
+ */
+export const HC_HEADLESS_SIZE = { cols: 200, rows: 120 } as const;
+
+/**
+ * This plugin's open attaches that are not observers, by core and terminal
+ * address (#172). hc 0.1.18 puts a terminal back to its headless size when
+ * the last such viewer closes, even one that never typed or took the size,
+ * and an observer does not hold the size; while another one stays attached,
+ * a closing viewer changes nothing. Shared by every connection in the
+ * plugin, since each terminal tab dials its own.
+ */
+const heldViewers = new Map<string, number>();
+
+function viewerKey(connection: HcConnection, address: string): string {
+	return `${connection.hello?.core?.id ?? ''}\u0000${address}`;
+}
+
+/**
+ * Whether this plugin holds a viewer that is not an observer open on the
+ * terminal at `address` (the record's own `address`), on the core behind
+ * `connection`. Viewers outside the plugin (`hc attach`, herdr-app) are not
+ * known here.
+ */
+export function holdsViewer(connection: HcConnection, address: string): boolean {
+	return (heldViewers.get(viewerKey(connection, address)) ?? 0) > 0;
+}
+
+function holdViewer(connection: HcConnection, record: unknown): () => void {
+	const address = (record as { address?: unknown } | null)?.address;
+	if (typeof address !== 'string' || !address) return () => undefined;
+	const key = viewerKey(connection, address);
+	heldViewers.set(key, (heldViewers.get(key) ?? 0) + 1);
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		const left = (heldViewers.get(key) ?? 1) - 1;
+		if (left > 0) heldViewers.set(key, left);
+		else heldViewers.delete(key);
+	};
+}
+
 export interface AttachOptions {
 	/** `t7`, a name, or `machine/t7`. */
 	terminal: string;
@@ -250,9 +296,11 @@ export async function attachTerminal(
 	const automaticInput = result.automatic_input === true && connection.hasFeature('automatic_input');
 	let open = true;
 	let handle: ChannelHandle | null = null;
+	const release = options.observe ? () => undefined : holdViewer(connection, result.terminal);
 	const end = (reason: HcCloseReason | null, error: Error | null): void => {
 		if (!open) return;
 		open = false;
+		release();
 		handle?.release();
 		handlers.closed(reason, error);
 	};

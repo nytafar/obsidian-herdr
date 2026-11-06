@@ -48,8 +48,6 @@ import {
 	dialogRegion,
 	findClaude,
 	fixtureText,
-	HC_HEADLESS,
-	hcTypingKeys,
 	latestSet,
 	modeOf,
 	namesUser,
@@ -285,19 +283,14 @@ async function openHcTerminal(client: HcClient, tools: Tools, session: Session, 
 	});
 	const address = parseTerminal(result)?.address;
 	if (!address) throw new Error('hc started the terminal without an address');
-	// The plugin's typing attach leaves a terminal at hc's headless size when
-	// it detaches (`hcTypingKeys`), so one held at another size is typed
-	// into key by key.
-	const headless = session.size.cols === HC_HEADLESS.cols && session.size.rows === HC_HEADLESS.rows;
 	const pane: Pane = {
 		session,
 		read: () => screen.read(address),
 		readAnsi: () => Promise.resolve(null),
 		press: (key) => screen.press(address, key),
-		async type(text) {
-			if (headless) return screen.type(address, text);
-			await client.request('terminal.keys', { terminal: address, keys: hcTypingKeys(text) });
-		},
+		// Key by key wherever the text allows, which keeps the size the
+		// session was started at (#172).
+		type: (text) => screen.type(address, text),
 		prompt: (text) => sender.send(address, text),
 		async status() {
 			return parseTerminal(await client.request<unknown>('terminal.get', { terminal: address }))?.status?.state ?? null;

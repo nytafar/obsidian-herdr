@@ -3,9 +3,11 @@
  * one key, type text, on herdr and herdr-core. The facts these pin are in
  * `docs/architecture.md`, "Answering Claude's dialogs from the screen":
  * herdr merges printable keys sent in one `agent.send_keys`, so every press
- * is its own call; hc's `terminal.keys` lowercases letters, so text goes as
- * one AUTOMATIC_INPUT frame on a resumed attach at the terminal's own grid,
- * which never takes the size.
+ * is its own call. On hc, text whose every character has a key name goes
+ * through `terminal.keys` (capitals as `shift+<letter>`), which never touches
+ * the size; other text as one AUTOMATIC_INPUT frame on a resumed attach at the
+ * terminal's own grid, refused where that attach's close would put the
+ * terminal back to 200x120 (#172).
  */
 
 import { readFileSync } from 'node:fs';
@@ -19,7 +21,7 @@ import {
 	type ScreenKey,
 } from '../src/native/screenAccess';
 import { NO_CONNECTION_MESSAGE, type PromptClient } from '../src/native/promptSender';
-import { hcScreenAccess } from '../src/hc/actions';
+import { hcScreenAccess, hcTextKeys } from '../src/hc/actions';
 import { HcClient } from '../src/hc/client';
 import { FrameKind } from '../src/hc/frames';
 import { createHerdrKind } from '../src/runtime/herdrKind';
@@ -168,16 +170,31 @@ describe('herdr-core screen access', () => {
 		]);
 	});
 
-	it('types the exact text as one automatic-input frame at the terminal’s own grid, never terminal.keys or send', async () => {
-		const { core, screen } = await connected({ size: { cols: 233, rows: 61 } });
+	it('types text every character of which has a key name key by key, in one terminal.keys call (#172)', async () => {
+		const { core, screen } = await connected({ size: { cols: 60, rows: 40 } });
+
+		await screen.type('t7', "Mango, Ripe 2; a-b/c\\d 'e' [f] = `g`.");
+
+		// No attach, so nothing that closes and puts the terminal back to 200x120.
+		expect(methods(core)).toEqual(['terminal.keys']);
+		expect(core.calls.find((call) => call.method === 'terminal.keys')?.params).toEqual({
+			terminal: 't7',
+			keys: [...'Mango, Ripe 2; a-b/c\\d \'e\' [f] = `g`.'].map((char) =>
+				char === ' ' ? 'space' : /[A-Z]/.test(char) ? `shift+${char.toLowerCase()}` : char,
+			),
+		});
+	});
+
+	it('types other text as one automatic-input frame at the terminal’s own grid, never send', async () => {
+		const { core, screen } = await connected();
 
 		await screen.type('t7', 'Mango, Ripe 2 — ✔');
 
 		expect(methods(core)).toEqual(['terminal.get', 'terminal.attach']);
 		expect(core.calls.find((call) => call.method === 'terminal.attach')?.params).toEqual({
 			terminal: 't7',
-			cols: 233,
-			rows: 61,
+			cols: 200,
+			rows: 120,
 			history: 0,
 			resumed: true,
 		});
@@ -189,19 +206,28 @@ describe('herdr-core screen access', () => {
 	});
 
 	it('types as DATA at the terminal’s own grid on a core without automatic input', async () => {
-		const { core, screen } = await connected({ features: ['framed', 'attach'], size: { cols: 90, rows: 25 } });
+		const { core, screen } = await connected({ features: ['framed', 'attach'] });
 
-		await screen.type('t7', 'Abc');
+		await screen.type('t7', 'Abc!');
 
-		expect(core.calls.find((call) => call.method === 'terminal.attach')?.params).toMatchObject({ cols: 90, rows: 25 });
+		expect(core.calls.find((call) => call.method === 'terminal.attach')?.params).toMatchObject({ cols: 200, rows: 120 });
 		expect(core.sent(3).map((frame) => frame.kind)).toEqual([FrameKind.Data, FrameKind.Close]);
-		expect(core.sent(3)[0]?.payload.toString()).toBe('Abc');
+		expect(core.sent(3)[0]?.payload.toString()).toBe('Abc!');
 	});
 
 	it('refuses to type, attaching nothing, when the core does not say the terminal’s size', async () => {
 		const { core, screen } = await connected({ size: {} });
 
-		await expect(screen.type('t7', 'x')).rejects.toThrow('did not say the terminal’s size');
+		await expect(screen.type('t7', 'why?')).rejects.toThrow('did not say the terminal’s size');
+		expect(methods(core)).toEqual(['terminal.get']);
+	});
+
+	it('refuses text with no key names on a terminal whose size the typing would change (#172)', async () => {
+		const { core, screen } = await connected({ size: { cols: 60, rows: 40 } });
+
+		await expect(screen.type('t7', 'Ripe — ✔')).rejects.toThrow(
+			'typing here would resize the terminal from 60x40 to 200x120',
+		);
 		expect(methods(core)).toEqual(['terminal.get']);
 	});
 
@@ -269,6 +295,13 @@ describe('screen access through the kind adapter', () => {
 describe('screen text and keys', () => {
 	it('takes no letters as keys: text goes through type', () => {
 		expect(SCREEN_KEYS.some((key) => /^[a-z]$/i.test(key))).toBe(false);
+	});
+
+	it('names on hc only the characters terminal.keys types exactly (#172)', () => {
+		expect(hcTextKeys('Ab 1')).toEqual(['shift+a', 'b', 'space', '1']);
+		expect(hcTextKeys('')).toEqual([]);
+		// hc has no name for a shifted symbol, and types shift+1 as 1.
+		for (const text of ['why?', 'yes!', 'a:b', '(x)', '"q"', 'a_b', 'æ', '—', '✔', '😀']) expect(hcTextKeys(text), text).toBeNull();
 	});
 
 	it('accepts typographic text and refuses C0, DEL and C1', () => {

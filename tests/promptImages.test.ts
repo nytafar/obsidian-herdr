@@ -41,6 +41,8 @@ import { hostEl } from './fixtures/dom';
 import { PromptBox, pastedImages, type ImageFile } from '../src/native/promptBox';
 import { TurnRenderer, type ShownImage } from '../src/native/turnRenderer';
 import { HcClient } from '../src/hc/client';
+import { HcConnection, type HcSpawn } from '../src/hc/connection';
+import { attachTerminal, type HcAttachStream } from '../src/hc/streams';
 import { FrameKind } from '../src/hc/frames';
 import { fakeSpawner, HELLO_RESULT, type FakeCore } from './fixtures/fakeHc';
 
@@ -673,19 +675,35 @@ describe('pasting and dropping images on the prompt box (#144)', () => {
 });
 
 describe('HcClient.input: typing with no Enter, over a short attach (#144)', () => {
-	async function connected(features: string[]): Promise<{ client: HcClient; core: FakeCore }> {
+	async function connected(
+		features: string[],
+		size: { cols: number; rows: number } = { cols: 200, rows: 120 },
+	): Promise<{ client: HcClient; core: FakeCore; spawn: HcSpawn }> {
 		const { spawn, cores } = fakeSpawner((core) => {
 			core.handlers.set('hello', () => ({
 				...HELLO_RESULT,
 				methods: [...HELLO_RESULT.methods, 'terminal.put'],
 				features,
 			}));
-			core.handlers.set('terminal.get', () => ({ address: 't7', cols: 150, rows: 40 }));
+			core.handlers.set('terminal.get', () => ({ address: 't7', ...size }));
 			core.handlers.set('terminal.attach', () => ({ channel: 3, automatic_input: true, terminal: { address: 't7' } }));
+			core.handlers.set('terminal.put', (params) => ({ path: `/state/files/t7/${String(params.name)}`, bytes: 1 }));
+			core.handlers.set('terminal.send', () => ({ turn: 1, status: 'idle', started: true }));
 		});
 		const client = new HcClient({ argv: ['hc', 'connect'], spawn });
 		await client.ping();
-		return { client, core: cores[0] as FakeCore };
+		return { client, core: cores[0] as FakeCore, spawn };
+	}
+
+	/** Another of this plugin's viewers on `t7` (a terminal tab), over its own connection. */
+	async function viewer(spawn: HcSpawn, observe = false): Promise<HcAttachStream> {
+		const connection = new HcConnection({ argv: ['hc', 'connect'], spawn, onExit: () => undefined });
+		await connection.open();
+		return attachTerminal(
+			connection,
+			{ terminal: 't7', cols: 90, rows: 25, observe },
+			{ data: () => undefined, closed: () => undefined },
+		);
 	}
 
 	it('attaches at the terminal’s own grid without taking it, types as automatic input, and closes', async () => {
@@ -695,8 +713,8 @@ describe('HcClient.input: typing with no Enter, over a short attach (#144)', () 
 
 		expect(core.calls.find((call) => call.method === 'terminal.attach')?.params).toEqual({
 			terminal: 't7',
-			cols: 150,
-			rows: 40,
+			cols: 200,
+			rows: 120,
 			history: 0,
 			resumed: true,
 		});
@@ -713,6 +731,48 @@ describe('HcClient.input: typing with no Enter, over a short attach (#144)', () 
 		await client.input('t7', 'x');
 
 		expect(core.sent(3).map((frame) => frame.kind)).toEqual([FrameKind.Data, FrameKind.Close]);
+		client.dispose();
+	});
+
+	it('refuses, attaching nothing, a terminal at another size with nothing of the plugin’s attached (#172)', async () => {
+		const { client, core } = await connected(HELLO_RESULT.features, { cols: 60, rows: 40 });
+
+		await expect(client.input('t7', 'x')).rejects.toThrow('typing here would resize the terminal from 60x40 to 200x120');
+		expect(core.calls.map((call) => call.method)).not.toContain('terminal.attach');
+		client.dispose();
+	});
+
+	it('types into a terminal at another size while a terminal tab of the plugin holds it (#172)', async () => {
+		const { client, core, spawn } = await connected(HELLO_RESULT.features, { cols: 90, rows: 25 });
+		const tab = await viewer(spawn);
+
+		await client.input('t7', 'x');
+		expect(core.calls.find((call) => call.method === 'terminal.attach')?.params).toMatchObject({ cols: 90, rows: 25 });
+
+		// The tab closed: the typing attach would now be the last viewer.
+		tab.detach();
+		core.calls.length = 0;
+		await expect(client.input('t7', 'x')).rejects.toThrow('would resize');
+		expect(core.calls.map((call) => call.method)).toEqual(['terminal.get']);
+		client.dispose();
+	});
+
+	it('does not count an observer, which does not hold the size (#172)', async () => {
+		const { client, spawn } = await connected(HELLO_RESULT.features, { cols: 90, rows: 25 });
+		const tab = await viewer(spawn, true);
+
+		await expect(client.input('t7', 'x')).rejects.toThrow('would resize');
+		tab.detach();
+		client.dispose();
+	});
+
+	it('sends neither the paste nor the text of a prompt with an image when typing would resize (#172)', async () => {
+		const { client, core } = await connected(HELLO_RESULT.features, { cols: 60, rows: 40 });
+
+		await expect(hcPromptSender(() => client).send('t7', 'What colour?', [IMAGE])).rejects.toThrow('would resize');
+		const methods = core.calls.map((call) => call.method);
+		expect(methods).not.toContain('terminal.attach');
+		expect(methods).not.toContain('terminal.send');
 		client.dispose();
 	});
 });
