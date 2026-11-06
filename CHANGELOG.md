@@ -3,7 +3,7 @@
 All notable changes to Herdr for Obsidian. Versions are the bare
 `manifest.json` version, which is also the release tag.
 
-## Unreleased
+## 0.5.0 — 2026-11-06
 
 Runtimes. The plugin now works with herdr-core (`hc`), herdrdev's headless
 runtime, next to the herdr TUI, and the local/remote pair has become a list of
