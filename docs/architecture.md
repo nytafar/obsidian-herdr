@@ -1781,6 +1781,22 @@ prompt; these are the facts a build may rely on.
   `down`, the words, `enter`; Claude replanned under the same slug), plan
   approve with manual edits (herdr and hc); a Bash request matched against
   another command was refused with nothing sent, on both.
+- **Re-checked after the review fixes (#165), 2026-11-06**, through the
+  built driver on herdr 0.9.5 and hc 0.1.18 (`oh-test-fix165*` in `/tmp`,
+  Claude Code 2.1.318, plan mode, haiku), each outcome against the
+  transcript: feedback `2` refused before any read, nothing sent; an answer
+  without the plan's lines refused; reject with feedback typed and sent; on
+  the replanned dialog (same slug, `c.txt` became `d.txt`) the card that
+  showed the first plan was refused, "the plan shown is not the plan the card
+  showed", nothing pressed, and a card from a fresh `inspect` approved it;
+  the Write that followed, under its titled rule, was refused for other
+  content and allowed as read, and `d.txt` held `plan`. Two transcript facts
+  from it: on herdr the rejected `ExitPlanMode` and its result were written
+  only when the replanned dialog was answered, about 15 s later, so the
+  driver reported `moved-on` (on hc they were written at once and it reported
+  `answered`); and in one of three runs the Write call was not in the
+  transcript while its dialog was up, for over a minute, so a Write card may
+  have no call to take its id and input from, as a question's often has not.
 - **The arrows on a question's own-answer row move within the words.** With
   the cursor on the multi-select's text row (typed or not), `right` did not
   change tab on either runtime; `up` to an option row and then `right`
