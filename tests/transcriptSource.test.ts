@@ -373,4 +373,38 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 		expect(seen.length).toBeGreaterThanOrEqual(3);
 		expect(current(seen).every((delivered) => delivered === line)).toBe(true);
 	});
+
+	it('reads at most its budget per look, and then only what the file gained (#147)', async () => {
+		const path = join(dir, 'agent-a1.jsonl');
+		// 100 bytes a line, newline and all.
+		const written = Array.from({ length: 50 }, (_, i) => `{"n":${String(i).padStart(2, '0')},"p":"${'z'.repeat(83)}"}`);
+		writeFileSync(path, `${written.join('\n')}\n`);
+
+		const seen = batches(path, { budgetBytes: 1000 });
+
+		await eventually(() => current(seen).length === written.length);
+		expect(current(seen)).toEqual(written);
+		// Ten lines' worth per look, the rest left for the next.
+		expect(seen.length).toBeGreaterThanOrEqual(5);
+		expect(seen.every((batch) => batch.lines.length <= 10)).toBe(true);
+
+		appendFileSync(path, '{"n":50}\n');
+		await eventually(() => current(seen).length === written.length + 1);
+		expect(seen.at(-1)?.lines).toEqual(['{"n":50}']);
+	});
+});
+
+describe('LocalTranscriptSource.list (#147)', () => {
+	it('lists a folder’s names, and nothing for a folder that is not there', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'herdr-list-'));
+		try {
+			writeFileSync(join(dir, 'agent-a1.jsonl'), '');
+			writeFileSync(join(dir, 'agent-a1.meta.json'), '{}');
+			const source = new LocalTranscriptSource();
+			expect((await source.list(dir))?.sort()).toEqual(['agent-a1.jsonl', 'agent-a1.meta.json']);
+			expect(await source.list(join(dir, 'missing'))).toBeNull();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

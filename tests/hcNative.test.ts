@@ -384,7 +384,10 @@ function line(n: number, pad = ''): string {
 }
 
 describe('the herdr-core transcript source over file.read', () => {
-	function openTail(files: Map<string, string>, options: { maxBytes?: number; pageLines?: number; terminals?: Partial<HcTerminal>[] } = {}) {
+	function openTail(
+		files: Map<string, string>,
+		options: { maxBytes?: number; pageLines?: number; terminals?: Partial<HcTerminal>[]; budgetBytes?: number; pollMs?: number } = {},
+	) {
 		const { timers, fire, delays } = manualTimers();
 		const { reader, calls } = filesReader(files, options.maxBytes);
 		const { scope, state } = sourceScope(options.terminals);
@@ -393,6 +396,8 @@ describe('the herdr-core transcript source over file.read', () => {
 		const problems: (string | null)[] = [];
 		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }), {
 			onProblem: (problem) => problems.push(problem),
+			...(options.budgetBytes ? { budgetBytes: options.budgetBytes } : {}),
+			...(options.pollMs ? { pollMs: options.pollMs } : {}),
 		});
 		const delivered = (): string[] => batches.flatMap((batch) => batch.lines);
 		return { source, stream, batches, delivered, fire, delays, calls, state, problems };
@@ -443,6 +448,28 @@ describe('the herdr-core transcript source over file.read', () => {
 		tail.fire(15_000);
 		await settle();
 		expect(tail.delivered()).toEqual([line(1)]);
+		tail.stream.close();
+	});
+
+	it('reads a file followed on the side within its budget, at its own pace (#147)', async () => {
+		const lines = Array.from({ length: 20 }, (_, i) => line(i + 1, 'x'.repeat(40)));
+		const files = new Map([[PATH_1, `${lines.join('\n')}\n`]]);
+		// Pages of three lines, and a budget of about five lines a look.
+		const tail = openTail(files, { pageLines: 3, budgetBytes: 300, pollMs: 1000 });
+		await settle();
+		// Two pages, then the budget is spent: the rest waits for the next look.
+		expect(tail.delivered()).toEqual(lines.slice(0, 6));
+		// Its own poll, whatever any terminal says.
+		expect(tail.delays()).toEqual([1000]);
+		tail.fire(1000);
+		await settle();
+		// The anchor, read again to check the file, comes out of the page.
+		expect(tail.delivered()).toEqual(lines.slice(0, 11));
+		for (let look = 0; look < 3; look++) {
+			tail.fire(1000);
+			await settle();
+		}
+		expect(tail.delivered()).toEqual(lines);
 		tail.stream.close();
 	});
 

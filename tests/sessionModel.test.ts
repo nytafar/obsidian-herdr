@@ -1304,3 +1304,136 @@ describe('SessionModel: what the runtime says of the session (#160)', () => {
 		handle.release();
 	});
 });
+
+describe('SessionModel: a subagent at work, while a view shows it (#147)', () => {
+	/** A turn that launched an async subagent, which has not reported yet. */
+	const WORKING = [
+		'{"type":"user","message":{"role":"user","content":"Start the long job"},"uuid":"u1"}',
+		'{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_a1","name":"Agent","input":{"description":"Check the styles"}}]},"uuid":"a1"}',
+		'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a1","content":"Async agent launched successfully.\\nagentId: a1f2 (internal ID)"}]},"uuid":"r1"}',
+		'',
+	].join('\n');
+
+	/** The subagent's own lines, as it writes them. */
+	const OWN_LINES = [
+		'{"type":"user","isSidechain":true,"timestamp":"2026-11-06T10:00:00.000Z","message":{"role":"user","content":"Check the styles"}}',
+		'{"type":"assistant","isSidechain":true,"timestamp":"2026-11-06T10:00:01.000Z","message":{"id":"s1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/home/lasse/hvelv/styles.css"}}]}}',
+	];
+
+	/** What a call's progress says, or undefined when none is on it. */
+	function progressOf(model: { state: { turns: { entries: unknown[] }[] } }): unknown {
+		for (const turn of model.state.turns) {
+			for (const entry of turn.entries) {
+				const tool = entry as { kind: string; id?: string; subagent?: unknown };
+				if (tool.kind === 'tool' && tool.id === 'toolu_a1') return tool.subagent;
+			}
+		}
+		return undefined;
+	}
+
+	function registryOf(files: Map<string, string>, grace = 0) {
+		const source = new FakeSource(files);
+		const watcher = new FakeWatcher(PANE);
+		const pending = new Map<number, () => void>();
+		let next = 1;
+		const registry = new SessionModelRegistry({
+			watcher: () => watcher,
+			source: () => source,
+			home: '/home/lasse',
+			subagentGraceMs: grace,
+			subagentTimers: {
+				set: (callback) => {
+					pending.set(next, callback);
+					return next++;
+				},
+				clear: (handle) => {
+					pending.delete(handle as number);
+				},
+			},
+		});
+		const fire = (): void => {
+			for (const [id, callback] of [...pending]) {
+				pending.delete(id);
+				callback();
+			}
+		};
+		const subagentTails = (): FakeTail[] => source.openTails.filter((tail) => tail.path === SUBAGENT_FILE);
+		return { registry, source, watcher, fire, subagentTails };
+	}
+
+	it('reads no subagent’s transcript until a view shows the session', () => {
+		const { registry, source } = registryOf(filesWith([PATH_1, WORKING]));
+		registry.acquire(LOCAL, 'w4:p1');
+		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
+	});
+
+	it('writes what the subagent did last onto its call, as a changed turn', () => {
+		const { registry, subagentTails } = registryOf(filesWith([PATH_1, WORKING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		const hide = handle.model.showSubagents();
+		expect(subagentTails()).toHaveLength(1);
+		expect(progressOf(handle.model)).toEqual({ running: true, latest: null, calls: 0 });
+		subagentTails()[0]?.emit(OWN_LINES);
+		expect(progressOf(handle.model)).toMatchObject({ running: true, calls: 1, latest: { name: 'Read' } });
+		expect(changes.at(-1)).toEqual({ changedTurnIds: ['u1'], reset: false });
+
+		// No view shows it: the tail goes, and so does what it said.
+		hide();
+		expect(subagentTails()).toEqual([]);
+		expect(progressOf(handle.model)).toBeUndefined();
+	});
+
+	it('keeps following for a moment after the last view went, so a tab switched back reads nothing again', () => {
+		const { registry, source, fire, subagentTails } = registryOf(filesWith([PATH_1, WORKING]), 10_000);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents()();
+		expect(subagentTails()).toHaveLength(1);
+		const again = handle.model.showSubagents();
+		fire();
+		expect(subagentTails()).toHaveLength(1);
+		expect(source.tails.filter((tail) => tail.path === SUBAGENT_FILE)).toHaveLength(1);
+		again();
+		fire();
+		expect(subagentTails()).toEqual([]);
+	});
+
+	it('says the subagent stopped when its notification lands, and still reads its report', async () => {
+		const { registry, source, subagentTails } = registryOf(
+			filesWith([PATH_1, WORKING], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents();
+		subagentTails()[0]?.emit(OWN_LINES);
+		source.tails[0]?.emit([
+			`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-06T10:05:00.000Z","content":${JSON.stringify(NOTIFICATION)}}`,
+		]);
+		expect(progressOf(handle.model)).toMatchObject({ running: false });
+		await vi.waitFor(() => expect(reportOf(handle.model)).toBe('The styles are **fine**.'));
+	});
+
+	it('opens a subagent’s transcript on request, followed until it is let go', () => {
+		const { registry, subagentTails } = registryOf(filesWith([PATH_1, WORKING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const transcript = handle.model.subagentTranscript('toolu_a1');
+		expect(subagentTails()).toHaveLength(1);
+		subagentTails()[0]?.emit(OWN_LINES);
+		expect(transcript?.state.turns.map((turn) => turn.prompt)).toEqual(['Check the styles']);
+		transcript?.release();
+		expect(subagentTails()).toEqual([]);
+		expect(handle.model.subagentTranscript('toolu_none')).toBeNull();
+	});
+
+	it('drops the subagents of a session that rotated away', () => {
+		const { registry, watcher, subagentTails } = registryOf(filesWith([PATH_1, WORKING], [PATH_2, TRANSCRIPT_2]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents();
+		expect(subagentTails()).toHaveLength(1);
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		expect(subagentTails()).toEqual([]);
+		expect(handle.model.path).toBe(PATH_2);
+	});
+});

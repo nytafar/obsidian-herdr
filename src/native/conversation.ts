@@ -66,6 +66,30 @@ export interface TaskNotification {
 	kind: 'agent' | 'command' | 'other';
 	/** The file the task wrote, empty when the notification named none. */
 	outputFile: string;
+	/**
+	 * When the notification was written, as an ISO timestamp, where the
+	 * records say (#147): a subagent whose own transcript was written after
+	 * this is working again.
+	 */
+	at?: string;
+}
+
+/**
+ * How far a subagent has got (#147), read out of its own transcript while a
+ * view shows it. Written by the session model, never by a record, onto the
+ * call it hangs under ({@link ToolEntry.subagent}).
+ */
+export interface SubagentProgress {
+	/**
+	 * Whether it is working now: the records say it started and nothing has
+	 * answered it yet, or its own transcript was written after the last
+	 * notification that said it stopped.
+	 */
+	running: boolean;
+	/** The last thing it did: its newest tool call or prose; null before it did anything. */
+	latest: ToolEntry | TextEntry | null;
+	/** How many tool calls it has made so far. */
+	calls: number;
 }
 
 /**
@@ -133,6 +157,11 @@ export interface ToolEntry {
 	 * {@link ToolEntry.result}.
 	 */
 	report: string | null;
+	/**
+	 * The subagent this call started or resumed, as far as its own transcript
+	 * has been read (#147). Absent while no view follows it.
+	 */
+	subagent?: SubagentProgress;
 	/**
 	 * The call this one continues, by id, where the agent splits one piece of
 	 * work across calls (a yielded cell, then a `wait` on it). Absent for a
@@ -530,6 +559,18 @@ export class TurnDraft {
 		return null;
 	}
 
+	/** The id of the newest tool call `match` takes, or null when it takes none. */
+	findToolId(match: (entry: ToolEntry) => boolean): string | null {
+		for (let i = this.turns.length - 1; i >= 0; i--) {
+			const entries = this.turns[i]?.entries ?? [];
+			for (let j = entries.length - 1; j >= 0; j--) {
+				const entry = entries[j];
+				if (entry?.kind === 'tool' && match(entry)) return entry.id;
+			}
+		}
+		return null;
+	}
+
 	/** The turn holding the tool call `toolUseId`, or null when none does. */
 	turnOf(toolUseId: string): Turn | null {
 		for (let i = this.turns.length - 1; i >= 0; i--) {
@@ -617,6 +658,28 @@ export function attachSubagentReport<S extends ConversationState>(
 	const turn = entry ? draft.turnOf(toolUseId) : null;
 	if (entry && turn) {
 		entry.report = report;
+		draft.touch(turn.id);
+	}
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+}
+
+/**
+ * A subagent's progress put on the call it hangs under, or taken off it
+ * (`undefined`) once nothing follows it (#147). Pure, like
+ * {@link attachSubagentReport}; the session model reads the subagent's file.
+ */
+export function attachSubagentProgress<S extends ConversationState>(
+	state: S,
+	toolUseId: string,
+	progress: SubagentProgress | undefined,
+): ReduceResult<S> {
+	const draft = new TurnDraft(state.turns);
+	const entry = draft.toolEntry(toolUseId);
+	const turn = entry ? draft.turnOf(toolUseId) : null;
+	if (entry && turn) {
+		if (progress) entry.subagent = progress;
+		else delete entry.subagent;
 		draft.touch(turn.id);
 	}
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();

@@ -21,9 +21,9 @@
 import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
 import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
-import { TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
+import { subagentLabel, TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
 import { TodoChip } from './todoList';
-import type { Turn } from './conversation';
+import type { ToolEntry, Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
@@ -42,6 +42,8 @@ import { FoldMemory } from './foldMemory';
 import { ScrollFollower } from './scrollFollower';
 import { TurnRenderer, type ShownImage } from './turnRenderer';
 import { ImageModal } from './imageModal';
+import { SubagentModal } from './subagentModal';
+import type { SubagentTranscript } from './subagents';
 import { WaitingCardView } from './waitingCardView';
 import { SessionLines } from './sessionLines';
 import { registerViewLinks } from './viewLinks';
@@ -129,6 +131,11 @@ export interface NativePaneSurfaceOptions {
 	 * passes its own.
 	 */
 	openImage?: (image: ShownImage) => void;
+	/**
+	 * Shows a subagent's transcript, held for as long as it is shown (#147).
+	 * Defaults to a modal; a test passes its own.
+	 */
+	openSubagent?: (title: string, transcript: SubagentTranscript) => void;
 }
 
 /**
@@ -186,6 +193,10 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private latestTodo: LatestTodo | null = null;
 	/** Takes the last find's highlight off (#145); null when nothing is marked. */
 	private clearFindMark: (() => void) | null = null;
+	/** Whether the tab is shown; a hidden one follows no subagent (#147). */
+	private visible = true;
+	/** Lets go of the session's subagents, while this shows them (#147). */
+	private subagentHold: (() => void) | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -248,6 +259,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			toolTable: () => this.model?.format,
 			openImage: (image) =>
 				this.options.openImage ? this.options.openImage(image) : new ImageModal(this.options.app, image).open(),
+			openSubagent: (call) => this.openSubagent(call),
 		});
 		this.todo = new TodoChip(root);
 		this.lines = new SessionLines(root, {
@@ -314,7 +326,50 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * tab whose reader had scrolled up is left exactly where they left it (#106).
 	 */
 	async setVisible(visible: boolean): Promise<void> {
+		this.visible = visible;
+		this.holdSubagents();
 		if (visible) this.follower?.pin();
+	}
+
+	/**
+	 * Says to the model that this shows its subagents while the tab is
+	 * attached and shown, and stops saying so otherwise (#147): a hidden tab
+	 * keeps its model, not the subagents' tails.
+	 */
+	private holdSubagents(): void {
+		const model = this.handle?.model;
+		const wanted = !!model && this.visible && this.rootEl !== null;
+		if (wanted && !this.subagentHold) this.subagentHold = model?.showSubagents?.() ?? null;
+		else if (!wanted && this.subagentHold) {
+			this.subagentHold();
+			this.subagentHold = null;
+		}
+	}
+
+	/** Opens the transcript of the subagent working under `call` (#147). */
+	private openSubagent(call: ToolEntry): void {
+		const transcript = this.model?.subagentTranscript?.(call.id) ?? null;
+		if (!transcript) {
+			this.notify('This subagent’s transcript cannot be read from here.');
+			return;
+		}
+		const title = `Subagent: ${subagentLabel(call)}`;
+		if (this.options.openSubagent) {
+			this.options.openSubagent(title, transcript);
+			return;
+		}
+		new SubagentModal(this.options.app, title, transcript, {
+			presentation: this.options.presentation,
+			vaultPath: this.options.vaultPath,
+			// Not the view's renderer: nothing here moves the view's scroll.
+			renderMarkdown: (markdown, el, component) =>
+				MarkdownRenderer.render(this.options.app, markdown, el, this.sourcePath(), component).then(() =>
+					linkVaultUris(el, (uri) => this.resolveUri(uri)),
+				),
+			resolveUri: (uri) => this.resolveUri(uri),
+			toolTable: () => this.model?.format,
+			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
+		}).open();
 	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
@@ -450,12 +505,15 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.handle = this.options.models.acquire(this.identity.endpointId, this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
 		}
+		this.holdSubagents();
 		this.renderAll();
 		this.report();
 	}
 
 	/** Gives the model back. Safe to call when nothing is held. */
 	private unbind(): void {
+		this.subagentHold?.();
+		this.subagentHold = null;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.handle?.release();

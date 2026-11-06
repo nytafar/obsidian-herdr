@@ -1596,6 +1596,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
+ * A subagent at work (#147): what it is and what it did last, under the group
+ * that holds its call, marked as live the way a working group is.
+ */
+.herdr-native-subagent {
+	border-left: 2px solid var(--interactive-accent);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+	min-width: 0;
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-subagent-head {
+	column-gap: var(--size-4-2);
+	display: flex;
+	flex-wrap: wrap;
+}
+
+.herdr-native-subagent-title {
+	color: var(--text-normal);
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.herdr-native-subagent-activity {
+	font-family: var(--font-monospace);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-subagent-open {
+	font-size: var(--font-ui-smaller);
+	margin-top: var(--size-4-1);
+}
+
+/* Its transcript, opened on request: the turns scroll, the status stays. */
+.herdr-subagent-modal {
+	max-width: 90vw;
+	width: var(--file-line-width);
+}
+
+.herdr-subagent-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-subagent-status.is-live {
+	color: var(--text-accent);
+}
+
+.herdr-subagent-turns {
+	max-height: 70vh;
+	overflow-y: auto;
+}
+
+/*
  * A note the agent changed and a source it read: the two things that stay in
  * the text, at the point in the turn where they happened (#95).
  */
@@ -1640,7 +1698,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	.herdr-native-prompt,
 	.herdr-native-steer,
 	.herdr-native-thought,
-	.herdr-native-report {
+	.herdr-native-report,
+	.herdr-native-subagent {
 		padding-left: var(--size-4-2);
 	}
 

@@ -171,7 +171,7 @@ export class HcTranscriptSource implements TranscriptSource {
 	}
 
 	open(path: string, onLines: TranscriptLines, options: TailOptions = {}): TranscriptStream {
-		const tail = new HcTranscriptTail(this, path, onLines, () => this.closed(tail), options.onProblem);
+		const tail = new HcTranscriptTail(this, path, onLines, () => this.closed(tail), options);
 		this.tails.add(tail);
 		this.unsubscribe ??= this.scope.onIngested((address, type) => this.onIngested(address, type));
 		tail.start();
@@ -234,8 +234,12 @@ class HcTranscriptTail implements TranscriptStream {
 		readonly path: string,
 		private readonly onLines: TranscriptLines,
 		private readonly onClose: () => void,
-		private readonly onProblem?: (problem: string | null) => void,
+		private readonly options: TailOptions = {},
 	) {}
+
+	private onProblem(problem: string | null): void {
+		this.options.onProblem?.(problem);
+	}
 
 	/** The problem said last, so each change is said once. */
 	private problem: string | null = null;
@@ -243,7 +247,7 @@ class HcTranscriptTail implements TranscriptStream {
 	private sayProblem(problem: string | null): void {
 		if (this.closedFlag || problem === this.problem) return;
 		this.problem = problem;
-		this.onProblem?.(problem);
+		this.onProblem(problem);
 	}
 
 	start(): void {
@@ -286,7 +290,9 @@ class HcTranscriptTail implements TranscriptStream {
 
 	private schedulePoll(): void {
 		if (this.closedFlag) return;
-		const ms = this.working() ? this.source.workingPollMs : this.source.idlePollMs;
+		// A file followed on the side (#147) names its own pace: no terminal's
+		// label names a subagent's transcript, so no status says it is written.
+		const ms = this.options.pollMs ?? (this.working() ? this.source.workingPollMs : this.source.idlePollMs);
 		this.poll = this.source.timers.set(() => {
 			this.poll = null;
 			void this.pump();
@@ -321,7 +327,10 @@ class HcTranscriptTail implements TranscriptStream {
 		let verified = false;
 		// The head is compared once per pump, and only when something is new.
 		let headChecked = false;
-		while (!this.closedFlag) {
+		// What this pump may still deliver (#147); a page that crosses it is the
+		// last, and the rest waits for the next kick or poll.
+		let budget = this.options.budgetBytes ? Math.max(1, this.options.budgetBytes) : Infinity;
+		while (!this.closedFlag && budget > 0) {
 			const anchored = !verified && this.anchor !== null;
 			const offset = anchored ? this.complete : this.complete + 1;
 			let page: HcFileLines;
@@ -391,6 +400,7 @@ class HcTranscriptTail implements TranscriptStream {
 			this.complete += whole.length;
 			this.anchor = whole[whole.length - 1] ?? null;
 			this.deliver(whole.map((line) => line.slice(0, -1)).filter((line) => line !== ''));
+			for (const line of whole) budget -= line.length;
 			if (page.last >= page.lines) break;
 		}
 		if (this.restartPending && !this.closedFlag) this.deliver([]);

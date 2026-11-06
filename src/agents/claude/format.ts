@@ -6,7 +6,8 @@
  * file `./planFile.ts`, the `/` list `./commands.ts` and its dialogs as the
  * screen shows them `./screenDialog.ts`. What is here is the
  * rest: the dialogs Claude blocks on as tool calls (`AskUserQuestion`,
- * `ExitPlanMode`), its tool names and where a subagent's report is.
+ * `ExitPlanMode`), its tool names and where a subagent's report is. Its
+ * subagents, for following one while it works, are `./subagents.ts`.
  */
 
 import type { AgentFormat, PendingCall, PlanReader } from '../format';
@@ -17,6 +18,7 @@ import { builtinCatalog, LocalCommandCatalog } from './commands';
 import { subagentTranscript, transcriptPath } from './paths';
 import { PlanTracker, planFilePath } from './planFile';
 import { parseClaudeScreen } from './screenDialog';
+import { claudeSubagents, claudeWrittenAt } from './subagents';
 import {
 	CLAUDE_EFFORTS,
 	CLAUDE_MODES,
@@ -156,6 +158,8 @@ export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 			return [notification.outputFile, subagentTranscript(transcript, notification.taskId)].filter(Boolean);
 		},
 		read: lastAssistantText,
+		subagents: claudeSubagents,
+		writtenAt: claudeWrittenAt,
 	},
 	plan: planReader,
 	toolKinds: TOOL_KINDS,
