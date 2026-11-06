@@ -78,7 +78,7 @@ export class ClaudeActions implements RuntimeActions {
 
 	async startAgentHere(folderAbsPath: string): Promise<StartedClaudeAgent | null> {
 		if (!this.host.connection()) {
-			this.host.notice('Herdr: not connected to Claude run by Obsidian yet.');
+			this.host.notice('Gjetr: not connected to Claude run by Obsidian yet.');
 			return null;
 		}
 		const settings = this.host.settings();
@@ -92,10 +92,10 @@ export class ClaudeActions implements RuntimeActions {
 		try {
 			paneId = this.agents.start(this.runtimeId, folderAbsPath, name).id;
 		} catch (error) {
-			this.host.notice(`Herdr: could not start Claude. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not start Claude. ${describe(error)}`);
 			return null;
 		}
-		this.host.notice(`Herdr: started Claude "${name}" in ${label}`);
+		this.host.notice(`Gjetr: started Claude "${name}" in ${label}`);
 		if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
 		return { paneId, name };
 	}
@@ -108,7 +108,7 @@ export class ClaudeActions implements RuntimeActions {
 		try {
 			await this.agents.stop(this.runtimeId, paneId);
 		} catch (error) {
-			this.host.notice(`Herdr: could not stop the agent. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not stop the agent. ${describe(error)}`);
 		}
 		return false;
 	}
@@ -119,7 +119,7 @@ export class ClaudeActions implements RuntimeActions {
 		try {
 			this.agents.resume(this.runtimeId, paneId);
 		} catch (error) {
-			this.host.notice(`Herdr: could not resume the agent. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not resume the agent. ${describe(error)}`);
 		}
 	}
 
@@ -127,7 +127,7 @@ export class ClaudeActions implements RuntimeActions {
 		try {
 			await this.agents.forget(this.runtimeId, paneId);
 		} catch (error) {
-			this.host.notice(`Herdr: could not forget the agent. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not forget the agent. ${describe(error)}`);
 			return false;
 		}
 		this.host.detachTerminalLeaves(paneId, endpointId);
@@ -165,7 +165,7 @@ export class ClaudeActions implements RuntimeActions {
 	}
 
 	private unsupported(what: string): null {
-		this.host.notice(`Herdr: ${what} is not available for Claude run by Obsidian.`);
+		this.host.notice(`Gjetr: ${what} is not available for Claude run by Obsidian.`);
 		return null;
 	}
 }

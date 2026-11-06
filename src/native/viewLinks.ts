@@ -58,7 +58,7 @@ function onLinkClick(options: ViewLinksOptions, event: MouseEvent, button: numbe
 		splitBefore: options.noteSplitBefore?.() ?? false,
 	}).catch((error: unknown) => {
 		const reason = error instanceof Error ? error.message : String(error);
-		options.notify(`Herdr: could not open ${linktext} (${reason})`);
+		options.notify(`Gjetr: could not open ${linktext} (${reason})`);
 	});
 }
 

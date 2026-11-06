@@ -22,12 +22,24 @@ if (!vault) {
 	console.error('usage: node scripts/install-dev.mjs <vault path>');
 	process.exit(1);
 }
-const target = join(resolve(vault), '.obsidian', 'plugins', 'herdr');
+// The plugin id is `gjetr` (it was `herdr` through 0.5, a name taken in the
+// community directory). The old folder is left alone: the plugin copies its
+// settings from there on first load.
+const target = join(resolve(vault), '.obsidian', 'plugins', 'gjetr');
+const legacy = join(resolve(vault), '.obsidian', 'plugins', 'herdr');
 if (existsSync(target) || lstatSafe(target)) rmSync(target, { recursive: true, force: true });
 mkdirSync(target, { recursive: true });
 for (const file of ARTIFACTS) symlinkSync(join(repo, file), join(target, file));
 writeFileSync(join(target, '.hotreload'), '');
 console.log(`linked ${ARTIFACTS.join(', ')} into ${target}`);
+if (lstatSafe(join(legacy, 'manifest.json'))?.isSymbolicLink()) {
+	// A dev install from before the rename links the same manifest, now id
+	// `gjetr`, so Obsidian would see the plugin twice. Not removed here: its
+	// data.json is what the first load under the new id copies.
+	console.warn(
+		`note: ${legacy} is an older dev install of this plugin. Load the plugin once so it copies the settings, then remove that folder.`,
+	);
+}
 
 function lstatSafe(path) {
 	try {

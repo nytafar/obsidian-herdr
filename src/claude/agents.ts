@@ -1021,7 +1021,7 @@ export class ClaudeAgents {
 				if (event.isError && !event.terminalReason.startsWith('aborted')) {
 					const reason = event.terminalReason ? ` (${event.terminalReason})` : '';
 					this.host.notice(
-						`Herdr: ${record.stored.name || 'Claude'}: ${event.message || event.subtype || 'the turn failed'}${reason}`,
+						`Gjetr: ${record.stored.name || 'Claude'}: ${event.message || event.subtype || 'the turn failed'}${reason}`,
 					);
 				}
 				this.update(runtimeId, record);
@@ -1080,7 +1080,7 @@ export class ClaudeAgents {
 			}
 		}
 		if (!info.stopping && info.code !== 0) {
-			this.host.notice(`Herdr: ${record.stored.name || 'Claude'} stopped: ${info.error}`);
+			this.host.notice(`Gjetr: ${record.stored.name || 'Claude'} stopped: ${info.error}`);
 		}
 		this.update(runtimeId, record);
 	}
@@ -1260,7 +1260,7 @@ export class ClaudeAgents {
 			const message = asError(error).message;
 			for (const prompt of queued) prompt.reject(new Error(message));
 			// Nobody waits on a send to hear it otherwise.
-			if (queued.length === 0) this.host.notice(`Herdr: ${record.stored.name || 'Claude'} could not start: ${message}`);
+			if (queued.length === 0) this.host.notice(`Gjetr: ${record.stored.name || 'Claude'} could not start: ${message}`);
 			this.update(runtimeId, record);
 			return;
 		}
@@ -1419,7 +1419,7 @@ export class ClaudeAgents {
 		if (!record.switching) record.want = 'stream';
 		if (!info.stopping && !fallback && info.code !== 0) {
 			const last = output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? info.error;
-			this.host.notice(`Herdr: ${record.stored.name || 'Claude'} stopped: ${last.slice(0, 200)}`);
+			this.host.notice(`Gjetr: ${record.stored.name || 'Claude'} stopped: ${last.slice(0, 200)}`);
 		}
 		this.update(runtimeId, record);
 	}

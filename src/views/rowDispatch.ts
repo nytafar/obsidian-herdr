@@ -148,7 +148,7 @@ const EVERYTHING: RowCapabilities = { rename: true, close: true, focus: true };
 
 /** Said when a modal is answered after the herdr under it has changed. */
 export const STALE_TARGET_NOTICE =
-	'Herdr: the connection changed while the dialog was open, so nothing was done.';
+	'Gjetr: the connection changed while the dialog was open, so nothing was done.';
 
 /** Keys that activate a focused row, mirroring what a pointer does. */
 const ACTIVATION_KEYS = new Set(['Enter', ' ']);

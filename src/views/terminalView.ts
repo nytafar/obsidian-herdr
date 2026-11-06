@@ -688,7 +688,7 @@ export class TerminalView extends ItemView {
 			// and free: `arm()` is a no-op while the leaf is visible.
 			onStarted: () => this.visibility?.arm(),
 			onRendererError: (error) => {
-				new Notice(`Herdr: terminal renderer failed to start (${String(error)})`);
+				new Notice(`Gjetr: terminal renderer failed to start (${String(error)})`);
 			},
 			onIdentityChanged: ({ switchedPane }) => {
 				// Another agent's name has nothing to do with this one's.
@@ -1269,7 +1269,7 @@ export class TerminalView extends ItemView {
 	 */
 	private detached(what: string, run: () => Promise<void>): void {
 		run().catch((error: unknown) => {
-			console.warn(`Herdr: terminal ${what} failed`, error);
+			console.warn(`Gjetr: terminal ${what} failed`, error);
 		});
 	}
 

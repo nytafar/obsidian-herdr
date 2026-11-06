@@ -135,7 +135,7 @@ export const IMAGE_FILE_GRACE_MS = 60_000;
  * removed a minute after their prompt went: Claude read them when the paste
  * landed, and a screenshot should not outlive its prompt in `/tmp`.
  */
-export function localImageFiles(dir: string = join(tmpdir(), 'obsidian-herdr-images')): ImageFiles {
+export function localImageFiles(dir: string = join(tmpdir(), 'gjetr-images')): ImageFiles {
 	return {
 		async write(images) {
 			await mkdir(dir, { recursive: true, mode: 0o700 });

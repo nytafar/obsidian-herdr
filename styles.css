@@ -930,9 +930,9 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * Grows with what is typed and stops at about half the view. `field-sizing`
  * does the growing, so no height is ever measured or written in TypeScript;
  * where it is unsupported the `rows` attribute sizes the box and `resize`
- * still gives the user the drag. The `vh` cap is the fallback for a build
- * without container queries; `cqh` overrides it where they work, the container
- * being `.herdr-native-view`.
+ * still gives the user the drag. The cap is half the container's height, the
+ * container being `.herdr-native-view`; outside one, `cqh` falls back to the
+ * viewport, as the spec defines.
  */
 .herdr-native-prompt-input {
 	field-sizing: content;
@@ -941,7 +941,6 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	/* A text area's own minimum is its `cols`, wider than a narrow sidebar (#146). */
 	min-width: 0;
 	font-family: var(--font-text);
-	max-height: 50vh;
 	max-height: 50cqh;
 	min-height: 3em;
 	resize: vertical;
@@ -1816,31 +1815,32 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 /*
  * Dim applies to the foreground only, which xterm does by generating a
- * transparent foreground colour; the opacity here has to be reset for that, and
- * the generated rule is what it has to beat.
+ * transparent foreground colour, so the cell itself keeps full opacity. xterm's
+ * own sheet forces it; the plugin does not load that sheet, so specificity is
+ * enough here.
  */
-.herdr-terminal-host .xterm-dim {
-	opacity: 1 !important;
+.herdr-terminal-host .xterm .xterm-dim {
+	opacity: 1;
 }
 
-.herdr-terminal-host .xterm-underline-1 { text-decoration: underline; }
-.herdr-terminal-host .xterm-underline-2 { text-decoration: double underline; }
-.herdr-terminal-host .xterm-underline-3 { text-decoration: wavy underline; }
-.herdr-terminal-host .xterm-underline-4 { text-decoration: dotted underline; }
-.herdr-terminal-host .xterm-underline-5 { text-decoration: dashed underline; }
+.herdr-terminal-host .xterm-underline-1 { text-decoration-line: underline; text-decoration-style: solid; }
+.herdr-terminal-host .xterm-underline-2 { text-decoration-line: underline; text-decoration-style: double; }
+.herdr-terminal-host .xterm-underline-3 { text-decoration-line: underline; text-decoration-style: wavy; }
+.herdr-terminal-host .xterm-underline-4 { text-decoration-line: underline; text-decoration-style: dotted; }
+.herdr-terminal-host .xterm-underline-5 { text-decoration-line: underline; text-decoration-style: dashed; }
 
 .herdr-terminal-host .xterm-overline {
-	text-decoration: overline;
+	text-decoration-line: overline;
 }
 
-.herdr-terminal-host .xterm-overline.xterm-underline-1 { text-decoration: overline underline; }
-.herdr-terminal-host .xterm-overline.xterm-underline-2 { text-decoration: overline double underline; }
-.herdr-terminal-host .xterm-overline.xterm-underline-3 { text-decoration: overline wavy underline; }
-.herdr-terminal-host .xterm-overline.xterm-underline-4 { text-decoration: overline dotted underline; }
-.herdr-terminal-host .xterm-overline.xterm-underline-5 { text-decoration: overline dashed underline; }
+.herdr-terminal-host .xterm-overline.xterm-underline-1 { text-decoration-line: overline underline; text-decoration-style: solid; }
+.herdr-terminal-host .xterm-overline.xterm-underline-2 { text-decoration-line: overline underline; text-decoration-style: double; }
+.herdr-terminal-host .xterm-overline.xterm-underline-3 { text-decoration-line: overline underline; text-decoration-style: wavy; }
+.herdr-terminal-host .xterm-overline.xterm-underline-4 { text-decoration-line: overline underline; text-decoration-style: dotted; }
+.herdr-terminal-host .xterm-overline.xterm-underline-5 { text-decoration-line: overline underline; text-decoration-style: dashed; }
 
 .herdr-terminal-host .xterm-strikethrough {
-	text-decoration: line-through;
+	text-decoration-line: line-through;
 }
 
 /* The Claude session hook's review modal (ADR-0006): the exact script and entry it writes. */

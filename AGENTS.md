@@ -8,7 +8,10 @@ plugin) holds general plugin conventions.
 
 ## Hard rules
 
-- Plugin id `herdr`, name `Herdr`, `isDesktopOnly: true`. Ship only `main.js`,
+- Plugin id `gjetr`, name `Gjetr`, `isDesktopOnly: true`; `herdr` was the id
+  through 0.5, so `src/legacyData.ts` adopts our old `plugins/herdr/data.json` once. Protocol
+  names (view types, CSS classes, `obsidian-herdr.*` labels, the hook file)
+  keep their herdr prefix. Ship only `main.js`,
   `manifest.json`, `styles.css`. No helper files, no Python, no native addons.
 - Each runtime kind has its own seams, over a socket or child_process pipes,
   never a native addon, and never a PTY except the one exception below.
@@ -72,7 +75,9 @@ plugin) holds general plugin conventions.
 
 - Dev vault `/Users/lasse/Vaults/hvelv` is Lasse's live vault. Install with
   `npm run install-dev -- ~/Vaults/hvelv`, which symlinks **only** `main.js`,
-  `manifest.json` and `styles.css`.
+  `manifest.json` and `styles.css` into `.obsidian/plugins/gjetr/`. The old
+  `.obsidian/plugins/herdr/` dev install is left for the settings migration
+  to read; remove it by hand once the plugin has loaded as `gjetr`.
 - **Never symlink the repository root into `.obsidian/plugins/`.** Obsidian
   enumerates plugin folders at startup, and the repo carries `node_modules` and
   `.git`, about 37,000 files. Doing so hangs the vault on "Loading vault..."

@@ -694,7 +694,7 @@ describe('closePane (issue #35)', () => {
 		});
 		expect(await f.actions.closePane('w4:p3', 'local')).toBe(false);
 		expect(f.notices).toEqual([
-			'Herdr: could not close the pane. pane w4:p3 is the last pane (pane_close_refused)',
+			'Gjetr: could not close the pane. pane w4:p3 is the last pane (pane_close_refused)',
 		]);
 		expect(f.forgotten).toEqual([]);
 	});
@@ -715,7 +715,7 @@ describe('closePane (issue #35)', () => {
 		expect(f.forgotten).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
 		expect(f.detached).toEqual([{ paneId: 'w4:p3', endpointId: 'local' }]);
 		expect(f.notices).toEqual([
-			'Herdr: that pane is already gone, so its row was removed from the list.',
+			'Gjetr: that pane is already gone, so its row was removed from the list.',
 		]);
 	});
 
@@ -785,7 +785,7 @@ describe('renameAgent (issue #35)', () => {
 		expect(f.calls.map((call) => call.method)).toEqual(['agent.rename', 'pane.rename']);
 		expect(f.calls[1]?.params).toEqual({ pane_id: 'w4:p3', label: 'notes-2' });
 		expect(f.notices).toEqual([
-			'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
+			'Gjetr: this herdr cannot rename agents, so the pane label was set instead.',
 		]);
 	});
 
@@ -817,7 +817,7 @@ describe('renameAgent (issue #35)', () => {
 		expect(await f.actions.renameAgent('w4:p3', 'notes')).toBeNull();
 		expect(f.calls.map((call) => call.method)).toEqual(['agent.rename']);
 		expect(f.notices).toEqual([
-			'Herdr: could not rename the agent. name in use (agent_name_taken)',
+			'Gjetr: could not rename the agent. name in use (agent_name_taken)',
 		]);
 	});
 
@@ -829,14 +829,14 @@ describe('renameAgent (issue #35)', () => {
 			},
 		});
 		expect(await f.actions.renameAgent('w4:p3', 'notes')).toBeNull();
-		expect(f.notices).toEqual(['Herdr: could not rename the pane. gone (pane_not_found)']);
+		expect(f.notices).toEqual(['Gjetr: could not rename the pane. gone (pane_not_found)']);
 	});
 
 	it('refuses an empty name without touching the wire', async () => {
 		const f = fake({ responses: { 'agent.rename': {} } });
 		expect(await f.actions.renameAgent('w4:p3', '   ')).toBeNull();
 		expect(f.calls).toEqual([]);
-		expect(f.notices).toEqual(['Herdr: the name cannot be empty.']);
+		expect(f.notices).toEqual(['Gjetr: the name cannot be empty.']);
 	});
 });
 
