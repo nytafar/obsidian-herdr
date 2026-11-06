@@ -337,7 +337,7 @@ describe('the flow', () => {
 			const host = fakeHost();
 			host.copy = () => Promise.reject(new Error('denied'));
 			await new GetStartedFlow(host).copyInstaller();
-			expect(host.notices).toEqual(['Herdr: could not copy the command. denied']);
+			expect(host.notices).toEqual(['Gjetr: could not copy the command. denied']);
 		});
 
 		it('runs the installer in a shell tab in the vault, adding the claude runtime silently', async () => {

@@ -87,7 +87,7 @@ function planFor(pane: PaneState, endpointId: string, transition: NotifiedTransi
 		paneId: pane.paneId,
 		endpointId,
 		transition,
-		title: `Herdr: ${name} ${verb}`,
+		title: `Gjetr: ${name} ${verb}`,
 		body: pane.title.trim() || pane.cwd || pane.paneId,
 		notice: false,
 		os: false,
@@ -201,5 +201,5 @@ const DEGRADED_WITHOUT: Record<string, string> = {
 /** Notice text for an optional method this herdr rejected as unknown (PRD M3). */
 export function unsupportedMethodMessage(method: string): string {
 	const degraded = DEGRADED_WITHOUT[method] ?? 'the feature that needs it stays off';
-	return `Herdr: this herdr does not support ${method}; ${degraded}.`;
+	return `Gjetr: this herdr does not support ${method}; ${degraded}.`;
 }

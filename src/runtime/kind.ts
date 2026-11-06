@@ -407,7 +407,7 @@ export function unavailableKind(
 			throw refuse();
 		},
 		createActions: (host) => {
-			const say = (): void => host.notice(`Herdr: ${reason}.`);
+			const say = (): void => host.notice(`Gjetr: ${reason}.`);
 			return {
 				newTabHere: () => Promise.resolve(say()),
 				splitHere: () => Promise.resolve(say()),

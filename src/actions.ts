@@ -146,7 +146,7 @@ export async function agentToStart(
 	const chosen = await host.defaultAgent();
 	if (chosen) return chosen;
 	const where = host.runtime().target === 'ssh' ? `on ${host.runtime().host}` : 'on this machine';
-	host.notice(`Herdr: no agent CLI was found ${where}. Add one under Settings → Herdr → Agents.`);
+	host.notice(`Gjetr: no agent CLI was found ${where}. Add one under Settings → Gjetr → Agents.`);
 	return null;
 }
 
@@ -408,7 +408,7 @@ export class HerdrActions {
 				label,
 				focus: true,
 			});
-			this.host.notice(`Herdr: new tab "${result.tab?.label ?? label}"`);
+			this.host.notice(`Gjetr: new tab "${result.tab?.label ?? label}"`);
 			return result.tab ?? null;
 		} catch (error) {
 			this.reportFailure('create a tab', error);
@@ -431,7 +431,7 @@ export class HerdrActions {
 				cwd: folderAbsPath,
 				focus: true,
 			});
-			this.host.notice(`Herdr: split in ${folderName(folderAbsPath)}`);
+			this.host.notice(`Gjetr: split in ${folderName(folderAbsPath)}`);
 			return result.pane ?? null;
 		} catch (error) {
 			this.reportFailure('split a pane', error);
@@ -462,7 +462,7 @@ export class HerdrActions {
 		// `agent.start` runs the kind's own program; a wrapper needs herdr-core.
 		if (agent.command || agent.template) {
 			this.host.notice(
-				`Herdr: herdr starts ${agent.kind ?? 'an agent'} with its own program, so "${agentLabel(agent)}" cannot start here.`,
+				`Gjetr: herdr starts ${agent.kind ?? 'an agent'} with its own program, so "${agentLabel(agent)}" cannot start here.`,
 			);
 			return null;
 		}
@@ -500,7 +500,7 @@ export class HerdrActions {
 			paneId = await this.waitForPane(tabId, created.root_pane?.pane_id);
 		}
 		if (!paneId) {
-			this.host.notice('Herdr: the new tab never reported a pane, so no agent was started.');
+			this.host.notice('Gjetr: the new tab never reported a pane, so no agent was started.');
 			return null;
 		}
 
@@ -517,7 +517,7 @@ export class HerdrActions {
 		for (;;) {
 			try {
 				await this.host.request('agent.start', { name, kind, pane_id: paneId, ...args });
-				this.host.notice(`Herdr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
+				this.host.notice(`Gjetr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
 				// The folder is this pane's cwd, and the scope cannot know that yet:
 				// it admits a pane on `pane.agent_detected` plus a `pane.list`, both
 				// still in flight here (issue #28).
@@ -582,7 +582,7 @@ export class HerdrActions {
 				this.reportFailure('close the pane', error);
 				return false;
 			}
-			this.host.notice('Herdr: that pane is already gone, so its row was removed from the list.');
+			this.host.notice('Gjetr: that pane is already gone, so its row was removed from the list.');
 		}
 		// Not only on the `pane_not_found` path: doing it on a plain success too
 		// makes the row go now rather than when `pane.closed` comes round, and
@@ -611,7 +611,7 @@ export class HerdrActions {
 	async renameAgent(paneId: string, name: string): Promise<RenameOutcome | null> {
 		const trimmed = name.trim();
 		if (!trimmed) {
-			this.host.notice('Herdr: the name cannot be empty.');
+			this.host.notice('Gjetr: the name cannot be empty.');
 			return null;
 		}
 		// Falls back to the plugin's own lookup when nothing is connected, which
@@ -631,7 +631,7 @@ export class HerdrActions {
 		try {
 			await send('pane.rename', { pane_id: paneId, label: trimmed });
 			this.host.notice(
-				'Herdr: this herdr cannot rename agents, so the pane label was set instead.',
+				'Gjetr: this herdr cannot rename agents, so the pane label was set instead.',
 			);
 			return { method: 'pane.rename', name: trimmed };
 		} catch (error) {
@@ -677,7 +677,7 @@ export class HerdrActions {
 			// Not reported to the user — the caller falls back to a new tab, which
 			// is a better answer than an error nobody can act on — but a refusal
 			// here is worth knowing about when a split unexpectedly became a tab.
-			console.warn('Herdr: pane.split for a new agent failed', error);
+			console.warn('Gjetr: pane.split for a new agent failed', error);
 			return null;
 		}
 		const created = result.pane?.pane_id;
@@ -730,13 +730,13 @@ export class HerdrActions {
 	private guard(workspaceId: string | null): workspaceId is string {
 		if (!workspaceId) {
 			this.host.notice(
-				'Herdr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
+				'Gjetr: no herdr workspace matches this vault yet. Open one in herdr, or set a workspace ID in the settings.',
 			);
 			return false;
 		}
 		const issue = remoteVaultPathIssue(this.host.runtime());
 		if (issue) {
-			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
+			this.host.notice(`Gjetr: ${issue}. Set it in the plugin settings.`);
 			return false;
 		}
 		return true;
@@ -749,6 +749,6 @@ export class HerdrActions {
 				: error instanceof Error
 					? error.message
 					: String(error);
-		this.host.notice(`Herdr: could not ${what}. ${message}`);
+		this.host.notice(`Gjetr: could not ${what}. ${message}`);
 	}
 }

@@ -15,7 +15,7 @@ npm run install-dev -- /path/to/vault
 ```
 
 This symlinks **only** `main.js`, `manifest.json` and `styles.css` into
-`<vault>/.obsidian/plugins/herdr/` and drops a `.hotreload` marker for the
+`<vault>/.obsidian/plugins/gjetr/` and drops a `.hotreload` marker for the
 [Hot-Reload](https://github.com/pjeby/hot-reload) plugin.
 
 Never symlink the repository itself into the plugins folder. Obsidian enumerates
@@ -57,7 +57,7 @@ so a size regression shows up in diff review rather than only as a red test
 
 `tests/README.md` lists what is unit tested and the manual recipes for the parts
 that need a canvas or a live herdr: the renderers, the terminal view, shift+enter,
-a runtime over SSH. The Obsidian CLI (`obsidian plugin:reload id=herdr`,
+a runtime over SSH. The Obsidian CLI (`obsidian plugin:reload id=gjetr`,
 `obsidian dev:errors`, `obsidian eval code=…`) is the quickest way to check a
 build in a running vault.
 

@@ -150,7 +150,7 @@ export function imageDataUrl(mediaType: string, data: string): string {
 
 /** What a paste or drop says when the pane's runtime cannot take images. */
 export function imagesRefusedMessage(reason: string): string {
-	return `Herdr: images cannot be sent here (${reason}).`;
+	return `Gjetr: images cannot be sent here (${reason}).`;
 }
 
 /** What something hung on the text area tells the box about itself (#103). */
@@ -198,7 +198,7 @@ export function remainingDraft(current: string, sent: string): string {
 /** What a failed send says, with herdr's own message in the tail. */
 export function sendFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
-	return `Herdr: could not send the prompt (${reason})`;
+	return `Gjetr: could not send the prompt (${reason})`;
 }
 
 /** The box, its button and the one send path they share. */
@@ -336,7 +336,7 @@ export class PromptBox {
 			await sender.interrupt(this.options.paneId());
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Herdr: could not stop the turn (${reason})`);
+			this.notify(`Gjetr: could not stop the turn (${reason})`);
 		}
 	}
 
@@ -407,11 +407,11 @@ export class PromptBox {
 		for (const file of files) {
 			const problem = imageFileProblem(file);
 			if (problem) {
-				this.notify(`Herdr: ${problem}.`);
+				this.notify(`Gjetr: ${problem}.`);
 				continue;
 			}
 			if (this.images.length >= MAX_PROMPT_IMAGES) {
-				this.notify(`Herdr: a prompt takes at most ${MAX_PROMPT_IMAGES} images.`);
+				this.notify(`Gjetr: a prompt takes at most ${MAX_PROMPT_IMAGES} images.`);
 				break;
 			}
 			let data: string;
@@ -419,7 +419,7 @@ export class PromptBox {
 				data = await read(file);
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
-				this.notify(`Herdr: could not read ${file.name || 'the image'} (${reason})`);
+				this.notify(`Gjetr: could not read ${file.name || 'the image'} (${reason})`);
 				continue;
 			}
 			// The box went while the file was read.

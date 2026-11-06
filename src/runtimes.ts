@@ -523,7 +523,7 @@ export function remoteVaultPathIssue(
 
 /**
  * What is missing from a runtime before it can work, as lowercase clauses the
- * caller frames ("Herdr: …" in a notice, a sentence in the form). Empty when
+ * caller frames ("Gjetr: …" in a notice, a sentence in the form). Empty when
  * nothing is. Whether the kind exists in this build is the kind registry's
  * question, not this one.
  */

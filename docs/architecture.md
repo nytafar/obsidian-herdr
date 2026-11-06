@@ -1412,7 +1412,7 @@ and one-word prompts, checked against Claude's answers and the transcript.
   attachment whose `prompt` is an array of blocks, the image among them.
 - **Claude reads the file when the paste lands.** A file removed right after
   `agent.prompt` returned was in the transcript all the same. The plugin
-  writes herdr's images to `<tmpdir>/obsidian-herdr-images/` (mode 0600) and
+  writes herdr's images to `<tmpdir>/gjetr-images/` (mode 0600) and
   removes them a minute after the send. Only a local herdr shows the native
   view, so that folder is the agent's machine.
 - **herdr-core has no raw-input method, and `terminal.send` cannot carry the

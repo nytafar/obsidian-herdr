@@ -444,7 +444,7 @@ export class ConnectionCoordinator<
 
 	private fail(message: string): void {
 		this.deps.setError(message);
-		this.deps.notice(`Herdr: ${message}`);
+		this.deps.notice(`Gjetr: ${message}`);
 	}
 }
 

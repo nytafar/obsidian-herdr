@@ -292,7 +292,7 @@ describe('ConnectionCoordinator: a plain connect', () => {
 		expect(h.tunnels).toHaveLength(0);
 		expect(h.coordinator.current).toBeNull();
 		expect(h.coordinator.discovery).toBeNull();
-		expect(h.notices).toEqual(['Herdr: herdr-core runtimes are not available yet']);
+		expect(h.notices).toEqual(['Gjetr: herdr-core runtimes are not available yet']);
 		expect(h.errors.at(-1)).toBe('herdr-core runtimes are not available yet');
 	});
 
@@ -304,7 +304,7 @@ describe('ConnectionCoordinator: a plain connect', () => {
 		await connecting;
 		expect(h.clients).toHaveLength(0);
 		expect(h.coordinator.current).toBeNull();
-		expect(h.notices).toEqual(['Herdr: herdr not on PATH']);
+		expect(h.notices).toEqual(['Gjetr: herdr not on PATH']);
 		expect(h.errors.at(-1)).toBe('herdr not on PATH');
 	});
 
@@ -319,7 +319,7 @@ describe('ConnectionCoordinator: a plain connect', () => {
 		expect(h.coordinator.current?.client).toBe(h.clients[0]);
 		expect(h.clients[0]?.subscribed).toBe(0);
 		expect(h.errors.at(-1)).toBe('cannot reach herdr');
-		expect(h.notices).toEqual(['Herdr: cannot reach herdr']);
+		expect(h.notices).toEqual(['Gjetr: cannot reach herdr']);
 	});
 
 	it('routes events from the stream into the scope of the same connection', async () => {
@@ -512,7 +512,7 @@ describe('ConnectionCoordinator: overlapping attempts', () => {
 		h.discoveries[0]?.resolve({ ...DISCOVERY, binary: null });
 		await connecting;
 		expect(h.clients).toHaveLength(0);
-		expect(h.notices).toEqual(['Herdr: the runtime has no SSH host']);
+		expect(h.notices).toEqual(['Gjetr: the runtime has no SSH host']);
 	});
 
 	it('routes a tunnel reconnect socket to the client of the same attempt', async () => {

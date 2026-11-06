@@ -11,6 +11,9 @@ on:
 
 permissions:
     contents: write
+    # For the build provenance attestation of the shipped files.
+    id-token: write
+    attestations: write
 
 jobs:
     release:
@@ -82,6 +85,14 @@ jobs:
                     echo "the build emitted unexpected files: $strays" >&2
                     exit 1
                   fi
+
+            - name: Attest build provenance of the shipped files
+              uses: actions/attest-build-provenance@v4
+              with:
+                  subject-path: |
+                      main.js
+                      manifest.json
+                      styles.css
 
             - name: Create the GitHub release
               env:

@@ -1,9 +1,9 @@
 {
-	"id": "herdr",
-	"name": "Herdr",
-	"version": "0.5.0",
+	"id": "gjetr",
+	"name": "Gjetr",
+	"version": "0.6.1",
 	"minAppVersion": "1.7.2",
-	"description": "See, reach and start your herdr agents from your vault, with a live agent list, notifications, embedded pane terminals and new tabs at a note's folder.",
+	"description": "Run persistent agents in your vault locally or remotely using herdr or herdr-core.",
 	"author": "Lasse",
 	"authorUrl": "https://github.com/nytafar",
 	"isDesktopOnly": true

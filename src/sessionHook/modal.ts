@@ -167,11 +167,11 @@ export class SessionHookModal extends Modal {
 		this.busy = true;
 		try {
 			await apply();
-			new Notice(`Herdr: ${done}`);
+			new Notice(`Gjetr: ${done}`);
 			this.close();
 			this.onDone?.();
 		} catch (error) {
-			new Notice(`Herdr: ${message(error)}`);
+			new Notice(`Gjetr: ${message(error)}`);
 			// Show the files as they are now, so the next click is on what is there.
 			await this.load();
 		} finally {

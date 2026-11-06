@@ -1,14 +1,14 @@
-# Installing Herdr with a coding agent
+# Installing Gjetr with a coding agent
 
 This file is written for a coding agent (Claude Code, Codex, …) running on
-the user's machine. It installs the Herdr plugin into the user's Obsidian
-vault, plus BRAT, which keeps Herdr updated, by writing the plugin files
+the user's machine. It installs the Gjetr plugin (herdr for Obsidian)
+into the user's Obsidian vault, plus BRAT, which keeps Gjetr updated, by writing the plugin files
 directly. Nothing is clicked in Obsidian unless the step below says so.
 
 Paste this into the agent:
 
 ```text
-Install the Obsidian plugin Herdr for me: read
+Install the Obsidian plugin Gjetr for me: read
 https://raw.githubusercontent.com/nytafar/obsidian-herdr/main/docs/agent-install.md
 and follow it.
 ```
@@ -39,14 +39,21 @@ From the latest GitHub release of each project, put `main.js`,
 
 | Plugin | Repository | Folder |
 |---|---|---|
-| Herdr | `nytafar/obsidian-herdr` | `<vault>/.obsidian/plugins/herdr/` |
+| Gjetr | `nytafar/obsidian-herdr` | `<vault>/.obsidian/plugins/gjetr/` |
 | BRAT | `TfTHacker/obsidian42-brat` | `<vault>/.obsidian/plugins/obsidian42-brat/` |
 
 URL shape: `https://github.com/<repository>/releases/latest/download/<file>`
 (`curl -fL`, or `gh release download -R <repository>`).
 
-- Check that each `manifest.json` has the id from the folder name (`herdr`,
+- Check that each `manifest.json` has the id from the folder name (`gjetr`,
   `obsidian42-brat`).
+- The plugin's id was `herdr` until 0.5. A `<vault>/.obsidian/plugins/herdr/`
+  folder is this plugin's old install only if its `manifest.json` has
+  author `Lasse` and author URL `https://github.com/nytafar`; other
+  plugins use the id `herdr` too. Either way, leave that folder alone:
+  Gjetr copies its own old settings from it on first load. If it is ours,
+  tell the user they can remove it, and its `"herdr"` entry in
+  `community-plugins.json`, once Gjetr has loaded.
 - If a folder already exists, replace only those three files. Keep its
   `data.json` (the plugin's settings) and anything else in it.
 - Never symlink a source checkout into `.obsidian/plugins/`. Obsidian hangs
@@ -58,7 +65,7 @@ Merge, never replace: read each JSON file, add what is missing, keep every
 entry already there, write it back.
 
 - `<vault>/.obsidian/community-plugins.json` is a JSON array of enabled
-  plugin ids. Add `"herdr"` and `"obsidian42-brat"`. Create it as `[]`
+  plugin ids. Add `"gjetr"` and `"obsidian42-brat"`. Create it as `[]`
   first if it does not exist.
 - `<vault>/.obsidian/plugins/obsidian42-brat/data.json` is BRAT's settings.
   Create it as `{}` if missing, then make sure that:
@@ -98,7 +105,7 @@ plugins straight away. Do not try to edit Obsidian's storage.
 
 ### 6. Check for a runtime
 
-Herdr shows agents from a runtime. It never installs one, and neither do
+Gjetr shows agents from a runtime. It never installs one, and neither do
 you: report what is there and let the user decide.
 
 Look on the PATH and in `/opt/homebrew/bin`, `/usr/local/bin` and
@@ -106,7 +113,7 @@ Look on the PATH and in `/opt/homebrew/bin`, `/usr/local/bin` and
 
 - `hc` or `herdr-core` (herdr-core);
 - `herdr` (the herdr TUI);
-- `claude` (Claude Code, which Herdr can run by itself).
+- `claude` (Claude Code, which Gjetr can run by itself).
 
 Note each one's version (`--version`). If none is found, the plugin's
 **Get started** card offers the ways in once Obsidian is open.
@@ -115,12 +122,12 @@ Note each one's version (`--version`). If none is found, the plugin's
 
 Tell the user, in a few lines:
 
-- the vault you installed into, and the Herdr and BRAT versions (from
+- the vault you installed into, and the Gjetr and BRAT versions (from
   their `manifest.json`);
 - the files you created or changed;
 - whether Obsidian was restarted, and whether they still have to turn on
   community plugins (step 5);
 - which runtimes you found, with versions;
-- next: open the vault, run **Herdr: Show agents** from the command
+- next: open the vault, run **Gjetr: Show agents** from the command
   palette, and follow **Get started** if no runtime connects.
-  **Settings → Herdr** shows what the plugin found.
+  **Settings → Gjetr** shows what the plugin found.

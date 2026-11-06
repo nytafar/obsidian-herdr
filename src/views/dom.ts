@@ -28,5 +28,9 @@ export function isHTMLElement(node: unknown): node is HTMLElement {
 	const ownerDocument = candidate.ownerDocument;
 	const view = ownerDocument?.defaultView;
 	if (!view) return false;
-	return candidate instanceof view.HTMLElement;
+	// Obsidian's own cross-window check where it exists; the prototype chain
+	// against the node's realm otherwise (plain DOM, the unit tests).
+	const withInstanceOf = candidate as HTMLElement & { instanceOf?: (type: unknown) => boolean };
+	if (typeof withInstanceOf.instanceOf === 'function') return withInstanceOf.instanceOf(view.HTMLElement);
+	return Object.prototype.isPrototypeOf.call(view.HTMLElement.prototype, candidate);
 }

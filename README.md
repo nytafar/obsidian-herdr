@@ -1,4 +1,4 @@
-# Herdr for Obsidian
+# Gjetr: Herdr for Obsidian
 
 Obsidian as an agentic workspace for knowledge work. Your agents work in your
 vault, next to your notes: open any one as a live terminal tab, or, for Claude
@@ -12,7 +12,7 @@ and config, and keep running when Obsidian closes.
 No herdr yet? Run Claude Code directly from Obsidian to get up and running
 straight away.
 
-![The agent list in the left sidebar, a live Claude Code terminal as the centre tab, and the note the agent is writing open beside it.](images/screenshot.webp)
+![A research note open in the centre, with a Claude Code session beside it in the native view showing the sources table it wrote. In the left sidebar, the agent list groups four Claude Code and Codex agents by herdr tab, and the + menu offers Claude Code, Codex, Pi and Copilot.](images/screenshot.webp)
 
 **Remote:** run agents on another machine over SSH, with the vault kept in sync
 there. See the [remote guide](docs/runtimes.md#the-vault-must-exist-on-both-machines).
@@ -52,28 +52,29 @@ key-based login that does not prompt.
 
 Until the plugin is in the community list, install it with
 [BRAT](https://github.com/TfTHacker/obsidian42-brat): add
-`nytafar/obsidian-herdr` as a beta plugin, then enable **Herdr** under Community
-plugins.
+`nytafar/obsidian-herdr` as a beta plugin, then enable **Gjetr** under Community
+plugins. The plugin id was `herdr` through 0.5; settings saved under that id
+carry over on the first load as `gjetr`.
 
 Or let your coding agent do it, BRAT included
 ([docs/agent-install.md](docs/agent-install.md)):
 
 ```text
-Install the Obsidian plugin Herdr for me: read
+Install the Obsidian plugin Gjetr for me: read
 https://raw.githubusercontent.com/nytafar/obsidian-herdr/main/docs/agent-install.md
 and follow it.
 ```
 
 Manual: put `main.js`, `manifest.json` and `styles.css` from a
 [release](https://github.com/nytafar/obsidian-herdr/releases) into
-`<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
+`<vault>/.obsidian/plugins/gjetr/` and reload Obsidian.
 
 ## Get started
 
-Run **Herdr: Show agents**. While no runtime connects, the list shows a **Get
+Run **Gjetr: Show agents**. While no runtime connects, the list shows a **Get
 started** card: start Claude Code run by Obsidian at once, install herdr-core
 with its official installer where you can watch it, or go to herdr's install
-docs. **Settings → Herdr** shows what the plugin found.
+docs. **Settings → Gjetr** shows what the plugin found.
 
 ## For power users
 
@@ -93,6 +94,25 @@ docs. **Settings → Herdr** shows what the plugin found.
 - Answer an agent's questions or permission prompts for you.
 - Touch an agent's config without asking: the Claude session hook is installed
   only after you agree.
+
+## What it uses on your machine
+
+The plugin is desktop only because agents run outside Obsidian:
+
+- **Programs**: it starts `herdr`, `hc`, `ssh`, `claude` and the agent CLIs you
+  pick as child processes, and asks your login shell for its `PATH` to find
+  them.
+- **Files outside the vault**: it reads herdr's socket and Claude Code's
+  session transcripts, checks which agent CLIs are installed, and keeps
+  short-lived SSH forwarding sockets in `/tmp`. Outside the vault it writes only
+  the Claude session hook and its entry in Claude's settings, after you agree.
+- **The vault's file list**: for `@` completion in the native view's prompt
+  box.
+- **The clipboard**: it writes to it when you press a copy button. It never
+  reads it.
+
+The plugin itself sends nothing over the network, except SSH to the hosts you
+add. The agents it starts reach whatever their own CLIs reach.
 
 ## Docs
 

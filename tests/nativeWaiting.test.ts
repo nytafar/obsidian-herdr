@@ -456,7 +456,7 @@ describe('waiting card: what it presses (#99)', () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(notices).toEqual(['Herdr: could not trust this folder (pane is gone)']);
+		expect(notices).toEqual(['Gjetr: could not trust this folder (pane is gone)']);
 	});
 
 	it('switches the tab to a terminal when Open in terminal is pressed', async () => {

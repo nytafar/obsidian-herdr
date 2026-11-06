@@ -125,7 +125,7 @@ until it has stopped, the card says so and takes no answer.
 
 ## Table of contents
 
-**Herdr: Show table of contents** opens a sidebar listing the session's turns
+**Gjetr: Show table of contents** opens a sidebar listing the session's turns
 with their headings nested underneath, where Obsidian's outline lives. It
 follows whichever native view is active, and a click scrolls to that heading.
 
@@ -135,9 +135,9 @@ Each tab shows either the native view or a terminal, and remembers its choice.
 
 - The **header button** on a tab toggles between the two. The tab menu offers
   the same, plus the terminal engine.
-- **Herdr: Switch render mode** in the command palette does it for the active
+- **Gjetr: Switch render mode** in the command palette does it for the active
   tab.
-- **Settings → Herdr → Default view** sets what a tab shows until it chooses
+- **Settings → Gjetr → Default view** sets what a tab shows until it chooses
   for itself. Native is the default; pick Terminal to make every new tab a
   terminal and switch to native per tab instead.
 

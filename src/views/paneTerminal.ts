@@ -862,7 +862,7 @@ export class PaneTerminal {
 			// no reason to leave a renderer — and ghostty-web's repaint loop, and
 			// its canvas — alive on a view that is closing. The view's `onClose`
 			// waits on this, so a rejection here would strand its teardown too.
-			console.warn('Herdr: releasing the terminal session failed', error);
+			console.warn('Gjetr: releasing the terminal session failed', error);
 		}
 		this.renderer?.dispose();
 		this.renderer = null;
@@ -1022,7 +1022,7 @@ export class PaneTerminal {
 		renderer.refreshTheme?.(theme);
 		if (plan === 'rebuild-renderer') {
 			this.remountRenderer().catch((error: unknown) => {
-				console.warn('Herdr: terminal theme rebuild failed', error);
+				console.warn('Gjetr: terminal theme rebuild failed', error);
 			});
 		}
 	}
@@ -1104,7 +1104,7 @@ export class PaneTerminal {
 			// renderer alive: `suspended` is already true, so bailing out here would
 			// leave a 60 fps repaint loop running with nothing left to come back and
 			// stop it. Fall through to the dispose below.
-			console.warn('Herdr: releasing the terminal session failed', error);
+			console.warn('Gjetr: releasing the terminal session failed', error);
 		}
 		// A reconnect or a reveal raced us; it owns the terminal now, it has
 		// already cleared `suspended`, and the renderer it kept must stay.
@@ -1417,7 +1417,7 @@ export class PaneTerminal {
 		try {
 			for (const line of lines) renderer.write(encoder.encode(`${line}\r\n`));
 		} catch (error) {
-			console.warn('herdr: could not restore scrollback after reveal', error);
+			console.warn('Gjetr: could not restore scrollback after reveal', error);
 		}
 	}
 
