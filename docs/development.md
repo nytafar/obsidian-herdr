@@ -57,14 +57,14 @@ so a size regression shows up in diff review rather than only as a red test
 
 `tests/README.md` lists what is unit tested and the manual recipes for the parts
 that need a canvas or a live herdr: the renderers, the terminal view, shift+enter,
-the remote profile. The Obsidian CLI (`obsidian plugin:reload id=herdr`,
+a runtime over SSH. The Obsidian CLI (`obsidian plugin:reload id=herdr`,
 `obsidian dev:errors`, `obsidian eval code=…`) is the quickest way to check a
 build in a running vault.
 
 ## Releases
 
 `.github/workflows/release.yml` builds on a bare version tag (e.g. `0.1.0`, no
-`v` prefix — Obsidian's own contract, see AGENTS.md and the official sample
+`v` prefix — Obsidian's own contract, see `docs/agents/obsidian-plugin.md` and the official sample
 plugin) matching `manifest.json`'s version, and ships exactly `main.js`,
 `manifest.json` and `styles.css`. The build asserts the embedded, Brotli-compressed
 WebAssembly is present and that no stray files are emitted.

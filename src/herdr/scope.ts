@@ -103,6 +103,25 @@ export interface PaneState {
 	 * row model's name tie-break. Never a wall clock.
 	 */
 	statusChangedSeq: number;
+	/**
+	 * Pinned on the runtime itself, for a kind that keeps pins there (herdr-core's
+	 * shared `herdr.pinned` label, ADR-0005). herdr never sets it: its pins live
+	 * in the plugin's settings (issue #35).
+	 */
+	pinned?: boolean;
+	/**
+	 * The agent has no process, and its row is a stored session that opening
+	 * or prompting resumes (the `claude` kind, ADR-0007). Its `agentStatus` is
+	 * `idle` then, which is what lets the native view's prompt box send. herdr
+	 * and herdr-core never set it: their panes exist or are gone.
+	 */
+	stopped?: boolean;
+	/**
+	 * The agent's session has had a turn, so it has a conversation another
+	 * runtime can resume (the `claude` kind's graduation, ADR-0007). Only that
+	 * kind sets it.
+	 */
+	started?: boolean;
 }
 
 export interface ScopeEventMap {

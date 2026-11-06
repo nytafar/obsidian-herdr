@@ -15,30 +15,30 @@ import {
 } from '../src/actions';
 import { HerdrError } from '../src/herdr/client';
 import type { HerdrSettings } from '../src/settings';
+import {
+	defaultLocalRuntime,
+	defaultRuntimeSettings,
+	newRuntime,
+	type RuntimeConfig,
+} from '../src/runtimes';
 import type { PaneInfo } from '../src/herdr/types.gen';
+import type { StartAgentOptions } from '../src/runtime/kind';
 
 const VAULT = '/Users/lasse/Vaults/hvelv';
 
 function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 	return {
-		socketPath: '~/.config/herdr/herdr.sock',
-		herdrBinary: '',
-		workspaceId: '',
+		...defaultRuntimeSettings(),
 		agentListSort: 'priority',
 		agentListGroupBy: 'tab',
-		remote: {
-			enabled: false,
-			host: '',
-			remoteSocketPath: '',
-			remoteBinary: '',
-			remoteVaultPath: '',
-		},
 		notifications: {
 			statusBar: true,
 			blocked: { notice: true, os: true },
 			done: { notice: true, os: false },
 		},
-		defaultAgentKind: 'claude',
+		agentProfiles: [],
+		hiddenAgents: [],
+		defaultAgents: {},
 		agentNamePattern: '{folder}',
 		terminalFontFamily: '',
 		terminalTheme: 'obsidian',
@@ -61,6 +61,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
 		pinnedPanes: {},
+		claudeSessions: {},
 		...overrides,
 	};
 }
@@ -98,10 +99,14 @@ interface Fake {
 
 function fake(options: {
 	settings?: HerdrSettings;
+	/** The runtime the actions go to; the local herdr unless a case says otherwise. */
+	runtime?: RuntimeConfig;
 	workspaceId?: string | null;
 	responses?: Record<string, unknown>;
 	/** Agent panes the scope would report, for the split choice (issue #29). */
 	agentPanes?: AgentPaneSummary[];
+	/** The runtime's default agent from its catalog (issue #125); absent is Claude. */
+	defaultAgent?: StartAgentOptions | null;
 } = {}): Fake {
 	const calls: { method: string; params: unknown }[] = [];
 	const generations: number[] = [];
@@ -129,6 +134,7 @@ function fake(options: {
 		};
 	const host: ActionHost = {
 		settings: () => options.settings ?? settings(),
+		runtime: () => options.runtime ?? defaultLocalRuntime(),
 		workspaceId: () => (options.workspaceId === undefined ? 'w4' : options.workspaceId),
 		request: <T,>(method: string, params: unknown): Promise<T> =>
 			over(client.generation)<T>(method, params),
@@ -150,6 +156,7 @@ function fake(options: {
 			clock.now += ms;
 		},
 		now: () => clock.now,
+		...(options.defaultAgent !== undefined ? { defaultAgent: async () => options.defaultAgent ?? null } : {}),
 	};
 	return {
 		host,
@@ -306,17 +313,9 @@ describe('HerdrActions.newTabHere', () => {
 		expect(f.notices[0]).toContain('no herdr workspace');
 	});
 
-	it('refuses when a remote profile has no remote vault path (S5, M19)', async () => {
+	it('refuses when an SSH runtime has no remote vault path (S5, M19)', async () => {
 		const f = fake({
-			settings: settings({
-				remote: {
-					enabled: true,
-					host: 'lasse@xl',
-					remoteSocketPath: '',
-					remoteBinary: '',
-					remoteVaultPath: '   ',
-				},
-			}),
+			runtime: { ...newRuntime('herdr', 'ssh', []), host: 'lasse@xl', remoteVaultPath: '   ' },
 		});
 		// A local macOS path would otherwise be sent to the Linux host.
 		expect(await f.actions.newTabHere('/Users/lasse/Vaults/hvelv/notes')).toBeNull();
@@ -436,7 +435,8 @@ describe('HerdrActions.startAgentHere', () => {
 
 	it('does not open the terminal when the setting is off', async () => {
 		const f = fake({
-			settings: settings({ openTerminalAfterStart: false, defaultAgentKind: 'codex' }),
+			settings: settings({ openTerminalAfterStart: false }),
+			defaultAgent: { kind: 'codex', label: 'Codex' },
 			responses: {
 				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
 				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
@@ -836,5 +836,28 @@ describe('renameAgent (issue #35)', () => {
 		expect(await f.actions.renameAgent('w4:p3', '   ')).toBeNull();
 		expect(f.calls).toEqual([]);
 		expect(f.notices).toEqual(['Herdr: the name cannot be empty.']);
+	});
+});
+
+describe('startAgentHere with a kind and arguments (graduation, ADR-0007)', () => {
+	it('passes the kind and the arguments to agent.start', async () => {
+		const f = fake({
+			defaultAgent: { kind: 'codex' },
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': {},
+			},
+		});
+		await f.actions.startAgentHere(`${VAULT}/notes`, {
+			kind: 'claude',
+			args: ['--resume', '3b3ad50c-0000-4000-8000-000000000001'],
+		});
+		expect(f.calls.find((c) => c.method === 'agent.start')?.params).toEqual({
+			name: 'notes',
+			kind: 'claude',
+			pane_id: 'w4:p9',
+			args: ['--resume', '3b3ad50c-0000-4000-8000-000000000001'],
+		});
 	});
 });

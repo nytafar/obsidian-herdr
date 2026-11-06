@@ -41,6 +41,12 @@ export interface TerminalSessionOptions {
 	 * `terminal session <mode> <target> …` itself.
 	 */
 	command: string[];
+	/**
+	 * How to find the argv prefix when {@link command} is empty: a local
+	 * runtime whose binary no discovery has found yet. Awaited by `start()`;
+	 * a rejection is reported as `error`, then `exit`, like a failed spawn.
+	 */
+	resolveCommand?: () => Promise<string[]>;
 	/** Pane id (`w4:p1`) or unique agent name. */
 	target: string;
 	mode: TerminalSessionMode;
@@ -48,6 +54,19 @@ export interface TerminalSessionOptions {
 	takeover?: boolean;
 	cols: number;
 	rows: number;
+	/**
+	 * `cols`/`rows` are a placeholder: the tab's host had no box to measure.
+	 * herdr's bridge ignores it (herdr renders per viewer); a herdr-core
+	 * session does not take the shared terminal's size with it.
+	 */
+	provisionalSize?: boolean;
+	/**
+	 * This start is a hidden tab shown again, not a person asking for the
+	 * pane. herdr's bridge and herdr-core ignore it; a `claude` agent that
+	 * was stopped stays stopped and the tab says so, since only an explicit
+	 * act (a prompt, Resume, a Reconnect click) starts it again.
+	 */
+	revealed?: boolean;
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
 	/** How long `release()` waits for a clean exit before SIGTERM. */
@@ -95,6 +114,28 @@ export interface TerminalSessionEventMap {
 	stderr: [line: string];
 	/** The child is gone. Always the last event. */
 	exit: [code: number | null, signal: NodeJS.Signals | null];
+	/**
+	 * The shared terminal's grid, when it is not the size this session asked
+	 * for (another viewer owns it, or this one only observes), and again with
+	 * this session's own size once it has the grid back. herdr's bridge never
+	 * emits it: herdr renders every frame at the size the viewer asked for.
+	 * herdr-core streams the program's raw bytes at the terminal's one grid, so
+	 * the renderer has to follow it (ADR-0005).
+	 */
+	grid: [cols: number, rows: number];
+	/**
+	 * The session attached again on its own after a `closed` (a restarted
+	 * terminal, a redialled connection): what that close said no longer holds.
+	 * Never emitted by herdr's bridge, whose process ends with its session.
+	 */
+	reopened: [];
+	/**
+	 * Why the session is not attached yet though nothing failed, or null once
+	 * it is: a `claude` agent's terminal waits for the agent's turn to end
+	 * before its process switches to the TUI (ADR-0007's D2). Never emitted
+	 * by herdr's bridge or herdr-core's attach.
+	 */
+	waiting: [reason: string | null];
 }
 
 type Listener<K extends keyof TerminalSessionEventMap> = (
@@ -156,9 +197,19 @@ export class TerminalSession {
 	private releasing: Promise<void> | null = null;
 	private lastCols: number;
 	private lastRows: number;
+	/** The argv prefix: the given one, or what `resolveCommand` found. */
+	private command: string[];
+	/** Waiting on `resolveCommand`: no child yet, but one is coming. */
+	private resolving = false;
+	/**
+	 * The latest resize asked for while resolving, cell metrics included,
+	 * sent once the child exists. Its grid is also what the child spawns at.
+	 */
+	private pendingResize: Record<string, unknown> | null = null;
 
 	constructor(options: TerminalSessionOptions) {
 		this.options = options;
+		this.command = options.command;
 		this.lastCols = clampDimension(options.cols);
 		this.lastRows = clampDimension(options.rows);
 	}
@@ -183,7 +234,13 @@ export class TerminalSession {
 	}
 
 	get argv(): string[] {
-		return buildArgv(this.options);
+		// The grid asked for last, so a resize before the spawn is not lost.
+		return buildArgv({
+			...this.options,
+			command: this.command,
+			cols: this.lastCols,
+			rows: this.lastRows,
+		});
 	}
 
 	on<K extends keyof TerminalSessionEventMap>(event: K, listener: Listener<K>): this {
@@ -201,10 +258,42 @@ export class TerminalSession {
 		return this;
 	}
 
-	/** Spawns the child. Safe to call once; later calls are ignored. */
+	/**
+	 * Spawns the child, once the argv prefix is known. Safe to call once;
+	 * later calls are ignored.
+	 */
 	start(): this {
 		if (this.started || this.disposed) return this;
 		this.started = true;
+		const resolve = this.options.resolveCommand;
+		if (this.command.length === 0 && resolve) {
+			this.resolving = true;
+			resolve().then(
+				(command) => {
+					this.resolving = false;
+					if (this.disposed) return;
+					this.command = command;
+					this.spawnChild();
+					const resize = this.pendingResize;
+					this.pendingResize = null;
+					if (resize) this.send(resize);
+				},
+				(err: unknown) => {
+					this.resolving = false;
+					this.pendingResize = null;
+					if (this.disposed) return;
+					this.exited = true;
+					this.emit('error', asError(err));
+					this.emit('exit', null, null);
+				},
+			);
+			return this;
+		}
+		this.spawnChild();
+		return this;
+	}
+
+	private spawnChild(): void {
 		let child: ChildProcessWithoutNullStreams;
 		try {
 			const [file, ...rest] = this.argv;
@@ -219,7 +308,7 @@ export class TerminalSession {
 			this.exited = true;
 			this.emit('error', asError(err));
 			this.emit('exit', null, null);
-			return this;
+			return;
 		}
 		this.child = child;
 
@@ -238,7 +327,6 @@ export class TerminalSession {
 			if (trailingErr) this.emit('stderr', trailingErr);
 			this.emit('exit', code, signal);
 		});
-		return this;
 	}
 
 	/** Sends text (or raw bytes) as `terminal.input`. No-op outside control mode. */
@@ -263,6 +351,19 @@ export class TerminalSession {
 		const message: Record<string, unknown> = { type: 'terminal.resize', cols: c, rows: r };
 		if (cellWidthPx !== undefined) message.cell_width_px = Math.max(0, Math.trunc(cellWidthPx));
 		if (cellHeightPx !== undefined) message.cell_height_px = Math.max(0, Math.trunc(cellHeightPx));
+		// No child yet because its binary is still being found: kept, and sent
+		// as soon as it is spawned, exactly as a direct spawn would have had it.
+		if (this.resolving && !this.disposed && this.options.mode === 'control') {
+			// A later grid without cell metrics keeps the ones already asked for,
+			// which a direct spawn would have delivered with the earlier resize.
+			const earlier = this.pendingResize;
+			this.pendingResize = {
+				...(earlier?.cell_width_px !== undefined ? { cell_width_px: earlier.cell_width_px } : {}),
+				...(earlier?.cell_height_px !== undefined ? { cell_height_px: earlier.cell_height_px } : {}),
+				...message,
+			};
+			return true;
+		}
 		return this.send(message);
 	}
 

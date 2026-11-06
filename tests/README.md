@@ -55,17 +55,24 @@ crossterm modifier bits rather than an SGR report the plugin built (#25).
 
 ## The `Setting` fixture and the settings tab (#85)
 
-The settings tab is a status block plus seven sections, and each section is a
+The settings tab is a status block plus eight sections, and each section is a
 plain function over a container, the settings object and a bundle of callbacks
 (`save`, `saveAndReconnect`, `redisplay`, `refreshAgentList`,
-`refreshFolderHoverButton`, `applyTerminalSetting`). No builder sees the plugin,
+`refreshFolderHoverButton`, `applyTerminalSetting`, and for the runtimes
+section `activateRuntime`, `refreshRuntimes`, `editRuntime` and `confirm`). No
+builder sees the plugin,
 so `tests/settingsSections.test.ts` renders a section on a bare container and
 asserts three things: the rows it puts up, what a change writes into the
 settings, and which callbacks run in which order — save before the refresh, and
 the redisplay last where a control shows or hides other fields. Both conditional
-groups are covered: the remote fields, which only exist while the profile is on
-(the enable toggle itself is always there), and the panes-per-tab cap, which
-only exists while agents share a herdr tab.
+groups are covered: a runtime's form, which only exists while that runtime is
+being edited and whose fields follow its kind and target, and the panes-per-tab
+cap, which only exists while agents share a herdr tab.
+
+The runtime registry itself — migration from 0.4.0's `data.json` shapes (no
+remote, remote off, remote on), normalisation, the switcher by count and
+removal — is `tests/runtimes.test.ts`; the kind seam and the real
+`loadSettings` path are `tests/runtimeKinds.test.ts`.
 
 That works because `Setting` in `tests/fixtures/obsidian.ts` is a recorder
 rather than a stub. It records `setName`, `setDesc`, `setHeading` and `setClass`,
@@ -224,7 +231,7 @@ open, settings → Herdr → Terminal → **Terminal engine** → xterm.js:
    the colours must not change when the engine does.
 6. Switch back to ghostty-web and check the same six things.
 
-## Checking the remote profile against `xl` (T10, PRD S5/S17)
+## Checking an SSH runtime against `xl` (T10, PRD S5/S17)
 
 The SSH tunnel unit tests inject the spawn, the socket probe and the unlink, so
 `npm test` never runs `ssh`. The live check is manual and read-only:
@@ -374,7 +381,7 @@ real terminal.
 4. Restart Obsidian: a tab left in native mode comes back in native mode, and a
    tab that never chose follows **Default render mode** in the settings, so
    switching that setting to Native view moves every such tab at once.
-5. With the remote profile on and a terminal opened on the remote endpoint, the
+5. With an SSH runtime active and a terminal opened on it, the
    menu shows "Native view (local panes only)", greyed out, and clicking it does
    nothing (ADR-0002).
 
@@ -483,3 +490,25 @@ a table (`tests/promptMentions.test.ts`). What needs Obsidian is the popover:
    resolved the file rather than treating the text as prose.
 6. `/` in the middle of a prompt, and `@` glued to the end of a word, offer
    nothing: neither is a trigger there.
+
+## The agent catalog and the + button (#125)
+
+`tests/agentCatalog.test.ts` covers the merge (`buildCatalog`), the defaults
+and the `defaultAgentKind` migration, the + menu's items, the probe commands
+and their parsing, the per-connection cache (`AgentCatalogs`), each kind's
+`probeAgents`, the probe in the order a connect really runs (published
+before its first ping answers), and starting an entry.
+`tests/agentListView.test.ts` mounts the list on the DOM fixture: building
+the toolbar and repainting start no probe, and the context-menu key opens
+the catalog under the +. Every runner, filesystem and requester is a fake:
+no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
+
+1. Left-click the + at the far right of the agent list's toolbar: the
+   runtime's default agent starts at the vault root, and the notice names it.
+2. Right-click it: the menu lists only the agent CLIs installed on the
+   runtime's machine (`command -v claude codex …` there), the default
+   checked. Switch runtimes and right-click again: the list follows.
+3. Add an agent CLI in Settings → Herdr → Agents with a command that does
+   not exist and press **Done**: it shows in the menu as "(not found)", and
+   its settings row says "was not found on …". Install it and press **Check
+   again**: the mark goes without a reconnect.

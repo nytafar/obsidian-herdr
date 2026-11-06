@@ -1,8 +1,9 @@
 /**
- * Two small modals the agent row menu needs (issue #35): a yes-or-no
+ * Small modals: the two the agent row menu needs (issue #35), a yes-or-no
  * confirmation before a pane is closed, and a one-line prompt for a new agent
- * name. Both resolve a promise when they close, so a caller reads
- * `if (await confirm(...))` and never wires callbacks.
+ * name, and the runtime picker behind the `Switch runtime` command
+ * (ADR-0004). The first two resolve a promise when they close, so a caller
+ * reads `if (await confirm(...))` and never wires callbacks.
  *
  * Layout is Obsidian's own: `Setting` rows for the input and the buttons, the
  * `mod-warning` button for the destructive choice, no classes of ours and no
@@ -10,7 +11,8 @@
  * modal's own scope.
  */
 
-import { App, Modal, Setting } from 'obsidian';
+import { App, FuzzySuggestModal, Modal, Setting } from 'obsidian';
+import { runtimeDisplayName, runtimeSummary, type RuntimeConfig } from '../runtimes';
 
 export interface ConfirmOptions {
 	title: string;
@@ -135,5 +137,45 @@ export class PromptModal extends Modal {
 		this.contentEl.empty();
 		this.resolve?.(this.submitted ? this.value : null);
 		this.resolve = null;
+	}
+}
+
+/** What the runtime picker reads, live, and where a choice goes. */
+export interface RuntimePickerOptions {
+	runtimes(): readonly RuntimeConfig[];
+	activeId(): string;
+	/** Why a runtime's kind cannot connect yet, shown beside it; null when it can. */
+	unavailable(runtime: RuntimeConfig): string | null;
+	choose(runtime: RuntimeConfig): void;
+}
+
+/**
+ * The `Switch runtime` palette command's picker (ADR-0004): every runtime,
+ * fuzzy-searchable by name and by what it is, the active one marked. Works for
+ * any count; choosing the active one reconnects it.
+ */
+export class RuntimeSuggestModal extends FuzzySuggestModal<RuntimeConfig> {
+	constructor(
+		app: App,
+		private readonly options: RuntimePickerOptions,
+	) {
+		super(app);
+		this.setPlaceholder('Switch to runtime…');
+	}
+
+	getItems(): RuntimeConfig[] {
+		return [...this.options.runtimes()];
+	}
+
+	getItemText(runtime: RuntimeConfig): string {
+		const marks: string[] = [runtimeSummary(runtime)];
+		if (runtime.id === this.options.activeId()) marks.push('active');
+		const unavailable = this.options.unavailable(runtime);
+		if (unavailable) marks.push('not available yet');
+		return `${runtimeDisplayName(runtime)} (${marks.join(', ')})`;
+	}
+
+	onChooseItem(runtime: RuntimeConfig): void {
+		this.options.choose(runtime);
 	}
 }

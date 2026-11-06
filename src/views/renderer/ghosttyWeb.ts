@@ -13,6 +13,7 @@
  * Smoke-testing this needs a DOM plus the WASM, so it is not unit tested; see
  * tests/README.md for the in-Obsidian recipe.
  */
+import { DataRouter, type DataListener } from './replies';
 import { FitAddon, init, Terminal, type ITheme } from 'ghostty-web';
 import {
 	cellFromPoint,
@@ -36,7 +37,6 @@ import {
 	type TerminalThemeName,
 } from './themes';
 
-type DataListener = (data: string) => void;
 type ResizeListener = (size: { cols: number; rows: number }) => void;
 /** Returns true when it consumed the event; see `TerminalRenderer.onKeyEvent`. */
 type KeyListener = (event: KeyboardEvent) => boolean;
@@ -61,7 +61,8 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 
 	/** Writes that arrived before the WASM finished loading. */
 	private readonly pending: Uint8Array[] = [];
-	private readonly dataListeners = new Set<DataListener>();
+	/** `onData` and `onReply` listeners, and which is which ({@link DataRouter}). */
+	private readonly router = new DataRouter('write-scope');
 	private readonly resizeListeners = new Set<ResizeListener>();
 	private readonly keyListeners = new Set<KeyListener>();
 	private readonly wheelListeners = new Set<WheelListener>();
@@ -119,7 +120,7 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 
 		this.libraryDisposables.push(
 			terminal.onData((data) => {
-				for (const cb of [...this.dataListeners]) cb(data);
+				this.router.dispatch(data);
 			}),
 			terminal.onResize((size) => {
 				for (const cb of [...this.resizeListeners]) cb(size);
@@ -131,7 +132,7 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		// Listeners registered before the WASM finished loading.
 		this.attachInterceptors();
 
-		for (const chunk of this.pending.splice(0)) terminal.write(chunk);
+		for (const chunk of this.pending.splice(0)) this.router.write(() => terminal.write(chunk));
 		this.fit();
 		if (this.focusRequested) {
 			this.focusRequested = false;
@@ -145,7 +146,8 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 			this.pending.push(bytes);
 			return;
 		}
-		this.terminal.write(bytes);
+		const terminal = this.terminal;
+		this.router.write(() => terminal.write(bytes));
 	}
 
 	resize(cols: number, rows: number): void {
@@ -228,8 +230,14 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	}
 
 	onData(cb: DataListener): Unsubscribe {
-		this.dataListeners.add(cb);
-		return () => this.dataListeners.delete(cb);
+		this.router.data.add(cb);
+		return () => this.router.data.delete(cb);
+	}
+
+	/** See `TerminalRenderer.onReply` and {@link DataRouter}. */
+	onReply(cb: DataListener): Unsubscribe {
+		this.router.replies.add(cb);
+		return () => this.router.replies.delete(cb);
 	}
 
 	onResize(cb: ResizeListener): Unsubscribe {
@@ -354,7 +362,7 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.dataListeners.clear();
+		this.router.clear();
 		this.resizeListeners.clear();
 		this.keyListeners.clear();
 		this.wheelListeners.clear();

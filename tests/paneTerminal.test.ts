@@ -40,7 +40,8 @@ import type {
 	TerminalRenderer,
 	Unsubscribe,
 } from '../src/views/renderer/TerminalRenderer';
-import type { Endpoint } from '../src/connection';
+import { endpointOf, type Endpoint } from '../src/connection';
+import { defaultLocalRuntime } from '../src/runtimes';
 
 /** A promise plus the handle that settles it, for holding an await open. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
@@ -61,16 +62,7 @@ function settle(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-const LOCAL: Endpoint = {
-	id: 'local',
-	remote: {
-		enabled: false,
-		host: '',
-		remoteSocketPath: '',
-		remoteBinary: '',
-		remoteVaultPath: '',
-	},
-};
+const LOCAL: Endpoint = endpointOf(defaultLocalRuntime());
 
 class FakeRenderer implements TerminalRenderer {
 	readonly writes: string[] = [];
@@ -117,14 +109,27 @@ class FakeRenderer implements TerminalRenderer {
 		this.writes.push(new TextDecoder().decode(bytes));
 	}
 
-	resize(): void {}
+	/** Grids forced with `resize` (a herdr-core shared grid), in order. */
+	readonly gridResizes: number[][] = [];
+	dataListener: ((data: string) => void) | null = null;
+	replyListener: ((data: string) => void) | null = null;
+
+	resize(cols: number, rows: number): void {
+		this.gridResizes.push([cols, rows]);
+	}
 
 	fit(): FitResult {
 		return this.fitResult;
 	}
 
-	onData(): Unsubscribe {
+	onData(cb: (data: string) => void): Unsubscribe {
 		this.dataCallbacks++;
+		this.dataListener = cb;
+		return () => {};
+	}
+
+	onReply(cb: (data: string) => void): Unsubscribe {
+		this.replyListener = cb;
 		return () => {};
 	}
 
@@ -246,6 +251,38 @@ class FakeSession implements PaneSession {
 	}
 }
 
+/** A session with herdr-core's extras: replies, credit, repaint, looking. */
+class HcLikeSession extends FakeSession {
+	readonly replies: string[] = [];
+	readonly consumedBytes: number[] = [];
+	repaints = 0;
+	readonly looking: boolean[] = [];
+
+	reply(data: string | Uint8Array): boolean {
+		this.replies.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+		return true;
+	}
+
+	consumed(bytes: number): void {
+		this.consumedBytes.push(bytes);
+	}
+
+	repaint(): void {
+		this.repaints++;
+	}
+
+	setLooking(looking: boolean): void {
+		this.looking.push(looking);
+	}
+
+	readonly focuses: boolean[] = [];
+
+	focus(gained: boolean): boolean {
+		this.focuses.push(gained);
+		return true;
+	}
+}
+
 class FakeScheduler implements PaneTerminalScheduler {
 	private nextHandle = 1;
 	readonly frames = new Map<number, () => void>();
@@ -295,6 +332,8 @@ interface HarnessOptions {
 	identity?: Partial<PaneIdentity>;
 	/** Renderers created from this point on hold their mount open. */
 	deferMounts?: boolean;
+	/** Sessions are {@link HcLikeSession}s. */
+	hcLike?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -344,7 +383,7 @@ function harness(options: HarnessOptions = {}) {
 		host,
 		scheduler,
 		createSession: (sessionOptions) => {
-			const session = new FakeSession(sessionOptions);
+			const session = options.hcLike ? new HcLikeSession(sessionOptions) : new FakeSession(sessionOptions);
 			sessions.push(session);
 			return session;
 		},
@@ -376,6 +415,11 @@ function harness(options: HarnessOptions = {}) {
 		session: (index = 0): FakeSession => {
 			const session = sessions[index];
 			if (!session) throw new Error(`no session ${index}`);
+			return session;
+		},
+		hcSession: (index = 0): HcLikeSession => {
+			const session = sessions[index];
+			if (!(session instanceof HcLikeSession)) throw new Error(`no hc session ${index}`);
 			return session;
 		},
 		lastStatus: (): StatusLine => {
@@ -529,7 +573,7 @@ describe('PaneTerminal generation races', () => {
 		await h.terminal.attach(h.hostEl);
 
 		expect(h.sessions).toHaveLength(0);
-		expect(h.lastStatus().text).toContain('the endpoint local is no longer configured');
+		expect(h.lastStatus().text).toContain('the runtime local is no longer configured');
 		// Not a "waiting for herdr" case, so a connection does not retry it.
 		await h.terminal.connectionArrived();
 		expect(h.sessions).toHaveLength(0);
@@ -550,6 +594,18 @@ describe('PaneTerminal mount and dispose races', () => {
 		expect(h.renderer().disposed).toBe(1);
 		expect(h.sessions).toHaveLength(0);
 		expect(h.scheduler.pending).toBe(0);
+	});
+
+	it('tells the session a reveal is a reveal, and a reconnect or a first open is not', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		expect(h.session(0).options.revealed).toBeUndefined();
+		await h.terminal.setVisible(false);
+		await h.terminal.setVisible(true);
+		// A `claude` agent stopped while the leaf was hidden stays stopped on this one.
+		expect(h.session(1).options.revealed).toBe(true);
+		await h.terminal.reconnect();
+		expect(h.session(2).options.revealed).toBeUndefined();
 	});
 
 	it('a stale mount continuation replays no snapshot into the renderer it lost', async () => {
@@ -1172,5 +1228,158 @@ describe('PaneTerminal lifecycle races (PR #89 review)', () => {
 		await settle();
 
 		expect(h.renderer(1).writes).toEqual(['old scrollback\r\n', 'live output']);
+	});
+});
+
+describe('PaneTerminal on a raw-byte session (herdr-core)', () => {
+	it('returns credit for bytes written, and for bytes a full repaint dropped', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		const session = h.hcSession();
+		session.emit('frame', ...frame('abc', 1));
+		session.emit('frame', ...frame('\x18paint', 2, true));
+		expect(session.consumedBytes).toEqual([3]);
+		h.scheduler.runFrames();
+		expect(h.renderer().writes.at(-1)).toBe('\x18paint');
+		expect(session.consumedBytes).toEqual([3, 6]);
+	});
+
+	it('sends emulator replies through reply, typing through input, and neither from an observer', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.renderer().dataListener?.('ls');
+		h.renderer().replyListener?.('\x1b[?1;2c');
+		expect(h.hcSession().inputs).toEqual(['ls']);
+		expect(h.hcSession().replies).toEqual(['\x1b[?1;2c']);
+
+		const o = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await o.terminal.attach(o.hostEl);
+		o.renderer().dataListener?.('ls');
+		o.renderer().replyListener?.('\x1b[0n');
+		expect(o.hcSession().inputs).toEqual([]);
+		expect(o.hcSession().replies).toEqual([]);
+	});
+
+	it('a session without reply gets replies as input, as herdr always did', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.renderer().replyListener?.('\x1b[0n');
+		expect(h.session().inputs).toEqual(['\x1b[0n']);
+	});
+
+	it('an observer draws at the shared grid and never resizes it', async () => {
+		const h = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await h.terminal.attach(h.hostEl);
+		h.hcSession().emit('grid', 120, 30);
+		expect(h.renderer().gridResizes).toEqual([[120, 30]]);
+		// A container resize fits, then goes back to the shared grid.
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(h.renderer().gridResizes).toEqual([[120, 30], [120, 30]]);
+		expect(h.hcSession().resizes).toEqual([]);
+	});
+
+	it('a controller follows another viewer\'s grid until it has the size back', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		const session = h.hcSession();
+		const sent = session.resizes.length;
+		session.emit('grid', 200, 50);
+		expect(h.renderer().gridResizes).toEqual([[200, 50]]);
+		// Its own grid again (100x40, the fit): back to fitting, nothing sent.
+		session.emit('grid', 100, 40);
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(h.renderer().gridResizes).toEqual([[200, 50]]);
+		expect(session.resizes.length).toBe(sent);
+	});
+
+	it('clears a close when the session attached again by itself', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.hcSession().emit('closed', 'herdr-core connection lost: gone; trying again');
+		expect(h.lastStatus().warning).toBe(true);
+		h.hcSession().emit('reopened');
+		expect(h.lastStatus()).toMatchObject({ text: 'Controlling this pane on local.', warning: false });
+	});
+
+	it('tells every session whether a person is looking, including the next one', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		expect(h.hcSession().looking).toEqual([false]);
+		h.terminal.setLooking(true);
+		h.terminal.setLooking(true);
+		expect(h.hcSession().looking).toEqual([false, true]);
+		await h.terminal.reconnect();
+		expect(h.hcSession(1).looking).toEqual([true]);
+	});
+
+	it('a host with no box does not size the shared terminal until it has a real fit', async () => {
+		const h = harness({ hcLike: true, deferMounts: true });
+		// The renderer measures nothing: a hidden host.
+		const attaching = h.terminal.attach(h.hostEl);
+		await settle();
+		h.renderer().fitResult = { cols: 0, rows: 0, cellWidthPx: 0, cellHeightPx: 0 };
+		h.renderer().finishMount();
+		await attaching;
+		const session = h.hcSession();
+		expect(session.options).toMatchObject({ cols: 80, rows: 24, provisionalSize: true });
+		expect(session.resizes).toEqual([]);
+		// The shared grid is drawn even when it equals the placeholder.
+		session.emit('grid', 80, 24);
+		expect(h.renderer().gridResizes).toEqual([[80, 24]]);
+		// The first measured fit is sent, though it equals the placeholder.
+		h.renderer().fitResult = { cols: 80, rows: 24, cellWidthPx: 8, cellHeightPx: 16 };
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(session.resizes).toEqual([[80, 24, 8, 16]]);
+		// From then on, an unchanged fit is not news.
+		h.terminal.resize();
+		h.scheduler.runTimers();
+		expect(session.resizes).toHaveLength(1);
+	});
+
+	it('a host with a box sizes the session at once, as before', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		expect(h.hcSession().options).not.toHaveProperty('provisionalSize');
+		expect(h.hcSession().resizes).toEqual([[100, 40, 8, 16]]);
+	});
+
+	it('tells a session with focus about the keyboard focus, and drops the engine’s own reports', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.terminal.setFocused(true);
+		h.terminal.setFocused(true);
+		h.terminal.setFocused(false);
+		expect(h.hcSession().focuses).toEqual([true, false]);
+		// xterm.js's focus reports would reach the program a second time.
+		h.renderer().replyListener?.('\x1b[I');
+		h.renderer().replyListener?.('\x1b[O');
+		h.renderer().replyListener?.('\x1b[?1;2c');
+		expect(h.hcSession().replies).toEqual(['\x1b[?1;2c']);
+		// An observer has no focus to give.
+		const o = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await o.terminal.attach(o.hostEl);
+		o.terminal.setFocused(true);
+		expect(o.hcSession().focuses).toEqual([]);
+	});
+
+	it('a session without focus keeps the engine’s focus reports (herdr)', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		h.terminal.setFocused(true);
+		h.renderer().replyListener?.('\x1b[I');
+		expect(h.session().inputs).toEqual(['\x1b[I']);
+	});
+
+	it('asks for a fresh paint when the renderer is rebuilt under the live session', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		await h.terminal.apply('theme');
+		await settle();
+		expect(h.renderers).toHaveLength(2);
+		expect(h.sessions).toHaveLength(1);
+		expect(h.hcSession().repaints).toBe(1);
 	});
 });

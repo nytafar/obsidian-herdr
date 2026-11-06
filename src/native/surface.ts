@@ -13,13 +13,24 @@
  * then build and attach the new one. The terminal view owns the holder and
  * feeds it a factory, which is the seam `tests/paneSurface.test.ts` fakes.
  *
- * Remote endpoints keep a terminal surface (ADR-0002): everything the native
- * view reads is a path on the transcript's host, and the SSH adapters for that
- * do not exist yet, so {@link paneViewAvailability} reports native as
- * unavailable there and {@link effectivePaneView} falls back.
+ * A pane whose transcripts cannot be reached from here keeps a terminal
+ * surface (ADR-0002): everything the native view reads is a path on the
+ * transcript's host, and herdr over SSH has no adapter for that, so {@link
+ * paneViewAvailability} reports native as unavailable there and {@link
+ * effectivePaneView} falls back. Which runtimes can is the kind's to say
+ * (`nativeViewBlock` in `../runtime/kind.ts`).
  */
 
-import { Component, Keymap, MarkdownRenderer, Notice, type App } from 'obsidian';
+import {
+	Component,
+	Keymap,
+	MarkdownRenderer,
+	Notice,
+	type App,
+	type HoverParent,
+	type HoverPopover,
+	type WorkspaceLeaf,
+} from 'obsidian';
 import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
 import { type PaneView } from './renderMode';
 import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
@@ -40,6 +51,15 @@ import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { waitingCard, type WaitingCardModel } from './waitingCard';
+import {
+	projectGrantText,
+	type PendingQuestion,
+	type PendingRequest,
+	type WaitingAnswer,
+	type WaitingResponder,
+} from './pendingRequest';
+import { HOVER_LINK_SOURCE, fillUriLink, linkVaultUris, openLinkBeside } from './noteLinks';
+import { findObsidianUris, resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
 import type {
 	SessionChange,
@@ -90,15 +110,45 @@ export interface PaneViewAvailability {
 }
 
 /**
- * Whether a pane on this endpoint can be shown in this view. Only the native
- * view is ever unavailable, and only on a remote endpoint: the transcript it
- * reads is a path on the pane's own host and the SSH adapters are not built
- * yet (ADR-0002, ADR-0003).
+ * Where a pane lives, as far as the native view cares: on another machine
+ * whose transcripts cannot be reached, and whether its runtime's kind rules
+ * the view out by itself (ADR-0004).
  */
-export function paneViewAvailability(
-	view: PaneView,
-	where: { remote: boolean },
-): PaneViewAvailability {
+export interface PaneWhere {
+	/**
+	 * On another machine, with no way to read its transcripts from here. A
+	 * remote runtime whose kind reads them over its connection is not `remote`
+	 * in this sense.
+	 */
+	remote: boolean;
+	/**
+	 * Why the native view cannot be offered here, or null/absent when only the
+	 * target decides: the kind's reason (a kind with no agent session), or the
+	 * pane's own (an hc terminal with no Claude session label, ADR-0006).
+	 */
+	kindReason?: string | null;
+	/**
+	 * Why the terminal view cannot be offered for the pane's kind, or
+	 * null/absent when it can: the `claude` kind has no terminal in this
+	 * version (ADR-0007's D2), so its tabs show the native view.
+	 */
+	terminalReason?: string | null;
+}
+
+/**
+ * Whether a pane on this endpoint can be shown in this view. Only the native
+ * view is ever unavailable: on a runtime whose kind has no agent session to
+ * follow, and on a remote endpoint, where the transcript it reads is a path on
+ * the pane's own host and the SSH adapters are not built yet (ADR-0002,
+ * ADR-0003). The kind's reason comes first, since it holds on any target.
+ */
+export function paneViewAvailability(view: PaneView, where: PaneWhere): PaneViewAvailability {
+	if (view === 'terminal' && where.terminalReason) {
+		return { available: false, reason: where.terminalReason };
+	}
+	if (view === 'native' && where.kindReason) {
+		return { available: false, reason: where.kindReason };
+	}
 	if (view === 'native' && where.remote) {
 		return { available: false, reason: NATIVE_REMOTE_REASON };
 	}
@@ -117,9 +167,13 @@ export function effectivePaneView(input: {
 	/** The global default view, normalized. */
 	fallback: PaneView;
 	remote: boolean;
+	kindReason?: string | null;
+	terminalReason?: string | null;
 }): PaneView {
 	const view = input.stored ?? input.fallback;
-	if (paneViewAvailability(view, { remote: input.remote }).available) return view;
+	if (paneViewAvailability(view, input).available) return view;
+	// A kind with no terminal shows the native view whenever it can.
+	if (view === 'terminal' && paneViewAvailability('native', input).available) return 'native';
 	return 'terminal';
 }
 
@@ -219,6 +273,12 @@ export interface NativePaneSurfaceOptions {
 	sender: PromptSender;
 	/** How the waiting card's "Trust this folder" reaches the agent (#99). */
 	keySender: KeySender;
+	/**
+	 * How the waiting card answers a request the runtime itself is waiting on
+	 * (ADR-0007): only a kind that owns its agents' dialogs has one. Without it
+	 * such a card is described like any other block.
+	 */
+	responder?: WaitingResponder;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -252,6 +312,24 @@ export interface NativePaneSurfaceOptions {
 	 * every path outside the vault.
 	 */
 	vaultPath: () => string;
+	/**
+	 * The leaf this view sits in, so a link opens beside it and never in it
+	 * (#114). Read on every click; null, or left out by a test that does not
+	 * click, opens links in a new tab instead of a split.
+	 */
+	leaf?: () => WorkspaceLeaf | null;
+	/**
+	 * Whether a note split off beside this view goes before (left of) it, which
+	 * mirrors the terminal placement setting: a terminal placed right of its
+	 * note gets its links on the left (#114). Defaults to false.
+	 */
+	noteSplitBefore?: () => boolean;
+	/**
+	 * What links in the prose and prompts resolve against: a path in the pane's
+	 * cwd when that is inside the vault (`./noteLinks.ts`, `linkSourcePath`),
+	 * else the vault root. Defaults to the vault root.
+	 */
+	linkSourcePath?: () => string;
 }
 
 /**
@@ -296,16 +374,20 @@ export function isAtBottom(geometry: {
 	return furthest - geometry.scrollTop <= BOTTOM_SLACK_PX;
 }
 
-/** One piece of a human prompt: literal text, or a wikilink to a note. */
+/**
+ * One piece of a human prompt: literal text, a wikilink to a note, or an
+ * `obsidian://` URI (#114), which is resolved when it is drawn.
+ */
 export type PromptSegment =
 	| { kind: 'text'; text: string }
-	| { kind: 'link'; target: string; label: string };
+	| { kind: 'link'; target: string; label: string }
+	| { kind: 'uri'; uri: string };
 
 /**
- * A human prompt split into text and wikilinks.
+ * A human prompt split into text, wikilinks and `obsidian://` URIs.
  *
  * Human prompts are shown as the human typed them — plain, pre-wrapped text,
- * not Markdown — with the one exception that a wikilink is a link, because a
+ * not Markdown — with the one exception that a link is a link, because a
  * prompt in this vault is usually half references (native-view-design.md).
  */
 export function promptSegments(prompt: string): PromptSegment[] {
@@ -313,14 +395,34 @@ export function promptSegments(prompt: string): PromptSegment[] {
 	const pattern = /\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]/g;
 	let at = 0;
 	for (let match = pattern.exec(prompt); match; match = pattern.exec(prompt)) {
-		if (match.index > at) segments.push({ kind: 'text', text: prompt.slice(at, match.index) });
+		if (match.index > at) segments.push(...textSegments(prompt.slice(at, match.index)));
 		const target = (match[1] ?? '').trim();
 		const alias = match[2]?.trim();
 		segments.push({ kind: 'link', target, label: alias || target });
 		at = match.index + match[0].length;
 	}
-	if (at < prompt.length) segments.push({ kind: 'text', text: prompt.slice(at) });
+	if (at < prompt.length) segments.push(...textSegments(prompt.slice(at)));
 	return segments;
+}
+
+/** A run of prompt text between wikilinks, with its `obsidian://` URIs split out. */
+function textSegments(text: string): PromptSegment[] {
+	const segments: PromptSegment[] = [];
+	let at = 0;
+	for (const match of findObsidianUris(text)) {
+		if (match.start > at) segments.push({ kind: 'text', text: text.slice(at, match.start) });
+		segments.push({ kind: 'uri', uri: match.uri });
+		at = match.end;
+	}
+	if (at < text.length) segments.push({ kind: 'text', text: text.slice(at) });
+	return segments;
+}
+
+/** The link an event inside the view landed on, if it landed on one (#114). */
+function linkAt(target: EventTarget | null): HTMLElement | null {
+	const el = target as HTMLElement | null;
+	if (typeof el?.closest !== 'function') return null;
+	return el.closest<HTMLElement>('a.internal-link');
 }
 
 /**
@@ -365,7 +467,9 @@ interface TurnDraw {
  * listener and every rendered Markdown child hangs off a `Component` that is
  * unloaded when its turn is redrawn or the surface detaches.
  */
-export class NativePaneSurface implements PaneSurface {
+export class NativePaneSurface implements PaneSurface, HoverParent {
+	/** The page preview a hovered link opened, as `HoverParent` asks (#114). */
+	hoverPopover: HoverPopover | null = null;
 	private identity: PaneIdentity;
 	private readonly options: NativePaneSurfaceOptions;
 	/** The element this surface added to the host; removed again on detach. */
@@ -420,6 +524,13 @@ export class NativePaneSurface implements PaneSurface {
 	private waitingComponent: Component | null = null;
 	/** Whether this surface has already answered the block it is in (#99). */
 	private trustSent = false;
+	/**
+	 * The runtime request the card on screen answers, so a redraw for anything
+	 * else keeps the card — and what was chosen or typed on it — as it is.
+	 */
+	private waitingRequest: PendingRequest | null = null;
+	/** The request an answer has been sent for, so a second press sends nothing. */
+	private answeredRequest = '';
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -466,6 +577,11 @@ export class NativePaneSurface implements PaneSurface {
 		this.component.registerDomEvent(turns, 'scroll', () => {
 			this.following = isAtBottom(turns);
 		});
+		// Every link in the view, prose and prompts alike, through one handler
+		// (#114): Obsidian's renderer wires no clicks of its own here.
+		this.component.registerDomEvent(root, 'click', (event) => this.onLinkClick(event, 0));
+		this.component.registerDomEvent(root, 'auxclick', (event) => this.onLinkClick(event, 1));
+		this.component.registerDomEvent(root, 'mouseover', (event) => this.onLinkHover(event));
 		this.watchForGrowth(turns);
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
@@ -508,13 +624,16 @@ export class NativePaneSurface implements PaneSurface {
 	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
-		const samePane = identity.paneId === this.identity.paneId;
+		// The same pane id on another runtime is another pane (ADR-0006).
+		const samePane =
+			identity.paneId === this.identity.paneId && identity.endpointId === this.identity.endpointId;
 		this.identity = identity;
 		if (samePane) {
 			this.report();
 			return;
 		}
 		// Another pane is another session: let the old model go and start over.
+		// The new one is pinned to the identity's runtime, never the published one.
 		this.unbind();
 		this.bind();
 	}
@@ -579,7 +698,7 @@ export class NativePaneSurface implements PaneSurface {
 		if (!this.rootEl) return;
 		this.following = true;
 		if (this.identity.paneId) {
-			this.handle = this.options.models.acquire(this.identity.paneId);
+			this.handle = this.options.models.acquire(this.identity.endpointId, this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
 		}
 		this.renderAll();
@@ -674,7 +793,7 @@ export class NativePaneSurface implements PaneSurface {
 		this.turnComponents.set(turn.id, component);
 
 		if (turn.prompt) {
-			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt, component);
+			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt);
 		}
 		// What to draw, and in which order, is `turnItems` (#95): the tool calls
 		// folded into groups with the vault changes and sources left outside.
@@ -702,7 +821,7 @@ export class NativePaneSurface implements PaneSurface {
 				this.renderToolGroup(turnEl, item.tools);
 				return;
 			case 'change':
-				this.renderVaultChange(turnEl, item.entry, component);
+				this.renderVaultChange(turnEl, item.entry);
 				return;
 			case 'source':
 				this.renderSource(turnEl, item.entry);
@@ -712,11 +831,7 @@ export class NativePaneSurface implements PaneSurface {
 				return;
 			case 'steer':
 				// A steer is shown where it entered the running turn (CONTEXT.md).
-				this.renderPrompt(
-					turnEl.createDiv({ cls: 'herdr-native-steer' }),
-					item.entry.text,
-					component,
-				);
+				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), item.entry.text);
 				return;
 		}
 	}
@@ -820,7 +935,7 @@ export class NativePaneSurface implements PaneSurface {
 	 * refused, or that nothing has answered yet, must not read as one that
 	 * landed.
 	 */
-	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry, component: Component): void {
+	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry): void {
 		const path = changedPath(entry);
 		if (!path) return;
 		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
@@ -829,7 +944,7 @@ export class NativePaneSurface implements PaneSurface {
 		const { lead, trail } = changeLine(entry.status);
 		el.appendText(lead);
 		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (link) this.renderPrompt(el, `[[${link}]]`, component);
+		if (link) this.renderPrompt(el, `[[${link}]]`);
 		else el.appendText(path);
 		if (trail) el.appendText(trail);
 	}
@@ -876,29 +991,78 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
-	/** A human prompt: text as typed, wikilinks as links Obsidian can follow. */
-	private renderPrompt(el: HTMLElement, prompt: string, component: Component): void {
+	/**
+	 * A human prompt: text as typed, wikilinks and `obsidian://` URIs as links.
+	 * A click on one is the view's delegated handler's ({@link onLinkClick}).
+	 */
+	private renderPrompt(el: HTMLElement, prompt: string): void {
 		for (const segment of promptSegments(prompt)) {
 			if (segment.kind === 'text') {
 				el.appendText(segment.text);
 				continue;
 			}
-			const linkEl = el.createEl('a', {
+			if (segment.kind === 'uri') {
+				fillUriLink(el.createEl('a'), segment.uri, this.resolveUri(segment.uri));
+				continue;
+			}
+			el.createEl('a', {
 				cls: 'internal-link',
 				text: segment.label,
 				href: segment.target,
 				attr: { 'data-href': segment.target },
 			});
-			component.registerDomEvent(linkEl, 'click', (event) => {
-				event.preventDefault();
-				// A mod-click opens the note in a new tab, as a link in a note does.
-				void this.options.app.workspace.openLinkText(
-					segment.target,
-					'',
-					Keymap.isModEvent(event),
-				);
-			});
 		}
+	}
+
+	/** The vault path an `obsidian://` URI opens in this vault, or null (#114). */
+	private resolveUri(uri: string): string | null {
+		return resolveObsidianUri(uri, vaultLookup(this.options.app, this.options.vaultPath()));
+	}
+
+	/** What the view's links resolve against (#114). */
+	private sourcePath(): string {
+		return this.options.linkSourcePath?.() ?? '';
+	}
+
+	/**
+	 * A click on a link: beside the view on a plain click, where Obsidian would
+	 * on a mod-click, a new tab on a middle click (#114). Never the operating
+	 * system's protocol handler, and never this view's own leaf.
+	 *
+	 * A click something inside the link already handled — an embed's own
+	 * reading view wires its links — is left to it.
+	 */
+	private onLinkClick(event: MouseEvent, button: number): void {
+		if (event.defaultPrevented || (event.button ?? 0) !== button) return;
+		const linkEl = linkAt(event.target);
+		const linktext = linkEl?.getAttribute('data-href') ?? linkEl?.getAttribute('href');
+		if (!linktext) return;
+		event.preventDefault();
+		openLinkBeside(this.options.app, {
+			linktext,
+			sourcePath: this.sourcePath(),
+			ownLeaf: this.options.leaf?.() ?? null,
+			newLeaf: button === 1 ? 'tab' : Keymap.isModEvent(event),
+			splitBefore: this.options.noteSplitBefore?.() ?? false,
+		}).catch((error: unknown) => {
+			const reason = error instanceof Error ? error.message : String(error);
+			this.notify(`Herdr: could not open ${linktext} (${reason})`);
+		});
+	}
+
+	/** A hover over a link: Obsidian's page preview, as in a note (#114). */
+	private onLinkHover(event: MouseEvent): void {
+		const linkEl = linkAt(event.target);
+		const linktext = linkEl?.getAttribute('data-href');
+		if (!linkEl || !linktext) return;
+		this.options.app.workspace.trigger('hover-link', {
+			event,
+			source: HOVER_LINK_SOURCE,
+			hoverParent: this,
+			targetEl: linkEl,
+			linktext,
+			sourcePath: this.sourcePath(),
+		});
 	}
 
 	/**
@@ -916,7 +1080,13 @@ export class NativePaneSurface implements PaneSurface {
 		el: HTMLElement,
 		component: Component,
 	): Promise<void> {
-		const rendering = MarkdownRenderer.render(this.options.app, markdown, el, '', component);
+		const rendering = MarkdownRenderer.render(
+			this.options.app,
+			markdown,
+			el,
+			this.sourcePath(),
+			component,
+		).then(() => linkVaultUris(el, (uri) => this.resolveUri(uri)));
 		this.renders.push(rendering);
 		return rendering;
 	}
@@ -968,16 +1138,21 @@ export class NativePaneSurface implements PaneSurface {
 		this.resizeObserver.observe(el);
 	}
 
-	/** The line shown when there is nothing to show, and nothing when there is. */
+	/**
+	 * The line shown when there is nothing to show, and nothing when there is;
+	 * or, above whatever is shown, why the transcript cannot be read (a
+	 * runtime's own limit), which an empty view would otherwise hide.
+	 */
 	private updateEmpty(): void {
 		const root = this.rootEl;
 		if (!root) return;
-		if (this.turnEls.size > 0) {
+		const problem = this.model?.readProblem ?? null;
+		if (this.turnEls.size > 0 && !problem) {
 			this.emptyEl?.remove();
 			this.emptyEl = null;
 			return;
 		}
-		const text = this.model?.path ? 'No turns in this session yet.' : 'No session yet.';
+		const text = problem ?? (this.model?.path ? 'No turns in this session yet.' : 'No session yet.');
 		if (!this.emptyEl) {
 			this.emptyEl = root.createDiv({ cls: ['herdr-native-empty', 'herdr-native-sizer'] });
 		}
@@ -1025,9 +1200,19 @@ export class NativePaneSurface implements PaneSurface {
 			this.promptBox?.setHidden(false);
 			return;
 		}
+		const request = this.options.responder ? (this.model?.request ?? null) : null;
+		// The same request still waiting: the card on screen is already it.
+		if (request && request === this.waitingRequest && this.waitingEl) {
+			this.promptBox?.setHidden(true);
+			return;
+		}
 		const card = waitingCard({
-			// No transcript at all is the workspace trust prompt: a freshly
-			// started Claude writes no file until its first turn (ADR-0003).
+			request,
+			// The runtime's own word on the block when it has one (ADR-0006);
+			// else no transcript at all reads as the workspace trust prompt, as a
+			// freshly started Claude writes no file until its first turn
+			// (ADR-0003) — a guess the view shows but never answers by itself.
+			blockKind: this.model?.blockKind ?? null,
 			hasTranscript: this.model?.path != null,
 			turns: this.model?.state.turns ?? [],
 			vaultPath: this.options.vaultPath(),
@@ -1039,6 +1224,7 @@ export class NativePaneSurface implements PaneSurface {
 
 	/** Drops the card and its listeners. Safe to call when there is none. */
 	private clearWaiting(): void {
+		this.waitingRequest = null;
 		this.waitingComponent?.unload();
 		this.waitingComponent = null;
 		this.waitingEl?.remove();
@@ -1067,15 +1253,21 @@ export class NativePaneSurface implements PaneSurface {
 		const el = root.createDiv({ cls: ['herdr-native-waiting', 'herdr-native-sizer'] });
 		this.waitingEl = el;
 		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		if (card.request && this.options.responder) {
+			this.waitingRequest = card.request;
+			this.renderRequest(el, card, card.request, component);
+			return;
+		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
 		for (const option of card.options) {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		// The startup kind is "no transcript at all", which is what a Claude
-		// sitting at its trust prompt looks like: it has written no file yet
-		// (ADR-0003). Every other kind is read out of a transcript, so it is a
-		// session that is already running and past this prompt.
+		// The startup kind is the trust prompt the runtime reported, or, where
+		// the runtime says nothing of kinds, "no transcript at all", which is
+		// what a Claude sitting at its trust prompt looks like: it has written no
+		// file yet (ADR-0003). Every other kind is a session past this prompt,
+		// or a block the runtime named as something else (`auth` included).
 		if (card.kind === 'startup') {
 			const trustEl = actions.createEl('button', {
 				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-trust', 'mod-cta'],
@@ -1097,9 +1289,15 @@ export class NativePaneSurface implements PaneSurface {
 	 * checked here as well as where the button is drawn, because this is the
 	 * path with nobody looking at it: every other block stays on screen,
 	 * whatever the setting says.
+	 *
+	 * **Only a trust prompt the runtime identified.** A startup card guessed
+	 * from "no transcript yet" is also what an auth prompt, or any dialog
+	 * before the session exists, looks like, and `Down Enter` there picks
+	 * whatever its second option is. The guess keeps its button, which the
+	 * user presses having been told to check; nothing presses it for them.
 	 */
 	private autoTrust(card: WaitingCardModel): void {
-		if (card.kind !== 'startup') return;
+		if (card.kind !== 'startup' || !card.reported) return;
 		if (!this.options.autoTrustFolders()) return;
 		// One answer per block for the pane, not one per view: the claim is the
 		// model's, which is the thing two tabs on one pane share (ADR-0003). It
@@ -1131,6 +1329,153 @@ export class NativePaneSurface implements PaneSurface {
 		}
 	}
 
+	/**
+	 * The card for a request the runtime is waiting on (ADR-0007), with the
+	 * answers it can take. Nothing here is pressed for the user: every answer
+	 * is a click, and none times out (the agent stays blocked until one comes).
+	 *
+	 * - **Permission:** Allow, Deny, and — only when Claude suggested them —
+	 *   "Allow for this session" and "Always allow in this project", each with
+	 *   what it grants on the line under it, the project one naming the
+	 *   settings file it writes.
+	 * - **Question:** the options as buttons; one single-choice question is
+	 *   answered by its button, several (or a multiple choice) by "Send
+	 *   answers" once each has one. "Dismiss" declines.
+	 * - **Plan:** the plan as Markdown, "Approve plan", and "Reject" with the
+	 *   feedback typed above it.
+	 */
+	private renderRequest(
+		el: HTMLElement,
+		card: WaitingCardModel,
+		request: PendingRequest,
+		component: Component,
+	): void {
+		const buttons: HTMLButtonElement[] = [];
+		// A stopping agent has denied the request already: shown, not answerable.
+		const stopping = request.stopping === true;
+		if (stopping) {
+			el.createDiv({ cls: 'herdr-native-waiting-stopping', text: 'The agent is stopping, so this request is being denied.' });
+		}
+		const send = (answer: WaitingAnswer): void => {
+			void this.answer(request, answer, buttons);
+		};
+		const button = (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => {
+			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
+			buttonEl.disabled = stopping;
+			buttons.push(buttonEl);
+			component.registerDomEvent(buttonEl, 'click', () => {
+				const chosen = answer();
+				if (chosen) send(chosen);
+			});
+			return buttonEl;
+		};
+		if (request.kind === 'plan') {
+			const planEl = el.createDiv({ cls: 'herdr-native-waiting-plan' });
+			void this.renderMarkdown(request.plan || 'Claude did not include a plan.', planEl, component);
+			const feedbackEl = el.createEl('textarea', {
+				cls: 'herdr-native-waiting-feedback',
+				attr: { rows: '2', placeholder: 'What should change, if you reject it', 'aria-label': 'Plan feedback' },
+			});
+			const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+			button(actions, 'Approve plan', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'approve-plan' }));
+			button(actions, 'Reject', ['herdr-native-waiting-deny'], () => ({
+				type: 'reject-plan',
+				feedback: feedbackEl.value,
+			}));
+			return;
+		}
+		if (request.kind === 'question') {
+			this.renderQuestions(el, request.questions, button);
+			return;
+		}
+		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		if (request.reason) el.createDiv({ cls: 'herdr-native-waiting-reason', text: request.reason });
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		button(actions, 'Allow', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'allow' }));
+		button(actions, 'Deny', ['herdr-native-waiting-deny'], () => ({ type: 'deny' }));
+		if (request.session) {
+			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
+			button(grant, 'Allow for this session', ['herdr-native-waiting-session'], () => ({ type: 'allow-session' }));
+			grant.createSpan({ cls: 'herdr-native-waiting-grant-text', text: request.session.lines.join('; ') });
+		}
+		if (request.project) {
+			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
+			button(grant, 'Always allow in this project', ['herdr-native-waiting-project'], () => ({
+				type: 'allow-project',
+			}));
+			grant.createSpan({
+				cls: 'herdr-native-waiting-grant-text',
+				text: projectGrantText(request.project),
+			});
+		}
+	}
+
+	/** The questions of an `AskUserQuestion`, and how they are answered. */
+	private renderQuestions(
+		el: HTMLElement,
+		questions: readonly PendingQuestion[],
+		button: (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => HTMLButtonElement,
+	): void {
+		const single = questions.length === 1 && questions[0]?.multiSelect !== true;
+		const chosen = new Map<string, Set<string>>();
+		let submit: HTMLButtonElement | null = null;
+		const complete = (): boolean => questions.every((question) => (chosen.get(question.question)?.size ?? 0) > 0);
+		for (const question of questions) {
+			const block = el.createDiv({ cls: 'herdr-native-waiting-question' });
+			if (question.header) block.createDiv({ cls: 'herdr-native-waiting-header', text: question.header });
+			block.createDiv({ cls: 'herdr-native-waiting-body', text: question.question });
+			const options = block.createDiv({ cls: 'herdr-native-waiting-actions' });
+			for (const option of question.options) {
+				const optionEl = button(options, option.label, ['herdr-native-waiting-choice'], () => {
+					if (single) return { type: 'answer', answers: { [question.question]: option.label } };
+					const picked = chosen.get(question.question) ?? new Set<string>();
+					if (!question.multiSelect) picked.clear();
+					if (picked.has(option.label)) picked.delete(option.label);
+					else picked.add(option.label);
+					chosen.set(question.question, picked);
+					for (const sibling of Array.from(options.children)) {
+						sibling.toggleClass('is-selected', picked.has(sibling.textContent ?? ''));
+					}
+					if (submit) submit.disabled = !complete();
+					return null;
+				});
+				if (option.description) optionEl.setAttr('title', option.description);
+			}
+		}
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		if (!single) {
+			submit = button(actions, 'Send answers', ['mod-cta', 'herdr-native-waiting-allow'], () => {
+				if (!complete()) return null;
+				const answers: Record<string, string> = {};
+				for (const question of questions) {
+					answers[question.question] = [...(chosen.get(question.question) ?? [])].join(', ');
+				}
+				return { type: 'answer', answers };
+			});
+			submit.disabled = submit.disabled || !complete();
+		}
+		button(actions, 'Dismiss', ['herdr-native-waiting-deny'], () => ({ type: 'dismiss' }));
+	}
+
+	/**
+	 * Sends one answer to the request on the card, once: the buttons go
+	 * disabled until the runtime has it, and come back only if it failed.
+	 */
+	private async answer(request: PendingRequest, answer: WaitingAnswer, buttons: HTMLButtonElement[]): Promise<void> {
+		const responder = this.options.responder;
+		if (!responder || request.stopping || this.answeredRequest === request.id) return;
+		this.answeredRequest = request.id;
+		for (const buttonEl of buttons) buttonEl.disabled = true;
+		try {
+			await responder.respond(this.identity.paneId, request.id, answer);
+		} catch (error) {
+			this.answeredRequest = '';
+			for (const buttonEl of buttons) buttonEl.disabled = false;
+			const reason = error instanceof Error ? error.message : String(error);
+			this.notify(`Herdr: could not answer Claude (${reason})`);
+		}
+	}
+
 	/** How a failure reaches the user; a Notice, as a failed send is (#97). */
 	private notify(message: string): void {
 		if (this.options.notify) {
@@ -1143,11 +1488,17 @@ export class NativePaneSurface implements PaneSurface {
 	private report(): void {
 		const paneId = this.identity.paneId;
 		const session = this.model?.agentSession ?? '';
+		// Another runtime is active, or none is: what is on screen is what the
+		// session said when this one was last connected (ADR-0006).
+		const disconnected = paneId !== '' && this.model?.connected === false;
+		const tail = disconnected
+			? ' Its runtime is not connected.'
+			: session
+				? ''
+				: ' No session yet.';
 		this.options.onStatus({
-			text: paneId
-				? `Native view of ${paneId}.${session ? '' : ' No session yet.'}`
-				: 'Native view. No pane.',
-			warning: false,
+			text: paneId ? `Native view of ${paneId}.${tail}` : 'Native view. No pane.',
+			warning: disconnected,
 			detail: null,
 		});
 	}

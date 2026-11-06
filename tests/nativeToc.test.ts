@@ -14,6 +14,7 @@ import { TocPanel, tocTarget, type ActiveLeafFacts } from '../src/native/tocView
 import { OutlineSwap, outlineSwapAction } from '../src/native/tocOutline';
 import { emptyTranscript, type Turn, type TranscriptState } from '../src/native/reducer';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -30,6 +31,8 @@ class FakeModel implements SessionModelView {
 	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 
 	on(listener: (change: SessionChange) => void): () => void {
@@ -63,7 +66,11 @@ class FakeModels implements SessionModels {
 		return model;
 	}
 
-	acquire(paneId: string): SessionHandleOf<SessionModelView> {
+	/** The runtime each acquire named, in the same order as {@link acquired}. */
+	readonly endpoints: string[] = [];
+
+	acquire(endpointId: string, paneId: string): SessionHandleOf<SessionModelView> {
+		this.endpoints.push(endpointId);
 		this.acquired.push(paneId);
 		return {
 			model: this.model(paneId),
@@ -113,20 +120,21 @@ function items(el: FakeElement): string[] {
 
 describe('tocTarget: which leaf the TOC follows (#100)', () => {
 	it('follows a native view in the main area', () => {
-		expect(tocTarget({ inMainArea: true, nativePaneId: 'w4:p1' })).toEqual({
+		expect(tocTarget({ inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' })).toEqual({
 			kind: 'follow',
+			endpointId: 'local',
 			paneId: 'w4:p1',
 		});
 	});
 
 	it('empties for a main-area leaf that is not a native view', () => {
-		expect(tocTarget({ inMainArea: true, nativePaneId: '' })).toEqual({ kind: 'empty' });
+		expect(tocTarget({ inMainArea: true, nativePaneId: '', nativeEndpointId: '' })).toEqual({ kind: 'empty' });
 	});
 
 	it('keeps what it shows when its own leaf, or any leaf outside the main area, is activated', () => {
 		// Clicking in the table of contents activates the TOC's own leaf. If that
 		// emptied the list, the list could never be clicked twice.
-		expect(tocTarget({ inMainArea: false, nativePaneId: '' })).toEqual({ kind: 'keep' });
+		expect(tocTarget({ inMainArea: false, nativePaneId: '', nativeEndpointId: '' })).toEqual({ kind: 'keep' });
 		expect(tocTarget(null)).toEqual({ kind: 'keep' });
 	});
 });
@@ -145,7 +153,7 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel, el } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		models.model('w4:p1').state = {
 			...emptyTranscript(),
@@ -178,7 +186,7 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel, el } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		panel.activeLeafChanged(leaf);
 
@@ -195,9 +203,9 @@ describe('TocPanel', () => {
 		const { panel, el } = panelOn(
 			models,
 			new Map([
-				[first, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[second, { inMainArea: true, nativePaneId: 'w4:p2' }],
-				[note, { inMainArea: true, nativePaneId: '' }],
+				[first, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[second, { inMainArea: true, nativePaneId: 'w4:p2', nativeEndpointId: 'local' }],
+				[note, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' }],
 			]),
 		);
 
@@ -217,12 +225,12 @@ describe('TocPanel', () => {
 		// the list that the tab the reader is in is now a native view.
 		const models = new FakeModels();
 		const leaf = leafOf('tab');
-		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: '' }]]);
+		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' }]]);
 		const { panel, el } = panelOn(models, facts);
 		panel.activeLeafChanged(leaf);
 		expect(el.find('herdr-toc-empty').textContent).toBe('No native view is active.');
 
-		facts.set(leaf, { inMainArea: true, nativePaneId: 'w4:p1' });
+		facts.set(leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' });
 		panel.surfaceChanged(leaf, true);
 		models.model('w4:p1').push([turn('u1', 'First prompt')]);
 
@@ -233,12 +241,12 @@ describe('TocPanel', () => {
 	it('empties and gives the model back when that leaf goes back to a terminal', () => {
 		const models = new FakeModels();
 		const leaf = leafOf('tab');
-		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]);
+		const facts = new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]);
 		const { panel, el } = panelOn(models, facts);
 		panel.activeLeafChanged(leaf);
 		models.model('w4:p1').push([turn('u1', 'First prompt')]);
 
-		facts.set(leaf, { inMainArea: true, nativePaneId: '' });
+		facts.set(leaf, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' });
 		panel.surfaceChanged(leaf, true);
 
 		// Stale entries and a subscription nobody reads are the whole of the bug.
@@ -253,8 +261,8 @@ describe('TocPanel', () => {
 		const read = leafOf('native');
 		const background = leafOf('background');
 		const facts = new Map([
-			[read, { inMainArea: true, nativePaneId: 'w4:p1' }],
-			[background, { inMainArea: true, nativePaneId: 'w4:p2' }],
+			[read, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+			[background, { inMainArea: true, nativePaneId: 'w4:p2', nativeEndpointId: 'local' }],
 		]);
 		const { panel } = panelOn(models, facts);
 		panel.activeLeafChanged(read);
@@ -272,8 +280,8 @@ describe('TocPanel', () => {
 		const { panel, el, scrollToHeading } = panelOn(
 			models,
 			new Map([
-				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[own, { inMainArea: false, nativePaneId: '' }],
+				[native, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[own, { inMainArea: false, nativePaneId: '', nativeEndpointId: '' }],
 			]),
 		);
 		panel.activeLeafChanged(native);
@@ -286,7 +294,7 @@ describe('TocPanel', () => {
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 		// The list is still the one the native leaf put there, so the click goes
 		// to that leaf and not to the TOC's own.
-		expect(scrollToHeading).toHaveBeenCalledWith(native, 'w4:p1', 'u1', 0);
+		expect(scrollToHeading).toHaveBeenCalledWith(native, 'local', 'w4:p1', 'u1', 0);
 	});
 
 	it('scrolls to the heading a click names, by its place in the turn (#118)', () => {
@@ -294,7 +302,7 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel, el, scrollToTurn, scrollToHeading } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		panel.activeLeafChanged(leaf);
 		models.model('w4:p1').push([
@@ -307,16 +315,16 @@ describe('TocPanel', () => {
 
 		// Rows: First, One, Two, Second, Three.
 		el.findAll('herdr-toc-item')[2]?.dispatch('click');
-		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'w4:p1', 'u1', 1);
+		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'local', 'w4:p1', 'u1', 1);
 
 		// The index is within the turn, so the first heading of the next turn is
 		// its own index 0 and not the fourth heading of the list.
 		el.findAll('herdr-toc-item')[4]?.dispatch('click');
-		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2', 0);
+		expect(scrollToHeading).toHaveBeenCalledWith(leaf, 'local', 'w4:p1', 'u2', 0);
 
 		// A prompt row is still the turn's seam, headings or no headings.
 		el.findAll('herdr-toc-item')[3]?.dispatch('click');
-		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'local', 'w4:p1', 'u2');
 	});
 
 	it('scrolls the view to the turn a click names', () => {
@@ -324,14 +332,14 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel, el, scrollToTurn } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		panel.activeLeafChanged(leaf);
 		models.model('w4:p1').push([turn('u1', 'First'), turn('u2', 'Second')]);
 
 		el.findAll('herdr-toc-item')[1]?.dispatch('click');
 
-		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'local', 'w4:p1', 'u2');
 	});
 
 	it('is reachable and activated from the keyboard', () => {
@@ -341,7 +349,7 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel, el, scrollToTurn } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		panel.activeLeafChanged(leaf);
 		models.model('w4:p1').push([turn('u1', 'First'), turn('u2', 'Second')]);
@@ -351,7 +359,7 @@ describe('TocPanel', () => {
 		expect(row?.attrs.tabindex).toBe('0');
 
 		row?.dispatch('keydown', { key: 'Enter' });
-		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'w4:p1', 'u2');
+		expect(scrollToTurn).toHaveBeenCalledWith(leaf, 'local', 'w4:p1', 'u2');
 
 		row?.dispatch('keydown', { key: ' ' });
 		expect(scrollToTurn).toHaveBeenCalledTimes(2);
@@ -371,8 +379,8 @@ describe('TocPanel', () => {
 		const { panel, el, scrollToTurn } = panelOn(
 			models,
 			new Map([
-				[first, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[second, { inMainArea: true, nativePaneId: 'w4:p1' }],
+				[first, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[second, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
 			]),
 		);
 		panel.activeLeafChanged(first);
@@ -382,7 +390,7 @@ describe('TocPanel', () => {
 
 		el.findAll('herdr-toc-item')[0]?.dispatch('click');
 
-		expect(scrollToTurn).toHaveBeenCalledWith(second, 'w4:p1', 'u1');
+		expect(scrollToTurn).toHaveBeenCalledWith(second, 'local', 'w4:p1', 'u1');
 		expect(models.acquired).toEqual(['w4:p1']);
 	});
 
@@ -391,7 +399,7 @@ describe('TocPanel', () => {
 		const leaf = leafOf('native');
 		const { panel } = panelOn(
 			models,
-			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[leaf, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		panel.activeLeafChanged(leaf);
 
@@ -452,7 +460,7 @@ describe('outlineSwapAction: which way the sidebar swaps (#119)', () => {
 	it('shows the table of contents for a native view while the outline is up', () => {
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				facts: { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' },
 				outlineLeaf: outline,
 				hidden: null,
 			}),
@@ -462,14 +470,14 @@ describe('outlineSwapAction: which way the sidebar swaps (#119)', () => {
 	it('does nothing for a native view when no outline is up, or when it is already swapped', () => {
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				facts: { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' },
 				outlineLeaf: null,
 				hidden: null,
 			}),
 		).toEqual({ kind: 'none' });
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: true, nativePaneId: 'w4:p1' },
+				facts: { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' },
 				outlineLeaf: outline,
 				hidden: outline,
 			}),
@@ -479,14 +487,14 @@ describe('outlineSwapAction: which way the sidebar swaps (#119)', () => {
 	it('puts the outline back for any other main-area leaf, but only what it took away', () => {
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: true, nativePaneId: '' },
+				facts: { inMainArea: true, nativePaneId: '', nativeEndpointId: '' },
 				outlineLeaf: outline,
 				hidden: outline,
 			}),
 		).toEqual({ kind: 'outline', outlineLeaf: outline });
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: true, nativePaneId: '' },
+				facts: { inMainArea: true, nativePaneId: '', nativeEndpointId: '' },
 				outlineLeaf: outline,
 				hidden: null,
 			}),
@@ -498,7 +506,7 @@ describe('outlineSwapAction: which way the sidebar swaps (#119)', () => {
 		// that answered it would swap itself back the moment it ran.
 		expect(
 			outlineSwapAction({
-				facts: { inMainArea: false, nativePaneId: '' },
+				facts: { inMainArea: false, nativePaneId: '', nativeEndpointId: '' },
 				outlineLeaf: outline,
 				hidden: outline,
 			}),
@@ -517,8 +525,8 @@ describe('OutlineSwap against a fake workspace (#119)', () => {
 		const note = leafIn('note', groupOf('main'));
 		const workspace = new FakeWorkspace(
 			new Map([
-				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[note, { inMainArea: true, nativePaneId: '' }],
+				[native, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[note, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' }],
 			]),
 		);
 		workspace.outlines = [outline];
@@ -546,7 +554,7 @@ describe('OutlineSwap against a fake workspace (#119)', () => {
 		const toc = leafIn('toc', sidebar);
 		const native = leafIn('native', groupOf('main'));
 		const workspace = new FakeWorkspace(
-			new Map([[native, { inMainArea: true, nativePaneId: 'w4:p1' }]]),
+			new Map([[native, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }]]),
 		);
 		workspace.outlines = [outline];
 		workspace.tocs = [toc];
@@ -563,8 +571,8 @@ describe('OutlineSwap against a fake workspace (#119)', () => {
 		const note = leafIn('note', groupOf('main'));
 		const workspace = new FakeWorkspace(
 			new Map([
-				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[note, { inMainArea: true, nativePaneId: '' }],
+				[native, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[note, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' }],
 			]),
 		);
 		const swap = workspace.swap();
@@ -584,8 +592,8 @@ describe('OutlineSwap against a fake workspace (#119)', () => {
 		const note = leafIn('note', groupOf('main'));
 		const workspace = new FakeWorkspace(
 			new Map([
-				[native, { inMainArea: true, nativePaneId: 'w4:p1' }],
-				[note, { inMainArea: true, nativePaneId: '' }],
+				[native, { inMainArea: true, nativePaneId: 'w4:p1', nativeEndpointId: 'local' }],
+				[note, { inMainArea: true, nativePaneId: '', nativeEndpointId: '' }],
 			]),
 		);
 		workspace.outlines = [outline];

@@ -12,16 +12,37 @@ import type { SessionSnapshot } from '../src/herdr/types.gen';
 import {
 	ConnectionCoordinator,
 	EndpointSessions,
-	endpointIdOf,
 	endpointLabel,
 	endpointOf,
+	isRemoteEndpoint,
 	LOCAL_ENDPOINT_ID,
 	resolveEndpoint,
 	type ConnectionClient,
 	type ConnectionDeps,
+	type ConnectionDriver,
 	type ConnectionScope,
 	type ConnectionTunnel,
 } from '../src/connection';
+import { primeHerdrScope, startHerdrStream } from '../src/herdr/connect';
+import type { PaneState, ScopeEventMap } from '../src/herdr/scope';
+import {
+	defaultLocalRuntime,
+	legacySshRuntimeId,
+	type RuntimeConfig,
+} from '../src/runtimes';
+
+/** The remote runtime a pre-registry remote profile migrates to. */
+const XL: RuntimeConfig = {
+	id: 'ssh:lasse@xl:~/.config/herdr/herdr.sock',
+	name: 'xl',
+	kind: 'herdr',
+	target: 'ssh',
+	host: 'lasse@xl',
+	binary: '/home/lasse/.local/bin/herdr',
+	socketPath: '~/.config/herdr/herdr.sock',
+	remoteVaultPath: '/home/lasse/hvelv',
+	workspace: '',
+};
 
 interface Deferred<T> {
 	promise: Promise<T>;
@@ -64,7 +85,7 @@ class FakeClient implements ConnectionClient {
 	disposed = false;
 	subscribed = 0;
 	socketPath: string;
-	readonly handlers = new Map<string, ((...args: never[]) => void)[]>();
+	readonly handlers = new Map<string, ((...args: never) => void)[]>();
 	/** Deferred answers to `ping`, `snapshot`; resolved by the test. */
 	readonly pings: Deferred<unknown>[] = [];
 	readonly snapshots: Deferred<SessionSnapshot | null>[] = [];
@@ -93,14 +114,22 @@ class FakeClient implements ConnectionClient {
 		this.subscribed++;
 	}
 
-	on(type: string, handler: (...args: never[]) => void): void {
+	isUnsupported(): boolean {
+		return false;
+	}
+
+	request<T>(): Promise<T> {
+		return Promise.reject(new Error('not used'));
+	}
+
+	on(type: string, handler: (...args: never) => void): void {
 		const list = this.handlers.get(type) ?? [];
 		list.push(handler);
 		this.handlers.set(type, list);
 	}
 
 	emit(type: string, ...args: unknown[]): void {
-		for (const handler of this.handlers.get(type) ?? []) handler(...(args as never[]));
+		for (const handler of this.handlers.get(type) ?? []) (handler as (...rest: unknown[]) => void)(...args);
 	}
 
 	setSocketPath(path: string): void {
@@ -123,6 +152,26 @@ class FakeScope implements ConnectionScope {
 	ingest(event: HerdrEvent): void {
 		this.ingested.push(event);
 	}
+	readonly workspaceId = null;
+	readonly workspaceLabel = null;
+	readonly method = 'none' as const;
+	readonly size = 0;
+	list(): PaneState[] {
+		return [];
+	}
+	get(): PaneState | undefined {
+		return undefined;
+	}
+	on<K extends keyof ScopeEventMap>(_type: K, _handler: (...args: ScopeEventMap[K]) => void): () => void {
+		return () => undefined;
+	}
+	forget(): void {}
+	refresh(): Promise<void> {
+		return Promise.resolve();
+	}
+	agentNames(): Set<string> {
+		return new Set();
+	}
 }
 
 class FakeTunnel implements ConnectionTunnel {
@@ -138,7 +187,9 @@ class FakeTunnel implements ConnectionTunnel {
 	}
 }
 
-function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
+function harness(
+	options: { remote?: boolean; tunnelThrows?: boolean; unavailable?: string } = {},
+) {
 	const discoveries: Deferred<DiscoveryResult>[] = [];
 	const clients: FakeClient[] = [];
 	const scopes: FakeScope[] = [];
@@ -147,22 +198,22 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 	const errors: (string | null)[] = [];
 	let replaced = 0;
 	let primed = 0;
-	const deps: ConnectionDeps = {
+	// The herdr kind's driver, with fakes for what it builds: a local runtime
+	// needs the local binary and opens the discovered socket, an SSH one
+	// forwards it and needs nothing local.
+	const driver: ConnectionDriver<FakeClient, FakeScope, FakeTunnel> = {
 		discover: () => {
 			const d = deferred<DiscoveryResult>();
 			discoveries.push(d);
 			return d.promise;
 		},
-		endpoint: () =>
-			endpointOf({
-				enabled: options.remote ?? false,
-				host: 'lasse@xl',
-				remoteSocketPath: '~/.config/herdr/herdr.sock',
-				remoteBinary: '/home/lasse/.local/bin/herdr',
-				remoteVaultPath: '/home/lasse/hvelv',
-			}),
-		createTunnel: (onSocket) => {
-			if (options.tunnelThrows) throw new Error('the remote profile has no SSH host');
+		discoveryIssue: (endpoint, discovery) =>
+			isRemoteEndpoint(endpoint) || discovery.binary
+				? null
+				: (discovery.error ?? 'herdr binary not found'),
+		createTunnel: (endpoint, onSocket) => {
+			if (!isRemoteEndpoint(endpoint)) return null;
+			if (options.tunnelThrows) throw new Error('the runtime has no SSH host');
 			const tunnel = new FakeTunnel(onSocket);
 			tunnels.push(tunnel);
 			return tunnel;
@@ -178,7 +229,13 @@ function harness(options: { remote?: boolean; tunnelThrows?: boolean } = {}) {
 			scopes.push(scope);
 			return scope;
 		},
-		subscriptions: [{ kind: 'pane.updated' } as never],
+		prime: (client, scope, retired) => primeHerdrScope(client, scope, retired),
+		start: (client, scope) =>
+			startHerdrStream(client, scope, { subscriptions: [{ kind: 'pane.updated' } as never] }),
+	};
+	const deps: ConnectionDeps<FakeClient, FakeScope, FakeTunnel> = {
+		endpoint: () => endpointOf(options.remote ? XL : defaultLocalRuntime()),
+		driver: () => (options.unavailable ? { unavailable: options.unavailable } : driver),
 		notice: (message) => notices.push(message),
 		setError: (message) => errors.push(message),
 		onReplaced: () => {
@@ -225,6 +282,18 @@ describe('ConnectionCoordinator: a plain connect', () => {
 		expect(client.subscribed).toBe(1);
 		expect(h.replaced()).toBe(1);
 		expect(h.notices).toEqual([]);
+	});
+
+	it('fails an unavailable kind at once, discovering and creating nothing', async () => {
+		const h = harness({ unavailable: 'herdr-core runtimes are not available yet' });
+		await h.coordinator.connect();
+		expect(h.discoveries).toHaveLength(0);
+		expect(h.clients).toHaveLength(0);
+		expect(h.tunnels).toHaveLength(0);
+		expect(h.coordinator.current).toBeNull();
+		expect(h.coordinator.discovery).toBeNull();
+		expect(h.notices).toEqual(['Herdr: herdr-core runtimes are not available yet']);
+		expect(h.errors.at(-1)).toBe('herdr-core runtimes are not available yet');
 	});
 
 	it('reports a missing local binary without creating anything', async () => {
@@ -443,7 +512,7 @@ describe('ConnectionCoordinator: overlapping attempts', () => {
 		h.discoveries[0]?.resolve({ ...DISCOVERY, binary: null });
 		await connecting;
 		expect(h.clients).toHaveLength(0);
-		expect(h.notices).toEqual(['Herdr: the remote profile has no SSH host']);
+		expect(h.notices).toEqual(['Herdr: the runtime has no SSH host']);
 	});
 
 	it('routes a tunnel reconnect socket to the client of the same attempt', async () => {
@@ -554,48 +623,47 @@ describe('Connection: priming', () => {
 	});
 });
 
-describe('endpoint identity (issue #54)', () => {
-	const remote = {
-		enabled: true,
-		host: ' lasse@xl ',
-		remoteSocketPath: '~/.config/herdr/herdr.sock ',
-		remoteBinary: '/home/lasse/.local/bin/herdr',
-		remoteVaultPath: '/home/lasse/hvelv',
-	};
-
-	it('names the local herdr `local` and a remote one by host and socket', () => {
-		expect(endpointIdOf({ ...remote, enabled: false })).toBe(LOCAL_ENDPOINT_ID);
-		expect(endpointIdOf(remote)).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
+describe('endpoint identity (issue #54, ADR-0004)', () => {
+	it('keeps the ids a pre-registry local and remote derived', () => {
+		expect(endpointOf(defaultLocalRuntime()).id).toBe(LOCAL_ENDPOINT_ID);
+		expect(legacySshRuntimeId(' lasse@xl ', '~/.config/herdr/herdr.sock ')).toBe(XL.id);
+		expect(endpointOf(XL).id).toBe(XL.id);
 	});
 
-	it('snapshots trimmed settings into a frozen copy', () => {
-		const live = { ...remote };
+	it('snapshots a trimmed runtime into a frozen copy', () => {
+		const live: RuntimeConfig = { ...XL, host: ' lasse@xl ', binary: ' /bin/herdr ' };
 		const endpoint = endpointOf(live);
-		expect(endpoint.id).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
-		expect(endpoint.remote.host).toBe('lasse@xl');
-		expect(Object.isFrozen(endpoint.remote)).toBe(true);
+		expect(endpoint.runtime.host).toBe('lasse@xl');
+		expect(endpoint.runtime.binary).toBe('/bin/herdr');
+		expect(Object.isFrozen(endpoint.runtime)).toBe(true);
 		// The snapshot does not follow the live settings object.
 		live.host = 'other';
-		expect(endpoint.remote.host).toBe('lasse@xl');
+		expect(endpoint.runtime.host).toBe('lasse@xl');
+		// Nor does the id, which is the runtime's and never re-derived.
+		expect(endpointOf(live).id).toBe(XL.id);
 	});
 
-	it('resolves an id against the settings as they are now', () => {
-		const local = resolveEndpoint(LOCAL_ENDPOINT_ID, { ...remote, enabled: true });
-		expect(local?.remote.enabled).toBe(false);
+	it('resolves an id against the registry as it is now', () => {
+		const settings = { runtimes: [defaultLocalRuntime(), XL], activeRuntime: XL.id };
+		const local = resolveEndpoint(LOCAL_ENDPOINT_ID, settings);
 		expect(local?.id).toBe(LOCAL_ENDPOINT_ID);
-		// The list may have switched to local; the remote profile is still there.
-		const pinned = resolveEndpoint('ssh:lasse@xl:~/.config/herdr/herdr.sock', {
-			...remote,
-			enabled: false,
+		expect(local && isRemoteEndpoint(local)).toBe(false);
+		// The list may have switched to local; the remote runtime is still there.
+		const pinned = resolveEndpoint(XL.id, { ...settings, activeRuntime: LOCAL_ENDPOINT_ID });
+		expect(pinned && isRemoteEndpoint(pinned)).toBe(true);
+		expect(pinned?.runtime.binary).toBe('/home/lasse/.local/bin/herdr');
+		// An edited host keeps the id, so a pinned tab follows the edit.
+		const edited = resolveEndpoint(XL.id, {
+			...settings,
+			runtimes: [defaultLocalRuntime(), { ...XL, host: 'lasse@xl2' }],
 		});
-		expect(pinned?.remote.enabled).toBe(true);
-		expect(pinned?.remote.remoteBinary).toBe('/home/lasse/.local/bin/herdr');
-		expect(resolveEndpoint('ssh:someone@else:/x.sock', remote)).toBeNull();
+		expect(edited?.runtime.host).toBe('lasse@xl2');
+		expect(resolveEndpoint('ssh:someone@else:/x.sock', settings)).toBeNull();
 	});
 
 	it('labels endpoints for status lines and tooltips', () => {
-		expect(endpointLabel(endpointOf({ ...remote, enabled: false }))).toBe('local');
-		expect(endpointLabel(endpointOf(remote))).toBe('ssh lasse@xl');
+		expect(endpointLabel(endpointOf(defaultLocalRuntime()))).toBe('local');
+		expect(endpointLabel(endpointOf(XL))).toBe('ssh lasse@xl');
 	});
 
 	it('pins each connection to the endpoint read at the start of its attempt', async () => {
@@ -609,7 +677,7 @@ describe('endpoint identity (issue #54)', () => {
 		h.clients[0]?.pings[0]?.resolve({ type: 'pong' });
 		await connecting;
 		expect(h.coordinator.current?.endpoint.id).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
-		expect(h.coordinator.current?.endpoint.remote.enabled).toBe(true);
+		expect(h.coordinator.current?.endpoint.runtime.target).toBe('ssh');
 		expect(h.scopes[0]?.endpointId).toBe('ssh:lasse@xl:~/.config/herdr/herdr.sock');
 		const local = harness();
 		await connected(local);
@@ -630,7 +698,7 @@ class FakeLabels {
 function sessionsOver(h: ReturnType<typeof harness>) {
 	const built: FakeLabels[] = [];
 	const sessions = new EndpointSessions<FakeClient, FakeScope, FakeLabels, FakeTunnel>({
-		current: () => h.coordinator.current as never,
+		current: () => h.coordinator.current,
 		createTabLabels: (connection) => {
 			const labels = new FakeLabels(connection.client);
 			built.push(labels);

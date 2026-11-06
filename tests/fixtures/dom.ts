@@ -24,10 +24,36 @@ export interface FakeElementInfo {
 	attr?: Record<string, string>;
 }
 
-type Node = string | FakeElement;
+/**
+ * A text node. Text is a node of its own, rather than a bare string, for the
+ * one piece of code that edits rendered text in place: the native view's
+ * `obsidian://` links (#114), which replace a text node with the text and the
+ * links it holds.
+ */
+export class FakeText {
+	readonly nodeType = 3;
+	parent: FakeElement | null = null;
+
+	constructor(public data: string) {}
+
+	get textContent(): string {
+		return this.data;
+	}
+
+	get parentElement(): FakeElement | null {
+		return this.parent;
+	}
+
+	replaceWith(...nodes: (string | Node)[]): void {
+		this.parent?.replaceChild(this, nodes);
+	}
+}
+
+type Node = FakeText | FakeElement;
 
 /** One element: a tag, classes, attributes, and children mixed with text. */
 export class FakeElement {
+	readonly nodeType = 1;
 	readonly classList = new Set<string>();
 	readonly attrs: Record<string, string> = {};
 	readonly nodes: Node[] = [];
@@ -96,16 +122,23 @@ export class FakeElement {
 	}
 
 	setText(text: string): void {
-		this.nodes.length = 0;
-		if (text !== '') this.nodes.push(text);
+		this.empty();
+		if (text !== '') this.appendText(text);
 	}
 
 	appendText(text: string): void {
-		this.nodes.push(text);
+		const node = new FakeText(text);
+		node.parent = this;
+		this.nodes.push(node);
 	}
 
 	setAttr(name: string, value: string): void {
 		this.attrs[name] = value;
+	}
+
+	/** The DOM's own name for {@link setAttr}; the list's toolbar uses it. */
+	setAttribute(name: string, value: string): void {
+		this.setAttr(name, value);
 	}
 
 	/**
@@ -118,7 +151,7 @@ export class FakeElement {
 	}
 
 	empty(): void {
-		for (const node of this.nodes) if (typeof node !== 'string') node.parent = null;
+		for (const node of this.nodes) node.parent = null;
 		this.nodes.length = 0;
 	}
 
@@ -160,18 +193,76 @@ export class FakeElement {
 		if (at !== -1) this.listeners.splice(at, 1);
 	}
 
+	// -- The standard DOM the `obsidian://` links use (#114) -----------------
+
+	/** Upper case, as an HTML document reports it. */
+	get tagName(): string {
+		return this.tag.toUpperCase();
+	}
+
+	/** A snapshot, which is all the code under test iterates. */
+	get childNodes(): Node[] {
+		return [...this.nodes];
+	}
+
+	get parentElement(): FakeElement | null {
+		return this.parent;
+	}
+
+	getAttribute(name: string): string | null {
+		return this.attrs[name] ?? null;
+	}
+
+	replaceWith(...nodes: (string | Node)[]): void {
+		this.parent?.replaceChild(this, nodes);
+	}
+
+	/** `old` swapped for `nodes` in place, each moved out of wherever it was. */
+	replaceChild(old: Node, nodes: (string | Node)[]): void {
+		const at = this.nodes.indexOf(old);
+		if (at === -1) return;
+		const added = nodes.map((node) => {
+			if (typeof node === 'string') return new FakeText(node);
+			if (node.parent) {
+				const from = node.parent.nodes.indexOf(node);
+				if (from !== -1) node.parent.nodes.splice(from, 1);
+			}
+			return node;
+		});
+		// Moving a node out of this very element may have shifted `old`.
+		this.nodes.splice(this.nodes.indexOf(old), 1, ...added);
+		old.parent = null;
+		for (const node of added) node.parent = this;
+	}
+
+	/**
+	 * The nearest ancestor or self matching `tag`, `.class` or `tag.class`: the
+	 * shapes the plugin passes (`a.internal-link`). Anything else throws.
+	 */
+	closest(selector: string): FakeElement | null {
+		const match = /^([a-z][a-z0-9]*)?(?:\.([\w-]+))?$/.exec(selector);
+		if (!match || (!match[1] && !match[2])) throw new Error(`unsupported selector: ${selector}`);
+		const [, tag, cls] = match;
+		return (
+			this.ancestry().find((el) => (!tag || el.tag === tag) && (!cls || el.hasClass(cls))) ?? null
+		);
+	}
+
+	/** This element and every ancestor, innermost first. */
+	ancestry(): FakeElement[] {
+		return [this, ...(this.parent?.ancestry() ?? [])];
+	}
+
 	// -- What a test asks --------------------------------------------------
 
 	/** Everything this element and its children say, in order. */
 	get textContent(): string {
-		return this.nodes
-			.map((node) => (typeof node === 'string' ? node : node.textContent))
-			.join('');
+		return this.nodes.map((node) => node.textContent).join('');
 	}
 
 	/** Child elements, text nodes left out. */
 	get children(): FakeElement[] {
-		return this.nodes.filter((node): node is FakeElement => typeof node !== 'string');
+		return this.nodes.filter((node): node is FakeElement => node instanceof FakeElement);
 	}
 
 	/** Every element at or below this one carrying `cls`, in document order. */
@@ -211,10 +302,27 @@ export class FakeElement {
 		return first;
 	}
 
-	/** Fires every listener registered for `type`, in order. */
-	dispatch(type: string, event: Record<string, unknown> = {}): void {
-		const detail = { preventDefault: () => {}, ...event };
-		for (const listener of this.listeners) if (listener.type === type) listener.handler(detail);
+	/**
+	 * Fires every listener registered for `type`, here and then on every
+	 * ancestor, as a bubbling DOM event does: the native view's links are
+	 * handled by one listener on its root (#114). `target` is this element
+	 * and `preventDefault` marks the event, unless the test passes its own.
+	 */
+	dispatch(type: string, event: Record<string, unknown> = {}): Record<string, unknown> {
+		const detail: Record<string, unknown> = {
+			target: this,
+			defaultPrevented: false,
+			preventDefault: () => {
+				detail.defaultPrevented = true;
+			},
+			...event,
+		};
+		for (const el of this.ancestry()) {
+			for (const listener of [...el.listeners]) {
+				if (listener.type === type) listener.handler(detail);
+			}
+		}
+		return detail;
 	}
 }
 

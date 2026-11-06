@@ -56,6 +56,8 @@ export class FakeApiServer {
 	private directory: string | null = null;
 	private path = '';
 	private readonly subscribers = new Set<Socket>();
+	/** The `events.subscribe` request id of each subscriber, for its end line. */
+	private readonly subscriberIds = new Map<Socket, string>();
 
 	constructor(public options: FakeApiServerOptions = {}) {}
 
@@ -89,6 +91,20 @@ export class FakeApiServer {
 	/** Writes a raw line to every live subscriber, valid JSON or not. */
 	pushRaw(line: string): void {
 		for (const socket of this.subscribers) socket.write(`${line}\n`);
+	}
+
+	/**
+	 * Ends every subscription the way herdr 0.9.2+ does when a reader falls
+	 * behind retained history (`src/api/server.rs`, the subscription loop): one
+	 * error response carrying the subscribe request's id, then the connection
+	 * closes.
+	 */
+	endSubscribers(code = 'events_lost', message = 'event subscription fell behind retained history; resubscribe and resync with session.snapshot'): void {
+		for (const socket of this.subscribers) {
+			const id = this.subscriberIds.get(socket) ?? '';
+			socket.end(`${JSON.stringify({ id, error: { code, message } })}\n`);
+		}
+		this.subscribers.clear();
 	}
 
 	/** Drops every subscriber connection, as a server restart would. */
@@ -152,6 +168,7 @@ export class FakeApiServer {
 
 		if (method === 'events.subscribe') {
 			this.subscribers.add(socket);
+			this.subscriberIds.set(socket, id);
 			this.write(socket, JSON.stringify({ id, result: { type: 'subscription_started' } }), false);
 			return;
 		}

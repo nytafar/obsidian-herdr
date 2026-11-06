@@ -34,10 +34,13 @@ import { asElement } from './dom';
 import { agentDisplayName, isRowClickAction, rowActions, type RowClickAction } from './rowModel';
 import {
 	closeConfirmation,
+	continueConfirmation,
+	forgetConfirmation,
 	renamePrompt,
 	rowMenuItems,
 	type CloseConfirmText,
 	type RenamePromptText,
+	type RowMenuCapabilities,
 	type RowMenuItem,
 	type RowMenuRow,
 } from './rowMenu';
@@ -63,7 +66,7 @@ export interface RowTarget {
 }
 
 /** What the dispatcher needs of a pane: enough to name it and to rename it. */
-export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'>;
+export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'> & Pick<Partial<PaneState>, 'stopped' | 'started'>;
 
 /** The bit of a mouse event read here. Structural, so a test needs no DOM. */
 export interface RowPointerEvent {
@@ -95,6 +98,11 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	pane(paneId: string): RowPane | null;
 	/** Which half of the action pair sits on the row body (issue #21). */
 	rowClick(): RowClickAction;
+	/**
+	 * What the runtime the rows come from can do (ADR-0004): what the row menu
+	 * offers and whether focus exists. Everything when absent.
+	 */
+	capabilities?(): RowCapabilities;
 	/** Whether the pane is pinned to the top of its group on that endpoint. */
 	pinned(ref: PaneRef): boolean;
 	/** Writes the pin state and persists it. No repaint: the caller decides. */
@@ -112,6 +120,13 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	 * toolbar can switch herdrs while the close is in flight (PR #89).
 	 */
 	closePane(ref: PaneRef): Promise<boolean>;
+	/**
+	 * Removes a stopped row for good (ADR-0007); true when it went. Only a
+	 * host whose runtime has resumable rows implements it.
+	 */
+	forgetAgent?(ref: PaneRef): Promise<boolean>;
+	/** Moves the row's conversation to another runtime (ADR-0007), reporting its own failures. */
+	continueIn?(ref: PaneRef, runtimeId: string): Promise<void>;
 	/** Draws the row menu at the event and calls `choose` for the entry picked. */
 	showRowMenu(event: E, items: RowMenuItem[], choose: (item: RowMenuItem) => void): void;
 	/** The rename prompt. Resolves null when it was cancelled or dismissed. */
@@ -123,6 +138,13 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	/** Shows a message to the user. */
 	notice(message: string): void;
 }
+
+/** The slice of a runtime's capabilities the rows read. */
+export interface RowCapabilities extends RowMenuCapabilities {
+	focus: boolean;
+}
+
+const EVERYTHING: RowCapabilities = { rename: true, close: true, focus: true };
 
 /** Said when a modal is answered after the herdr under it has changed. */
 export const STALE_TARGET_NOTICE =
@@ -176,8 +198,10 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 			displayName: agentDisplayName(pane),
 			pinned: this.host.pinned(ref),
 			name: pane.name,
+			stopped: pane.stopped === true,
+			started: pane.started === true,
 		};
-		this.host.showRowMenu(event, rowMenuItems(row), (item) => {
+		this.host.showRowMenu(event, rowMenuItems(row, this.can()), (item) => {
 			void this.runMenuItem(item, row, target);
 		});
 	}
@@ -205,8 +229,26 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 				await this.host.renameAgent(ref, name);
 				return;
 			}
+			case 'forget': {
+				const confirmed = await this.host.confirmClose(forgetConfirmation(row));
+				if (!confirmed) return;
+				if (!this.stillCurrent(target)) return;
+				if (!(await this.host.forgetAgent?.(ref))) return;
+				if (row.pinned) await this.host.setPinned(ref, false);
+				return;
+			}
+			case 'continue': {
+				const runtimeId = item.runtimeId ?? '';
+				const graduation = this.can().graduation?.find((entry) => entry.id === runtimeId);
+				if (!graduation) return;
+				const confirmed = await this.host.confirmClose(continueConfirmation(row, graduation));
+				if (!confirmed) return;
+				if (!this.stillCurrent(target)) return;
+				await this.host.continueIn?.(ref, runtimeId);
+				return;
+			}
 			case 'close': {
-				const confirmed = await this.host.confirmClose(closeConfirmation(row));
+				const confirmed = await this.host.confirmClose(closeConfirmation(row, this.can().resumable === true));
 				if (!confirmed) return;
 				if (!this.stillCurrent(target)) return;
 				if (!(await this.host.closePane(ref))) return;
@@ -250,8 +292,17 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 		if (!paneId) return null;
 		const drawn = this.element(event)?.closest<HTMLElement>('[data-herdr-action]')?.dataset
 			.herdrAction;
-		const action = isRowClickAction(drawn) ? drawn : rowActions(this.host.rowClick()).body;
+		const canFocus = this.can().focus;
+		const fallback = rowActions(this.host.rowClick(), canFocus).body;
+		// A focus drawn before a switch to a runtime without focus opens the
+		// terminal instead, the one action left.
+		const action = isRowClickAction(drawn) && (canFocus || drawn !== 'focus') ? drawn : fallback;
 		return { paneId, action };
+	}
+
+	/** What the rows' runtime can do now; everything for a host that does not say. */
+	private can(): RowCapabilities {
+		return this.host.capabilities?.() ?? EVERYTHING;
 	}
 
 	/** The pane id of the row the event landed in, or undefined outside one. */

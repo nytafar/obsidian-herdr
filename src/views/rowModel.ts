@@ -18,6 +18,19 @@ import { cacheBadge, type RowBadge } from '../herdr/cacheBadge';
 import { isUnder, type PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 
+/**
+ * What a row says about its agent: herdr's five statuses, and `stopped`, a
+ * stored session with no process that opening or prompting resumes (the
+ * `claude` kind, ADR-0007). Only the row has it; the agent status a stopped
+ * row carries underneath is `idle`.
+ */
+export type RowStatus = AgentStatus | 'stopped';
+
+/** The row status of a pane. */
+export function rowStatus(pane: Pick<PaneState, 'agentStatus' | 'stopped'>): RowStatus {
+	return pane.stopped === true ? 'stopped' : pane.agentStatus;
+}
+
 // A badge's shape is part of what a row says, so the types belong to this
 // module's vocabulary; the code behind them sits under `herdr/` because the
 // scope needs it too — it asks whether a token change moves the badge before it
@@ -30,26 +43,29 @@ export type { BadgeTone, RowBadge } from '../herdr/cacheBadge';
  * This is herdr's own `tab_attention_priority` read the other way up — herdr
  * scores blocked 4, unseen-idle 3 (the API calls it `done`), working 2,
  * seen-idle 1 and unknown 0, highest first — so the sidebar and the herdr TUI
- * with `agent_panel_sort = "priority"` agree row for row.
+ * with `agent_panel_sort = "priority"` agree row for row. A stopped row has
+ * nothing running and goes last.
  */
-export const STATUS_ORDER: Record<AgentStatus, number> = {
+export const STATUS_ORDER: Record<RowStatus, number> = {
 	blocked: 0,
 	done: 1,
 	working: 2,
 	idle: 3,
 	unknown: 4,
+	stopped: 5,
 };
 
 /** A status the table above does not know sorts last, never in the middle. */
 const STATUS_ORDER_FALLBACK = 9;
 
 /** Screen-reader text per status; the colour it goes with is CSS (`styles.css`). */
-export const STATUS_LABEL: Record<AgentStatus, string> = {
+export const STATUS_LABEL: Record<RowStatus, string> = {
 	blocked: 'Blocked',
 	done: 'Done',
 	working: 'Working',
 	idle: 'Idle',
 	unknown: 'Unknown',
+	stopped: 'Stopped',
 };
 
 /** Everything one row displays. The view adds no facts of its own. */
@@ -73,7 +89,7 @@ export interface RowModel {
 	 * The view hangs it off the path element as `title` and `aria-label`.
 	 */
 	pathTooltip: string;
-	status: AgentStatus;
+	status: RowStatus;
 	/** Accessible text for the status, said by the kind icon's label (issue #34). */
 	statusLabel: string;
 	focused: boolean;
@@ -223,7 +239,7 @@ export function pathTooltip(cwd: string, vaultPath: string, homePath = ''): stri
 	return full === pathLabel(cwd, vaultPath, homePath) ? '' : full;
 }
 
-function statusRank(status: AgentStatus): number {
+function statusRank(status: RowStatus): number {
 	return STATUS_ORDER[status] ?? STATUS_ORDER_FALLBACK;
 }
 
@@ -283,7 +299,7 @@ const GROUPS: Record<GroupBy, Grouping> = {
  */
 const COMPARE: Record<SortBy, (a: PaneState, b: PaneState) => number> = {
 	priority: (a, b) =>
-		statusRank(a.agentStatus) - statusRank(b.agentStatus) ||
+		statusRank(rowStatus(a)) - statusRank(rowStatus(b)) ||
 		b.statusChangedSeq - a.statusChangedSeq ||
 		a.title.localeCompare(b.title) ||
 		a.paneId.localeCompare(b.paneId),
@@ -329,6 +345,7 @@ export function toRow(
 	pinned = false,
 ): RowModel {
 	const displayName = agentDisplayName(pane);
+	const status = rowStatus(pane);
 	return {
 		paneId: pane.paneId,
 		kind: pane.agent,
@@ -336,8 +353,8 @@ export function toRow(
 		title: pane.title && pane.title !== displayName ? pane.title : '',
 		pathLabel: showPath ? pathLabel(pane.cwd, vaultPath, homePath) : '',
 		pathTooltip: showPath ? pathTooltip(pane.cwd, vaultPath, homePath) : '',
-		status: pane.agentStatus,
-		statusLabel: STATUS_LABEL[pane.agentStatus] ?? pane.agentStatus,
+		status,
+		statusLabel: STATUS_LABEL[status] ?? status,
 		focused: pane.focused,
 		pinned,
 		badges: badges(pane),
@@ -369,7 +386,7 @@ export function buildRows(
 	const groups = new Map<string, { group: RowGroup; urgency: number }>();
 	for (const pane of ordered) {
 		const key = grouping.key(pane);
-		const urgency = statusRank(pane.agentStatus);
+		const urgency = statusRank(rowStatus(pane));
 		let entry = groups.get(key);
 		if (!entry) {
 			entry = {
@@ -439,9 +456,13 @@ const ACTION_LABEL: Record<RowClickAction, string> = {
  *
  * An unrecognised value falls back to that default rather than throwing — this
  * reads a stored setting, and a hand-edited `data.json` should not break a row.
+ *
+ * A runtime whose kind cannot focus a pane (herdr-core, ADR-0005) puts the
+ * terminal on the body whatever the setting says; the view then draws no
+ * button, since the other half of the pair does not exist.
  */
-export function rowActions(rowClick: RowClickAction): RowActions {
-	const body: RowClickAction = rowClick === 'focus' ? 'focus' : 'terminal';
+export function rowActions(rowClick: RowClickAction, canFocus = true): RowActions {
+	const body: RowClickAction = canFocus && rowClick === 'focus' ? 'focus' : 'terminal';
 	const button: RowClickAction = body === 'terminal' ? 'focus' : 'terminal';
 	return {
 		body,

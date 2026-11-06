@@ -15,6 +15,7 @@ import { NativePaneSurface } from '../src/native/surface';
 import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
 import type { PromptSender } from '../src/native/promptSender';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -341,6 +342,8 @@ class FakeModel implements SessionModelView {
 	loaded = false;
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 
 	on(listener: (change: SessionChange) => void): () => void {

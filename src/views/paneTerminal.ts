@@ -263,6 +263,8 @@ export interface StatusInput {
 	exited: boolean;
 	/** Stderr lines seen since the last (re)start, newest last. */
 	stderr: readonly string[];
+	/** Why the session is not attached yet though nothing failed; null or absent when it is. */
+	waiting?: string | null;
 }
 
 export interface StatusLine {
@@ -296,6 +298,10 @@ export function statusLine(input: StatusInput): StatusLine {
 	}
 	if (input.exited) {
 		return { text: 'Bridge process exited. Reconnect to attach again.', warning: true, detail };
+	}
+	if (input.waiting) {
+		const reason = input.waiting;
+		return { text: `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`, warning: false, detail };
 	}
 	const verb = input.mode === 'observe' ? 'Observing (read-only)' : 'Controlling this pane';
 	return { text: `${verb} on ${input.endpoint}.`, warning: false, detail };
@@ -588,6 +594,32 @@ export interface PaneSession {
 	resize(cols: number, rows: number, cellWidthPx?: number, cellHeightPx?: number): boolean;
 	scroll(direction: ScrollDirection, lines: number, options?: ScrollOptions): boolean;
 	dispose(): Promise<void>;
+	/**
+	 * Emulator replies (DA, DSR, …), as opposed to typing. herdr-core sends
+	 * them as AUTOMATIC_INPUT, which does not count as a person's activity;
+	 * a session without it takes them through {@link input}, as herdr does.
+	 */
+	reply?(data: string | Uint8Array): boolean;
+	/**
+	 * Bytes from `frame` events now written into the renderer, or dropped by a
+	 * full repaint: a session with flow control (herdr-core's credit) hands
+	 * that much back, so a renderer that falls behind slows the stream.
+	 */
+	consumed?(bytes: number): void;
+	/**
+	 * Asks for a fresh full paint, for a renderer rebuilt under the live
+	 * session. herdr-core's stream is the program's raw bytes, so a new
+	 * terminal cannot be brought up to date from replayed text alone.
+	 */
+	repaint?(): void;
+	/** Whether a person is in front of this terminal now (herdr-core's `herdr.seen`). */
+	setLooking?(looking: boolean): void;
+	/**
+	 * The terminal gained or lost the keyboard focus. A session with it tells
+	 * the program itself (herdr-core's FOCUS, passed on as `CSI I`/`CSI O` to
+	 * a program that asked), so the renderer's own focus reports are dropped.
+	 */
+	focus?(gained: boolean): boolean;
 }
 
 /**
@@ -638,11 +670,19 @@ export interface PaneTerminalOptions {
 	identity: PaneIdentity;
 	host: PaneTerminalHost;
 	scheduler: PaneTerminalScheduler;
-	createSession: (options: TerminalSessionOptions) => PaneSession;
+	/**
+	 * The bridge for one start, given the endpoint the tab is pinned to, whose
+	 * runtime's kind decides what the bridge is (ADR-0004, ADR-0005).
+	 */
+	createSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
 	createRenderer: (options: RendererOptions) => TerminalRenderer;
 	/** Decides the host-key policy (#47); `Platform.isMacOS` in the view. */
 	macOS: boolean;
 }
+
+/** Focus reports (mode 1004): gained, lost. */
+const FOCUS_IN = '\x1b[I';
+const FOCUS_OUT = '\x1b[O';
 
 /** The erase-display a pane switch writes: the screen, then the scrollback. */
 const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
@@ -650,7 +690,7 @@ const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
 export class PaneTerminal {
 	private readonly host: PaneTerminalHost;
 	private readonly scheduler: PaneTerminalScheduler;
-	private readonly newSession: (options: TerminalSessionOptions) => PaneSession;
+	private readonly newSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
 	private readonly newRenderer: (options: RendererOptions) => TerminalRenderer;
 
 	private paneIdentity: PaneIdentity;
@@ -675,6 +715,8 @@ export class PaneTerminal {
 	private rendererMounted = false;
 	private session: PaneSession | null = null;
 	private closedReason: string | null = null;
+	/** Why the session is not attached yet though nothing failed (a `claude` agent's turn). */
+	private waitingReason: string | null = null;
 	private exited = false;
 	private stderr: string[] = [];
 	/** True while the renderer and the session are given up for a hidden leaf. */
@@ -717,6 +759,22 @@ export class PaneTerminal {
 	private flushHandle = 0;
 	private perf: PerfCounter | null = null;
 	private readonly scheduleFit: Debounced;
+	/**
+	 * The shared terminal's grid while it is not this tab's own: an observed
+	 * herdr-core terminal, or one another viewer resized last. The renderer
+	 * draws at it, since the stream is laid out for it. Null otherwise.
+	 */
+	private sharedGrid: { cols: number; rows: number } | null = null;
+	/** Whether a person is in front of this terminal, as the view last said. */
+	private looking = false;
+	/** Whether the terminal has the keyboard focus, as the view last said. */
+	private focused = false;
+	/**
+	 * Whether the session has been given a measured grid. A start on a host
+	 * with no box spawns with a placeholder, and the first real fit is sent
+	 * even when it happens to equal it.
+	 */
+	private sessionSized = false;
 
 	constructor(options: PaneTerminalOptions) {
 		this.paneIdentity = { ...options.identity };
@@ -769,6 +827,7 @@ export class PaneTerminal {
 			closedReason: this.closedReason,
 			exited: this.exited && this.closedReason === null,
 			stderr: this.stderr,
+			waiting: this.waitingReason,
 		});
 	}
 
@@ -885,6 +944,25 @@ export class PaneTerminal {
 	/** Obsidian's keymap asking what to do with a keydown (#47). */
 	routeHostKey(event: KeyboardEvent): HostKeyDecision {
 		return this.input.routeHostKey(event);
+	}
+
+	/**
+	 * Whether a person is really in front of this terminal: its window in the
+	 * foreground and the terminal drawn on screen. The view decides; the
+	 * session shares it where its kind can (herdr-core's `herdr.seen`).
+	 */
+	setLooking(looking: boolean): void {
+		if (this.looking === looking) return;
+		this.looking = looking;
+		this.session?.setLooking?.(looking);
+	}
+
+	/** The renderer's input element gained or lost the keyboard focus. */
+	setFocused(focused: boolean): void {
+		if (this.focused === focused) return;
+		this.focused = focused;
+		const session = this.session;
+		if (session?.mode === 'control') session.focus?.(focused);
 	}
 
 	/**
@@ -1046,19 +1124,24 @@ export class PaneTerminal {
 		this.hostEl?.empty();
 	}
 
-	/** The leaf is back: mount a fresh renderer, replay the snapshot, reattach. */
+	/**
+	 * The leaf is back: mount a fresh renderer, replay the snapshot, reattach.
+	 * The session is told it is a reveal, not a person asking, so a `claude`
+	 * agent stopped meanwhile is not started again behind the user's back.
+	 */
 	private async resume(): Promise<void> {
 		if (!this.opened || !this.isSuspended) return;
 		this.isSuspended = false;
 		if (!this.paneIdentity.paneId) return;
-		await this.start();
+		await this.start({ revealed: true });
 	}
 
 	/**
 	 * (Re)starts the bridge: releases the old session, makes sure the renderer is
 	 * mounted, fits it, then spawns `herdr terminal session <mode> <pane>`.
+	 * `revealed`: a hidden leaf shown again (`TerminalSessionOptions.revealed`).
 	 */
-	private async start(): Promise<void> {
+	private async start({ revealed = false }: { revealed?: boolean } = {}): Promise<void> {
 		const { paneId, mode, endpointId } = this.paneIdentity;
 		const hostEl = this.hostEl;
 		if (!paneId || !hostEl) return;
@@ -1070,11 +1153,13 @@ export class PaneTerminal {
 		if (generation !== this.generation) return;
 
 		this.closedReason = null;
+		this.waitingReason = null;
 		this.exited = false;
 		this.stderr = [];
 		// Bytes from the previous session must never land in the new one's grid.
 		this.cancelFlush();
 		this.frames.clear();
+		this.sharedGrid = null;
 		this.perf = this.host.perfEnabled()
 			? new PerfCounter(`${paneId} ${mode}`, (line) => console.debug(line))
 			: null;
@@ -1092,14 +1177,16 @@ export class PaneTerminal {
 		this.host.onStarted();
 
 		let command: string[];
+		const endpoint = this.endpoint;
 		try {
-			// Local: `[<herdr>]`. Remote profile: `['ssh','-T',host,<remote herdr>]`
-			// — terminals never go through the forwarded API socket (PRD S17).
-			// The argv comes from the pinned endpoint's snapshot (issue #54).
-			if (!this.endpoint) {
-				throw new Error(`the endpoint ${endpointId} is no longer configured`);
+			// The pinned runtime's kind builds the argv, from the endpoint's
+			// snapshot (issue #54, ADR-0004): for herdr `[<herdr>]` locally and
+			// `['ssh','-T',host,<remote herdr>]` over SSH — terminals never go
+			// through the forwarded API socket (PRD S17).
+			if (!endpoint) {
+				throw new Error(`the runtime ${endpointId} is no longer configured`);
 			}
-			command = this.host.commandFor(this.endpoint);
+			command = this.host.commandFor(endpoint);
 		} catch (error) {
 			// A restored tab opens before `connect()` has discovered the binary
 			// (discovery is async); the plugin announces the connection, and the
@@ -1122,19 +1209,27 @@ export class PaneTerminal {
 		// gesture, so nothing of the previous one is carried.
 		this.wheel.setPixelsPerLine(fit.cellHeightPx);
 		this.cancelWheel();
-		const cols = fit.cols > 0 ? fit.cols : FALLBACK_COLS;
-		const rows = fit.rows > 0 ? fit.rows : FALLBACK_ROWS;
+		// No box, no grid: the placeholder must not size a shared terminal.
+		const measured = fit.cols > 0 && fit.rows > 0;
+		const cols = measured ? fit.cols : FALLBACK_COLS;
+		const rows = measured ? fit.rows : FALLBACK_ROWS;
 		const attach = attachFor(mode);
-		const session = this.newSession({
-			command,
-			target: paneId,
-			mode: attach.mode,
-			takeover: attach.takeover,
-			cols,
-			rows,
-			env: this.host.env(),
-		});
+		const session = this.newSession(
+			{
+				command,
+				target: paneId,
+				mode: attach.mode,
+				takeover: attach.takeover,
+				cols,
+				rows,
+				...(measured ? {} : { provisionalSize: true }),
+				...(revealed ? { revealed: true } : {}),
+				env: this.host.env(),
+			},
+			endpoint,
+		);
 		this.session = session;
+		this.sessionSized = measured;
 
 		session.on('frame', (bytes: Uint8Array, meta: FrameMeta) => {
 			if (this.session !== session) return;
@@ -1142,7 +1237,11 @@ export class PaneTerminal {
 			// sets; seq 1 means a fresh bridge, so it starts from the defaults.
 			this.input.observeFrame(bytes, meta.seq);
 			this.perf?.frame(bytes.length);
+			// A full repaint drops what was buffered before it; those bytes are
+			// consumed as far as flow control goes.
+			const dropped = meta.full ? this.frames.pending : 0;
 			this.frames.push(bytes, meta.full);
+			if (dropped > 0) session.consumed?.(dropped);
 			// Flushed into `this.renderer`, not the one captured above: a theme
 			// rebuild (#53) swaps the renderer under a live session, and bytes must
 			// land in the terminal that is on screen now.
@@ -1152,6 +1251,12 @@ export class PaneTerminal {
 		session.on('closed', (reason: string) => {
 			if (this.session !== session) return;
 			this.closedReason = reason;
+			this.waitingReason = null;
+			this.host.onStatus(this.status());
+		});
+		session.on('waiting', (reason: string | null) => {
+			if (this.session !== session) return;
+			this.waitingReason = reason;
 			this.host.onStatus(this.status());
 		});
 		session.on('stderr', (line: string) => {
@@ -1167,12 +1272,24 @@ export class PaneTerminal {
 			this.exited = true;
 			this.host.onStatus(this.status());
 		});
+		session.on('grid', (gridCols: number, gridRows: number) => {
+			if (this.session !== session) return;
+			this.followGrid(session, gridCols, gridRows);
+		});
+		session.on('reopened', () => {
+			if (this.session !== session) return;
+			this.closedReason = null;
+			this.exited = false;
+			this.host.onStatus(this.status());
+		});
 
 		session.start();
+		session.setLooking?.(this.looking);
 		if (attach.mode === 'control') {
 			// The spawn argv already carries the grid; this adds the cell metrics
-			// herdr uses for pixel-aware programs.
-			session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
+			// herdr uses for pixel-aware programs. A placeholder is not sent: the
+			// first real fit is.
+			if (measured) session.resize(cols, rows, fit.cellWidthPx, fit.cellHeightPx);
 			renderer.focus();
 		}
 		this.host.onStatus(this.status());
@@ -1222,6 +1339,9 @@ export class PaneTerminal {
 		if (!next) return;
 		// Same grid as before, so this normally sends herdr nothing at all.
 		this.applyFit();
+		// A raw-byte stream (herdr-core) brings the new terminal up to date with
+		// a fresh paint; herdr's next frame does that by itself.
+		this.session?.repaint?.();
 	}
 
 	/**
@@ -1246,6 +1366,8 @@ export class PaneTerminal {
 				// here would eat the snapshot the next mount is there to restore.
 				if (this.renderer !== mounting) return;
 				mounting.onData((data) => this.onData(data));
+				// Replies the emulator itself makes, where the engine can tell.
+				mounting.onReply?.((data) => this.onReply(data));
 				this.replaySnapshot(mounting);
 				// The history is in; whatever the pane said while this was mounting
 				// goes in after it, in arrival order.
@@ -1320,6 +1442,7 @@ export class PaneTerminal {
 		const batch = this.frames.take();
 		if (!batch) return;
 		renderer.write(batch);
+		this.session?.consumed?.(batch.length);
 		this.perf?.repaint();
 	}
 
@@ -1334,6 +1457,35 @@ export class PaneTerminal {
 		const session = this.session;
 		if (!session || session.mode !== 'control') return;
 		session.input(data);
+	}
+
+	/** Emulator replies: the session's own route when it has one, else as input. */
+	private onReply(data: string): void {
+		const session = this.session;
+		if (!session || session.mode !== 'control') return;
+		// xterm.js reports focus itself (to a program with mode 1004); a session
+		// that sends focus as such would make the program hear it twice.
+		const reply = session.focus ? data.replaceAll(FOCUS_IN, '').replaceAll(FOCUS_OUT, '') : data;
+		if (reply.length === 0) return;
+		if (session.reply) session.reply(reply);
+		else session.input(reply);
+	}
+
+	/**
+	 * The shared terminal's grid moved away from this tab's own, or came back
+	 * to it (herdr-core). An observer, or a controller someone else took the
+	 * size from, draws at the shared grid, since the bytes are laid out for
+	 * it; a controller that has its size back fits its container again.
+	 */
+	private followGrid(session: PaneSession, cols: number, rows: number): void {
+		const own = session.size;
+		if (session.mode === 'control' && this.sessionSized && own.cols === cols && own.rows === rows) {
+			this.sharedGrid = null;
+			this.applyFit();
+			return;
+		}
+		this.sharedGrid = { cols, rows };
+		this.renderer?.resize(cols, rows);
 	}
 
 	/**
@@ -1446,9 +1598,19 @@ export class PaneTerminal {
 		// #65: pixel deltas divide by the measured cell height, as ghostty does.
 		this.wheel.setPixelsPerLine(fit.cellHeightPx);
 		const session = this.session;
-		if (!session || session.mode !== 'control') return;
+		const shared = this.sharedGrid;
+		if (!session || session.mode !== 'control') {
+			// An observer never resizes the terminal; it draws at its grid.
+			if (shared) renderer.resize(shared.cols, shared.rows);
+			return;
+		}
 		const current = session.size;
-		if (current.cols === fit.cols && current.rows === fit.rows) return;
+		if (this.sessionSized && current.cols === fit.cols && current.rows === fit.rows) {
+			// Someone else's grid holds until this tab types or resizes.
+			if (shared) renderer.resize(shared.cols, shared.rows);
+			return;
+		}
+		this.sessionSized = true;
 		session.resize(fit.cols, fit.rows, fit.cellWidthPx, fit.cellHeightPx);
 	}
 

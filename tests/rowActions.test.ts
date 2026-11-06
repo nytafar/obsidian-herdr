@@ -42,6 +42,12 @@ describe('rowActions', () => {
 		expect(actions.button).toBe('focus');
 	});
 
+	it('puts the terminal on the body for a runtime that cannot focus (ADR-0004)', () => {
+		expect(rowActions('focus', false).body).toBe('terminal');
+		expect(rowActions('terminal', false).body).toBe('terminal');
+		expect(rowActions('focus', true).body).toBe('focus');
+	});
+
 	it('is what the shipped default asks for: a click opens the terminal', () => {
 		expect(DEFAULT_SETTINGS.agentListRowClick).toBe('terminal');
 		expect(rowActions(DEFAULT_SETTINGS.agentListRowClick).body).toBe('terminal');

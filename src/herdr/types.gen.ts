@@ -1,6 +1,6 @@
 /**
  * GENERATED FILE — do not edit. Run `npm run gen:types` (PRD N3).
- * Source: `herdr api schema --json` from herdr 0.9.0.
+ * Source: `herdr api schema --json` from herdr 0.9.5.
  * Protocol 22, schema version 1.
  *
  * Unknown fields are tolerated at runtime: these types describe what the
@@ -12,12 +12,13 @@ export const HERDR_PROTOCOL = 22;
 /** `schema_version` of the schema document used for generation. */
 export const HERDR_SCHEMA_VERSION = 1;
 /** herdr build the schema was read from. Informational only. */
-export const HERDR_SCHEMA_SOURCE_VERSION = 'herdr 0.9.0';
+export const HERDR_SCHEMA_SOURCE_VERSION = 'herdr 0.9.5';
 
 export interface AgentInfo {
 	agent?: string | null;
 	agent_session?: AgentSessionInfo | null;
 	agent_status: AgentStatus;
+	completion_seq?: number | null;
 	cwd?: string | null;
 	display_agent?: string | null;
 	focused: boolean;
@@ -643,31 +644,6 @@ export interface PaneFocusDirectionResult {
 	source_pane_id: string;
 }
 
-export interface PaneGraphicsClearParams {
-	layer_id?: string | null;
-	pane_id: string;
-}
-
-export type PaneGraphicsFormat = 'png' | 'rgb' | 'rgba' | 'bgra';
-
-export interface PaneGraphicsPlacementParams {
-	grid_cols?: number;
-	grid_rows?: number;
-	viewport_col?: number;
-	viewport_row?: number;
-}
-
-export interface PaneGraphicsSetParams {
-	data_base64?: string;
-	format: PaneGraphicsFormat;
-	image_height: number;
-	image_width: number;
-	layer_id?: string | null;
-	pane_id: string;
-	placement?: PaneGraphicsPlacementParams;
-	z_index?: number;
-}
-
 export interface PaneInfo {
 	agent?: string | null;
 	agent_session?: AgentSessionInfo | null;
@@ -678,6 +654,7 @@ export interface PaneInfo {
 	foreground_cwd?: string | null;
 	label?: string | null;
 	pane_id: string;
+	restore_error?: string | null;
 	revision: number;
 	scroll?: PaneScrollInfo | null;
 	state_labels?: Record<string, string>;
@@ -735,6 +712,12 @@ export interface PaneLinkActivateParams {
 	offset_from_bottom?: number | null;
 	pane_id: string;
 	viewport_row: number;
+}
+
+export interface PaneLinkRegion {
+	end_col: number;
+	row: number;
+	start_col: number;
 }
 
 export interface PaneListParams {
@@ -860,6 +843,7 @@ export interface PaneReportAgentParams {
 	agent_session_path?: string | null;
 	message?: string | null;
 	pane_id: string;
+	resume_argv?: string[] | null;
 	seq?: number | null;
 	source: string;
 	state: PaneAgentState;
@@ -870,6 +854,7 @@ export interface PaneReportAgentSessionParams {
 	agent_session_id?: string | null;
 	agent_session_path?: string | null;
 	pane_id: string;
+	resume_argv?: string[] | null;
 	seq?: number | null;
 	session_start_source?: string | null;
 	source: string;
@@ -1379,25 +1364,6 @@ export type ResponseResult =
 		type: 'pane_copy_search';
 	}
 	| {
-		revision: number;
-		sequence: number;
-		type: 'pane_graphics_frame_ack';
-	}
-	| {
-		cell_height_px: number;
-		cell_width_px: number;
-		file_frame_damage?: boolean;
-		file_frame_direct_max_bytes?: number | null;
-		file_frame_directory?: string | null;
-		file_frame_formats?: string[];
-		file_frame_max_bytes?: number | null;
-		file_frame_transport?: string | null;
-		max_layers_per_pane?: number;
-		pane_visible: boolean;
-		pixel_mouse?: boolean;
-		type: 'pane_graphics_info';
-	}
-	| {
 		explain: unknown;
 		type: 'agent_explain';
 	}
@@ -1481,6 +1447,10 @@ export type ResponseResult =
 		type: 'plugin_action_invoked';
 	}
 	| {
+		regions: PaneLinkRegion[];
+		type: 'pane_link_resolved';
+	}
+	| {
 		handled: boolean;
 		type: 'pane_link_activated';
 		url?: string | null;
@@ -1520,6 +1490,7 @@ export interface ServerCapabilities {
 	endpoint_protocol_generation?: number | null;
 	health_check?: boolean;
 	live_handoff: boolean;
+	ssh_agent_registration?: boolean;
 	surface_interest?: boolean;
 }
 
@@ -1527,6 +1498,10 @@ export interface ServerLiveHandoffParams {
 	expected_protocol?: number | null;
 	expected_version?: string | null;
 	import_exe?: string | null;
+}
+
+export interface ServerSshAgentRegisterParams {
+	socket_path: string;
 }
 
 export interface SessionSnapshot {
@@ -1817,6 +1792,7 @@ export interface HerdrMethodParams {
 	'layout.export': LayoutExportParams;
 	'layout.set_split_ratio': LayoutSetSplitRatioParams;
 	'notification.show': NotificationShowParams;
+	'pane.clear': PaneTarget;
 	'pane.clear_agent_authority': PaneClearAgentAuthorityParams;
 	'pane.close': PaneTarget;
 	'pane.copy_motion': PaneCopyMotionParams;
@@ -1827,12 +1803,10 @@ export interface HerdrMethodParams {
 	'pane.focus': PaneTarget;
 	'pane.focus_direction': PaneFocusDirectionParams;
 	'pane.get': PaneTarget;
-	'pane.graphics.clear': PaneGraphicsClearParams;
-	'pane.graphics.info': PaneTarget;
-	'pane.graphics.set': PaneGraphicsSetParams;
 	'pane.input.set': PaneInputSetParams;
 	'pane.layout': PaneLayoutParams;
 	'pane.link.activate': PaneLinkActivateParams;
+	'pane.link.resolve': PaneLinkActivateParams;
 	'pane.list': PaneListParams;
 	'pane.move': PaneMoveParams;
 	'pane.neighbor': PaneNeighborParams;
@@ -1872,6 +1846,7 @@ export interface HerdrMethodParams {
 	'server.live_handoff': ServerLiveHandoffParams;
 	'server.reload_agent_manifests': EmptyParams;
 	'server.reload_config': EmptyParams;
+	'server.ssh_agent.register': ServerSshAgentRegisterParams;
 	'server.stop': EmptyParams;
 	'session.snapshot': EmptyParams;
 	'tab.close': TabTarget;
@@ -2070,25 +2045,6 @@ export interface HerdrResultByType {
 		total: number;
 		type: 'pane_copy_search';
 	};
-	'pane_graphics_frame_ack': {
-		revision: number;
-		sequence: number;
-		type: 'pane_graphics_frame_ack';
-	};
-	'pane_graphics_info': {
-		cell_height_px: number;
-		cell_width_px: number;
-		file_frame_damage?: boolean;
-		file_frame_direct_max_bytes?: number | null;
-		file_frame_directory?: string | null;
-		file_frame_formats?: string[];
-		file_frame_max_bytes?: number | null;
-		file_frame_transport?: string | null;
-		max_layers_per_pane?: number;
-		pane_visible: boolean;
-		pixel_mouse?: boolean;
-		type: 'pane_graphics_info';
-	};
 	'agent_explain': {
 		explain: unknown;
 		type: 'agent_explain';
@@ -2171,6 +2127,10 @@ export interface HerdrResultByType {
 		context: PluginInvocationContext;
 		log: PluginCommandLogInfo;
 		type: 'plugin_action_invoked';
+	};
+	'pane_link_resolved': {
+		regions: PaneLinkRegion[];
+		type: 'pane_link_resolved';
 	};
 	'pane_link_activated': {
 		handled: boolean;

@@ -20,15 +20,19 @@
  * `removed` / `workspaceResolved` events, and even those are coalesced into one
  * repaint per frame.
  *
- * The toolbar under the rows holds three `clickable-icon` buttons (issues #41,
- * #44): the sort and group-by menu, "start agent in the vault", and a quick
- * settings menu. What the two menus contain is `listMenu.ts` and
+ * The toolbar above the rows, in the view's `nav-header`, holds three `clickable-icon` buttons (issues #41,
+ * #44): the sort and group-by menu, a quick settings menu, and, at the far
+ * right, the + that starts the runtime's default agent at the vault root on a
+ * left click and opens its agent catalog on a right click (issue #125,
+ * `startMenu.ts`). What the two menus contain is `listMenu.ts` and
  * `quickSettings.ts`, both pure and tested; choosing an entry writes the same
  * settings the settings tab writes and repaints every open list. A fourth
- * button, shown only when a remote host is configured, switches the list
- * between the local and the remote herdr (issue #54): it flips
- * `settings.remote.enabled` and reconnects. Terminals already open stay pinned
- * to the endpoint they started on.
+ * button switches the runtime the list shows (issue #54, ADR-0004): hidden
+ * with one runtime, a toggle to the other with two, a menu of all of them
+ * with three or more; `runtimeSwitcher` in `runtimes.ts` decides which. Any
+ * switch reconnects; terminals already open stay pinned to the runtime they
+ * started on. "Start agent in the vault" is left out for a runtime whose kind
+ * cannot start one.
  *
  * What an event on a row *does* is `rowDispatch.ts` (issue #82): click,
  * right-click and keyboard activation all go there, and it decides between
@@ -46,11 +50,9 @@
 
 import { ItemView, Menu, Notice, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
-import type { EndpointSession } from '../connection';
-import type { HerdrClient } from '../herdr/client';
-import type { WorkspaceScope } from '../herdr/scope';
-import type { TabLabelCache } from '../tabLabels';
-import { isPanePinned, pinnedPaneIds, togglePanePin, type HerdrSettings } from '../settings';
+import type { ConnectionClient, ConnectionScope, EndpointSession } from '../connection';
+import type { TabLabels } from '../tabLabels';
+import { activeRuntimeOf, issueSentence, runtimeSwitcher } from '../runtimes';
 import { ConfirmModal, PromptModal } from './modals';
 import type { RowMenuItem } from './rowMenu';
 import { RowDispatcher, type PaneRef, type RowDispatchHost } from './rowDispatch';
@@ -58,41 +60,18 @@ import { iconForKind, isKindIcon, kindStatusLabel } from './kindIcons';
 import { SECTION_LABEL, listMenuItems, type ListMenuItem, type ListMenuSection } from './listMenu';
 import { buildRows, rowActions, type RowGroup, type RowModel } from './rowModel';
 import { quickSettingsItems, type QuickSettingsItem } from './quickSettings';
+import { startButtonLabel, startMenuItems } from './startMenu';
+import { getStartedActionOf, renderGetStartedCard, runGetStartedAction } from '../getStarted/card';
 
 export const AGENT_LIST_VIEW_TYPE = 'herdr-agents';
-
-/** What the local/remote toggle in the toolbar shows (issue #54). */
-export interface EndpointToggle {
-	/** Hidden entirely unless a remote host is configured. */
-	shown: boolean;
-	/** True while the remote profile is the connected one. */
-	remote: boolean;
-	icon: string;
-	/** Tooltip and aria-label: what a click does, not what is on. */
-	label: string;
-}
-
-/**
- * The toggle is a picture of where the list points (`laptop` for the local
- * herdr, `server` for the remote one) and a label naming the other side, so a
- * click reads as "switch to". Without a host there is nothing to switch to.
- */
-export function endpointToggle(settings: Pick<HerdrSettings, 'remote'>): EndpointToggle {
-	const host = settings.remote.host.trim();
-	const remote = settings.remote.enabled;
-	return {
-		shown: host.length > 0,
-		remote,
-		icon: remote ? 'server' : 'laptop',
-		label: remote ? 'Switch to local herdr' : `Switch to remote herdr (${host})`,
-	};
-}
 
 export class AgentListView extends ItemView {
 	private readonly plugin: HerdrPlugin;
 	private listEl: HTMLElement | null = null;
-	/** The local/remote toggle (issue #54); null until the toolbar is built. */
+	/** The runtime switcher (issue #54, ADR-0004); null until the toolbar is built. */
 	private endpointToggleEl: HTMLElement | null = null;
+	/** "Start agent in the vault", hidden for a kind that cannot start one. */
+	private startButtonEl: HTMLElement | null = null;
 	private pendingRender = 0;
 	/** Unsubscribes from the scope and label cache bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
@@ -121,14 +100,19 @@ export class AgentListView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('herdr-agent-list');
-		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 		this.renderToolbar(container);
+		this.listEl = container.createDiv({ cls: 'herdr-agent-list-body' });
 
 		// One delegated listener beats one per row: rows are rebuilt on every
 		// scope event, and per-row registrations would pile up on the component.
 		this.registerDomEvent(container, 'click', (event) => this.rows.click(event));
 		this.registerDomEvent(container, 'keydown', (event) => this.rows.keyDown(event));
 		this.registerDomEvent(container, 'contextmenu', (event) => this.rows.contextMenu(event));
+		// The "Get started" card's buttons (ADR-0008), delegated like the rows.
+		this.registerDomEvent(container, 'click', (event) => {
+			const action = getStartedActionOf(event.target);
+			if (action) void runGetStartedAction(this.plugin.getStarted, action);
+		});
 
 		this.bindScope();
 		// The sidebar is usually restored before `connect()` has built a scope, and
@@ -142,34 +126,83 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
-	 * The row of controls under the rows (issues #41, #44): sort and group, start
+	 * The row of controls above the rows (issues #41, #44): sort and group, start
 	 * an agent at the vault root, and the quick settings menu. Built once in
 	 * `onOpen`, outside `listEl`, so a repaint never touches it.
 	 *
-	 * Below the list rather than above it, and without a title: the view already
-	 * carries "Herdr agents" in its tab, and a toolbar at the bottom keeps the
-	 * first row of agents at the top of the pane where the eye starts.
+	 * Above the list, in Obsidian's own `nav-header` like the file explorer's
+	 * and bookmarks' buttons, so it stays put however many rows there are. It
+	 * sat under the rows once and moved with every agent added or removed.
 	 */
 	private renderToolbar(container: HTMLElement): void {
-		const bar = container.createDiv({ cls: 'herdr-list-toolbar' });
+		const header = container.createDiv({ cls: 'nav-header herdr-list-toolbar' });
+		const bar = header.createDiv({ cls: 'nav-buttons-container' });
 		// Leftmost, apart from the three menu buttons: it changes what the whole
-		// list shows rather than how. Hidden unless a remote host is configured.
-		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch to remote herdr', () => {
-			void this.toggleEndpoint();
+		// list shows rather than how. Hidden while there is one runtime.
+		this.endpointToggleEl = this.toolbarButton(bar, 'laptop', 'Switch runtime', (event) => {
+			this.switchRuntime(event);
 		});
 		this.endpointToggleEl.addClass('herdr-endpoint-toggle');
 		this.updateEndpointToggle();
 		this.toolbarButton(bar, 'arrow-down-up', 'Sort and group', (event) =>
 			this.openListMenu(event),
 		);
-		this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
-			// The same flow as the folder menu, at the vault root: it honours the
-			// share-a-tab setting (issue #29) and reports its own failures.
-			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
-		});
 		this.toolbarButton(bar, 'settings-2', 'Quick settings', (event) =>
 			this.openQuickSettings(event),
 		);
+		// Far right (issue #125): a left click starts the runtime's default
+		// agent at the vault root, through the same flow as the folder menu
+		// (it honours the share-a-tab setting, issue #29, and reports its own
+		// failures); a right click lists the runtime's agent catalog.
+		const start = this.toolbarButton(bar, 'plus', 'Start agent in the vault', () => {
+			void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath());
+		});
+		start.addClass('herdr-start-agent-button');
+		this.registerDomEvent(start, 'contextmenu', (event) => {
+			// Ours, not the row menu's delegated listener on the container.
+			event.preventDefault();
+			event.stopPropagation();
+			void this.openStartMenu(event);
+		});
+		this.startButtonEl = start;
+		this.updateEndpointToggle();
+	}
+
+	/**
+	 * The + button's catalog menu (issue #125), once the runtime's probe has
+	 * landed: every agent CLI the runtime can start, the default checked, the
+	 * ones it cannot greyed with the reason.
+	 */
+	private async openStartMenu(event: MouseEvent): Promise<void> {
+		// Where the menu opens is read before the await: the event's
+		// `currentTarget` is null once its dispatch is over. The context-menu
+		// key reports no pointer, so the menu opens under the button then.
+		const keyboard = event.clientX === 0 && event.clientY === 0;
+		const rect = keyboard ? this.startButtonEl?.getBoundingClientRect() : null;
+		const position = rect ? { x: rect.left, y: rect.bottom } : { x: event.clientX, y: event.clientY };
+		const catalog = await this.plugin.agentCatalogs.catalog();
+		const menu = new Menu();
+		for (const item of startMenuItems(catalog)) {
+			menu.addItem((entry) => {
+				entry.setTitle(item.title).setIcon(item.icon).setChecked(item.checked).setDisabled(item.disabled);
+				const launch = item.launch;
+				if (launch) {
+					entry.onClick(() => void this.plugin.actions.startAgentHere(this.plugin.herdrVaultPath(), launch));
+				}
+			});
+		}
+		menu.showAtPosition(position);
+		this.updateStartButtonLabel();
+	}
+
+	/**
+	 * The + tooltip names the default once the catalog knows it. From the
+	 * cache only: a probe that lands repaints the list, which calls this.
+	 */
+	private updateStartButtonLabel(): void {
+		const el = this.startButtonEl;
+		if (!el) return;
+		setTooltip(el, startButtonLabel(this.plugin.agentCatalogs.cachedCatalog()));
 	}
 
 	/** One `clickable-icon` button in the toolbar, labelled for pointer and reader. */
@@ -180,7 +213,7 @@ export class AgentListView extends ItemView {
 		onClick: (event: MouseEvent) => void,
 	): HTMLElement {
 		const button = bar.createEl('button', {
-			cls: 'clickable-icon herdr-list-menu-button',
+			cls: 'clickable-icon nav-action-button herdr-list-menu-button',
 			attr: { type: 'button' },
 		});
 		setIcon(button, icon);
@@ -191,29 +224,48 @@ export class AgentListView extends ItemView {
 	}
 
 	/**
-	 * The local/remote switch (issue #54): the same flip the settings toggle
-	 * does, followed by the same reconnect, without the debounce a typed field
-	 * needs. Open terminals are left alone; each stays pinned to its endpoint.
+	 * The runtime switch (issue #54, ADR-0004). With two runtimes a click goes
+	 * to the other one, without the debounce a typed field needs; with three or
+	 * more it opens a menu of all of them, the active one checked. Open
+	 * terminals are left alone; each stays pinned to its runtime.
 	 */
-	private async toggleEndpoint(): Promise<void> {
-		const settings = this.plugin.settings;
-		if (settings.remote.host.trim().length === 0) return;
-		settings.remote.enabled = !settings.remote.enabled;
-		this.updateEndpointToggle();
-		await this.plugin.saveSettings();
-		await this.plugin.reconnect();
+	private switchRuntime(event: MouseEvent): void {
+		const switcher = runtimeSwitcher(this.plugin.settings);
+		if (switcher.mode === 'toggle' && switcher.next) {
+			void this.plugin.switchRuntime(switcher.next.id);
+			return;
+		}
+		if (switcher.mode !== 'menu') return;
+		const menu = new Menu();
+		for (const entry of switcher.entries) {
+			menu.addItem((item) =>
+				item
+					.setTitle(entry.name)
+					.setChecked(entry.checked)
+					.onClick(() => void this.plugin.switchRuntime(entry.id)),
+			);
+		}
+		menu.showAtMouseEvent(event);
 	}
 
-	/** Icon, label, active state and visibility from the settings as they are. */
+	/**
+	 * Icon, label, pressed state and visibility of the switcher, and whether
+	 * the start button applies, from the registry and kind as they are now.
+	 */
 	private updateEndpointToggle(): void {
+		const start = this.startButtonEl;
+		if (start) {
+			start.toggleClass('herdr-hidden', !this.plugin.capabilities().startAgent);
+			this.updateStartButtonLabel();
+		}
 		const el = this.endpointToggleEl;
 		if (!el) return;
-		const toggle = endpointToggle(this.plugin.settings);
-		el.toggleClass('herdr-hidden', !toggle.shown);
-		el.toggleClass('is-active', toggle.remote);
-		setIcon(el, toggle.icon);
-		setTooltip(el, toggle.label);
-		el.setAttribute('aria-label', toggle.label);
+		const switcher = runtimeSwitcher(this.plugin.settings);
+		el.toggleClass('herdr-hidden', switcher.mode === 'hidden');
+		el.toggleClass('is-active', switcher.remote);
+		setIcon(el, switcher.icon);
+		setTooltip(el, switcher.label);
+		el.setAttribute('aria-label', switcher.label);
 	}
 
 	/**
@@ -295,7 +347,7 @@ export class AgentListView extends ItemView {
 	 * is (issue #81). One lookup answers with the scope, the tab labels and the
 	 * endpoint together; null means nothing is connected.
 	 */
-	private session(): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	private session(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
 		return this.plugin.endpointSession(this.plugin.endpoint.id);
 	}
 
@@ -361,24 +413,40 @@ export class AgentListView extends ItemView {
 		const list = this.listEl;
 		if (!list) return;
 		list.empty();
-		// The host may have been typed into settings since the toolbar was built,
-		// and the settings tab's own toggle flips the same flag.
+		// Runtimes may have been added, renamed or switched since the toolbar was
+		// built, from the settings tab or the palette.
 		this.updateEndpointToggle();
 
 		const session = this.session();
 		const scope = session?.scope;
+		if (!scope && this.plugin.showGetStarted()) {
+			// No runtime connects: a guided start instead of a dead end (ADR-0008).
+			// The first card scans for the binaries once; only "Check again" rescans.
+			renderGetStartedCard(list, this.plugin.getStarted.model(), this.plugin.getStartedReason());
+			this.plugin.getStarted.ensureScanned();
+			return;
+		}
 		if (!scope || !scope.workspaceId) {
+			// A runtime whose kind this build cannot run says so, rather than
+			// looking like a herdr that is down (ADR-0004).
+			const unavailable = this.plugin.kindUnavailable(activeRuntimeOf(this.plugin.settings).kind);
 			list.createDiv({
 				cls: 'herdr-empty',
 				text: scope
 					? 'No herdr workspace matches this vault yet.'
-					: 'Not connected to herdr.',
+					: unavailable
+						? issueSentence(unavailable)
+						: 'Not connected to herdr.',
 			});
 			return;
 		}
 		const panes = scope.list();
 		if (panes.length === 0) {
-			list.createDiv({ cls: 'herdr-empty', text: 'No agents in this workspace.' });
+			// A kind with no workspace of its own lists what the plugin started.
+			const text = this.plugin.capabilities().resumable
+				? 'No agents yet. Start one with the plus button below or from a folder menu.'
+				: 'No agents in this workspace.';
+			list.createDiv({ cls: 'herdr-empty', text });
 			return;
 		}
 
@@ -392,8 +460,9 @@ export class AgentListView extends ItemView {
 			sort: settings.agentListSort,
 			homePath: this.plugin.herdrHomePath(),
 			// Pins are per endpoint (issue #35): a local pane id says nothing about
-			// a remote pane that happens to share it.
-			pinnedPaneIds: pinnedPaneIds(settings, this.plugin.endpoint.id),
+			// a remote pane that happens to share it. herdr-core keeps them on the
+			// runtime (ADR-0005); the plugin asks the right store.
+			pinnedPaneIds: this.plugin.pinnedPaneIds(this.plugin.endpoint.id),
 		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
@@ -416,6 +485,8 @@ export class AgentListView extends ItemView {
 		const rowClasses = ['herdr-agent-row'];
 		if (model.focused) rowClasses.push('is-focused');
 		if (model.pinned) rowClasses.push('is-pinned');
+		// A stored session with no process (ADR-0007): drawn quieter, opened alike.
+		if (model.status === 'stopped') rowClasses.push('is-stopped');
 		const row = parent.createDiv({ cls: rowClasses });
 		row.dataset.paneId = model.paneId;
 		row.tabIndex = 0;
@@ -471,7 +542,10 @@ export class AgentListView extends ItemView {
 		// The button records its own action in the dataset,
 		// so a click is dispatched by what was drawn — and promised in the tooltip
 		// — rather than by a setting that may have changed since the last repaint.
-		const actions = rowActions(this.plugin.settings.agentListRowClick);
+		const canFocus = this.plugin.capabilities().focus;
+		const actions = rowActions(this.plugin.settings.agentListRowClick, canFocus);
+		// Without focus there is no other half of the pair to put on a button.
+		if (!canFocus) return;
 		const button = row.createEl('button', {
 			cls: 'clickable-icon herdr-row-action',
 			attr: { type: 'button' },
@@ -501,18 +575,21 @@ export class AgentListView extends ItemView {
 			target: () => ({ endpointId: plugin.endpoint.id, connection: this.session() }),
 			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
 			rowClick: () => plugin.settings.agentListRowClick,
-			pinned: (ref) => isPanePinned(plugin.settings, ref.endpointId, ref.paneId),
-			setPinned: async (ref, pinned) => {
-				if (isPanePinned(plugin.settings, ref.endpointId, ref.paneId) !== pinned) {
-					togglePanePin(plugin.settings, ref.endpointId, ref.paneId);
-				}
-				await plugin.saveSettings();
+			capabilities: () => {
+				const can = plugin.capabilities();
+				// Graduation targets only matter where rows are resumable sessions.
+				return can.resumable ? { ...can, graduation: plugin.graduationTargets() } : can;
 			},
+			pinned: (ref) => plugin.isPanePinned(ref.endpointId, ref.paneId),
+			setPinned: (ref, pinned) => plugin.setPanePinned(ref.endpointId, ref.paneId, pinned),
 			// The plugin acts on the published connection, so a ref captured on
 			// another endpoint must not be handed to it (issue #54). The dispatcher
 			// already notices on a stale target; these just refuse to act.
 			openTerminal: (ref) => {
-				if (onCurrentEndpoint(ref)) void plugin.openTerminal(ref.paneId);
+				if (!onCurrentEndpoint(ref)) return;
+				// A stopped row resumes when it is opened (ADR-0007), before its tab is.
+				void plugin.actions.resumeAgent?.(ref.paneId);
+				void plugin.openTerminal(ref.paneId);
 			},
 			focusPane: (ref) => {
 				if (onCurrentEndpoint(ref)) void plugin.actions.focusPane(ref.paneId);
@@ -527,6 +604,14 @@ export class AgentListView extends ItemView {
 				// herdrs while `pane.close` is in flight, and the terminal leaves
 				// that go with the pane are the ones on this herdr (PR #89).
 				return await plugin.actions.closePane(ref.paneId, ref.endpointId);
+			},
+			forgetAgent: async (ref) => {
+				if (!onCurrentEndpoint(ref)) return false;
+				return (await plugin.actions.forgetAgent?.(ref.paneId, ref.endpointId)) ?? false;
+			},
+			continueIn: async (ref, runtimeId) => {
+				if (!onCurrentEndpoint(ref)) return;
+				await plugin.continueIn(ref.paneId, ref.endpointId, runtimeId);
 			},
 			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
 			promptRename: (text) => new PromptModal(this.app, text).ask(),

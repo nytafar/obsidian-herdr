@@ -46,8 +46,18 @@ export class Component {
 	}
 }
 
-/** An ATX heading, the one piece of Markdown the stub below understands. */
+/** An ATX heading, which the stub below turns into an `h1`-`h6`. */
 const STUB_HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
+
+/** A code fence, which opens or closes a `pre > code` block. */
+const STUB_FENCE = /^ {0,3}(```|~~~)/;
+
+/**
+ * The inline shapes the stub renders, in the order they are tried: a code
+ * span, a wikilink, a Markdown link, an autolink, and a bare `http(s)` URL.
+ */
+const STUB_INLINE =
+	/`([^`]+)`|\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]|\[([^\]]*)\]\(([^)\s]+)\)|<([a-z][a-z0-9+.-]*:[^>\s]+)>|(https?:\/\/[^\s<]+)/g;
 
 /**
  * Recording stand-in for `MarkdownRenderer`. The real one turns Markdown into
@@ -57,15 +67,67 @@ const STUB_HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
  * on. The stub writes the source text into the element synchronously so the
  * surrounding structure is still assertable.
  *
- * One shape of output is real, because the surface reads it back: an ATX
- * heading line becomes an `h1`–`h6` element, which is what the heading
- * anchors are written onto (#118). Everything else is the source text, so a
- * block of prose with no headings still says exactly what it was given.
+ * The shapes of output the surface reads back are real:
+ *
+ * - An ATX heading line becomes an `h1`–`h6` element, which is what the
+ *   heading anchors are written onto (#118).
+ * - A fenced block becomes `pre > code`, a code span `code`, and links become
+ *   `a` elements the way Obsidian 1.13.7's renderer makes them (read from its
+ *   `app.js`): a wikilink or a relative Markdown link is an `internal-link`
+ *   with `data-href`; any other link is an `external-link` with `target` and
+ *   `rel`, and an `aria-label` holding the URL when its text is not the URL.
+ *   Of bare text only `http(s)` URLs become links; a bare `obsidian://` URI
+ *   stays text, as it does in the app (#114).
+ *
+ * Everything else is the source text, so a block of prose with none of these
+ * still says exactly what it was given.
  */
 /** What the stub renderer needs of the element it was handed. */
 interface StubElement {
-	createEl(tag: string, info: { text: string }): unknown;
+	createEl(
+		tag: string,
+		info?: { text?: string; cls?: string; href?: string; attr?: Record<string, string> },
+	): StubElement;
 	appendText(text: string): void;
+}
+
+/** One line of prose into `el`, its inline shapes as elements. */
+function stubInline(el: StubElement, line: string): void {
+	let at = 0;
+	for (const match of line.matchAll(STUB_INLINE)) {
+		if (match.index > at) el.appendText(line.slice(at, match.index));
+		at = match.index + match[0].length;
+		const [, code, wikiTarget, wikiAlias, label, url, autolink, bare] = match;
+		if (code !== undefined) {
+			el.createEl('code', { text: code });
+		} else if (wikiTarget !== undefined) {
+			el.createEl('a', {
+				cls: 'internal-link',
+				text: wikiAlias ?? wikiTarget,
+				href: wikiTarget,
+				attr: { 'data-href': wikiTarget },
+			});
+		} else if (url !== undefined) {
+			stubLink(el, label ?? '', url);
+		} else {
+			const href = autolink ?? bare ?? '';
+			stubLink(el, href, href);
+		}
+	}
+	if (at < line.length) el.appendText(line.slice(at));
+}
+
+function stubLink(el: StubElement, text: string, href: string): void {
+	if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+		el.createEl('a', { cls: 'internal-link', text, href, attr: { 'data-href': href } });
+		return;
+	}
+	const attr: Record<string, string> = { target: '_blank', rel: 'noopener nofollow' };
+	if (text !== href) {
+		attr['aria-label'] = href;
+		attr['data-tooltip-position'] = 'top';
+	}
+	el.createEl('a', { cls: 'external-link', text, href, attr });
 }
 
 export class MarkdownRenderer {
@@ -93,14 +155,30 @@ export class MarkdownRenderer {
 			cls: 'markdown-rendered',
 		});
 		let first = true;
+		let fence: string[] | null = null;
 		for (const line of markdown.split('\n')) {
+			if (STUB_FENCE.test(line)) {
+				if (fence) {
+					rendered.createEl('pre').createEl('code', { text: fence.join('\n') });
+					fence = null;
+				} else {
+					fence = [];
+				}
+				first = false;
+				continue;
+			}
+			if (fence) {
+				fence.push(line);
+				continue;
+			}
 			const heading = STUB_HEADING.exec(line);
 			if (heading) {
 				rendered.createEl(`h${(heading[1] ?? '').length}`, { text: (heading[2] ?? '').trim() });
 				first = false;
 				continue;
 			}
-			rendered.appendText(first ? line : `\n${line}`);
+			if (!first) rendered.appendText('\n');
+			stubInline(rendered, line);
 			first = false;
 		}
 	}
@@ -158,6 +236,15 @@ export class Modal {
 	constructor(public app: unknown) {}
 }
 
+/** Stand-in for the palette-style picker; only constructible here. */
+export class FuzzySuggestModal<T> extends Modal {
+	setPlaceholder(_placeholder: string): void {}
+	open(): void {}
+	getItems(): T[] {
+		return [];
+	}
+}
+
 export class Notice {
 	constructor(public message: string) {}
 }
@@ -166,11 +253,72 @@ export class Plugin extends Component {}
 
 export class PluginSettingTab {}
 
-export class TAbstractFile {}
+export class TAbstractFile {
+	path = '';
+}
 export class TFile extends TAbstractFile {}
+
+/** Obsidian's split of a link into the note and the `#heading` after it. */
+export function parseLinktext(linktext: string): { path: string; subpath: string } {
+	const at = linktext.indexOf('#');
+	return at === -1
+		? { path: linktext, subpath: '' }
+		: { path: linktext.slice(0, at), subpath: linktext.slice(at) };
+}
 export class TFolder extends TAbstractFile {}
 export class FileSystemAdapter {}
-export class Menu {}
+/**
+ * Records what a menu was given and where it opened (the + button's catalog
+ * menu, issue #125). `Menu.shown` holds every menu opened since a test reset it.
+ */
+export class Menu {
+	static shown: Menu[] = [];
+	readonly items: { title: string; disabled: boolean; checked: boolean }[] = [];
+	position: { x: number; y: number } | null = null;
+	addItem(build: (item: MenuItemStub) => void): this {
+		const item = new MenuItemStub();
+		build(item);
+		this.items.push({ title: item.title, disabled: item.disabled, checked: item.checked });
+		return this;
+	}
+	addSeparator(): this {
+		return this;
+	}
+	showAtPosition(position: { x: number; y: number }): void {
+		this.position = position;
+		Menu.shown.push(this);
+	}
+	showAtMouseEvent(event: { clientX?: number; clientY?: number }): void {
+		this.showAtPosition({ x: event.clientX ?? 0, y: event.clientY ?? 0 });
+	}
+}
+
+export class MenuItemStub {
+	title = '';
+	disabled = false;
+	checked = false;
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
+	setIcon(): this {
+		return this;
+	}
+	setChecked(checked: boolean): this {
+		this.checked = checked;
+		return this;
+	}
+	setDisabled(disabled: boolean): this {
+		this.disabled = disabled;
+		return this;
+	}
+	setIsLabel(): this {
+		return this;
+	}
+	onClick(): this {
+		return this;
+	}
+}
 
 /**
  * Stand-in for the `inputEl`/`selectEl`/`sliderEl` a real component exposes.
@@ -183,6 +331,12 @@ export class FakeElement {
 		this.listeners.push({ type, handler });
 	}
 	removeEventListener(): void {}
+	/** Classes toggled on, as `toggleClass` leaves them. */
+	readonly classes = new Set<string>();
+	toggleClass(cls: string, on: boolean): void {
+		if (on) this.classes.add(cls);
+		else this.classes.delete(cls);
+	}
 	select(): void {}
 	focus(): void {}
 	/** Fires every listener registered for `type`, in order. */
@@ -362,6 +516,8 @@ export class Setting {
 	heading = false;
 	readonly classes: string[] = [];
 	readonly components: SettingComponent[] = [];
+	/** The description element, for code that marks it (`toggleClass`). */
+	readonly descEl = new FakeElement();
 
 	constructor(public readonly containerEl: unknown) {
 		const key = containerEl as object;

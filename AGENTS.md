@@ -1,269 +1,140 @@
-# Obsidian community plugin
+# obsidian-herdr — working rules
 
-## Project overview
+Read `docs/architecture.md` first: it is the verified herdr integration contract
+(two seams, measured facts). Do not re-derive it, extend it with new verified
+facts. Project docs beyond the repo live in the vault docs root named in
+`docs/agents/domain.md`. `docs/agents/obsidian-plugin.md` (from the Obsidian sample
+plugin) holds general plugin conventions.
 
-- Target: Obsidian Community Plugin (TypeScript → bundled JavaScript).
-- Entry point: `src/main.ts` compiled to `main.js` and loaded by Obsidian.
-- Required release artifacts: `main.js`, `manifest.json`, and optional `styles.css`.
+## Hard rules
 
-## Environment & tooling
+- Plugin id `herdr`, name `Herdr`, `isDesktopOnly: true`. Ship only `main.js`,
+  `manifest.json`, `styles.css`. No helper files, no Python, no native addons.
+- Each runtime kind has its own seams, over a socket or child_process pipes,
+  never a native addon, and never a PTY except the one exception below.
+  **herdr:** the terminal seam is `herdr terminal session
+  control|observe` with NDJSON — not `herdr agent attach`, not the binary
+  client socket. **herdr-core:** `hc connect` (or `ssh -T <host> … connect`)
+  in framed mode, JSON-RPC on channel 0, events and attach on their own
+  channels — ADR-0005, the recorded exception, resting on the finding
+  `herdr-core-api`. **claude** ("Claude, run by Obsidian", ADR-0007): the
+  plugin spawns `claude -p` in stream-json mode itself, over child_process
+  pipes with no shell, every stdin line through the one strict writer
+  (`src/claude/protocol.ts`). The one recorded exception to "not a PTY", for
+  this kind only: its terminal view and shell tabs run on a pty from
+  `script(1)` (`src/claude/pty.ts`), spawned over plain pipes inside the POSIX
+  sh fd-3 watchdog that ends `script` when the plugin dies. An agent runs one
+  process at a time, headless or its TUI. If a seam proves insufficient, write
+  it up as a finding in the docs root before changing it.
+- No code from Whip (KaminariOS/whip, AGPL). Read it for behaviour only.
+- Obsidian guidelines are rules: `this.app` never global `app`; `registerEvent`,
+  `registerDomEvent`, `registerInterval` for everything that must be torn down;
+  no `innerHTML`/`outerHTML`/`insertAdjacentHTML`; no inline styles; no default
+  hotkeys; sentence case in UI; never detach leaves in `onunload`; do not keep
+  references to views, use `getLeavesOfType`; vault handlers inside
+  `workspace.onLayoutReady`.
+- JSON API: ignore unknown fields, treat unsupported methods as ordinary errors,
+  warn on protocol mismatch, never refuse to connect over it.
+- React to `agent_status` transitions, never to raw `pane.updated` events.
+  One exception: a view following a pane's agent session reads the
+  `agent_session` field of `pane.updated` for its own pane only, deduplicated
+  by value, because session rotation (`/clear`) has no event or status change.
+- Scope everything to one workspace client-side. herdr outside Obsidian must be
+  unaffected by this plugin.
 
-- Node.js: use current LTS (Node 18+ recommended).
-- **Package manager: npm** (required for this sample - `package.json` defines npm scripts and dependencies).
-- **Bundler: esbuild** (required for this sample - `esbuild.config.mjs` and build scripts depend on it). Alternative bundlers like Rollup or webpack are acceptable for other projects if they bundle all external dependencies into `main.js`.
-- Types: `obsidian` type definitions.
+## herdr on this machine
 
-**Note**: This sample project has specific technical dependencies on npm and esbuild. If you're creating a plugin from scratch, you can choose different tools, but you'll need to replace the build configuration accordingly.
+- Installed 0.9.5, protocol 22, at `~/.local/bin/herdr`, which is the one on
+  PATH; socket `~/.config/herdr/herdr.sock`. An older 0.9.1 (also protocol 22)
+  sits at `/usr/bin/herdr`; the plugin's binary search and the type generator
+  both find `~/.local/bin` first. The generated types are read from 0.9.5 as
+  of 2026-11-05: `npm run gen:types -- --binary ~/.local/bin/herdr`. 0.9.0
+  through 0.9.5 all report protocol 22 with different schemas, so gate
+  features on the server version, not the protocol (`docs/architecture.md`,
+  "Versions and protocol"). To regenerate against a release without
+  installing it, `gh release download vX.Y.Z -R herdrdev/herdr -p
+  herdr-linux-x86_64 -O /tmp/herdr-X.Y.Z`, then
+  `npm run gen:types -- --binary /tmp/herdr-X.Y.Z` and review the diff; the
+  terminal session seam is checked by diffing `herdr terminal session
+  observe --help` between the two binaries. Do not run `herdr update` from an
+  agent session, and do not stop or restart the server: sessions run inside
+  it.
+- herdr-core: `hc` 0.1.18 (generation 1) at `~/.local/bin/hc`, a symlink to
+  `herdr-core`; `asher` has 0.1.17 in `/root/.local/bin`, not on its
+  non-interactive SSH PATH. Live checks may start terminals named `oh-test-*`
+  here and remove only those; never `hc update` or `hc server stop|restart`,
+  and nothing is started on `asher`.
+- Remote test host: `lasse@xl`, herdr at `/home/lasse/.local/bin/herdr` (not on
+  the non-interactive PATH), vault at `/home/lasse/hvelv`.
+- Whip checkout for reading: `~/code/herdr/whip` (upstream fetched as FETCH_HEAD).
 
-### Install
+## Dev loop
 
-```bash
-npm install
-```
+- Dev vault `/Users/lasse/Vaults/hvelv` is Lasse's live vault. Install with
+  `npm run install-dev -- ~/Vaults/hvelv`, which symlinks **only** `main.js`,
+  `manifest.json` and `styles.css`.
+- **Never symlink the repository root into `.obsidian/plugins/`.** Obsidian
+  enumerates plugin folders at startup, and the repo carries `node_modules` and
+  `.git`, about 37,000 files. Doing so hangs the vault on "Loading vault..."
+  indefinitely while other vaults open normally. Cost us a debugging round on
+  2026-09-06. Hot-Reload watches for `main.js` or
+  `styles.css` changes when a `.hotreload` file exists in the plugin folder.
+- `npm run dev` for watch builds, `npm run build` before committing.
+- Do not touch the installed `ghostty-terminal` plugin in that vault.
+- Sanity-check the terminal seam without Obsidian:
+  `herdr terminal session observe <pane_id> --cols 80 --rows 24 </dev/null | head -1`
 
-### Dev (watch)
+## Where things are
 
-```bash
-npm run dev
-```
+- `docs/architecture.md` — the **verified herdr contract**: the JSON API seam,
+  the terminal session seam and the facts measured against real herdr builds.
+  Authoritative. Extend it with new verified facts; do not re-derive it.
+- `~/hvelv/repos/obsidian-herdr/` — the vault docs root (see
+  `docs/agents/domain.md`): `adr/` for hard decisions, `findings/` for
+  discussions and verified facts per topic. The v1 PRD, its research file and
+  the exploration notes predate this layout and are not on every machine; when
+  found, they belong here, not beside the repo.
+- **Issue #32** — the v0.2 roadmap: build order, what blocks what, and why.
+  The single source for what to work on next. `docs/agents/issue-tracker.md`
+  has the label vocabulary.
+- `docs/agents/obsidian-plugin.md` — generic Obsidian plugin conventions from the sample template.
 
-### Production build
+## How work gets done here
 
-```bash
-npm run build
-```
+The loop that worked for v1, worth repeating. The `/implement-spec` skill
+describes the general shape; what follows is what this repo specifically learned.
 
-## Linting
+**Orchestrator holds the graph, subagents hold the code.** Read the roadmap
+issue, work the frontier of unblocked issues, dispatch one `implementer`
+subagent per unit of work with `isolation: "worktree"`, then merge its branch
+yourself. Agents never push; the orchestrator merges, builds, tests and pushes.
 
-- ESLint is preconfigured with `eslint-plugin-obsidianmd` for Obsidian-specific rules.
-- Run `npm run lint` to lint the project.
-- A GitHub Action automatically lints every commit on all branches.
+**Use the `implementer` agent type.** It is defined in `.claude/agents/` here,
+in the container, and in `~/.claude/agents/`. It is deliberately lean: Bash,
+Read, Edit, Write only, no exploration surface. A general-purpose agent starts
+tens of thousands of tokens heavier for no benefit. Custom agent types are
+loaded at session start, so if you add one mid-session it will not resolve.
 
-## File & folder conventions
+**Batch related issues into one branch.** Three list-view issues in one branch
+beat three branches racing on the same render path. Split only where the files
+genuinely do not overlap.
 
-- **Organize code into multiple files**: Split functionality across separate modules rather than putting everything in `main.ts`.
-- Source lives in `src/`. Keep `main.ts` small and focused on plugin lifecycle (loading, unloading, registering commands).
-- **Example file structure**:
-    ```
-    src/
-      main.ts           # Plugin entry point, lifecycle management
-      settings.ts       # Settings interface and defaults
-      commands/         # Command implementations
-        command1.ts
-        command2.ts
-      ui/              # UI components, modals, views
-        modal.ts
-        view.ts
-      utils/           # Utility functions, helpers
-        helpers.ts
-        constants.ts
-      types.ts         # TypeScript interfaces and types
-    ```
-- **Do not commit build artifacts**: Never commit `node_modules/`, `main.js`, or other generated files to version control.
-- Keep the plugin small. Avoid large dependencies. Prefer browser-compatible packages.
-- Generated output should be placed at the plugin root or `dist/` depending on your build setup. Release artifacts must end up at the top level of the plugin folder in the vault (`main.js`, `manifest.json`, `styles.css`).
+**Pass pointers, not content.** Give an agent the issue number to run
+`gh issue view` on, the doc path, and the specific finding files. Do not paste
+requirements into the prompt; they go stale and cost context twice.
 
-## Manifest rules (`manifest.json`)
+**Expect conflicts in exactly two places.** `src/main.ts`, which every feature
+touches, so tell agents to keep their footprint there small; conflicts are
+almost always unions, resolved by keeping both sides. And `package-lock.json`,
+which any `npm install` regenerates; resolve by regenerating once after merging.
 
-- Must include (non-exhaustive):
-    - `id` (plugin ID; for local dev it should match the folder name)
-    - `name`
-    - `version` (Semantic Versioning `x.y.z`)
-    - `minAppVersion`
-    - `description`
-    - `isDesktopOnly` (boolean)
-    - Optional: `author`, `authorUrl`, `fundingUrl` (string or map)
-- Never change `id` after release. Treat it as stable API.
-- Keep `minAppVersion` accurate when using newer APIs.
-- Canonical requirements are coded here: https://github.com/obsidianmd/obsidian-releases/blob/master/.github/workflows/validate-plugin-entry.yml
+**Review in two axes before merging a large branch.** One read-only agent
+against the documented standards, one against the spec, in parallel, then hand
+every finding to a single fix-up implementer. The spec axis caught that the
+agent list would have displayed "claude" on every row; the standards axis caught
+a literal NUL byte that made a whole file invisible to `git diff`.
 
-## Testing
-
-- Manual install for testing: copy `main.js`, `manifest.json`, `styles.css` (if any) to:
-    ```
-    <Vault>/.obsidian/plugins/<plugin-id>/
-    ```
-- Reload Obsidian and enable the plugin in **Settings → Community plugins**.
-
-## Commands & settings
-
-- Any user-facing commands should be added via `this.addCommand(...)`.
-- If the plugin has configuration, provide a settings tab and sensible defaults.
-- Persist settings using `this.loadData()` / `this.saveData()`.
-- Use stable command IDs; avoid renaming once released.
-
-## Versioning & releases
-
-- Bump `version` in `manifest.json` (SemVer) and update `versions.json` to map plugin version → minimum app version.
-- Create a GitHub release whose tag exactly matches `manifest.json`'s `version`. Do not use a leading `v`.
-- Attach `manifest.json`, `main.js`, and `styles.css` (if present) to the release as individual assets.
-- After the initial release, follow the process to add/update your plugin in the community catalog as required.
-
-## Security, privacy, and compliance
-
-Follow Obsidian's **Developer Policies** and **Plugin Guidelines**. In particular:
-
-- Default to local/offline operation. Only make network requests when essential to the feature.
-- No hidden telemetry. If you collect optional analytics or call third-party services, require explicit opt-in and document clearly in `README.md` and in settings.
-- Never execute remote code, fetch and eval scripts, or auto-update plugin code outside of normal releases.
-- Minimize scope: read/write only what's necessary inside the vault. Do not access files outside the vault.
-- Clearly disclose any external services used, data sent, and risks.
-- Respect user privacy. Do not collect vault contents, filenames, or personal information unless absolutely necessary and explicitly consented.
-- Avoid deceptive patterns, ads, or spammy notifications.
-- Register and clean up all DOM, app, and interval listeners using the provided `register*` helpers so the plugin unloads safely.
-
-## UX & copy guidelines (for UI text, commands, settings)
-
-- Prefer sentence case for headings, buttons, and titles.
-- Use clear, action-oriented imperatives in step-by-step copy.
-- Use **bold** to indicate literal UI labels. Prefer "select" for interactions.
-- Use arrow notation for navigation: **Settings → Community plugins**.
-- Keep in-app strings short, consistent, and free of jargon.
-
-## Performance
-
-- Keep startup light. Defer heavy work until needed.
-- Avoid long-running tasks during `onload`; use lazy initialization.
-- Batch disk access and avoid excessive vault scans.
-- Debounce/throttle expensive operations in response to file system events.
-
-## Coding conventions
-
-- TypeScript with `"strict": true` preferred.
-- **Keep `main.ts` minimal**: Focus only on plugin lifecycle (onload, onunload, addCommand calls). Delegate all feature logic to separate modules.
-- **Split large files**: If any file exceeds ~200-300 lines, consider breaking it into smaller, focused modules.
-- **Use clear module boundaries**: Each file should have a single, well-defined responsibility.
-- Bundle everything into `main.js` (no unbundled runtime deps).
-- Avoid Node/Electron APIs if you want mobile compatibility; set `isDesktopOnly` accordingly.
-- Prefer `async/await` over promise chains; handle errors gracefully.
-
-## Mobile
-
-- Where feasible, test on iOS and Android.
-- Don't assume desktop-only behavior unless `isDesktopOnly` is `true`.
-- Avoid large in-memory structures; be mindful of memory and storage constraints.
-
-## Agent do/don't
-
-**Do**
-
-- Add commands with stable IDs (don't rename once released).
-- Provide defaults and validation in settings.
-- Write idempotent code paths so reload/unload doesn't leak listeners or intervals.
-- Use `this.register*` helpers for everything that needs cleanup.
-
-**Don't**
-
-- Introduce network calls without an obvious user-facing reason and documentation.
-- Ship features that require cloud services without clear disclosure and explicit opt-in.
-- Store or transmit vault contents unless essential and consented.
-
-## Common tasks
-
-### Organize code across multiple files
-
-**main.ts** (minimal, lifecycle only):
-
-```ts
-import { Plugin } from 'obsidian';
-import { MySettings, DEFAULT_SETTINGS } from './settings';
-import { registerCommands } from './commands';
-
-export default class MyPlugin extends Plugin {
-	settings!: MySettings;
-
-	async onload() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MySettings>,
-		);
-		registerCommands(this);
-	}
-}
-```
-
-**settings.ts**:
-
-```ts
-export interface MySettings {
-	enabled: boolean;
-	apiKey: string;
-}
-
-export const DEFAULT_SETTINGS: MySettings = {
-	enabled: true,
-	apiKey: '',
-};
-```
-
-**commands/index.ts**:
-
-```ts
-import { Plugin } from 'obsidian';
-import { doSomething } from './my-command';
-
-export function registerCommands(plugin: Plugin) {
-	plugin.addCommand({
-		id: 'do-something',
-		name: 'Do something',
-		callback: () => doSomething(plugin),
-	});
-}
-```
-
-### Add a command
-
-```ts
-this.addCommand({
-	id: 'your-command-id',
-	name: 'Do the thing',
-	callback: () => this.doTheThing(),
-});
-```
-
-### Persist settings
-
-```ts
-interface MySettings { enabled: boolean }
-const DEFAULT_SETTINGS: MySettings = { enabled: true };
-
-async onload() {
-  this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MySettings>);
-  await this.saveData(this.settings);
-}
-```
-
-### Register listeners safely
-
-```ts
-this.registerEvent(
-	this.app.workspace.on('file-open', (f) => {
-		/* ... */
-	}),
-);
-this.registerDomEvent(activeWindow, 'resize', () => {
-	/* ... */
-});
-this.registerInterval(
-	window.setInterval(() => {
-		/* ... */
-	}, 1000),
-);
-```
-
-## Troubleshooting
-
-- Plugin doesn't load after build: ensure `main.js` and `manifest.json` are at the top level of the plugin folder under `<Vault>/.obsidian/plugins/<plugin-id>/`.
-- Build issues: if `main.js` is missing, run `npm run build` or `npm run dev` to compile your TypeScript source code.
-- Commands not appearing: verify `addCommand` runs after `onload` and IDs are unique.
-- Settings not persisting: ensure `loadData`/`saveData` are awaited and you re-render the UI after changes.
-- Mobile-only issues: confirm you're not using desktop-only APIs; check `isDesktopOnly` and adjust.
-
-## References
-
-- Obsidian sample plugin: https://github.com/obsidianmd/obsidian-sample-plugin
-- API documentation: https://docs.obsidian.md
-- Developer policies: https://docs.obsidian.md/Developer+policies
-- Plugin guidelines: https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines
-- Style guide: https://help.obsidian.md/style-guide
+**Verification before every commit:** `npm run build`, `npm test`, and
+`npx eslint src tests` with zero errors. Use that path, not `npx eslint .`,
+which walks agent worktrees under `.claude/` and reports their findings as
+yours.

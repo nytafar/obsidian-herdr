@@ -48,6 +48,7 @@ import { MarkdownRenderer } from '../fixtures/obsidian';
 import { NativePaneSurface } from '../../src/native/surface';
 import { emptyTranscript, reduce, type TranscriptState } from '../../src/native/reducer';
 import type {
+	BlockKind,
 	SessionChange,
 	SessionHandleOf,
 	SessionModels,
@@ -83,6 +84,8 @@ class StaticModel implements SessionModelView {
 	loaded = true;
 	agentSession = 'bench';
 	agentStatus: AgentStatus = 'idle';
+	blockKind: BlockKind | null = null;
+	connected = true;
 	constructor(readonly state: TranscriptState) {}
 	on(_listener: (change: SessionChange) => void): () => void {
 		return () => {};

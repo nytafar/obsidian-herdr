@@ -1,7 +1,7 @@
 /**
  * The waiting card (issue #99).
  *
- * What the native view shows when herdr's `agent_status` is `blocked`
+ * What the native view shows when the agent status is `blocked`
  * (CONTEXT.md): the kind of block and a way to answer it. This file is the
  * *kind*, as a value — the surface draws it — because which kind a block is
  * decides the one thing in the native view that presses a key in someone's
@@ -13,12 +13,30 @@
  * and plan approval are the user's. Those three kinds exist so the card can
  * say what the block is, and the terminal is where they are answered.
  *
- * The order is the ticket's, and it is an order rather than a set: no
- * transcript at all → startup; the last `tool_use` with no result → that tool;
- * anything else → a permission with no tool named.
+ * **The runtime's word first.** A runtime that reports what kind of block it
+ * is (herdr-core's `permission`, `question` and `auth`, ADR-0006) is believed,
+ * and the transcript only fills in the detail. One that does not (herdr) gets
+ * the transcript-shape guess, in the ticket's order, an order rather than a
+ * set: no transcript at all → startup; the last `tool_use` with no result →
+ * that tool; anything else → a permission with no tool named.
+ *
+ * **A dialog the runtime owns is answered here.** The `claude` kind runs its
+ * agents itself and its permission prompts arrive as requests it holds
+ * (ADR-0007): the card is then built from that {@link PendingRequest} — a
+ * tool permission, an `AskUserQuestion` or an `ExitPlanMode` plan — and the
+ * surface answers it through the kind's responder. That is a different thing
+ * from pressing keys in a terminal: the runtime asked, and it says what for.
+ *
+ * **A guess is never answered unasked.** The card says whether its kind was
+ * {@link WaitingCardModel.reported} by the runtime. A startup guessed from "no
+ * transcript yet" is also what an auth prompt, or any other dialog before the
+ * session exists, looks like, so only a runtime-reported `trust` may be
+ * answered automatically; a guessed one still gets the button.
  */
 
+import type { PendingRequest } from './pendingRequest';
 import type { ToolEntry, Turn } from './reducer';
+import type { BlockKind } from './sessionWatcher';
 import { toolDetail } from './toolCalls';
 
 /** The tool a question blocks under; its answers are the dialog's options. */
@@ -26,8 +44,8 @@ const ASK_USER_QUESTION = 'AskUserQuestion';
 /** The tool plan approval blocks under; its `plan` is what the dialog shows. */
 const EXIT_PLAN_MODE = 'ExitPlanMode';
 
-/** The four blocks a Claude session can be sitting in. */
-export type WaitingKind = 'startup' | 'question' | 'plan' | 'permission';
+/** The blocks a Claude session can be sitting in, as the card tells them apart. */
+export type WaitingKind = 'startup' | 'question' | 'plan' | 'permission' | 'auth';
 
 /** What the card says, and which block it says it about. */
 export interface WaitingCardModel {
@@ -44,6 +62,17 @@ export interface WaitingCardModel {
 	 * what tells one block from the next, so the trust answer goes out once.
 	 */
 	toolUseId: string;
+	/**
+	 * True when the runtime reported the kind, false when it was guessed from
+	 * the transcript's shape. Only a reported startup is answered without the
+	 * user pressing anything.
+	 */
+	reported: boolean;
+	/**
+	 * The runtime's own request this card is about, which the card can answer;
+	 * null for every card built from a block kind or the transcript.
+	 */
+	request: PendingRequest | null;
 }
 
 /**
@@ -72,30 +101,106 @@ export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 	return null;
 }
 
+/** The startup card: the workspace trust prompt, the one block the view answers. */
+function startupCard(reported: boolean): WaitingCardModel {
+	return {
+		kind: 'startup',
+		title: 'Claude is asking whether to trust this folder',
+		body: reported
+			? 'Trusting it here answers the prompt; the terminal answers it too.'
+			: 'No session has started yet, which is how the trust prompt looks. Open the terminal to be sure; trusting it here answers that prompt.',
+		options: [],
+		toolUseId: '',
+		reported,
+		request: null,
+	};
+}
+
+/**
+ * The card for a request the runtime is waiting on (ADR-0007). Never the
+ * startup kind, so nothing here is ever answered without a press.
+ */
+export function requestCard(request: PendingRequest, vaultPath: string): WaitingCardModel {
+	if (request.kind === 'question') {
+		const first = request.questions[0];
+		return {
+			kind: 'question',
+			title: 'Claude asked a question',
+			body: first?.question ?? '',
+			options: first?.options.map((option) => option.label) ?? [],
+			toolUseId: request.toolUseId,
+			reported: true,
+			request,
+		};
+	}
+	if (request.kind === 'plan') {
+		return {
+			kind: 'plan',
+			title: 'Claude is ready to code',
+			body: request.plan,
+			options: [],
+			toolUseId: request.toolUseId,
+			reported: true,
+			request,
+		};
+	}
+	const entry: ToolEntry = {
+		kind: 'tool',
+		id: request.toolUseId,
+		name: request.toolName,
+		input: { ...request.input },
+		result: null,
+		status: 'running',
+		notification: null,
+		report: null,
+	};
+	return {
+		kind: 'permission',
+		title: `Claude wants to use ${request.toolName}`,
+		body: toolDetail(entry, vaultPath),
+		options: [],
+		toolUseId: request.toolUseId,
+		reported: true,
+		request,
+	};
+}
+
 /**
  * The card for a blocked agent.
  *
- * `hasTranscript` is the session model's path: a pane whose Claude has not
- * written a file yet is blocked at startup on the workspace trust prompt, which
- * is the one block that exists before any transcript does.
+ * `blockKind` is what the runtime reported, null when it reports none.
+ * `hasTranscript` is the session model's path: without a reported kind, a
+ * pane whose Claude has not written a file yet is taken to be blocked at
+ * startup on the workspace trust prompt, which is the one block that exists
+ * before any transcript does.
  */
 export function waitingCard(input: {
+	blockKind?: BlockKind | null;
 	hasTranscript: boolean;
 	turns: readonly Turn[];
 	/** For the tool detail line, which is the tool group's own formatting. */
 	vaultPath: string;
+	/** The runtime's own pending request, which wins over everything else. */
+	request?: PendingRequest | null;
 }): WaitingCardModel {
-	if (!input.hasTranscript) {
+	if (input.request) return requestCard(input.request, input.vaultPath);
+	const kind = input.blockKind ?? null;
+	if (kind === 'trust') return startupCard(true);
+	if (kind === 'auth') {
 		return {
-			kind: 'startup',
-			title: 'Claude is asking whether to trust this folder',
-			body: 'Trusting it here answers the prompt; the terminal answers it too.',
+			kind: 'auth',
+			title: 'Claude needs you to sign in',
+			body: 'Signing in happens in the terminal.',
 			options: [],
 			toolUseId: '',
+			reported: true,
+			request: null,
 		};
 	}
+	if (kind === null && !input.hasTranscript) return startupCard(false);
+	const reported = kind !== null;
 	const tool = danglingToolUse(input.turns);
-	if (tool?.name === ASK_USER_QUESTION) {
+	if (tool?.name === ASK_USER_QUESTION && kind !== 'permission') {
 		const { question, options } = firstQuestion(tool);
 		return {
 			kind: 'question',
@@ -103,6 +208,21 @@ export function waitingCard(input: {
 			body: question,
 			options,
 			toolUseId: tool.id,
+			reported,
+			request: null,
+		};
+	}
+	if (kind === 'question') {
+		// A pending question is not in the transcript (`docs/architecture.md`):
+		// the runtime says it is one, and the terminal shows what it asks.
+		return {
+			kind: 'question',
+			title: 'Claude asked a question',
+			body: '',
+			options: [],
+			toolUseId: tool?.id ?? '',
+			reported,
+			request: null,
 		};
 	}
 	if (tool?.name === EXIT_PLAN_MODE) {
@@ -112,6 +232,8 @@ export function waitingCard(input: {
 			body: textField(tool, 'plan'),
 			options: [],
 			toolUseId: tool.id,
+			reported,
+			request: null,
 		};
 	}
 	if (tool) {
@@ -123,6 +245,8 @@ export function waitingCard(input: {
 			body: toolDetail(tool, input.vaultPath),
 			options: [],
 			toolUseId: tool.id,
+			reported,
+			request: null,
 		};
 	}
 	return {
@@ -131,6 +255,8 @@ export function waitingCard(input: {
 		body: '',
 		options: [],
 		toolUseId: '',
+		reported,
+		request: null,
 	};
 }
 

@@ -41,6 +41,20 @@ import type { TabInfo } from './herdr/types.gen';
 
 export type Unsubscribe = () => void;
 
+/**
+ * What a view reads of a connection's tab labels, whatever the kind: herdr's
+ * {@link TabLabelCache} over `tab.list`, or herdr-core's labels from the
+ * `herdr-app` document's tabs (`hc/tabLabels.ts`). Never fetches from a read.
+ */
+export interface TabLabels {
+	get(tabId: string): string | undefined;
+	labels(): ReadonlyMap<string, string>;
+	/** Asks for labels the source may not have yet; bounded, never per repaint. */
+	ensure(tabId?: string): void;
+	subscribe(listener: () => void): Unsubscribe;
+	dispose(): void;
+}
+
 /** The slice of `HerdrClient` the cache drives. */
 export interface TabLabelClient {
 	requestOptional<T>(method: string, params: unknown): Promise<T | null>;
@@ -84,7 +98,7 @@ function labelOf(tab: unknown): [string, string] | null {
 	return [record.tab_id, label || record.tab_id];
 }
 
-export class TabLabelCache {
+export class TabLabelCache implements TabLabels {
 	/** Labels by workspace id, then by tab id. */
 	private readonly entries = new Map<string, Map<string, string>>();
 	/**

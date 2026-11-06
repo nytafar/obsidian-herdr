@@ -3,6 +3,201 @@
 All notable changes to Herdr for Obsidian. Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## Unreleased
+
+Runtimes. The plugin now works with herdr-core (`hc`), herdrdev's headless
+runtime, next to the herdr TUI, and the local/remote pair has become a list of
+runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
+
+### Added
+
+- **Runtimes**: each one is a kind (herdr or herdr-core) on a target (this
+  machine or an SSH host), with its own binary, socket, remote vault path and
+  workspace. One runtime is active at a time. With two runtimes the agent
+  list's toolbar button toggles between them; with three or more it opens a
+  menu. A `Switch runtime` command works for any number of runtimes.
+- **herdr-core**: agents and their status from `hc`, locally and over SSH,
+  scoped to the herdr-app space named like the vault, or else to terminals
+  under the vault. Terminal tabs attach through one `hc connect` per tab, in
+  observe or control mode. Pins use herdr-app's shared `herdr.pinned` label,
+  and looking at a terminal tab writes `herdr.seen`, so "done" clears on every
+  herdr client. You can start and terminate agents from the plugin. Tabs,
+  splits, rename and focus don't exist in hc and are hidden.
+- **Claude session hook** for herdr-core: a command and a button in the
+  runtime's settings install, update or remove a Claude Code `SessionStart`
+  hook on the runtime's machine, local or over SSH. It labels each hc
+  terminal with its Claude session (`obsidian-herdr.session`). The modal shows
+  the exact script and settings entry first. Every other Claude setting keeps
+  its value; the file is rewritten in standard JSON formatting, and a rewrite
+  that would change a value is refused.
+- **Native view on herdr-core**, on this machine and over SSH: a Claude in an
+  hc terminal labelled by the session hook opens in the native view. The
+  label counts only while its pid is the terminal's foreground process, so a
+  Claude that exited or a child Claude never takes over the tab. It follows
+  `/clear` and `--resume`, sends and queues prompts, `/` commands and keys
+  through hc, and the waiting card names hc's blocked kinds. Over SSH the
+  transcript and subagent reports are read with hc's `file.read` on the
+  runtime's connection, paged, restarted when the file is replaced or
+  truncated, and read when the agent's status changes and every 2 s while it
+  works. A terminal without the label stays a terminal and its view switch
+  names the install command; one whose label names another process (a
+  wrapper that forks Claude) says that instead. Reading an agent in the
+  native view marks it seen in `herdr.seen`, as a terminal tab does. A
+  transcript hc's `file.read` refuses outright (over 64 MB, or a first line
+  over 8 MB) is named in the view instead of leaving it empty. `@` mentions
+  on an SSH runtime name the remote vault's file, and its `/` list offers the
+  remote machine's commands and skills (user, plugin and the pane's project),
+  read over the runtime's connection; while they cannot be read it offers
+  only the built-ins.
+- **Claude, run by Obsidian**: a third runtime kind and a simple mode that
+  needs no multiplexer. The plugin starts Claude Code itself on this machine,
+  in Claude's own stream-json mode, and its agents open in the native view.
+  Status comes straight from Claude: working, done, or blocked with what it
+  waits for. Done clears once you look at the agent in the native view,
+  including a turn that ends while you are watching it. After a restart the agents come back as **stopped** rows;
+  opening one or sending it a prompt resumes the conversation, in a symlinked
+  folder and with `CLAUDE_CONFIG_DIR` set too. The waiting
+  card answers Claude's dialogs itself: Allow, Deny, **Allow for this
+  session**, and **Always allow in this project**, which names the exact
+  `.claude/settings.local.json` Claude writes, at the root of the agent's git
+  repository rather than in its folder, and says the rule then covers every
+  agent in that repository; it is left out where that file cannot be told for
+  sure; a question's options; a plan's
+  approval, or its rejection with feedback. Nothing is answered for you and
+  nothing times out; while an agent stops, its card says so and takes no
+  answer, since stopping denies what waits. A **Stop** button interrupts the running turn. The row
+  menu has **Stop agent**, **Forget agent** for a stopped row, and **Continue
+  in herdr** or **Continue in herdr-core** once the session has had a turn,
+  which hands the conversation to such a runtime with `claude --resume`, in
+  the same permission mode. The permission mode is a runtime
+  setting (default: ask, passed as Claude's documented `manual`). Agents end when Obsidian closes or the plugin
+  unloads. See [docs/runtimes.md](docs/runtimes.md).
+- **Terminal view for Claude, run by Obsidian** (Linux only for now: off on
+  macOS until its written path is verified there, which the settings status
+  and the view switch say; not on Windows): the tab's view switch shows Claude's own
+  terminal interface, on a real terminal from `script(1)`, in the runtime's
+  permission mode. An agent runs one Claude at a time, so switching the view
+  moves it between the headless process and the terminal with
+  `claude --resume`, between turns only; while it works, the switch waits and
+  the tab says why. A prompt sent from the native view to an agent in its
+  terminal moves it back first and is delivered there, or the send fails
+  with the reason (a Stop came first); it is never sent later. A tab opened
+  while a switch runs waits for it. Stop, Forget, Continue in and unloading
+  hold the agent while they end it, so nothing (a tab opening, a turn
+  ending) starts it again behind them, and Continue in starts the session on
+  the other runtime only once the process here is gone. A stopped agent's
+  terminal tab that was hidden says the agent stopped when you show it again,
+  and starts it only when you click Reconnect. Permissions asked in the terminal are answered there,
+  and the agent list follows the status Claude reports to the terminal; a
+  terminal that reports none (Claude before 2.1.295) shows as unknown, and
+  moving it to the native view asks first, since a turn may be running.
+  Closing the tab keeps Claude running, and opening it again in the same
+  session shows the same screen, replayed without the terminal queries in
+  it, so the reopened tab types no answers into the program. Resizing reaches Claude. A watchdog beside
+  each terminal ends it within a second if Obsidian is killed.
+- **Open shell here** for Claude, run by Obsidian (Linux only, as the
+  terminal view): a plain shell in a
+  folder, in a terminal tab of its own, from the folder menu or the command.
+  It lives while a tab shows it. Ctrl-C interrupts what runs in it, the
+  command it was opened with included (Get started's installer).
+- **Get started** (ADR-0008): while no runtime connects, the agent list
+  shows a guided start, also behind a `Get started` command. Start at once in
+  Claude, run by Obsidian (the runtime is added, made active, and an agent
+  starts in the vault), or install herdr-core with its official command:
+  copy it, run it in a terminal tab, or ask Claude to run it. Ask Claude
+  always starts in the asking permission mode, whatever the runtime's mode,
+  so the command waits on a permission card, which offers only Allow once
+  and Deny: no session or project rule for the installer is ever saved, and
+  that agent has no terminal view, where Claude's own dialog could save one. **Check again** finds `hc`
+  afterwards and adds herdr-core on this machine in one click, then offers
+  the Claude session hook. A link covers herdr instead. The plugin never
+  downloads or installs anything itself.
+- **herdr 0.9.5**: the types are regenerated from it. The client records the
+  server's version so features can be gated on it, and it recovers from the
+  `events_lost` subscription error (0.9.2+) by resubscribing and taking a
+  fresh snapshot.
+- **Agent catalog** (#125): the + button and its menu list the agent CLIs
+  installed on the active runtime's machine, checked once per connection
+  (this machine's binary search, one `ssh` to an SSH herdr host, one
+  `machine.exec` on herdr-core over SSH), plus hc's templates on herdr-core
+  and your own entries from **Settings → Herdr → Agents**: a wrapper, another
+  command or extra arguments. An entry that cannot start on the runtime is
+  greyed with the reason; one of your own whose command was not found is
+  marked so and still starts. On an SSH host the check uses the PATH of your
+  own shell there, the one agents start in. On herdr, kinds the server's version does not
+  accept are left out. Entries can be hidden from the menu, and **Check
+  again** looks again after an install.
+- **Agent CLIs on every machine** (#125): each agent CLI row in
+  **Settings → Herdr → Agents** says which machines of your configured
+  runtimes have it ("Found on this machine and lasse@mac. Not found on
+  xl."), not only the active runtime's. Machines other than the active
+  runtime's are checked when the section draws, once per opening of the
+  settings and in parallel, and again on **Check again**; a machine that
+  cannot be checked is named once. The active runtime's catalog still decides
+  the menu and the default.
+
+### Changed
+
+- **The + button** sits at the far right of the agent list's toolbar. A left
+  click starts the runtime's default agent at the vault root, a right click
+  opens the agent catalog. The default is per runtime (**Default agent** in
+  the runtime's form) and falls back to the first installed entry; if nothing
+  is found, + says so instead of starting anything.
+- **Default agent kind** is gone: it migrates to every herdr and herdr-core
+  runtime's own default on first load, so the agent you chose keeps starting.
+
+- The remote profile and the global socket, binary and workspace settings
+  have moved into runtimes. They migrate on first load, and pins and saved
+  terminal tabs keep their runtime. **Downgrading below this version loses
+  the remote profile**, because the old keys are no longer written. A remote
+  set up again in the older build comes back as an extra, inactive runtime
+  on the next upgrade, and a runtime of a kind this build does not know (a
+  newer build's) is kept in `data.json` rather than erased.
+- A runtime keeps its id when you edit its host, so pins and saved tabs
+  survive the edit.
+- An SSH herdr runtime finds herdr on the remote host by itself when **Remote
+  herdr binary** is empty, the new default: the remote PATH, then
+  `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`. A Mac remote with
+  Homebrew's herdr works without typing its path. A binary left at the old
+  default `~/.local/bin/herdr` becomes the search; a path you chose is kept.
+- `unknown_method` errors now count as unsupported methods. herdr 0.9.5
+  answers removed methods that way.
+- **Trust new folders automatically** only answers a trust prompt the runtime
+  itself identified. herdr reports no kind of block, so on herdr the setting no
+  longer presses anything: a block before the session exists looks the same at
+  the trust prompt as at a sign-in, and `Down Enter` would land on the wrong
+  dialog. herdr-core reports no trust kind either, and Claude asks there
+  before its session hook labels the terminal, so today the setting does
+  nothing on any runtime and says so. The waiting card's **Trust this
+  folder** button still answers it.
+
+### Fixed
+
+- herdr-core: a vault now finds its herdr-app space when that space has no
+  stored name and Herdr UI shows it under its first terminal's folder, as on
+  the Mac, where every space had `name: ""`. Such a space matches when its
+  first terminal's working directory is the vault or inside it (the plugin
+  has no git top to compare, as Herdr UI does). If several match, the first
+  in Herdr UI's order wins. Agents started from the plugin then get the space
+  label again and show up in Herdr UI. Existing terminals are not relabelled.
+- After a runtime switch, a native tab on the other runtime keeps what it
+  showed and says its runtime is not connected, instead of showing the newly
+  active runtime's pane with the same id. The table of contents follows the
+  same runtime-and-pane pair.
+- A transcript replaced or truncated under the native view is read again from
+  the start instead of being appended to the old session's turns, and a file
+  renamed over the transcript is followed at once rather than after the next
+  2 s poll. A long transcript's first read is taken 1 MB at a time.
+- The agent catalog no longer lists a CLI whose only trace is a mise or asdf
+  shim for a tool that is not active in the vault. The check asks `mise
+  which` (or `asdf which`) from the vault root, on this machine and on SSH
+  and herdr-core hosts (from the remote vault path); if the manager cannot
+  answer, the shim counts as before.
+- pi started on herdr-core no longer drops out of the agent list once hc sees
+  its foreground (`node`, titled `pi`): the process title is read too. Agents
+  the plugin starts on herdr-core also carry an `obsidian-herdr.agent` label
+  with their kind, so an unrecognised foreground never drops their row.
+
 ## 0.4.0 — 2026-09-15
 
 The native view. A Claude Code session rendered as Obsidian Markdown, made for

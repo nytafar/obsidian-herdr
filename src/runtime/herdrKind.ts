@@ -1,0 +1,223 @@
+/**
+ * The herdr kind (ADR-0004): the herdr TUI multiplexer, on this machine or
+ * over SSH, behind the {@link RuntimeKindAdapter} seam.
+ *
+ * Nothing here is new behaviour; it is what `main.ts` did for "local, or the
+ * one remote" before the registry, moved behind the seam and reading the
+ * runtime snapshot of the attempt instead of the live settings:
+ *
+ * - **Connection.** On `local` the client opens the discovered socket; on
+ *   `ssh` it opens the local end of an `ssh -N -L` forward to the runtime's
+ *   socket (PRD S5).
+ * - **Scope.** `WorkspaceScope`, one workspace, chosen by the runtime's
+ *   workspace override, then the vault name, then cwd (`herdr/scope.ts`).
+ * - **Terminal tabs.** `herdr terminal session` over child-process pipes,
+ *   spawned through `ssh -T` on an `ssh` target (PRD S17). A local runtime's
+ *   binary is its override, `~` expanded (spawn has no shell), else what this
+ *   kind's own last discovery of that runtime found, else it is discovered
+ *   when the tab starts. Never the active connection's discovery: that may be
+ *   another kind's binary, or none (an SSH herdr-core runtime).
+ * - **Actions and prompts.** herdr's JSON API methods (`actions.ts`,
+ *   `native/promptSender.ts`).
+ * - **Native view.** A session watcher over the connection's scope and
+ *   client (`herdr/sessionWatcher.ts`) and this machine's transcript files,
+ *   on a `local` target only: herdr over SSH has no transcript adapter, so
+ *   its panes keep the terminal (ADR-0002).
+ */
+
+import { TerminalSession } from '../bridge/terminalSession';
+import type { Endpoint } from '../connection';
+import { HerdrActions } from '../actions';
+import { homedir } from 'node:os';
+import type { RuntimeConfig } from '../runtimes';
+import { defaultDeps, discoverHerdr, expandHome, type DiscoveryDeps } from '../herdr/binary';
+import { HerdrClient, type ProtocolMismatch } from '../herdr/client';
+import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from '../herdr/scope';
+import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
+import { defaultDeps as sshDefaultDeps, SshTunnel, terminalArgvPrefix, type RunCommand } from '../herdr/ssh';
+import { probeLocal, probeOverSsh } from '../agents/probe';
+import { clientKeySender, clientPromptSender } from '../native/promptSender';
+import { LocalTranscriptSource } from '../native/transcriptSource';
+import { herdrSessionWatcher } from '../herdr/sessionWatcher';
+import { TabLabelCache } from '../tabLabels';
+import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
+
+/** What the herdr kind needs from the plugin; everything Obsidian-shaped is here. */
+export interface HerdrKindHost {
+	/** Colon-separated PATH additions from the settings, read per attempt. */
+	extraPath(): string;
+	/** This vault's absolute path on this machine. */
+	vaultPath(): string;
+	/** Injected in tests; the real filesystem, PATH and processes otherwise. */
+	discoveryDeps?: DiscoveryDeps;
+	/** Runs the agent probe's `ssh` (issue #125); injected in tests, never spawned there. */
+	sshRun?: RunCommand;
+	onProtocolMismatch(mismatch: ProtocolMismatch): void;
+	onUnsupportedMethod(method: string): void;
+	/**
+	 * Whether this scope's connection is the published one. The scope's one
+	 * request (`pane.list`, issue #75) is only answered while it is: a lookup
+	 * still in flight when the connection is replaced must not write into a
+	 * scope nothing renders.
+	 */
+	isPublished(scope: WorkspaceScope): boolean;
+}
+
+export type HerdrKind = RuntimeKindAdapter<HerdrClient, WorkspaceScope, SshTunnel>;
+
+export function createHerdrKind(host: HerdrKindHost): HerdrKind {
+	const deps = (): DiscoveryDeps => host.discoveryDeps ?? defaultDeps();
+	const home = (): string => host.discoveryDeps?.home ?? homedir();
+	/**
+	 * The binary each local runtime's last discovery found, by runtime id;
+	 * only searches, since an override is read from the runtime itself.
+	 */
+	const discovered = new Map<string, string>();
+	const discoverLocal = (runtime: Readonly<RuntimeConfig>) =>
+		discoverHerdr(
+			{
+				override: runtime.binary,
+				extraPath: host.extraPath(),
+				socketOverride: runtime.socketPath,
+			},
+			deps(),
+		).then((found) => {
+			if (found.binary && found.binary.source !== 'setting') {
+				discovered.set(runtime.id, found.binary.path);
+			}
+			return found;
+		});
+	/** A local runtime's binary as spawn needs it, or empty until discovered. */
+	const localBinary = (runtime: Readonly<RuntimeConfig>): string => {
+		const override = runtime.binary.trim();
+		return override ? expandHome(override, home()) : (discovered.get(runtime.id) ?? '');
+	};
+	/** One for every local runtime of this kind: they all read this machine's files. */
+	const localTranscripts = new LocalTranscriptSource();
+	return {
+		kind: 'herdr',
+		unavailable: null,
+		terminalUnavailable: null,
+		capabilities: HERDR_CAPABILITIES,
+		nativeUnavailable: null,
+		native: {
+			transcriptAccess: (endpoint) => (endpoint.runtime.target === 'local' ? 'local' : null),
+			watcher: (connection) => herdrSessionWatcher(connection),
+			// A local file needs no connection, so a tab on a local herdr keeps
+			// following its transcript while another runtime is active.
+			transcripts: (endpoint) => (endpoint.runtime.target === 'local' ? localTranscripts : null),
+		},
+		connection: {
+			discover: (endpoint) => {
+				const runtime = endpoint.runtime;
+				if (runtime.target === 'local') return discoverLocal(runtime);
+				// An SSH runtime's binary lives on the remote host; the local one
+				// is only searched for, for the settings status.
+				return discoverHerdr({ override: '', extraPath: host.extraPath() }, deps());
+			},
+			// An SSH runtime only needs `ssh` here, so a missing local binary only
+			// stops the local path.
+			discoveryIssue: (endpoint, discovery) => {
+				if (endpoint.runtime.target === 'ssh' || discovery.binary) return null;
+				return discovery.error ?? 'herdr binary not found';
+			},
+			createTunnel: (endpoint, onSocket) => {
+				const runtime = endpoint.runtime;
+				if (runtime.target !== 'ssh') return null;
+				// The attempt's own snapshot, not the live settings: a host typed
+				// meanwhile belongs to the next attempt.
+				if (runtime.host.length === 0) throw new Error('the runtime has no SSH host');
+				return new SshTunnel({
+					host: runtime.host,
+					remoteSocketPath: runtime.socketPath,
+					onStatus: (status) => {
+						if (status.state === 'connected') onSocket(status.localSocketPath);
+					},
+				});
+			},
+			createClient: (socketPath) =>
+				new HerdrClient({
+					socketPath,
+					onProtocolMismatch: (mismatch) => host.onProtocolMismatch(mismatch),
+					// PRD M3: an unsupported method is reported once, then never retried.
+					onUnsupportedMethod: (method) => host.onUnsupportedMethod(method),
+				}),
+			createScope: (endpoint, client) => {
+				const runtime = endpoint.runtime;
+				const scope: WorkspaceScope = new WorkspaceScope({
+					workspaceId: runtime.workspace,
+					vaultPath: host.vaultPath(),
+					remoteVaultPath: runtime.target === 'ssh' ? runtime.remoteVaultPath : undefined,
+					// The one request the scope makes: what `pane_agent_detected`
+					// leaves out for a pane that just gained an agent (issue #75).
+					lookupPanes: (workspaceId) =>
+						host.isPublished(scope) ? client.listPanes(workspaceId) : Promise.resolve([]),
+				});
+				return scope;
+			},
+			prime: (client, scope, retired) => primeHerdrScope(client, scope, retired),
+			start: (client, scope) =>
+				startHerdrStream(client, scope, { subscriptions: SCOPE_SUBSCRIPTIONS }),
+		},
+		terminalCommand: (endpoint: Endpoint) => {
+			const runtime = endpoint.runtime;
+			// SSH: `['ssh','-T',host,<remote herdr>]`, the remote shell expanding
+			// a `~` — terminals never go through the forwarded API socket (PRD
+			// S17). Local: `[<herdr>]`, or empty while the binary is still to be
+			// found, which the session then does itself.
+			if (runtime.target === 'ssh') return terminalArgvPrefix(runtime, '');
+			const local = localBinary(runtime);
+			return local ? terminalArgvPrefix(runtime, local) : [];
+		},
+		createTerminalSession: (options, endpoint) => {
+			const runtime = endpoint.runtime;
+			if (options.command.length > 0 || runtime.target !== 'local') {
+				return new TerminalSession(options);
+			}
+			return new TerminalSession({
+				...options,
+				resolveCommand: async () => {
+					const known = localBinary(runtime);
+					if (known) return [known];
+					const found = await discoverLocal(runtime);
+					if (!found.binary) throw new Error(found.error ?? 'herdr binary not found');
+					return [found.binary.path];
+				},
+			});
+		},
+		createActions: (actionHost) => new HerdrActions(actionHost),
+		// The agent catalog's probe (issue #125): this machine's binary search,
+		// or one `ssh` to the host; herdr's version gates the kinds it accepts.
+		// The catalog asks once the first ping answered, so the version is
+		// known; it is read after the probe, as the connection has it then.
+		probeAgents: async (connection, programs) => {
+			const runtime = connection.endpoint.runtime;
+			const probe =
+				runtime.target === 'ssh'
+					? await probeOverSsh(runtime.host, programs, host.sshRun ?? sshDefaultDeps().run, {
+							vaultRoot: runtime.remoteVaultPath,
+						})
+					: await probeLocal(programs, { extraPath: host.extraPath(), vaultRoot: host.vaultPath() }, deps());
+			return { ...probe, herdrVersion: connection.client.serverVersion };
+		},
+		promptSender: (client) => clientPromptSender(client),
+		keySender: (client) => clientKeySender(client),
+		// One `tab.list` cache per connection (issue #43), over its own client
+		// and scope.
+		createTabLabels: (connection, alive) => {
+			const { client, scope } = connection;
+			return new TabLabelCache({
+				client,
+				scope: {
+					get workspaceId() {
+						return scope.workspaceId;
+					},
+					tabIds: () => scope.list().map((pane) => pane.tabId),
+					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
+				},
+				alive,
+			});
+		},
+		statusLines: () => null,
+	};
+}

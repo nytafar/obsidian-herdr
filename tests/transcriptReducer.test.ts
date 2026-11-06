@@ -366,3 +366,49 @@ describe('reduce: the live corpus', () => {
 		for (const turn of state.turns) expect(typeof turn.prompt).toBe('string');
 	});
 });
+
+describe('prompts sent over stream-json (the claude kind, ADR-0007)', () => {
+	// Captured 2026-11-06 from `claude -p --input-format stream-json` (Claude
+	// Code 2.1.318), trimmed: every prompt is enqueued and dequeued before its
+	// `user` line, which carries `entrypoint: "sdk-cli"` and `promptSource: "sdk"`.
+	const lines = [
+		{ type: 'queue-operation', operation: 'enqueue', content: 'Reply with PONG.' },
+		{ type: 'queue-operation', operation: 'dequeue' },
+		{
+			type: 'user',
+			uuid: 'u-1',
+			promptId: 'p-1',
+			promptSource: 'sdk',
+			entrypoint: 'sdk-cli',
+			userType: 'external',
+			message: { role: 'user', content: 'Reply with PONG.' },
+		},
+		{ type: 'assistant', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'PONG' }] } },
+		{ type: 'queue-operation', operation: 'enqueue', content: 'Again.' },
+		{ type: 'queue-operation', operation: 'dequeue' },
+		{ type: 'user', uuid: 'u-2', entrypoint: 'sdk-cli', message: { role: 'user', content: 'Again.' } },
+		{ type: 'assistant', message: { id: 'msg-2', role: 'assistant', content: [{ type: 'text', text: 'PONG' }] } },
+	].map((line) => JSON.stringify(line));
+
+	it('opens a turn with each prompt, as a prompt typed in a terminal does', () => {
+		const { state } = reduce(emptyTranscript(), lines);
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Reply with PONG.', 'Again.']);
+		expect(state.turns.map((turn) => turn.entries.length)).toEqual([1, 1]);
+	});
+
+	it('still reads a task notification over stream-json as the notification it is', () => {
+		const notification =
+			'<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n</task-notification>';
+		const { state } = reduce(emptyTranscript(), [
+			...lines.slice(0, 4),
+			JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: notification }),
+			JSON.stringify({
+				type: 'user',
+				entrypoint: 'sdk-cli',
+				origin: { kind: 'task-notification' },
+				message: { role: 'user', content: notification },
+			}),
+		]);
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Reply with PONG.']);
+	});
+});

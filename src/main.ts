@@ -24,26 +24,52 @@ import {
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
-import { discoverHerdr } from './herdr/binary';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
 	EndpointSessions,
-	endpointLabel,
-	LOCAL_ENDPOINT_ID,
 	endpointOf,
+	isRemoteEndpoint,
 	resolveEndpoint,
+	type ConnectionClient,
+	type ConnectionScope,
 	type Endpoint,
 	type EndpointSession,
 } from './connection';
-import { SCOPE_SUBSCRIPTIONS, WorkspaceScope } from './herdr/scope';
-import { TabLabelCache } from './tabLabels';
+import type { TabLabels } from './tabLabels';
 import { SshTunnel } from './herdr/ssh';
-import { HerdrActions, resolveFolderPath, type ActionHost } from './actions';
+import { isPanePinned, pinnedPaneIds, togglePanePin } from './settings';
+import { resolveFolderPath, type ActionHost } from './actions';
+import {
+	activeRuntimeOf,
+	foreignRuntimeRefs,
+	migrateRuntimes,
+	runtimeById,
+	runtimeDisplayName,
+	withLiveName,
+	type RuntimeConfig,
+	type RuntimeKind,
+} from './runtimes';
+import {
+	nativeAdapterFor,
+	type GraduationRelease,
+	type RuntimeActions,
+	type RuntimeCapabilities,
+	type RuntimeKindAdapter,
+} from './runtime/kind';
+import { createHerdrKind } from './runtime/herdrKind';
+import { createHerdrCoreKind } from './runtime/herdrCoreKind';
+import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
+import { normalizeClaudeSessions } from './claude/agents';
+import { graduationArgs } from './claude/actions';
+import { isShellId } from './claude/shells';
+import type { GraduationTarget } from './views/rowMenu';
+import { ConfirmModal, RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
 import { TOC_VIEW_TYPE, TocView, revealTocView } from './native/tocView';
 import { registerOutlineSwap } from './native/tocOutline';
+import { HOVER_LINK_SOURCE } from './native/noteLinks';
 import { countStatuses } from './views/rowModel';
 import { registerKindIcons } from './views/kindIcons';
 import {
@@ -54,19 +80,37 @@ import {
 	stateMatchesPane,
 	switchRenderModeCommand,
 } from './views/terminalView';
-import type { TerminalSetting } from './views/paneTerminal';
+import { spawnEnv, type TerminalSetting } from './views/paneTerminal';
 import {
 	chooseNoteLeaf,
 	decideOpenTarget,
 	decidePlacement,
 	type NoteLeafCandidate,
 } from './terminalPlacement';
-import { scopeWatcher, SessionModelRegistry } from './native/sessionModel';
-import { LocalTranscriptSource } from './native/transcriptSource';
+import { SessionModelRegistry } from './native/sessionModel';
+import type { SessionWatcher } from './native/sessionWatcher';
+import type { PromptClient } from './native/promptSender';
+import type { TranscriptSource } from './native/transcriptSource';
+import type { CommandCatalogSource } from './native/commandCatalog';
 import { ExplorerFolderButtons } from './explorerButtons';
+import { HcClient } from './hc/client';
+import { hcHookMachine } from './sessionHook/installer';
+import { SESSION_HOOK_COMMAND_NAME } from './hc/sessionWatcher';
+import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
+import { resolveHerdrBinary } from './herdr/binary';
+import { buildAgentName } from './actions';
+import type { PaneView } from './native/renderMode';
+import {
+	GET_STARTED_COMMAND_NAME,
+	GetStartedFlow,
+	showGetStarted,
+	type GetStartedHost,
+} from './getStarted/flow';
+import { GetStartedModal } from './getStarted/card';
+import { AgentCatalogs } from './agents/catalogs';
+import { defaultMachineProbesHost, MachineProbes } from './agents/machines';
+import { migrateDefaultAgents, normalizeIdList, normalizeUserProfiles } from './agents/catalog';
 
-/** Delay before a coalesced `agent.list` refresh; a burst of panes is one call. */
-const AGENT_NAME_REFRESH_MS = 300;
 /** Delay after a connection setting changes before reconnecting (typing). */
 const RECONNECT_DEBOUNCE_MS = 800;
 /**
@@ -81,6 +125,9 @@ const RECONNECT_DEBOUNCE_MS = 800;
  */
 const PANE_REFRESH_MS = 2000;
 
+/** How long after a terminal tab closes its pane is checked for other tabs. */
+const RELEASE_CHECK_MS = 1000;
+
 export default class HerdrPlugin extends Plugin {
 	settings!: HerdrSettings;
 	/**
@@ -88,24 +135,30 @@ export default class HerdrPlugin extends Plugin {
 	 * priming (issue #57). `client`, `scope` and `tunnel` below read from the
 	 * published connection; a retired or superseded attempt never shows here.
 	 */
-	private readonly connection = new ConnectionCoordinator<HerdrClient, WorkspaceScope, SshTunnel>(
+	private readonly connection = new ConnectionCoordinator(
 		{
-			discover: () =>
-				discoverHerdr({
-					override: this.settings.herdrBinary,
-					extraPath: this.settings.extraPath,
-					socketOverride: this.settings.socketPath,
-				}),
-			endpoint: () => endpointOf(this.settings.remote),
-			createTunnel: (onSocket) => this.createTunnel(onSocket),
-			createClient: (socketPath) => this.createClient(socketPath),
-			createScope: (endpoint) => this.createScope(endpoint),
-			subscriptions: SCOPE_SUBSCRIPTIONS,
+			endpoint: () => endpointOf(activeRuntimeOf(this.settings)),
+			driver: (endpoint) => {
+				const kind = this.kindOf(endpoint.runtime.kind);
+				const driver = kind.connection;
+				if (kind.unavailable !== null || !driver) {
+					return { unavailable: kind.unavailable ?? `${endpoint.runtime.kind} cannot connect` };
+				}
+				// The kind builds the scope; what hangs off its events is the plugin's.
+				return {
+					...driver,
+					createScope: (attempt, client) =>
+						this.wireScope(driver.createScope(attempt, client), attempt),
+				};
+			},
 			notice: (message) => {
 				new Notice(message);
 			},
 			setError: (message) => {
+				const changed = this.connectError !== message;
 				this.connectError = message;
+				// The agent list's "Get started" card follows a failed attempt.
+				if (changed) this.refreshAgentList();
 			},
 			onReplaced: () => {
 				// The caches belong to the connection that just went (#43, #81).
@@ -113,14 +166,112 @@ export default class HerdrPlugin extends Plugin {
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
-			onPrimed: () => this.updateStatusBar(),
+			onPrimed: () => {
+				// The agent catalog's probe, once per connection and only once it
+				// is live (#125); again after a reconnect if the last one failed.
+				const current = this.connection.current;
+				if (current) this.agentCatalogs.connected(current);
+				this.updateStatusBar();
+			},
 		},
 	);
+	/**
+	 * The `claude` kind (ADR-0007), held apart as well because its agents are
+	 * this plugin's own processes: unload stops them, and a runtime that is
+	 * removed takes its agents with it.
+	 */
+	private readonly claudeKind: ClaudeKind = createClaudeKind({
+		extraPath: () => this.settings.extraPath,
+		spawnEnv: () => spawnEnv(process.env, this.settings.extraPath),
+		vaultPath: () => this.vaultPath(),
+		loadSessions: (runtimeId) => this.settings.claudeSessions[runtimeId] ?? [],
+		saveSessions: (runtimeId, sessions) => {
+			const next = { ...this.settings.claudeSessions };
+			if (sessions.length > 0) next[runtimeId] = sessions;
+			else delete next[runtimeId];
+			this.settings.claudeSessions = next;
+			void this.saveSettings();
+		},
+		notice: (message) => {
+			new Notice(message);
+		},
+		confirm: (question) => new ConfirmModal(this.app, { ...question, warning: true }).ask(),
+	});
+	/**
+	 * One adapter per runtime kind (ADR-0004): everything that differs by kind
+	 * is asked of the adapter of the runtime in question, never decided here.
+	 * herdr-core runs over `hc connect` (ADR-0005).
+	 */
+	private readonly kinds: Record<RuntimeKind, RuntimeKindAdapter> = {
+		herdr: createHerdrKind({
+			extraPath: () => this.settings.extraPath,
+			vaultPath: () => this.vaultPath(),
+			onProtocolMismatch: (mismatch) => {
+				this.mismatch = mismatch;
+			},
+			onUnsupportedMethod: (method) => {
+				new Notice(unsupportedMethodMessage(method));
+			},
+			// The scope's one request (issue #75) is answered by its own
+			// connection's client, and only while that connection is published.
+			isPublished: (scope) => this.connection.current?.scope === scope,
+		}),
+		'herdr-core': createHerdrCoreKind({
+			extraPath: () => this.settings.extraPath,
+			spawnEnv: () => spawnEnv(process.env, this.settings.extraPath),
+			vaultPath: () => this.vaultPath(),
+			vaultName: () => this.app.vault.getName(),
+			// Warn, never refuse (ADR-0005): once per connection, and in the
+			// settings status for as long as it lasts.
+			onMismatch: (mismatch, runtime) => {
+				new Notice(
+					`Herdr: ${runtimeDisplayName(runtime)} speaks herdr-core generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Connecting anyway.`,
+				);
+			},
+			currentScope: () => this.connection.current?.scope ?? null,
+		}),
+		claude: this.claudeKind,
+	};
+	/**
+	 * "Get started" (ADR-0008): the card the agent list shows while no
+	 * runtime connects, and the `Get started` command's modal.
+	 */
+	readonly getStarted = new GetStartedFlow(this.getStartedHost());
+	/**
+	 * The agent catalog of the runtime the list points at (issue #125), its
+	 * probe cached per connection and run by the runtime's kind.
+	 */
+	readonly agentCatalogs = new AgentCatalogs({
+		connection: () => this.connection.current,
+		endpoint: () => this.endpoint,
+		settings: () => this.settings,
+		probe: (connection, programs) =>
+			this.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
+		changed: () => this.refreshAgentList(),
+		notice: (message) => {
+			new Notice(message);
+		},
+	});
+	/**
+	 * Fresh per-machine agent probes for one opening of the settings tab
+	 * (#125), reading the published connection's probe for its own machine.
+	 */
+	newMachineProbes(): MachineProbes {
+		return new MachineProbes(
+			defaultMachineProbesHost({
+				live: (machine) => this.agentCatalogs.liveProbeOn(machine.key),
+				extraPath: () => this.settings.extraPath,
+				vaultPath: () => this.vaultPath(),
+			}),
+		);
+	}
+	/** Actions per kind, built on first use over the one action host. */
+	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
 	/** Null until the herdr binary and socket have been discovered. */
-	get client(): HerdrClient | null {
+	get client(): ConnectionClient | null {
 		return this.connection.current?.client ?? null;
 	}
-	get scope(): WorkspaceScope | null {
+	get scope(): ConnectionScope | null {
 		return this.connection.current?.scope ?? null;
 	}
 	/**
@@ -128,7 +279,55 @@ export default class HerdrPlugin extends Plugin {
 	 * connect to while no connection is published (issue #54).
 	 */
 	get endpoint(): Endpoint {
-		return this.connection.current?.endpoint ?? endpointOf(this.settings.remote);
+		return this.connection.current?.endpoint ?? endpointOf(activeRuntimeOf(this.settings));
+	}
+
+	/** The adapter of a kind (ADR-0004). */
+	kindOf(kind: RuntimeKind): RuntimeKindAdapter {
+		return this.kinds[kind];
+	}
+
+	/** Why runtimes of this kind cannot connect in this build, or null. */
+	kindUnavailable(kind: RuntimeKind): string | null {
+		return this.kindOf(kind).unavailable;
+	}
+
+	/**
+	 * The Claude session hook's machine (ADR-0006): the published herdr-core
+	 * connection's, else null. Read per use, so a reconnect is never missed.
+	 */
+	private sessionHookTarget(): SessionHookTarget | null {
+		const current = this.connection.current;
+		const client = current?.client;
+		if (!current || current.endpoint.runtime.kind !== 'herdr-core' || !(client instanceof HcClient)) return null;
+		return {
+			runtimeName: runtimeDisplayName(withLiveName(this.settings, current.endpoint.runtime)),
+			machine: hcHookMachine((method, params) => client.request(method, params)),
+		};
+	}
+
+	/** The hook's review-and-confirm modal; `onDone` runs after a write. */
+	openSessionHook(onDone?: () => void): void {
+		const target = this.sessionHookTarget();
+		if (!target) {
+			new Notice('Herdr: connect to a herdr-core runtime first.');
+			return;
+		}
+		new SessionHookModal(this.app, target, onDone).open();
+	}
+
+	/** The hook's status line for the runtime form, or null while not connected. */
+	async sessionHookStatus(): Promise<{ text: string; warning: boolean } | null> {
+		const target = this.sessionHookTarget();
+		return target ? sessionHookStatusLine(target) : null;
+	}
+
+	/**
+	 * What the runtime the list points at can do (ADR-0004): the published
+	 * connection's, else the active runtime's. The UI leaves out what is false.
+	 */
+	capabilities(): Readonly<RuntimeCapabilities> {
+		return this.kindOf(this.endpoint.runtime.kind).capabilities;
 	}
 	/**
 	 * The endpoint-match rule, in one place (issue #81): everything a view
@@ -139,27 +338,15 @@ export default class HerdrPlugin extends Plugin {
 	 * them apart; it is retired with its connection (issue #43), and views never
 	 * fetch labels themselves.
 	 */
-	private readonly sessions = new EndpointSessions<
-		HerdrClient,
-		WorkspaceScope,
-		TabLabelCache,
-		SshTunnel
-	>({
+	private readonly sessions = new EndpointSessions<ConnectionClient, ConnectionScope, TabLabels>({
 		current: () => this.connection.current,
-		createTabLabels: (connection) => {
-			const { client, scope } = connection;
-			return new TabLabelCache({
-				client,
-				scope: {
-					get workspaceId() {
-						return scope.workspaceId;
-					},
-					tabIds: () => scope.list().map((pane) => pane.tabId),
-					onWorkspaceResolved: (handler) => scope.on('workspaceResolved', handler),
-				},
-				alive: () => this.connection.current === connection,
-			});
-		},
+		// The kind's own source: herdr's `tab.list` cache, herdr-core's
+		// `herdr-app` tabs.
+		createTabLabels: (connection) =>
+			this.kindOf(connection.endpoint.runtime.kind).createTabLabels(
+				connection,
+				() => this.connection.current === connection,
+			),
 	});
 	/**
 	 * What `endpointId` names on the published connection, or null when that
@@ -168,7 +355,7 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	endpointSession(
 		endpointId: string,
-	): EndpointSession<HerdrClient, WorkspaceScope, TabLabelCache> | null {
+	): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
 		return this.sessions.for(endpointId);
 	}
 	/**
@@ -179,20 +366,102 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	endpointFor(endpointId: string): Endpoint | null {
 		const session = this.endpointSession(endpointId);
-		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings.remote);
+		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings);
 	}
-	/** Non-null only while a remote profile is enabled (PRD S5). */
+
+	/**
+	 * The native view's session watcher for panes on this runtime (ADR-0006),
+	 * or null while that runtime is not the published one or cannot back a
+	 * native view. Never the published runtime's on another's behalf: the
+	 * same pane id on two runtimes is two panes.
+	 */
+	nativeWatcher(endpointId: string): SessionWatcher | null {
+		const current = this.connection.current;
+		if (!current || current.endpoint.id !== endpointId) return null;
+		const native = nativeAdapterFor(this.kindOf(current.endpoint.runtime.kind), current.endpoint);
+		return native?.watcher(current) ?? null;
+	}
+
+	/** Where this runtime's transcripts are read, or null while they cannot be. */
+	nativeTranscripts(endpointId: string): TranscriptSource | null {
+		const endpoint = this.endpointFor(endpointId);
+		if (!endpoint) return null;
+		const native = nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint);
+		const current = this.connection.current;
+		return native?.transcripts(endpoint, current?.endpoint.id === endpointId ? current : null) ?? null;
+	}
+
+	/**
+	 * Where a native tab's `/` list is read (#98): its runtime's machine, by
+	 * the same connection rule as {@link nativeTranscripts}. Null is this
+	 * machine's files, which the tab's suggest walks itself, as it always has.
+	 */
+	nativeCommandCatalog(endpointId: string): CommandCatalogSource | null {
+		const endpoint = this.endpointFor(endpointId);
+		const native = endpoint ? nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint) : null;
+		if (!endpoint || !native?.commandCatalog) return null;
+		const current = this.connection.current;
+		return native.commandCatalog(endpoint, current?.endpoint.id === endpointId ? current : null);
+	}
+
+	/** What a native view's prompt and key senders go through: its own runtime's client. */
+	nativeClient(endpointId: string): PromptClient | null {
+		const session = this.endpointSession(endpointId);
+		if (!session) return null;
+		return nativeAdapterFor(this.kindOf(session.endpoint.runtime.kind), session.endpoint)
+			? session.client
+			: null;
+	}
+	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
 	get tunnel(): SshTunnel | null {
-		return this.connection.current?.tunnel ?? null;
+		const tunnel = this.connection.current?.tunnel ?? null;
+		return tunnel instanceof SshTunnel ? tunnel : null;
+	}
+
+	/**
+	 * Pane ids pinned on an endpoint (issue #35): from the plugin's settings,
+	 * or, for a kind that keeps pins on the runtime (herdr-core's shared
+	 * `herdr.pinned`, ADR-0005), from the rows of that endpoint's connection.
+	 */
+	pinnedPaneIds(endpointId: string): string[] {
+		if (!this.sharedPins(endpointId)) return pinnedPaneIds(this.settings, endpointId);
+		return (this.endpointSession(endpointId)?.scope.list() ?? [])
+			.filter((pane) => pane.pinned === true)
+			.map((pane) => pane.paneId);
+	}
+
+	isPanePinned(endpointId: string, paneId: string): boolean {
+		if (!this.sharedPins(endpointId)) return isPanePinned(this.settings, endpointId, paneId);
+		return this.endpointSession(endpointId)?.scope.get(paneId)?.pinned === true;
+	}
+
+	/** Pins or unpins where that endpoint's kind keeps pins. */
+	async setPanePinned(endpointId: string, paneId: string, pinned: boolean): Promise<void> {
+		if (this.sharedPins(endpointId)) {
+			// Only the published connection can write the label; the row repaints
+			// when the core's `labels` event comes back.
+			if (this.endpoint.id !== endpointId) return;
+			await this.actions.setPinned?.(paneId, pinned);
+			return;
+		}
+		if (isPanePinned(this.settings, endpointId, paneId) !== pinned) {
+			togglePanePin(this.settings, endpointId, paneId);
+		}
+		await this.saveSettings();
+	}
+
+	private sharedPins(endpointId: string): boolean {
+		const endpoint = this.endpointFor(endpointId);
+		return endpoint ? this.kindOf(endpoint.runtime.kind).capabilities.sharedPins : false;
 	}
 	/**
-	 * The native view's session models (#93, ADR-0003), one per pane while a
-	 * view watches it. Local only: a remote pane keeps a terminal surface until
-	 * an SSH transcript adapter exists (ADR-0002).
+	 * The native view's session models (#93, ADR-0003), one per runtime and
+	 * pane while a view watches it, each over its own runtime's watcher and
+	 * transcript source as that runtime's kind supplies them (ADR-0006).
 	 */
 	readonly sessionModels = new SessionModelRegistry({
-		source: new LocalTranscriptSource(),
-		watcher: () => scopeWatcher(this.endpointSession(LOCAL_ENDPOINT_ID)),
+		watcher: (endpointId) => this.nativeWatcher(endpointId),
+		source: (endpointId) => this.nativeTranscripts(endpointId),
 	});
 	/**
 	 * Tabs that swapped their surface where they stand (#100, #105). The table
@@ -200,8 +469,19 @@ export default class HerdrPlugin extends Plugin {
 	 * activates no leaf.
 	 */
 	readonly paneViews = new PaneViewEvents();
-	/** Folder actions (PRD M19, M20); safe to call before a connection exists. */
-	actions!: HerdrActions;
+	/**
+	 * Folder and row actions (PRD M19, M20) of the runtime the list points at;
+	 * safe to call before a connection exists.
+	 */
+	get actions(): RuntimeActions {
+		const kind = this.endpoint.runtime.kind;
+		let actions = this.kindActions.get(kind);
+		if (!actions) {
+			actions = this.kindOf(kind).createActions(this.actionHost());
+			this.kindActions.set(kind, actions);
+		}
+		return actions;
+	}
 	/** Hover buttons on file explorer folder rows (issue #30); off unless enabled. */
 	private explorerButtons!: ExplorerFolderButtons;
 	/**
@@ -211,8 +491,6 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	private readonly scopeListeners = new Set<() => void>();
 
-	/** Pending coalesced `agent.list`, 0 when none. */
-	private agentNameTimer = 0;
 	/** Pending reconnect after a connection setting changed, 0 when none. */
 	private reconnectTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
@@ -224,7 +502,6 @@ export default class HerdrPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		this.actions = new HerdrActions(this.actionHost());
 		this.explorerButtons = new ExplorerFolderButtons(this);
 		this.notifier = new TransitionNotifier({
 			now: () => Date.now(),
@@ -241,7 +518,7 @@ export default class HerdrPlugin extends Plugin {
 		});
 		this.addSettingTab(
 			new HerdrSettingTab(this.app, this, (el) =>
-				renderConnectionStatus(el, this.settings, this.connectionStatus()),
+				renderConnectionStatus(el, this.connectionStatus()),
 			),
 		);
 
@@ -251,6 +528,8 @@ export default class HerdrPlugin extends Plugin {
 		this.registerView(AGENT_LIST_VIEW_TYPE, (leaf) => new AgentListView(leaf, this));
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerView(TOC_VIEW_TYPE, (leaf) => new TocView(leaf, this));
+		// Page preview for links in the native view (#114), behind the mod key.
+		this.registerHoverLinkSource(HOVER_LINK_SOURCE, { display: 'Herdr', defaultMod: true });
 		this.registerCommands();
 		this.registerStatusBar();
 		// A reconnect or an endpoint switch replaces the scope and the client the
@@ -299,21 +578,34 @@ export default class HerdrPlugin extends Plugin {
 		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
+		// The `claude` kind's agents and shells are children of this plugin
+		// (ADR-0007): each one stops in its own order, which runs on from here.
+		void this.claudeKind.dispose();
 		this.sessions.dispose();
 		this.sessionModels.dispose();
 		this.scopeListeners.clear();
-		if (this.agentNameTimer) window.clearTimeout(this.agentNameTimer);
-		this.agentNameTimer = 0;
 		if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
 		this.reconnectTimer = 0;
 		this.statusBarEl = null;
 	}
+
+	/**
+	 * Stored runtimes this build cannot read (a newer build's kind or target):
+	 * never shown or connected, written back by every save (ADR-0004).
+	 */
+	private foreignRuntimes: unknown[] = [];
 
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<HerdrSettings> | null;
 		// The v1 render mode setting split into a view and an engine (#104); a
 		// file that still holds the old `native` is written back once, below.
 		const renderMode = migrateRenderMode(stored);
+		// "Local, or the one remote" became a runtime registry (ADR-0004); a file
+		// in the old shape is migrated, ids and all, and written back once.
+		const runtimes = migrateRuntimes(stored);
+		this.foreignRuntimes = runtimes.foreign;
+		// One `defaultAgentKind` became a default per runtime (#125).
+		const agents = migrateDefaultAgents(stored, [...runtimes.runtimes, ...foreignRuntimeRefs(runtimes.foreign)]);
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			// Minus the keys this build has no setting for, so nothing a past
@@ -321,7 +613,8 @@ export default class HerdrPlugin extends Plugin {
 			...withoutRemovedSettings(stored),
 			defaultView: renderMode.defaultView,
 			terminalEngine: renderMode.terminalEngine,
-			remote: { ...DEFAULT_SETTINGS.remote, ...stored?.remote },
+			runtimes: runtimes.runtimes,
+			activeRuntime: runtimes.activeRuntime,
 			notifications: {
 				...DEFAULT_SETTINGS.notifications,
 				...stored?.notifications,
@@ -337,12 +630,24 @@ export default class HerdrPlugin extends Plugin {
 			// A hand-edited or older `data.json` must not put a non-list in a row's
 			// sort (issue #35).
 			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
+			// A file from before ADR-0007 has none, which is an empty map.
+			claudeSessions: normalizeClaudeSessions(stored?.claudeSessions),
+			agentProfiles: normalizeUserProfiles(stored?.agentProfiles),
+			hiddenAgents: normalizeIdList(stored?.hiddenAgents),
+			defaultAgents: agents.defaultAgents,
 		};
-		if (renderMode.migrated) await this.saveSettings();
+		if (renderMode.migrated || runtimes.migrated || agents.migrated) await this.saveSettings();
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		// Runtimes of a kind or target this build does not know go back where
+		// they were read from, after the known ones, so nothing is erased.
+		const foreign = this.foreignRuntimes;
+		await this.saveData(
+			foreign.length > 0
+				? { ...this.settings, runtimes: [...this.settings.runtimes, ...foreign] }
+				: this.settings,
+		);
 	}
 
 	/** Absolute path of the vault, or empty for a non-filesystem adapter. */
@@ -352,32 +657,220 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
-	 * Vault path as seen by the machine herdr runs on: the remote vault path with
-	 * a remote profile, the local one otherwise (PRD S5, M19).
+	 * Vault path as seen by the machine the runtime runs on: the remote vault
+	 * path on an `ssh` runtime, the local one otherwise (PRD S5, M19). Read from
+	 * the connection's own runtime snapshot, so it always matches the rows.
 	 */
 	herdrVaultPath(): string {
-		const remote = this.settings.remote;
-		if (remote.enabled && remote.remoteVaultPath.trim()) return remote.remoteVaultPath.trim();
+		const runtime = this.endpoint.runtime;
+		if (runtime.target === 'ssh' && runtime.remoteVaultPath) return runtime.remoteVaultPath;
 		return this.vaultPath();
 	}
 
 	/**
-	 * Home directory as seen by the machine herdr runs on (issue #22): the remote
-	 * user's home with a remote profile, this user's home otherwise. Empty when a
-	 * remote tunnel never had to expand a `~`, in which case rows outside the
-	 * vault keep their absolute paths.
+	 * Home directory as seen by the machine the runtime runs on (issue #22): the
+	 * remote user's home on an `ssh` runtime, this user's home otherwise. Empty
+	 * when a remote tunnel never had to expand a `~`, in which case rows outside
+	 * the vault keep their absolute paths.
 	 */
 	herdrHomePath(): string {
-		if (this.settings.remote.enabled) return this.tunnel?.remoteHome ?? '';
+		if (isRemoteEndpoint(this.endpoint)) return this.tunnel?.remoteHome ?? '';
 		return homedir();
 	}
 
 	/**
-	 * Path of the local herdr binary, empty until discovery ran or when it failed.
-	 * The terminal view turns this into a spawn argv (`terminalArgvPrefix`).
+	 * Makes a runtime the active one and reconnects at once (ADR-0004): the
+	 * toolbar switcher, the palette command and the settings list all land
+	 * here. Terminals already open stay pinned to the runtime they started on.
+	 * Choosing the active one reconnects it, which is what a user picking it
+	 * again after an outage wants.
 	 */
-	herdrBinaryPath(): string {
-		return this.connection.discovery?.binary?.path ?? this.settings.herdrBinary.trim();
+	async switchRuntime(id: string): Promise<void> {
+		if (!runtimeById(this.settings, id)) return;
+		this.settings.activeRuntime = id;
+		await this.saveSettings();
+		this.refreshRuntimes();
+		await this.reconnect();
+	}
+
+	/** The registry changed (a name, the list, the active one): redraw what names it. */
+	refreshRuntimes(): void {
+		// A removed `claude` runtime's agents stop with it.
+		this.claudeKind.agents.prune(
+			new Set(this.settings.runtimes.filter((runtime) => runtime.kind === 'claude').map((runtime) => runtime.id)),
+		);
+		this.refreshAgentList();
+		this.updateStatusBar();
+	}
+
+	/**
+	 * The runtimes a row of a resumable kind can continue on (ADR-0007): the
+	 * herdr and herdr-core runtimes on this machine — the transcript is this
+	 * machine's, so an SSH one could not resume it — that this build can run.
+	 * Labelled by kind, with the runtime's name when the kind has several.
+	 */
+	graduationTargets(): GraduationTarget[] {
+		const candidates = this.settings.runtimes.filter(
+			(runtime) =>
+				(runtime.kind === 'herdr' || runtime.kind === 'herdr-core') &&
+				runtime.target === 'local' &&
+				this.kindUnavailable(runtime.kind) === null,
+		);
+		return candidates.map((runtime) => {
+			const kind = runtime.kind === 'herdr' ? 'herdr' : 'herdr-core';
+			const several = candidates.filter((other) => other.kind === runtime.kind).length > 1;
+			return { id: runtime.id, label: several ? `${kind} (${runtimeDisplayName(runtime)})` : kind };
+		});
+	}
+
+	/**
+	 * Graduation (ADR-0007): stops a `claude` row's process, switches to the
+	 * target runtime, and starts `claude --resume <session>` in the same cwd
+	 * through that runtime's own start-agent path, only once the process here
+	 * is confirmed gone. The row is held meanwhile, so nothing here starts the
+	 * session again, and forgotten once the agent runs there, so the
+	 * conversation is never resumed in two places. Anything that fails on the
+	 * way gives the row back, stopped, where it can be resumed as before.
+	 */
+	async continueIn(paneId: string, endpointId: string, runtimeId: string): Promise<void> {
+		const target = runtimeById(this.settings, runtimeId);
+		if (!target || this.endpoint.id !== endpointId) return;
+		// Resolves once this plugin's process for the session is confirmed
+		// gone, and holds the row so nothing here starts it again meanwhile.
+		let released: GraduationRelease | null;
+		try {
+			released = (await this.actions.releaseForGraduation?.(paneId)) ?? null;
+		} catch (error) {
+			new Notice(`Herdr: could not continue the agent. ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		if (!released) {
+			new Notice('Herdr: that agent has no session to continue.');
+			return;
+		}
+		let moved = false;
+		try {
+			const name = runtimeDisplayName(target);
+			await this.switchRuntime(runtimeId);
+			if (!(await this.scopeReady(runtimeId))) {
+				new Notice(
+					`Herdr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
+				);
+				return;
+			}
+			const started = await this.actions.startAgentHere(released.cwd, {
+				kind: 'claude',
+				args: graduationArgs(released),
+			});
+			if (!started) return;
+			moved = true;
+			await this.claudeKind.agents.forget(endpointId, paneId);
+			this.detachTerminalLeaves(paneId, endpointId);
+		} finally {
+			// The session did not move: the row is stopped here, for the user to resume.
+			if (!moved) this.claudeKind.agents.reclaim(endpointId, paneId);
+		}
+	}
+
+	/** Waits until `runtimeId` is published with a resolved scope; false after the timeout. */
+	async scopeReady(runtimeId: string, timeoutMs = 15000): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			const current = this.connection.current;
+			if (current?.endpoint.id === runtimeId && current.scope.workspaceId) return true;
+			if (Date.now() >= deadline) return false;
+			await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+		}
+	}
+
+	/**
+	 * Whether the agent list draws "Get started" (ADR-0008) instead of its
+	 * "not connected" line: no runtime connects.
+	 */
+	showGetStarted(): boolean {
+		return showGetStarted({
+			runtimeCount: this.settings.runtimes.length,
+			published: this.connection.current !== null,
+			unavailable: this.kindUnavailable(activeRuntimeOf(this.settings).kind),
+			error: this.connectError,
+		});
+	}
+
+	/** Why the card shows: the active runtime's failure, as a sentence. */
+	getStartedReason(): string {
+		const runtime = activeRuntimeOf(this.settings);
+		const why = this.kindUnavailable(runtime.kind) ?? this.connectError ?? 'it is not connected';
+		return `${runtimeDisplayName(runtime)} is not available: ${why}`;
+	}
+
+	/** Everything the "Get started" flow needs from the plugin (ADR-0008). */
+	private getStartedHost(): GetStartedHost {
+		return {
+			platform: process.platform,
+			settings: () => this.settings,
+			vaultPath: () => this.vaultPath(),
+			findBinary: async (name) => {
+				// A runtime of that kind with a binary set is where the user said it is.
+				const kind = name === 'hc' ? 'herdr-core' : 'claude';
+				const configured = this.settings.runtimes.find(
+					(runtime) => runtime.kind === kind && runtime.target === 'local' && runtime.binary.trim(),
+				);
+				const found = await resolveHerdrBinary({
+					override: configured?.binary,
+					extraPath: this.settings.extraPath,
+					binaryName: name,
+				});
+				return found?.path ?? null;
+			},
+			shellsAvailable: () => this.claudeKind.shells !== null,
+			addRuntime: async (runtime) => {
+				this.settings.runtimes = [...this.settings.runtimes, runtime];
+				await this.saveSettings();
+				this.refreshRuntimes();
+			},
+			switchRuntime: (id) => this.switchRuntime(id),
+			waitForRuntime: (id) => this.scopeReady(id),
+			startAgentInVault: () => this.actions.startAgentHere(this.vaultPath()),
+			startClaudeAgent: async ({ runtimeId, cwd, name, prompt, permissionMode, allowOnceOnly }) => {
+				const runtime = runtimeById(this.settings, runtimeId);
+				if (!runtime || runtime.kind !== 'claude') return null;
+				const agents = this.claudeKind.agents;
+				let paneId: string;
+				try {
+					const unique = buildAgentName(name, { folder: '', vault: '' }, agents.names(runtimeId));
+					paneId = agents.start(runtimeId, cwd, unique, { permissionMode, allowOnceOnly }).id;
+					await agents.prompt(runtimeId, paneId, prompt);
+				} catch (error) {
+					new Notice(`Herdr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);
+					return null;
+				}
+				// The native view: its waiting card is where the permission is answered.
+				await this.openTerminal(paneId, cwd, endpointOf(runtime).id, 'native');
+				return paneId;
+			},
+			openShellHere: (folder, options) => this.openShellHere(folder, options),
+			copy: (text) => navigator.clipboard.writeText(text),
+			openSessionHook: () => this.openSessionHook(),
+			notice: (message) => {
+				new Notice(message);
+			},
+			changed: () => this.refreshAgentList(),
+		};
+	}
+
+	/** The `Get started` command's modal. */
+	openGetStarted(): void {
+		new GetStartedModal(this.app, this.getStarted).open();
+	}
+
+	/** Opens the runtime picker over every runtime, the active one marked. */
+	openRuntimeSwitcher(): void {
+		new RuntimeSuggestModal(this.app, {
+			runtimes: () => this.settings.runtimes,
+			activeId: () => activeRuntimeOf(this.settings).id,
+			unavailable: (runtime) => this.kindUnavailable(runtime.kind),
+			choose: (runtime) => void this.switchRuntime(runtime.id),
+		}).open();
 	}
 
 	/**
@@ -404,11 +897,11 @@ export default class HerdrPlugin extends Plugin {
 	 * filling the main area — while attaching to the same folder split beside the
 	 * note (issue #28).
 	 */
-	async openTerminal(paneId: string, cwd?: string): Promise<void> {
+	async openTerminal(paneId: string, cwd?: string, onEndpoint?: string, view?: PaneView): Promise<void> {
 		const workspace = this.app.workspace;
 		// Rows come from the connected endpoint, so that is the one the terminal
-		// is opened on and pinned to (issue #54).
-		const endpointId = this.endpoint.id;
+		// is opened on and pinned to (issue #54). A shell tab names its own.
+		const endpointId = onEndpoint ?? this.endpoint.id;
 		const existing = this.terminalLeaf(paneId, endpointId);
 		const open = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
 		const target = decideOpenTarget({
@@ -435,7 +928,7 @@ export default class HerdrPlugin extends Plugin {
 					active: true,
 					// The mode this view is in, off its persisted state rather than
 					// `leaf.view` (PRD N1), so a manual switch to observe survives.
-					state: { paneId, mode: this.attachModeOf(reused), endpointId },
+					state: { paneId, mode: this.attachModeOf(reused), endpointId, ...(view ? { view } : {}) },
 				});
 				leaf = reused;
 			}
@@ -445,7 +938,7 @@ export default class HerdrPlugin extends Plugin {
 			await leaf.setViewState({
 				type: TERMINAL_VIEW_TYPE,
 				active: true,
-				state: { paneId, mode: this.settings.defaultAttachMode, endpointId },
+				state: { paneId, mode: this.settings.defaultAttachMode, endpointId, ...(view ? { view } : {}) },
 			});
 		}
 		await workspace.revealLeaf(leaf);
@@ -580,6 +1073,64 @@ export default class HerdrPlugin extends Plugin {
 	}
 
 	/**
+	 * A terminal tab closed, or was pointed at another pane: when no other tab
+	 * shows `paneId` on `endpointId`, its kind is told (a `claude` shell ends
+	 * with its last tab, ADR-0008; an agent's TUI keeps running). A shell
+	 * whose runtime was removed while its tab was open ends the same way: it
+	 * is still this plugin's process, and nothing else would end it.
+	 */
+	terminalTabReleased(paneId: string, endpointId: string): void {
+		const endpoint = this.endpointFor(endpointId);
+		let release: (() => void) | null = null;
+		if (endpoint) {
+			const kind = this.kindOf(endpoint.runtime.kind);
+			if (kind.terminalReleased) release = () => kind.terminalReleased?.(endpoint, paneId);
+		} else if (isShellId(paneId)) {
+			release = () => void this.claudeKind.shells?.close(paneId);
+		}
+		if (!release) return;
+		const released = release;
+		// Asked a moment later, when a closed leaf has left the workspace and a
+		// tab moved to another window has opened its view again there.
+		window.setTimeout(() => {
+			const shown = this.app.workspace
+				.getLeavesOfType(TERMINAL_VIEW_TYPE)
+				.some((leaf) => stateMatchesPane(leaf.getViewState().state, paneId, endpointId));
+			if (!shown) released();
+		}, RELEASE_CHECK_MS);
+	}
+
+	/**
+	 * Opens a plain shell in a folder, in a terminal tab (ADR-0008, the action
+	 * D3's "Run in a terminal tab" calls). `command` runs first, in plain view,
+	 * and the shell starts after it. The shell belongs to a `claude` runtime:
+	 * `runtimeId` when given, else the active runtime when it is one, else the
+	 * first in the registry. Resolves to the shell's pane id, or null with a
+	 * notice when there is no such runtime or this machine has no pty.
+	 */
+	async openShellHere(folderAbsPath: string, options: { command?: string; runtimeId?: string } = {}): Promise<string | null> {
+		const runtimes = this.settings.runtimes.filter((runtime) => runtime.kind === 'claude');
+		const active = activeRuntimeOf(this.settings);
+		const runtime = options.runtimeId
+			? runtimes.find((candidate) => candidate.id === options.runtimeId)
+			: active.kind === 'claude'
+				? active
+				: runtimes.at(0);
+		const shells = this.claudeKind.shells;
+		if (!runtime || !shells) {
+			new Notice(
+				shells
+					? 'Herdr: a shell tab needs a "Claude, run by Obsidian" runtime. Add one in the settings.'
+					: 'Herdr: shell tabs are not available on this platform.',
+			);
+			return null;
+		}
+		const paneId = shells.open(folderAbsPath, options.command);
+		await this.openTerminal(paneId, folderAbsPath, endpointOf(runtime).id);
+		return paneId;
+	}
+
+	/**
 	 * Detaches every terminal leaf open for `paneId` on `endpointId` (issue #66).
 	 * Same endpoint-aware match as {@link terminalLeaf}, but over every matching
 	 * leaf instead of the first: a leaf pinned to another endpoint with the same
@@ -598,6 +1149,7 @@ export default class HerdrPlugin extends Plugin {
 			// Read lazily: `loadSettings` replaces the object and the settings tab
 			// mutates it while the plugin runs.
 			settings: () => this.settings,
+			runtime: () => this.endpoint.runtime,
 			workspaceId: () => this.scope?.workspaceId ?? null,
 			request: <T,>(method: string, params: unknown): Promise<T> => {
 				const client = this.client;
@@ -635,16 +1187,17 @@ export default class HerdrPlugin extends Plugin {
 					window.setTimeout(resolve, ms);
 				}),
 			now: () => Date.now(),
+			defaultAgent: () => this.agentCatalogs.defaultLaunch(),
 		};
 	}
 
 	/** Absolute path herdr should use for a vault file or folder (PRD M19). */
 	private folderPathOf(file: TAbstractFile): string {
 		const folder = file instanceof TFolder ? file : (file.parent ?? null);
-		const remote = this.settings.remote;
+		const runtime = this.endpoint.runtime;
 		return resolveFolderPath(folder?.path ?? '', {
 			basePath: this.vaultPath(),
-			remoteVaultPath: remote.enabled ? remote.remoteVaultPath : undefined,
+			remoteVaultPath: runtime.target === 'ssh' ? runtime.remoteVaultPath : undefined,
 		});
 	}
 
@@ -677,25 +1230,55 @@ export default class HerdrPlugin extends Plugin {
 			name: 'Switch render mode',
 			checkCallback: (checking) => switchRenderModeCommand(this.app, checking),
 		});
-		this.addFolderCommand('new-tab-here', 'New tab here', (path) =>
+		// Any count, one included: picking the active runtime reconnects it.
+		this.addCommand({
+			id: 'switch-runtime',
+			name: 'Switch runtime',
+			callback: () => this.openRuntimeSwitcher(),
+		});
+		// ADR-0008: always offered, connected or not. No default hotkey.
+		this.addCommand({
+			id: 'get-started',
+			name: GET_STARTED_COMMAND_NAME,
+			callback: () => this.openGetStarted(),
+		});
+		// ADR-0006: offered while the active runtime is herdr-core.
+		this.addCommand({
+			id: 'claude-session-hook',
+			name: SESSION_HOOK_COMMAND_NAME,
+			checkCallback: (checking) => {
+				if (activeRuntimeOf(this.settings).kind !== 'herdr-core') return false;
+				if (!checking) this.openSessionHook();
+				return true;
+			},
+		});
+		this.addFolderCommand('new-tab-here', 'New tab here', 'tabs', (path) =>
 			this.actions.newTabHere(path),
 		);
-		this.addFolderCommand('split-here', 'Split here', (path) => this.actions.splitHere(path));
-		this.addFolderCommand('start-agent-here', 'Start agent here', (path) =>
+		this.addFolderCommand('split-here', 'Split here', 'splits', (path) =>
+			this.actions.splitHere(path),
+		);
+		this.addFolderCommand('start-agent-here', 'Start agent here', 'startAgent', (path) =>
 			this.actions.startAgentHere(path),
 		);
+		this.addFolderCommand('open-shell-here', 'Open shell here', 'shells', (path) => this.openShellHere(path));
 	}
 
-	/** A command acting on the active file's folder; hidden when there is none. */
+	/**
+	 * A command acting on the active file's folder; hidden when there is none,
+	 * and while the runtime's kind cannot do it (ADR-0004).
+	 */
 	private addFolderCommand(
 		id: string,
 		name: string,
+		capability: keyof RuntimeCapabilities,
 		run: (folderAbsPath: string) => Promise<unknown>,
 	): void {
 		this.addCommand({
 			id,
 			name,
 			checkCallback: (checking) => {
+				if (!this.capabilities()[capability]) return false;
 				const path = this.activeFolderPath();
 				if (!path) return false;
 				if (!checking) void run(path);
@@ -713,6 +1296,7 @@ export default class HerdrPlugin extends Plugin {
 		const build = (menu: Menu, file: TAbstractFile): void => {
 			if (!(file instanceof TFolder) && !(file instanceof TFile)) return;
 			const path = this.folderPathOf(file);
+			const can = this.capabilities();
 			const item = (title: string, icon: string, run: () => void): void => {
 				menu.addItem((entry) =>
 					entry
@@ -722,9 +1306,15 @@ export default class HerdrPlugin extends Plugin {
 						.onClick(() => run()),
 				);
 			};
-			item('Herdr: new tab here', 'plus', () => void this.actions.newTabHere(path));
-			item('Herdr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
-			item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
+			// What the runtime's kind cannot do is left out, not offered and refused.
+			if (can.tabs) item('Herdr: new tab here', 'plus', () => void this.actions.newTabHere(path));
+			if (can.splits) {
+				item('Herdr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
+			}
+			if (can.startAgent) {
+				item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
+			}
+			if (can.shells) item('Herdr: open shell here', 'square-terminal', () => void this.openShellHere(path));
 		};
 
 		this.registerEvent(
@@ -756,18 +1346,29 @@ export default class HerdrPlugin extends Plugin {
 		this.updateStatusBar();
 	}
 
-	/** Re-renders the status bar counts. Called only from scope events (PRD N4). */
+	/**
+	 * Re-renders the status bar: the counts, and the active runtime's name once
+	 * there is more than one to tell apart (ADR-0004). Called from scope events
+	 * and registry changes only (PRD N4).
+	 */
 	private updateStatusBar(): void {
 		const el = this.statusBarEl;
 		if (!el) return;
 		el.empty();
 		if (!this.settings.notifications.statusBar) return;
-		const panes = this.scope?.list() ?? [];
-		if (panes.length === 0) return;
-		// Which herdr the counts are for (issue #54); the bar itself stays terse.
-		const where = `Herdr agents on ${endpointLabel(this.endpoint)}`;
+		// The live name: a rename shows without waiting for a reconnect.
+		const name = runtimeDisplayName(withLiveName(this.settings, this.endpoint.runtime));
+		// Which runtime the counts are for (issue #54), always in the tooltip.
+		const where = `Herdr agents on ${name}`;
 		setTooltip(el, where);
 		el.setAttribute('aria-label', where);
+		// With one runtime there is nothing to tell apart, and the bar stays
+		// terse; with more, the name shows even before any agent does.
+		const named = this.settings.runtimes.length > 1;
+		if (named) el.createSpan({ cls: 'herdr-status-bar-runtime', text: name });
+		const panes = this.scope?.list() ?? [];
+		if (panes.length === 0) return;
+		if (named) el.createSpan({ text: ' · ' });
 		const { blocked, done } = countStatuses(panes);
 		el.createSpan({ cls: 'herdr-status-bar-blocked', text: `${blocked} blocked` });
 		el.createSpan({ text: ' · ' });
@@ -828,52 +1429,19 @@ export default class HerdrPlugin extends Plugin {
 		await this.connection.connect();
 	}
 
-	private createClient(socketPath: string): HerdrClient {
-		return new HerdrClient({
-			socketPath,
-			onProtocolMismatch: (mismatch) => {
-				this.mismatch = mismatch;
-			},
-			// PRD M3: an unsupported method is reported once, then never retried.
-			onUnsupportedMethod: (method) => {
-				new Notice(unsupportedMethodMessage(method));
-			},
-		});
-	}
-
 	/**
-	 * The scope for one connection, with everything downstream hung off its
-	 * events, never off the raw stream: the scope has already collapsed the
-	 * ~10 pane.updated per second (N4).
+	 * Hangs everything downstream off a new scope's events, never off the raw
+	 * stream: the scope has already collapsed the ~10 pane.updated per second
+	 * (N4). The kind builds the scope; this is the plugin's half.
 	 */
-	private createScope(endpoint: Endpoint): WorkspaceScope {
-		const remoteProfile = endpoint.remote;
-		const scope: WorkspaceScope = new WorkspaceScope({
-			workspaceId: this.settings.workspaceId,
-			vaultPath: this.vaultPath(),
-			remoteVaultPath: remoteProfile.enabled ? remoteProfile.remoteVaultPath : undefined,
-			// The one request the scope makes: what `pane_agent_detected` leaves out
-			// for a pane that just gained an agent (issue #75). Answered by the
-			// client of the connection this scope belongs to, and only while that
-			// connection is the published one — a lookup still in flight when the
-			// connection is replaced must not write into a scope nothing renders,
-			// so it is left hanging rather than answered from the new client.
-			lookupPanes: (workspaceId) => {
-				const current = this.connection.current;
-				if (!current || current.scope !== scope) return Promise.resolve([]);
-				return current.client.listPanes(workspaceId);
-			},
-		});
+	private wireScope<S extends ConnectionScope>(scope: S, endpoint: Endpoint): S {
 		scope.on('changed', (_paneId, prev, next) => {
 			this.notifier.onChanged(prev, next, endpoint.id);
 			this.updateStatusBar();
 		});
-		scope.on('added', () => {
-			this.updateStatusBar();
-			// A pane that just gained an agent has no name yet: names are not on
-			// the event stream, only in `agent.list` (PRD M8).
-			this.refreshAgentNames();
-		});
+		// Agent names, which herdr's stream never carries, are the herdr
+		// kind's own business since ADR-0005 (`herdr/connect.ts`).
+		scope.on('added', () => this.updateStatusBar());
 		scope.on('removed', (pane) => {
 			this.notifier.forget(pane.paneId, endpoint.id);
 			this.updateStatusBar();
@@ -881,51 +1449,8 @@ export default class HerdrPlugin extends Plugin {
 		scope.on('workspaceResolved', () => {
 			this.notifier.reset();
 			this.updateStatusBar();
-			this.refreshAgentNames();
 		});
 		return scope;
-	}
-
-	/**
-	 * Coalesced `agent.list`. Agent names are the one thing the event stream
-	 * never carries, so they are re-read after the scope changes shape rather
-	 * than on a timer. A failure is cosmetic: rows fall back to the title.
-	 */
-	private refreshAgentNames(): void {
-		if (this.agentNameTimer) return;
-		// A herdr without `agent.list` said so once already: stay off it.
-		if (this.client?.isUnsupported('agent.list')) return;
-		this.agentNameTimer = window.setTimeout(() => {
-			this.agentNameTimer = 0;
-			const client = this.client;
-			const scope = this.scope;
-			if (!client || !scope) return;
-			void client.listAgents().then(
-				(agents) => scope.setAgentNames(agents),
-				() => undefined,
-			);
-		}, AGENT_NAME_REFRESH_MS);
-	}
-
-	/**
-	 * The SSH forward for the remote profile (PRD S5). The connection points its
-	 * client at the forward's local socket instead of the discovered one; the
-	 * tunnel keeps itself alive with backoff after a drop and reports the socket
-	 * through `onSocket` after every reconnect.
-	 */
-	private createTunnel(onSocket: (localSocketPath: string) => void): SshTunnel {
-		const remote = this.settings.remote;
-		const host = remote.host.trim();
-		if (host.length === 0) {
-			throw new Error('the remote profile has no SSH host');
-		}
-		return new SshTunnel({
-			host,
-			remoteSocketPath: remote.remoteSocketPath.trim(),
-			onStatus: (status) => {
-				if (status.state === 'connected') onSocket(status.localSocketPath);
-			},
-		});
 	}
 
 	/** State the settings tab's status block describes (rendered in settings.ts). */
@@ -933,13 +1458,18 @@ export default class HerdrPlugin extends Plugin {
 		const scope = this.scope;
 		const tunnel = this.tunnel;
 		const discovery = this.connection.discovery;
+		const runtime: RuntimeConfig = withLiveName(this.settings, this.endpoint.runtime);
+		const herdr = this.client instanceof HerdrClient ? this.client : null;
 		return {
+			runtime,
+			unavailable: this.kindUnavailable(runtime.kind),
+			details: this.kindOf(runtime.kind).statusLines(this.connection.current),
 			discovery,
-			socketPath: this.client?.socket ?? discovery?.socketPath ?? '',
+			socketPath: herdr?.socket ?? discovery?.socketPath ?? '',
 			tunnel: tunnel
 				? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' }
 				: null,
-			mismatch: this.mismatch ?? this.client?.lastMismatch ?? null,
+			mismatch: this.mismatch ?? herdr?.lastMismatch ?? null,
 			workspace: scope?.workspaceId
 				? {
 						id: scope.workspaceId,

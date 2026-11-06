@@ -19,7 +19,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,13 +49,18 @@ export interface RunResult {
 	stdout: string;
 	stderr: string;
 	code: number | null;
+	/**
+	 * True when the process did not exit by itself: it could not be spawned,
+	 * or it was killed (the timeout). `code` is then not the program's answer.
+	 */
+	failed?: boolean;
 }
 
 /** Runs a command and resolves even on a non-zero exit. */
 export type Runner = (
 	file: string,
 	args: string[],
-	options: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+	options: { timeoutMs: number; env?: NodeJS.ProcessEnv; cwd?: string },
 ) => Promise<RunResult>;
 
 export interface DiscoveryDeps {
@@ -64,6 +69,11 @@ export interface DiscoveryDeps {
 	run: Runner;
 	env: NodeJS.ProcessEnv;
 	home: string;
+	/**
+	 * The path with every symlink resolved, or null when it cannot be read.
+	 * Optional: without it a symlink is taken as it is.
+	 */
+	realPath?: (path: string) => string | null;
 }
 
 export const defaultRunner: Runner = (file, args, options) =>
@@ -71,15 +81,22 @@ export const defaultRunner: Runner = (file, args, options) =>
 		execFile(
 			file,
 			args,
-			{ timeout: options.timeoutMs, env: options.env, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
+			{ timeout: options.timeoutMs, env: options.env, cwd: options.cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
 			(error, stdout, stderr) => {
+				const exited = !error || typeof (error as { code?: unknown }).code === 'number';
+				const killed = Boolean(error && ((error as { killed?: boolean }).killed || (error as { signal?: unknown }).signal));
 				const code =
 					error && typeof (error as NodeJS.ErrnoException & { code?: number }).code === 'number'
 						? ((error as unknown as { code: number }).code ?? 1)
 						: error
 							? 1
 							: 0;
-				resolve({ stdout: String(stdout), stderr: String(stderr), code });
+				resolve({
+					stdout: String(stdout),
+					stderr: String(stderr),
+					code,
+					...(!exited || killed ? { failed: true } : {}),
+				});
 			},
 		);
 	});
@@ -97,6 +114,13 @@ export function defaultDeps(): DiscoveryDeps {
 		run: defaultRunner,
 		env: process.env,
 		home: homedir(),
+		realPath: (path: string) => {
+			try {
+				return realpathSync(path);
+			} catch {
+				return null;
+			}
+		},
 	};
 }
 
@@ -107,6 +131,8 @@ export interface ResolveOptions {
 	extraPath?: string;
 	/** Skip the login-shell step (it spawns a shell and can be slow). */
 	skipLoginShell?: boolean;
+	/** The executable's file name; `herdr` unless another kind searches (`hc`). */
+	binaryName?: string;
 	loginShellTimeoutMs?: number;
 }
 
@@ -144,7 +170,7 @@ export function localCandidates(
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
 	const add = (directory: string, source: BinarySource): void => {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+		const path = join(expandHome(directory, deps.home), options.binaryName ?? 'herdr');
 		if (seen.has(path) || !deps.isExecutable(path)) return;
 		seen.add(path);
 		found.push({ path, source });
@@ -164,7 +190,7 @@ export async function loginShellCandidates(
 	const found: ResolvedBinary[] = [];
 	const seen = new Set<string>();
 	for (const directory of splitPath(shellPath ?? '')) {
-		const path = join(expandHome(directory, deps.home), 'herdr');
+		const path = join(expandHome(directory, deps.home), options.binaryName ?? 'herdr');
 		if (seen.has(path) || !deps.isExecutable(path)) continue;
 		seen.add(path);
 		found.push({ path, source: 'login-shell' });

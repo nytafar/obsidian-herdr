@@ -6,8 +6,8 @@
  *
  *   - **Paths.** Obsidian speaks vault-relative paths; herdr wants an absolute
  *     cwd on the machine it runs on. Locally that is
- *     `FileSystemAdapter.getBasePath()`, and with a remote profile it is
- *     `settings.remote.remoteVaultPath` (PRD S5, M19). See {@link resolveFolderPath}.
+ *     `FileSystemAdapter.getBasePath()`, and on an `ssh` runtime it is the
+ *     runtime's `remoteVaultPath` (PRD S5, M19). See {@link resolveFolderPath}.
  *   - **Agent names.** herdr rejects a name that does not match
  *     `[a-z][a-z0-9_-]{0,31}` with `invalid_agent_name`, and a duplicate with
  *     `agent_name_taken`. {@link buildAgentName} makes both impossible up front.
@@ -18,9 +18,11 @@
  */
 
 import { lastPathSegment, trimTrailingSlashes } from './paths';
-import { clampPanesPerTab, remoteVaultPathIssue, type HerdrSettings } from './settings';
+import { clampPanesPerTab, type HerdrSettings } from './settings';
+import { remoteVaultPathIssue, type RuntimeConfig } from './runtimes';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
+import type { StartAgentOptions } from './runtime/kind';
 
 /** herdr's own rule from `src/app/agents.rs`: `[a-z][a-z0-9_-]{0,31}`. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -64,6 +66,11 @@ export type Requester = <T>(method: string, params: unknown) => Promise<T>;
 export interface ActionHost {
 	/** Live settings; read through a function because the object is replaced. */
 	settings(): HerdrSettings;
+	/**
+	 * The runtime the actions go to: the published connection's snapshot, or
+	 * the active runtime while none is published (ADR-0004).
+	 */
+	runtime(): RuntimeConfig;
 	/** Scoped workspace id, or null when no herdr workspace matches this vault. */
 	workspaceId(): string | null;
 	/** One JSON API call, over the connection as it is now. Rejects with `HerdrError`. */
@@ -116,6 +123,36 @@ export interface ActionHost {
 	sleep(ms: number): Promise<void>;
 	/** Clock, injected for the pane wait timeout. */
 	now(): number;
+	/**
+	 * The runtime's default agent from its catalog (issue #125), or null when
+	 * nothing in the catalog can start there. Absent: Claude.
+	 */
+	defaultAgent?(): Promise<StartAgentOptions | null>;
+}
+
+/** What "Start agent here" falls back to without a catalog: herdr's `claude`. */
+export const FALLBACK_AGENT_KIND = 'claude';
+
+/**
+ * The agent a start goes ahead with: the options given, else the runtime's
+ * default. Null, with a notice, when the catalog has nothing that can start.
+ */
+export async function agentToStart(
+	host: Pick<ActionHost, 'defaultAgent' | 'notice' | 'runtime'>,
+	options: StartAgentOptions | undefined,
+): Promise<StartAgentOptions | null> {
+	if (options) return options;
+	if (!host.defaultAgent) return { kind: FALLBACK_AGENT_KIND };
+	const chosen = await host.defaultAgent();
+	if (chosen) return chosen;
+	const where = host.runtime().target === 'ssh' ? `on ${host.runtime().host}` : 'on this machine';
+	host.notice(`Herdr: no agent CLI was found ${where}. Add one under Settings → Herdr → Agents.`);
+	return null;
+}
+
+/** What a started agent's notice calls it. */
+export function agentLabel(options: StartAgentOptions): string {
+	return options.label?.trim() || options.kind || FALLBACK_AGENT_KIND;
 }
 
 /** Joins path segments with `/` and collapses `.`, `..` and duplicate slashes. */
@@ -139,14 +176,14 @@ export function normalizePosixPath(path: string): string {
 export interface PathRoots {
 	/** `FileSystemAdapter.getBasePath()`. */
 	basePath: string;
-	/** `settings.remote.remoteVaultPath`, only when the remote profile is on. */
+	/** The runtime's `remoteVaultPath`, only when it is on an `ssh` target. */
 	remoteVaultPath?: string;
 }
 
 /**
  * Turns a vault-relative folder path into the absolute path herdr should use.
  *
- * The remote root wins when a remote profile is enabled, because the cwd is
+ * The remote root wins on an `ssh` runtime, because the cwd is
  * interpreted on the remote host. An already-absolute input is passed through
  * untouched: the file explorer never produces one, but a caller resolving a
  * folder outside the vault might.
@@ -412,10 +449,23 @@ export class HerdrActions {
 	 * reply is confirmed against `pane.list` first. That still does not mean the
 	 * pane sits at a prompt, so the start itself is retried on the two "not ready
 	 * yet" codes for {@link AGENT_START_RETRY_MS} — see the retry loop.
+	 *
+	 * `options` names another agent kind and the arguments after its program,
+	 * which `agent.start` takes as `args`: graduation from Claude run by
+	 * Obsidian starts `claude --resume <id>` this way (ADR-0007).
 	 */
-	async startAgentHere(folderAbsPath: string): Promise<StartedAgent | null> {
+	async startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<StartedAgent | null> {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
+		const agent = await agentToStart(this.host, options);
+		if (!agent) return null;
+		// `agent.start` runs the kind's own program; a wrapper needs herdr-core.
+		if (agent.command || agent.template) {
+			this.host.notice(
+				`Herdr: herdr starts ${agent.kind ?? 'an agent'} with its own program, so "${agentLabel(agent)}" cannot start here.`,
+			);
+			return null;
+		}
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 
@@ -454,7 +504,8 @@ export class HerdrActions {
 			return null;
 		}
 
-		const kind = settings.defaultAgentKind;
+		const kind = agent.kind ?? FALLBACK_AGENT_KIND;
+		const args = agent.args && agent.args.length > 0 ? { args: [...agent.args] } : {};
 		const taken = this.host.takenAgentNames();
 		let name = buildAgentName(settings.agentNamePattern || '{folder}', {
 			folder: label,
@@ -465,8 +516,8 @@ export class HerdrActions {
 		let renamed = false;
 		for (;;) {
 			try {
-				await this.host.request('agent.start', { name, kind, pane_id: paneId });
-				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
+				await this.host.request('agent.start', { name, kind, pane_id: paneId, ...args });
+				this.host.notice(`Herdr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
 				// The folder is this pane's cwd, and the scope cannot know that yet:
 				// it admits a pane on `pane.agent_detected` plus a `pane.list`, both
 				// still in flight here (issue #28).
@@ -683,7 +734,7 @@ export class HerdrActions {
 			);
 			return false;
 		}
-		const issue = remoteVaultPathIssue(this.host.settings());
+		const issue = remoteVaultPathIssue(this.host.runtime());
 		if (issue) {
 			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
 			return false;
