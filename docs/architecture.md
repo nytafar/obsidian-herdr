@@ -1007,7 +1007,12 @@ renderer:
   the kept bytes start put back first, and a SIGWINCH when anything was
   dropped. Claude's output for a few turns was under 5 KB. Several tabs can
   show one TUI; the last controller to resize or type owns the grid, the
-  others get `grid`, and one tab answers the program's queries.
+  others get `grid`, and one tab answers the program's queries. A replay
+  leaves out every query a renderer answers by itself (device attributes,
+  cursor and status reports, mode requests, colour queries, the 7501
+  probe): measured before that, a reopened shell tab's xterm answered the
+  old DA1, DA2 and cursor queries, and `1;2c0;276;0c1R` landed on the
+  shell's command line. Live queries are answered as before, by one tab.
 - **Not seen in TUI mode:** a `/clear` typed there (no stream, no `init`):
   the row keeps the session from before it.
 - **macOS**: written, not verified: BSD `script -q /dev/null /bin/sh -c

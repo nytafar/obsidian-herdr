@@ -15,6 +15,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { Terminal } from '@xterm/headless';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ActionHost } from '../src/actions';
 import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
@@ -798,6 +799,53 @@ describe('shell tabs', () => {
 		expect(h.pty.kills[0]).toEqual([h.pty.last.pid + 2, 'SIGHUP']);
 		expect(() => openTab(h, paneId).session).not.toThrow();
 		expect(h.kind.shells?.has(paneId)).toBe(false);
+	});
+
+	it('types nothing into the shell when a reopened tab replays its old queries; one tab answers live ones', async () => {
+		const h = harness();
+		const paneId = h.kind.shells?.open(h.dir) ?? '';
+		/** A tab with a real renderer that answers queries the way the plugin's do (`PaneTerminal.onReply`). */
+		const rendered = () => {
+			const term = new Terminal({ cols: 100, rows: 30, allowProposedApi: true });
+			const tab = openTab(h, paneId);
+			const writes: Promise<void>[] = [];
+			const drawn = () => Promise.all(writes);
+			let seen = 0;
+			const pump = () => {
+				for (; seen < tab.frames.length; seen++) {
+					const frame = tab.frames[seen]?.text ?? '';
+					writes.push(new Promise<void>((done) => term.write(frame, done)));
+				}
+			};
+			pump();
+			tab.session.on('frame', () => pump());
+			term.onData((data) => void tab.session.reply?.(data));
+			return { term, tab, drawn };
+		};
+		const first = rendered();
+		const child = h.pty.last;
+		// A program asks DA1, DA2 and the cursor position, as vim or a prompt does.
+		child.emit('$ \x1b[c\x1b[>c\x1b[6n');
+		await first.drawn();
+		const answered = child.input.length;
+		expect(answered).toBeGreaterThan(0);
+		await first.tab.session.dispose();
+		first.term.dispose();
+		const second = rendered();
+		await second.drawn();
+		await new Promise((done) => setTimeout(done, 20));
+		// The replay asked the new renderer nothing, so nothing was typed.
+		expect(child.input.length).toBe(answered);
+		// A second tab on the same shell: still nothing from its replay.
+		const third = rendered();
+		await third.drawn();
+		expect(child.input.length).toBe(answered);
+		// A live query is answered once, by the tab that attached last.
+		child.emit('\x1b[c');
+		await Promise.all([second.drawn(), third.drawn()]);
+		expect(child.input.length).toBe(answered + 1);
+		second.term.dispose();
+		third.term.dispose();
 	});
 
 	it('starts no shell once the plugin is unloading', async () => {

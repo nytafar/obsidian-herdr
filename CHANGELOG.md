@@ -89,7 +89,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   terminal that reports none (Claude before 2.1.295) shows as unknown, and
   moving it to the native view asks first, since a turn may be running.
   Closing the tab keeps Claude running, and opening it again in the same
-  session shows the same screen. Resizing reaches Claude. A watchdog beside
+  session shows the same screen, replayed without the terminal queries in
+  it, so the reopened tab types no answers into the program. Resizing reaches Claude. A watchdog beside
   each terminal ends it within a second if Obsidian is killed.
 - **Open shell here** for Claude, run by Obsidian: a plain shell in a
   folder, in a terminal tab of its own, from the folder menu or the command.

@@ -16,6 +16,14 @@
  *   bytes assume, and the input layer sees the modes the program set.
  * - **Full reset.** `ESC c` makes everything before it moot, so the buffer
  *   restarts there.
+ * - **No queries.** A replay leaves out every sequence a renderer answers by
+ *   itself ({@link QUERY}: device attributes, status and cursor reports, mode
+ *   and setting requests, colour and clipboard queries, window reports, ENQ).
+ *   The program asked them long ago; a reopened tab that answered them again
+ *   would type the answers into whatever reads its input now (the D2 review
+ *   saw `1;2c0;276;0c1R` land on a shell's command line). They draw nothing,
+ *   so the screen is the same without them. Live output is never touched:
+ *   a query after the replay is answered as ever.
  * - **Repaint.** A replay is exact while nothing was dropped. Once something
  *   was ({@link trimmed}), the owner also asks the program to draw its screen
  *   again (a SIGWINCH): Claude's TUI repaints all of it on one (measured).
@@ -116,6 +124,43 @@ export class TerminalModes {
 	}
 }
 
+/**
+ * The sequences a renderer (xterm.js, ghostty-web) answers by itself, on
+ * the latin1 text of the output: DA1/DA2/DA3, DSR and cursor position
+ * (DECXCPR too), DECRQM, XTVERSION, the kitty keyboard query, XTQMODKEYS,
+ * XTWINOPS reports, DECREQTPARM, DECRQSS and XTGETTCAP, any OSC whose last
+ * field is `?` (colours, palette, clipboard, Claude's 7501 probe), DECID and
+ * ENQ. 7-bit forms only: output is UTF-8, where a C1 byte is never alone.
+ */
+const QUERY = new RegExp(
+	[
+		'\\x1b\\[[>=]?[0-9;]*c',
+		'\\x1b\\[\\??[0-9;]*n',
+		'\\x1b\\[\\??[0-9;]*\\$p',
+		'\\x1b\\[>[0-9;]*q',
+		'\\x1b\\[\\?u',
+		'\\x1b\\[\\?[0-9;]*m',
+		'\\x1b\\[(?:1[13-9]|2[01])(?:;[0-9;]*)?t',
+		'\\x1b\\[[01]?x',
+		'\\x1bP[$+]q[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)',
+		'\\x1b\\][0-9]+(?:;[^\\x07\\x1b]*)?;\\?(?:\\x07|\\x1b\\\\)',
+		'\\x1bZ',
+		'\\x05',
+	].join('|'),
+	'g',
+);
+
+/** `bytes` without the queries a renderer would answer ({@link QUERY}). */
+export function withoutQueries(bytes: Uint8Array): Uint8Array {
+	const text = latin1(bytes);
+	QUERY.lastIndex = 0;
+	if (!QUERY.test(text)) return bytes;
+	const kept = text.replace(QUERY, '');
+	const out = new Uint8Array(kept.length);
+	for (let at = 0; at < kept.length; at++) out[at] = kept.charCodeAt(at);
+	return out;
+}
+
 /** Index of the last `ESC c` (a full reset) in `bytes`, or -1. */
 function lastFullReset(bytes: Uint8Array): number {
 	for (let at = bytes.length - 2; at >= 0; at--) {
@@ -160,8 +205,16 @@ export class ReplayBuffer {
 		if (this.bytes > this.limit) this.trim();
 	}
 
-	/** Everything a fresh terminal needs: a reset, the modes, then the kept bytes. */
+	/**
+	 * Everything a fresh terminal needs: a reset, the modes, then the kept
+	 * bytes, without the queries in them ({@link withoutQueries}).
+	 */
 	replay(): Uint8Array {
+		return withoutQueries(this.raw());
+	}
+
+	/** The reset, the modes and the kept bytes as they came. */
+	private raw(): Uint8Array {
 		const prefix = new TextEncoder().encode(REPLAY_RESET + this.startModes.sequence());
 		const out = new Uint8Array(prefix.length + this.bytes);
 		out.set(prefix, 0);

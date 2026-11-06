@@ -4,6 +4,7 @@
  * status reports (`src/claude/programStatus.ts`).
  */
 
+import { Terminal } from '@xterm/headless';
 import { describe, expect, it } from 'vitest';
 import {
 	parseProgramStatus,
@@ -72,6 +73,60 @@ describe('the replay buffer', () => {
 		buffer.push(bytes('\x1b[?1049hold screen'));
 		buffer.push(bytes('more\x1bcnew'));
 		expect(text(buffer.replay())).toBe(`${REPLAY_RESET}\x1bcnew`);
+	});
+});
+
+/** Queries a renderer answers by itself, as Claude's TUI, a shell and vim send them. */
+const QUERIES = [
+	'\x1b[c',
+	'\x1b[0c',
+	'\x1b[>c',
+	'\x1b[>0c',
+	'\x1b[=c',
+	'\x1b[5n',
+	'\x1b[6n',
+	'\x1b[?6n',
+	'\x1b[?2026$p',
+	'\x1b[4$p',
+	'\x1b[>q',
+	'\x1b[>0q',
+	'\x1b[?u',
+	'\x1b[?4m',
+	'\x1b[14t',
+	'\x1b[18t',
+	'\x1b]10;?\x1b\\',
+	'\x1b]11;?\x07',
+	'\x1b]4;1;?\x1b\\',
+	'\x1b]52;c;?\x07',
+	'\x1b]7501;?\x1b\\',
+	'\x1bP$qm\x1b\\',
+	'\x1bP+q544e\x1b\\',
+	'\x1bZ',
+	'\x05',
+];
+
+describe('a replay asks nothing', () => {
+	it('drops every query a renderer would answer, and keeps everything that draws', () => {
+		const buffer = new ReplayBuffer(1 << 16);
+		const drawn = '\x1b[?1049h\x1b[2J\x1b[H\x1b[1;31mred\x1b[0m\x1b[>1u\x1b[>4;1m\x1b[2 q\x1b]0;title\x07\x1b[22;0t\r\n';
+		buffer.push(bytes(`${drawn}${QUERIES.join('x')}end\r\n`));
+		const replayed = text(buffer.replay());
+		for (const query of QUERIES) expect(replayed).not.toContain(query);
+		expect(replayed).toBe(`${REPLAY_RESET}${drawn}${'x'.repeat(QUERIES.length - 1)}end\r\n`);
+	});
+
+	it('gives a real renderer nothing to answer while it replays', async () => {
+		const buffer = new ReplayBuffer(1 << 16);
+		buffer.push(bytes(`\x1b[?1049hshell$ ${QUERIES.join('')}\r\n`));
+		const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+		const replies: string[] = [];
+		term.onData((data) => replies.push(data));
+		await new Promise<void>((done) => term.write(buffer.replay(), done));
+		expect(replies).toEqual([]);
+		// The same renderer still answers a live query.
+		await new Promise<void>((done) => term.write('\x1b[c', done));
+		expect(replies).toHaveLength(1);
+		term.dispose();
 	});
 });
 
