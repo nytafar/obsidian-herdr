@@ -33,6 +33,7 @@ import type {
 	WaitingAnswer,
 } from '../native/pendingRequest';
 import type { ClaudePermissionMode } from '../runtimes';
+import type { PromptImage } from '../native/promptImages';
 import type { LocalSettingsTarget } from './projectRoot';
 
 /** What starts one agent process. */
@@ -123,9 +124,20 @@ export function encodeLine(message: object): string {
 	return `${json}\n`;
 }
 
-/** A prompt, or a slash command, as one user message. */
-export function userMessage(text: string): object {
-	return { type: 'user', message: { role: 'user', content: text } };
+/**
+ * A prompt, or a slash command, as one user message. With images (#144) the
+ * content is blocks: the text first, when there is any, then one base64
+ * `image` block each, which `claude -p` in stream-json takes as they are
+ * (measured 2026-11-06, Claude Code 2.1.318, `docs/architecture.md`, "Images
+ * in prompts").
+ */
+export function userMessage(text: string, images: readonly PromptImage[] = []): object {
+	if (!images.length) return { type: 'user', message: { role: 'user', content: text } };
+	const content: object[] = text.trim() ? [{ type: 'text', text }] : [];
+	for (const image of images) {
+		content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
+	}
+	return { type: 'user', message: { role: 'user', content } };
 }
 
 /** A control request from the plugin (`interrupt`). */

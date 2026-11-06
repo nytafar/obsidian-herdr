@@ -26,7 +26,7 @@ import {
 	type HcSpawn,
 } from './connection';
 import { clearTimer, setTimer } from '../timers';
-import { subscribeEvents, type EventSubscription, type HcEvent } from './streams';
+import { attachTerminal, subscribeEvents, type EventSubscription, type HcEvent } from './streams';
 
 /** First redial delay, doubled per failure up to {@link RECONNECT_MAX_MS}. */
 export const RECONNECT_INITIAL_MS = 1000;
@@ -149,6 +149,43 @@ export class HcClient {
 			return Promise.reject(new Error('not connected to herdr-core'));
 		}
 		return connection.request<T>(method, params);
+	}
+
+	/**
+	 * Types `text` into a terminal's program as it stands, with no Enter
+	 * (#144): what an image's bracketed paste needs, which `terminal.send`
+	 * cannot carry (it presses the submit key itself, and strips an embedded
+	 * end-of-paste). There is no raw-input method, so this is one short
+	 * attach on the terminal's own grid, `resumed` so it takes no size, its
+	 * output ignored, the bytes as AUTOMATIC_INPUT where both ends have it
+	 * (not a person's activity, so a `terminal.send` right after it is not
+	 * held for hc's quiet period) and as DATA on a core without it, then
+	 * CLOSE. Frames go out in order on the one pipe, so the input is in before
+	 * anything sent after this resolves (measured 2026-11-06, hc 0.1.18,
+	 * `docs/architecture.md`, "Images in prompts").
+	 */
+	async input(terminal: string, text: string): Promise<void> {
+		const connection = this.connection;
+		if (this.disposed || !connection || connection.isEnded || !connection.hello) {
+			throw new Error('not connected to herdr-core');
+		}
+		const record = await connection.request<{ cols?: unknown; rows?: unknown } | null>('terminal.get', {
+			terminal,
+		});
+		const cols = typeof record?.cols === 'number' && record.cols > 0 ? record.cols : 200;
+		const rows = typeof record?.rows === 'number' && record.rows > 0 ? record.rows : 120;
+		const stream = await attachTerminal(
+			connection,
+			{ terminal, cols, rows, history: 0, resumed: true },
+			{ data: () => undefined, closed: () => undefined },
+		);
+		stream.reply(text);
+		stream.detach();
+	}
+
+	/** Whether the core lists `method` in its `hello`; false while not connected. */
+	hasMethod(method: string): boolean {
+		return this.connection?.hello?.methods.includes(method) === true;
 	}
 
 	/** Nothing to do: there is no socket path (ADR-0005). */

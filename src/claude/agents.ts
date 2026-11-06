@@ -90,6 +90,7 @@ import {
 	type ToolPermissionRequest,
 } from './protocol';
 import { ClaudeProcess, type ClaudeSpawn, type ClaudeTimers } from './process';
+import type { PromptImage } from '../native/promptImages';
 import { PROGRAM_STATUS_REPLY, ProgramStatusScanner, type ProgramState, type ProgramStatusScan } from './programStatus';
 import type { LocalSettingsTarget } from './projectRoot';
 import type { PtyPlatform, PtySpawn, PtyTools } from './pty';
@@ -341,7 +342,7 @@ interface AgentRecord {
 	/** The current process has sent an `init`, so it took its prompts. */
 	initSeen: boolean;
 	/** Prompts written to the current process before its first `init`. */
-	unclaimed: string[];
+	unclaimed: ClaudePrompt[];
 	/** The current process is already the other way of starting; never a third. */
 	retried: boolean;
 	/** Prompts written whose `result` has not come yet. */
@@ -381,8 +382,13 @@ interface AgentRecord {
 }
 
 /** A native prompt that waits for its switch: delivered then, or rejected. */
-interface QueuedPrompt {
+/** One prompt as the agent takes it: its text and the images sent with it (#144). */
+export interface ClaudePrompt {
 	text: string;
+	images: readonly PromptImage[];
+}
+
+interface QueuedPrompt extends ClaudePrompt {
 	resolve(): void;
 	reject(error: Error): void;
 }
@@ -578,28 +584,28 @@ export class ClaudeAgents {
 	 * process could not start). Never kept for later. Rejects with a readable
 	 * error.
 	 */
-	prompt(runtimeId: string, agentId: string, text: string): Promise<void> {
+	prompt(runtimeId: string, agentId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
 		try {
-			return this.promptNow(runtimeId, agentId, text);
+			return this.promptNow(runtimeId, agentId, { text, images });
 		} catch (error) {
 			return Promise.reject(asError(error));
 		}
 	}
 
-	private promptNow(runtimeId: string, agentId: string, text: string): Promise<void> {
+	private promptNow(runtimeId: string, agentId: string, prompt: ClaudePrompt): Promise<void> {
 		const record = this.record(runtimeId, agentId);
 		this.refuseHeld(record);
 		if (record.switching === 'tui') throw new Error(SWITCHING_TO_TUI);
 		if (record.switching === 'stream') {
 			// The switch under way delivers it with the others.
 			this.wantStream(record);
-			return this.enqueue(record, text);
+			return this.enqueue(record, prompt);
 		}
 		if (record.tui) {
 			if (record.tui.isStopping) throw new Error(AGENT_STOPPING);
 			const status = this.statusOf(record);
 			if (status === 'working' || status === 'blocked') throw new Error(TUI_BUSY);
-			const sent = this.enqueue(record, text);
+			const sent = this.enqueue(record, prompt);
 			this.wantStream(record);
 			this.settle(runtimeId, record);
 			return sent;
@@ -611,8 +617,8 @@ export class ClaudeAgents {
 		if (!record.process) this.spawn(runtimeId, record);
 		const process = record.process;
 		if (!process?.alive) throw new Error('the agent could not be started');
-		process.send(userMessage(text));
-		if (!record.initSeen) record.unclaimed.push(text);
+		process.send(userMessage(prompt.text, prompt.images));
+		if (!record.initSeen) record.unclaimed.push(prompt);
 		record.turns++;
 		record.finished = false;
 		this.update(runtimeId, record);
@@ -626,8 +632,10 @@ export class ClaudeAgents {
 		if (record.stopping) throw new Error(AGENT_STOPPING);
 	}
 
-	private enqueue(record: AgentRecord, text: string): Promise<void> {
-		return new Promise<void>((resolve, reject) => record.queued.push({ text, resolve, reject }));
+	private enqueue(record: AgentRecord, prompt: ClaudePrompt): Promise<void> {
+		return new Promise<void>((resolve, reject) =>
+			record.queued.push({ text: prompt.text, images: prompt.images, resolve, reject }),
+		);
 	}
 
 	/** Rejects every prompt still waiting for a switch: none is ever sent later. */
@@ -885,7 +893,12 @@ export class ClaudeAgents {
 	 * that attempt never read, written again here. Returns how many of them
 	 * were written. Throws while the agent may not start.
 	 */
-	private spawn(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith'], replay: string[] = []): number {
+	private spawn(
+		runtimeId: string,
+		record: AgentRecord,
+		how?: AgentRecord['spawnedWith'],
+		replay: ClaudePrompt[] = [],
+	): number {
 		this.mayStart(record);
 		const setup = this.setups.get(runtimeId);
 		if (!setup) throw new Error('the runtime has not found claude yet');
@@ -929,14 +942,14 @@ export class ClaudeAgents {
 		if (record.process !== process) return 0;
 		this.live.set(process, () => process.stop({ busy: true, pending: [] }));
 		let written = 0;
-		for (const text of replay) {
+		for (const prompt of replay) {
 			try {
-				process.send(userMessage(text));
+				process.send(userMessage(prompt.text, prompt.images));
 			} catch {
 				break;
 			}
 			written++;
-			record.unclaimed.push(text);
+			record.unclaimed.push(prompt);
 			record.turns++;
 		}
 		this.update(runtimeId, record);
@@ -1241,7 +1254,7 @@ export class ClaudeAgents {
 				runtimeId,
 				record,
 				undefined,
-				queued.map((prompt) => prompt.text),
+				queued.map((prompt) => ({ text: prompt.text, images: prompt.images })),
 			);
 		} catch (error) {
 			const message = asError(error).message;

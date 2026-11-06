@@ -17,12 +17,22 @@
  * adapter can satisfy later.
  */
 
-import type { AgentPromptParams, AgentSendKeysParams } from '../herdr/types.gen';
+import type { AgentPromptParams, AgentSendKeysParams, PaneSendTextParams } from '../herdr/types.gen';
+import { imagePaste, localImageFiles, type ImageFiles, type PromptImage } from './promptImages';
 
 /** What the prompt box needs; a remote adapter can satisfy the same shape. */
 export interface PromptSender {
-	/** Delivers `text` to the pane's agent. Rejects with a readable message. */
-	send(paneId: string, text: string): Promise<void>;
+	/**
+	 * Delivers `text` to the pane's agent, with `images` attached when there
+	 * are any (#144); `text` may be empty then. Rejects with a readable message.
+	 */
+	send(paneId: string, text: string, images?: readonly PromptImage[]): Promise<void>;
+	/**
+	 * Why images cannot go to this pane's agent, in words for the prompt box,
+	 * or null when they can (#144). A sender without it takes none
+	 * ({@link IMAGES_UNSUPPORTED}).
+	 */
+	imagesUnavailable?(paneId: string): string | null;
 	/**
 	 * Ends the running turn, keeping the agent for the next prompt. Only a kind
 	 * with a real interrupt has it (the `claude` kind's `interrupt` control
@@ -55,6 +65,14 @@ export interface PromptClient {
 /** Shown as a Notice when a prompt is typed with no herdr to send it to. */
 export const NO_CONNECTION_MESSAGE = 'Not connected to herdr.';
 
+/** Why a sender that says nothing about images takes none (#144). */
+export const IMAGES_UNSUPPORTED = 'this runtime cannot send images to its agents';
+
+/** Why images cannot go out, for a sender that may say nothing about them. */
+export function imagesUnavailable(sender: PromptSender, paneId: string): string | null {
+	return sender.imagesUnavailable ? sender.imagesUnavailable(paneId) : IMAGES_UNSUPPORTED;
+}
+
 /**
  * The `agent.prompt` request for one prompt: the pane and the text, verbatim.
  * Deliberately not spread from anything, so no caller can slip a `wait` in.
@@ -68,18 +86,47 @@ export function agentSendKeysParams(paneId: string, keys: readonly string[]): Ag
 	return { target: paneId, keys: [...keys] };
 }
 
+/** The `pane.send_text` request that types `text` into the pane exactly. */
+export function paneSendTextParams(paneId: string, text: string): PaneSendTextParams {
+	return { pane_id: paneId, text };
+}
+
 /**
  * A sender over the herdr that is connected *now*: the client is read per send
  * because a reconnect replaces it, and a null one is an ordinary failure the
  * box reports rather than a crash.
+ *
+ * Images (#144) go the way a person drops a file on Claude's terminal: each is
+ * written to a file on this machine (`files`), the paths go in as one
+ * bracketed paste with `pane.send_text`, which Claude turns into image
+ * attachments, and the text follows with `agent.prompt`, whose Enter sends
+ * both. herdr refuses an empty `agent.prompt` (`empty_agent_prompt`), so a
+ * picture with no words is sent with a bare Enter. Only a local herdr shows
+ * the native view, so this machine is the agent's (measured 2026-11-06,
+ * `docs/architecture.md`, "Images in prompts").
  */
-export function clientPromptSender(client: () => PromptClient | null): PromptSender {
+export function clientPromptSender(
+	client: () => PromptClient | null,
+	files: ImageFiles = localImageFiles(),
+): PromptSender {
 	return {
-		async send(paneId: string, text: string): Promise<void> {
+		async send(paneId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
 			const connected = client();
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
-			await connected.request('agent.prompt', agentPromptParams(paneId, text));
+			if (!images.length) {
+				await connected.request('agent.prompt', agentPromptParams(paneId, text));
+				return;
+			}
+			const paths = await files.write(images);
+			try {
+				await connected.request('pane.send_text', paneSendTextParams(paneId, imagePaste(paths)));
+				if (text.trim()) await connected.request('agent.prompt', agentPromptParams(paneId, text));
+				else await connected.request('agent.send_keys', agentSendKeysParams(paneId, ['Enter']));
+			} finally {
+				files.release(paths);
+			}
 		},
+		imagesUnavailable: () => null,
 	};
 }
 

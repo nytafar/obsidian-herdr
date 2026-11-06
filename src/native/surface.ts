@@ -36,7 +36,8 @@ import type {
 } from './sessionModel';
 import { FoldMemory } from './foldMemory';
 import { ScrollFollower } from './scrollFollower';
-import { TurnRenderer } from './turnRenderer';
+import { TurnRenderer, type ShownImage } from './turnRenderer';
+import { ImageModal } from './imageModal';
 import { WaitingCardView } from './waitingCardView';
 import { SessionLines } from './sessionLines';
 import { registerViewLinks } from './viewLinks';
@@ -112,6 +113,11 @@ export interface NativePaneSurfaceOptions {
 	 * else the vault root. Defaults to the vault root.
 	 */
 	linkSourcePath?: () => string;
+	/**
+	 * Shows a prompt's image full size (#144). Defaults to a modal; a test
+	 * passes its own.
+	 */
+	openImage?: (image: ShownImage) => void;
 }
 
 /**
@@ -217,6 +223,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			folds: this.folds,
 			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
+			// A prompt's images, read from the transcript as they come into view
+			// and shown full size on a click (#144).
+			readImage: (image) => this.model?.readImage?.(image) ?? Promise.resolve(null),
+			openImage: (image) =>
+				this.options.openImage ? this.options.openImage(image) : new ImageModal(this.options.app, image).open(),
 		});
 		this.todo = new TodoChip(root);
 		this.lines = new SessionLines(root, {

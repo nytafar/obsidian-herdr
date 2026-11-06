@@ -134,6 +134,7 @@ import {
 	type PaneWhere,
 } from '../native/paneSurface';
 import { NativePaneSurface } from '../native/surface';
+import { imagesUnavailable } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
@@ -817,7 +818,10 @@ export class TerminalView extends ItemView {
 			// show a native view at all (ADR-0002, ADR-0006); `--wait` is never
 			// asked for (#97, ADR-0003).
 			sender: {
-				send: (paneId, text) => this.kind().promptSender(nativeClient).send(paneId, text),
+				send: (paneId, text, images) => this.kind().promptSender(nativeClient).send(paneId, text, images),
+				// Whether images can go with a prompt (#144), asked of the kind as
+				// it is now: herdr-core's answer depends on the core's version.
+				imagesUnavailable: (paneId) => imagesUnavailable(this.kind().promptSender(nativeClient), paneId),
 				// Stop, for a kind with a real interrupt (ADR-0007).
 				...(this.kind().promptSender(nativeClient).interrupt
 					? {

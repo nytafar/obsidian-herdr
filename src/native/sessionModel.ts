@@ -35,6 +35,9 @@ import {
 	lastAssistantText,
 	markLost,
 	reduce,
+	transcriptImage,
+	type ImageBytes,
+	type ImageEntry,
 	type TaskNotification,
 	type TranscriptState,
 } from './reducer';
@@ -93,6 +96,12 @@ export interface SessionModelView {
 	 * not have it; a model without one offers no retry.
 	 */
 	retryRead?(): void;
+	/**
+	 * The bytes of an image a prompt carried, read from the transcript when a
+	 * view shows it (#144), or null. Optional so a fake need not read any; a
+	 * view without it shows the image's label alone.
+	 */
+	readImage?(image: ImageEntry): Promise<ImageBytes | null>;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	/**
@@ -219,6 +228,8 @@ export class SessionModel implements SessionModelView {
 	private readingReports = new Set<string>();
 	/** Lines of the current file reduced so far (#135). */
 	private linesRead = 0;
+	/** The one read of the transcript in flight for images (#144); null between reads. */
+	private imageRead: { path: string; generation: number; text: Promise<string | null> } | null = null;
 	/**
 	 * Lines at the start of the current file that an agent now gone wrote, 0
 	 * when none are known to be (#135): what was running in them is lost.
@@ -330,6 +341,33 @@ export class SessionModel implements SessionModelView {
 		if (this.blockClaim === toolUseId) return false;
 		this.blockClaim = toolUseId;
 		return true;
+	}
+
+	/**
+	 * The bytes of an image a prompt carried (#144), read from the transcript
+	 * when a view shows it, never kept here: the state holds where each image
+	 * is, not what it is. The reads a draw starts at once share one read of
+	 * the file, which is dropped as soon as they have their images. Null when
+	 * the session moved on meanwhile or the image is not there.
+	 */
+	async readImage(image: ImageEntry): Promise<ImageBytes | null> {
+		const path = this.currentPath;
+		const source = this.streamSource ?? this.source;
+		if (!image.record || !path || !source) return null;
+		const generation = this.generation;
+		let read = this.imageRead;
+		if (!read || read.path !== path || read.generation !== generation) {
+			const text = source.read(path).catch(() => null);
+			read = { path, generation, text };
+			this.imageRead = read;
+			const started = read;
+			void text.then(() => {
+				if (this.imageRead === started) this.imageRead = null;
+			});
+		}
+		const text = await read.text;
+		if (generation !== this.generation || !text) return null;
+		return transcriptImage(text, image.record, image.index);
 	}
 
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */

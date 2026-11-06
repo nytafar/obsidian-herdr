@@ -334,11 +334,18 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		},
 		createActions: (actionHost) => new ClaudeActions(actionHost, agents, shells),
 		promptSender: (client) => ({
-			async send(paneId, text) {
+			// Images go as stream-json image blocks (#144); the TUI, when it
+			// is up, hands the prompt to the headless process like any other.
+			async send(paneId, text, images = []) {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
-				await connected.request('agent.prompt', { target: paneId, text });
+				await connected.request('agent.prompt', {
+					target: paneId,
+					text,
+					...(images.length ? { images: [...images] } : {}),
+				});
 			},
+			imagesUnavailable: () => null,
 			async interrupt(paneId) {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
