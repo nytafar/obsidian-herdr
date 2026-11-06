@@ -96,3 +96,33 @@ export async function readLegacyData(reader: LegacyDataReader, configDir: string
 		return null;
 	}
 }
+
+/**
+ * The slice of Obsidian's (undocumented) plugin manager the retirement needs.
+ * Typed here so a build without it simply does nothing.
+ */
+export interface LegacyPluginManager {
+	enabledPlugins?: Set<string>;
+	manifests?: Record<string, unknown>;
+	disablePluginAndSave?(id: string): Promise<unknown>;
+}
+
+/**
+ * Turns off this plugin's old install under the `herdr` id, when it is still
+ * enabled beside the renamed one: BRAT and a manual update put the new build
+ * in `plugins/gjetr/` and leave `plugins/herdr/` enabled, and both would then
+ * register the same view types. Only an install whose manifest is this
+ * plugin's is touched; another plugin with the `herdr` id is left alone. The
+ * folder itself, with its `data.json`, stays. Returns whether it disabled one.
+ */
+export async function retireLegacyPlugin(manager: LegacyPluginManager | undefined): Promise<boolean> {
+	if (!manager?.enabledPlugins?.has(LEGACY_PLUGIN_ID)) return false;
+	if (!isOurManifest(manager.manifests?.[LEGACY_PLUGIN_ID])) return false;
+	if (typeof manager.disablePluginAndSave !== 'function') return false;
+	try {
+		await manager.disablePluginAndSave(LEGACY_PLUGIN_ID);
+		return true;
+	} catch {
+		return false;
+	}
+}

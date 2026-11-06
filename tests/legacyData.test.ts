@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isOurManifest, looksLikeOurData, readLegacyData, type LegacyDataReader } from '../src/legacyData';
+import { isOurManifest, looksLikeOurData, readLegacyData, retireLegacyPlugin, type LegacyDataReader } from '../src/legacyData';
 
 const OLD = '.config-dir/plugins/herdr';
 
@@ -98,5 +98,40 @@ describe('isOurManifest and looksLikeOurData', () => {
 		expect(looksLikeOurData(OUR_DATA)).toBe(true);
 		expect(looksLikeOurData({ runtimes: [] })).toBe(false);
 		expect(looksLikeOurData(null)).toBe(false);
+	});
+});
+
+describe('retireLegacyPlugin', () => {
+	const ours = { id: 'herdr', author: 'Lasse', authorUrl: 'https://github.com/nytafar' };
+	const xicum = { id: 'herdr', author: 'xicum', authorUrl: 'https://github.com/xicum' };
+	function manager(enabled: boolean, manifest: unknown) {
+		const disabled: string[] = [];
+		return {
+			disabled,
+			enabledPlugins: new Set(enabled ? ['herdr'] : []),
+			manifests: { herdr: manifest },
+			disablePluginAndSave: async (id: string) => {
+				disabled.push(id);
+			},
+		};
+	}
+
+	it('turns off our old install when it is still enabled', async () => {
+		const m = manager(true, ours);
+		expect(await retireLegacyPlugin(m)).toBe(true);
+		expect(m.disabled).toEqual(['herdr']);
+	});
+
+	it('leaves another plugin with the herdr id alone', async () => {
+		const m = manager(true, xicum);
+		expect(await retireLegacyPlugin(m)).toBe(false);
+		expect(m.disabled).toEqual([]);
+	});
+
+	it('does nothing when the old install is not enabled, or there is no plugin manager', async () => {
+		const m = manager(false, ours);
+		expect(await retireLegacyPlugin(m)).toBe(false);
+		expect(await retireLegacyPlugin(undefined)).toBe(false);
+		expect(m.disabled).toEqual([]);
 	});
 });

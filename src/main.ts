@@ -98,7 +98,7 @@ import { hcHookMachine } from './sessionHook/installer';
 import { SESSION_HOOK_COMMAND_NAME } from './hc/sessionWatcher';
 import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
 import { resolveHerdrBinary } from './herdr/binary';
-import { readLegacyData } from './legacyData';
+import { readLegacyData, retireLegacyPlugin, type LegacyPluginManager } from './legacyData';
 import { buildAgentName } from './actions';
 import type { PaneView } from './native/renderMode';
 import {
@@ -502,6 +502,12 @@ export default class HerdrPlugin extends Plugin {
 	private windowFocused = true;
 
 	async onload() {
+		// Before anything registers: an old `herdr` install of this plugin left
+		// enabled beside this one would hold the same view types.
+		const plugins = (this.app as unknown as { plugins?: LegacyPluginManager }).plugins;
+		if (await retireLegacyPlugin(plugins)) {
+			new Notice('Gjetr: turned off the old "herdr" copy of this plugin. Its folder is kept; you can remove it.');
+		}
 		await this.loadSettings();
 		this.explorerButtons = new ExplorerFolderButtons(this);
 		this.notifier = new TransitionNotifier({

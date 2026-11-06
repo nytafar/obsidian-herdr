@@ -17,6 +17,10 @@ All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
   keys), saves it once and says so in a notice. Another plugin's data in that
   folder is never read in, and the old folder is never changed or removed.
   Hotkeys bound to the old `herdr:` command ids have to be set again.
+- The old install is turned off: when this plugin's `herdr` copy is still
+  enabled beside Gjetr (BRAT and a manual update leave it enabled), Gjetr
+  disables it at load, before registering its views, and says so. Another
+  plugin with the `herdr` id is never touched.
 
 ## 0.5.0 — 2026-11-06
 
