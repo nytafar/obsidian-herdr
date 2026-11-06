@@ -37,6 +37,7 @@ import { TurnRenderer } from './turnRenderer';
 import { WaitingCardView } from './waitingCardView';
 import { SessionLines } from './sessionLines';
 import { registerViewLinks } from './viewLinks';
+import { ConversationFindModal, highlightMatch, locateMatch, type FindHit } from './conversationFind';
 
 /** What {@link NativePaneSurface} needs from the view around it. */
 export interface NativePaneSurfaceOptions {
@@ -146,6 +147,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private promptBox: PromptBox | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
+	/** Takes the last find's highlight off (#145); null when nothing is marked. */
+	private clearFindMark: (() => void) | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -314,6 +317,65 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	}
 
 	/**
+	 * Puts the cursor in the prompt box (#145), and says whether there was one
+	 * to take it: hidden behind the waiting card, or not mounted, it cannot.
+	 */
+	focusPrompt(): boolean {
+		return this.promptBox?.focus() ?? false;
+	}
+
+	/** Whether {@link focusPrompt} would take, for the command's check. */
+	canFocusPrompt(): boolean {
+		return this.promptBox?.canFocus() ?? false;
+	}
+
+	/** Brings the next or the previous turn into view (#145). */
+	stepTurn(direction: 1 | -1): void {
+		const turns = this.turns;
+		const follower = this.follower;
+		if (!turns || !follower) return;
+		const turnEls: HTMLElement[] = [];
+		for (const turn of this.model?.state.turns ?? []) {
+			const el = turns.turnEl(turn.id);
+			if (el) turnEls.push(el);
+		}
+		follower.stepTurn(turnEls, direction);
+	}
+
+	/**
+	 * Opens the find picker over this session (#145); a pick brings its turn
+	 * into view with the match highlighted until the next find.
+	 */
+	findInConversation(): void {
+		if (!this.rootEl) return;
+		new ConversationFindModal(
+			this.options.app,
+			() => this.model?.state.turns ?? [],
+			(hit, query) => this.revealMatch(hit, query),
+		).open();
+	}
+
+	/** Scrolls to a find's match and marks it, or to its turn when the drawing lacks it. */
+	private revealMatch(hit: FindHit, query: string): void {
+		this.clearFind();
+		const turnEl = this.turns?.turnEl(hit.turnId);
+		if (!turnEl || !this.follower) return;
+		const match = locateMatch(turnEl, query, hit.occurrence);
+		if (!match) {
+			this.follower.scrollTo(turnEl);
+			return;
+		}
+		this.clearFindMark = highlightMatch(match);
+		this.follower.scrollTo(match.node.parentElement ?? turnEl, 'center');
+	}
+
+	/** Takes the last find's mark off, if there is one. */
+	private clearFind(): void {
+		this.clearFindMark?.();
+		this.clearFindMark = null;
+	}
+
+	/**
 	 * Takes the pane's session model and draws what it already holds.
 	 *
 	 * At the bottom of it, always: this runs on open and again whenever the tab
@@ -379,6 +441,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	/** Drops every turn element and stops watching the one being written. */
 	private clearTurns(): void {
+		this.clearFind();
 		this.turns?.clear();
 		this.follower?.forgetTurn();
 	}

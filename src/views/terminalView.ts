@@ -926,6 +926,12 @@ export class TerminalView extends ItemView {
 		return this.nativePaneId() ? this.terminal.identity.endpointId : '';
 	}
 
+	/** The native surface this tab shows, or null while it shows a terminal. */
+	nativeSurface(): NativePaneSurface | null {
+		const surface = this.surfaces.current;
+		return surface instanceof NativePaneSurface ? surface : null;
+	}
+
 	/** Brings a turn into view, for a click in the table of contents (#100). */
 	scrollNativeToTurn(turnId: string): void {
 		const surface = this.surfaces.current;
@@ -1619,5 +1625,24 @@ export function switchRenderModeCommand(app: App, checking: boolean): boolean {
 	const view = app.workspace.getActiveViewOfType(TerminalView);
 	if (!view) return false;
 	if (!checking) view.showRenderModeMenu();
+	return true;
+}
+
+/** What a native view command does to the surface of the active tab (#145). */
+export type NativeViewAction = 'focus-prompt' | 'next-turn' | 'previous-turn' | 'find';
+
+/**
+ * The native view's commands (#145), registered in `main.ts` with no default
+ * hotkey. Offered only while the active tab shows the native view, whatever
+ * runtime its pane is on; the terminal view has its own keys for all of this.
+ * Focusing the prompt is offered only while there is a box to take it.
+ */
+export function nativeViewCommand(app: App, action: NativeViewAction, checking: boolean): boolean {
+	const surface = app.workspace.getActiveViewOfType(TerminalView)?.nativeSurface();
+	if (!surface) return false;
+	if (action === 'focus-prompt') return checking ? surface.canFocusPrompt() : surface.focusPrompt();
+	if (checking) return true;
+	if (action === 'find') surface.findInConversation();
+	else surface.stepTurn(action === 'next-turn' ? 1 : -1);
 	return true;
 }

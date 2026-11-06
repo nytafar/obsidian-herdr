@@ -184,6 +184,16 @@ export class FakeElement {
 		this.scrolledIntoView.push(options ?? null);
 	}
 
+	/**
+	 * Where a layout put the element's top, in viewport pixels; a test sets it
+	 * for the turn commands (#145), which measure turns against the view.
+	 */
+	top = 0;
+
+	getBoundingClientRect(): { top: number } {
+		return { top: this.top };
+	}
+
 	addEventListener(type: string, handler: (event: unknown) => void): void {
 		this.listeners.push({ type, handler });
 	}

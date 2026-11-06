@@ -37,6 +37,30 @@ export function isAtBottom(geometry: {
 }
 
 /**
+ * How far a turn's top may sit from the view's top and still be the turn the
+ * reader is on: a jump lands within a pixel or two of it, not on it.
+ */
+const TURN_SLACK_PX = 4;
+
+/**
+ * Which turn "next" or "previous" goes to (#145), from each turn's top minus
+ * the view's top, in session order: the first turn starting below the top of
+ * the view, or the last one starting above it. Inside a long turn "previous"
+ * is therefore that turn's own start, the way a reader paging back expects.
+ * Null when there is none that way.
+ */
+export function turnStep(offsets: readonly number[], direction: 1 | -1): number | null {
+	if (direction === 1) {
+		const next = offsets.findIndex((offset) => offset > TURN_SLACK_PX);
+		return next === -1 ? null : next;
+	}
+	for (let index = offsets.length - 1; index >= 0; index--) {
+		if ((offsets[index] ?? 0) < -TURN_SLACK_PX) return index;
+	}
+	return null;
+}
+
+/**
  * Whether the view follows the end of the session, and the pins that keep it
  * there. True on open and after a rotation, off the moment the reader scrolls
  * up, on again when they come back to the bottom (#106).
@@ -163,10 +187,29 @@ export class ScrollFollower {
 	 * Brings an element into view and stops following, which is what a click in
 	 * the table of contents does (#100, #118).
 	 */
-	scrollTo(el: HTMLElement): void {
+	scrollTo(el: HTMLElement, block: ScrollLogicalPosition = 'start'): void {
 		this.following = false;
 		this.showJump();
-		el.scrollIntoView({ block: 'start' });
+		el.scrollIntoView({ block });
+	}
+
+	/**
+	 * The next or the previous turn, for the commands (#145). Measured now, on
+	 * the reader's command, never on a scroll: the turns' tops against the
+	 * scroll container's. Past the last turn, or already at the end, "next" is
+	 * the end itself, following again.
+	 */
+	stepTurn(turnEls: readonly HTMLElement[], direction: 1 | -1): void {
+		if (direction === 1 && isAtBottom(this.scrollEl)) {
+			this.jumpToEnd();
+			return;
+		}
+		const top = this.scrollEl.getBoundingClientRect().top;
+		const offsets = turnEls.map((el) => el.getBoundingClientRect().top - top);
+		const index = turnStep(offsets, direction);
+		const target = index === null ? undefined : turnEls[index];
+		if (target) this.scrollTo(target);
+		else if (direction === 1) this.jumpToEnd();
 	}
 
 	/** A Markdown render of the current draw, which {@link settle} waits for. */

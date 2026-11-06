@@ -625,6 +625,32 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: flex;
 }
 
+/*
+ * Find in the conversation (#145): the match a pick jumps to, through the CSS
+ * Custom Highlight API so the rendered Markdown is not touched, and the class
+ * that stands in for it where that API is missing. The theme's own search
+ * highlight colour.
+ */
+::highlight(herdr-native-find) {
+	background-color: var(--text-highlight-bg);
+	color: var(--text-normal);
+}
+
+.herdr-native-find-hit {
+	background-color: var(--text-highlight-bg);
+}
+
+/* One row of the find picker: the snippet with its match marked, and where it is. */
+.herdr-native-find-snippet {
+	color: var(--text-normal);
+	overflow-wrap: anywhere;
+}
+
+.herdr-native-find-where {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
 .herdr-native-prompt-box {
 	flex: 0 0 auto;
 	order: 4;
