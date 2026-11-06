@@ -570,6 +570,18 @@ describe('AgentCatalogs', () => {
 		expect(count()).toBe(3);
 	});
 
+	it('shares the published connection’s probe with its own machine only', async () => {
+		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
+		const { subject, count } = catalogs(current);
+		expect(subject.liveProbeOn('ssh:xl')).toBeNull();
+		const live = subject.liveProbeOn('local');
+		expect((await live)?.found).toEqual(new Set(['codex']));
+		await subject.catalog();
+		expect(count()).toBe(1);
+		current.connection = null;
+		expect(subject.liveProbeOn('local')).toBeNull();
+	});
+
 	it('probes again on the same connection only for a new program list', async () => {
 		const current = { connection: connectionOf(LOCAL_HERDR) as Connection | null };
 		const { subject, settings, count } = catalogs(current);

@@ -360,6 +360,9 @@ export function machinePhrase(runtime: Pick<RuntimeConfig, 'target' | 'host'>): 
 	return runtime.target === 'ssh' && runtime.host.trim() ? `on ${runtime.host.trim()}` : 'on this machine';
 }
 
+/** How an entry's reason starts when the runtime's probe failed. */
+export const UNVERIFIED_PREFIX = 'could not check what is installed: ';
+
 export interface BuildCatalogInput {
 	runtime: Pick<RuntimeConfig, 'id' | 'kind' | 'target' | 'host'>;
 	settings: AgentCatalogSettings;
@@ -399,7 +402,7 @@ export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 		if (probed === null || (checked !== null && !checked.has(program))) return null;
 		return probed.has(program);
 	};
-	const unverified = probe?.error ? `could not check what is installed: ${probe.error}` : null;
+	const unverified = probe?.error ? `${UNVERIFIED_PREFIX}${probe.error}` : null;
 	const entries: CatalogEntry[] = [];
 	const push = (profile: AgentProfile, available: boolean, reason: string | null, wasFound: boolean | null): void => {
 		entries.push({ profile, available, reason, found: wasFound, hidden: hidden.has(profile.id), isDefault: false });
