@@ -173,6 +173,13 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
 
 ### Fixed
 
+- herdr-core: a vault now finds its herdr-app space when that space has no
+  stored name and Herdr UI shows it under its first terminal's folder, as on
+  the Mac, where every space had `name: ""`. Such a space matches when its
+  first terminal's working directory is the vault or inside it (the plugin
+  has no git top to compare, as Herdr UI does). If several match, the first
+  in Herdr UI's order wins. Agents started from the plugin then get the space
+  label again and show up in Herdr UI. Existing terminals are not relabelled.
 - After a runtime switch, a native tab on the other runtime keeps what it
   showed and says its runtime is not connected, instead of showing the newly
   active runtime's pane with the same id. The table of contents follows the

@@ -26,6 +26,7 @@ import {
 } from '../herdr/scope';
 import type { ConnectionScope } from '../connection';
 import {
+	cwdOf,
 	inHcScope,
 	resolveHcScope,
 	spaceTabLabels,
@@ -243,6 +244,10 @@ export class HcScope implements ConnectionScope {
 					space: this.options.space,
 					vaultName: this.options.vaultName,
 					root: this.options.remoteVaultPath?.trim() || this.options.vaultPath,
+					terminalCwd: (address) => {
+						const terminal = this.store.get(address);
+						return terminal ? cwdOf(terminal) : undefined;
+					},
 				})
 			: { kind: 'none', method: 'none' };
 		const resolved = !sameResolution(previous, this.resolution);

@@ -63,6 +63,27 @@ const DOC = {
 	],
 };
 
+/**
+ * Shaped like the Mac's `doc.get {name: "herdr-app"}` of 2026-11-06: three
+ * spaces, every one `name: ""` and `folder: "/Users/lasse"`; Herdr UI shows
+ * the second as "hvelv" after its first terminal, `t13`.
+ */
+const MAC_DOC = {
+	spaces: [
+		{ id: 'sp-mac-1', name: '', folder: '/Users/lasse', tabs: [{ id: 'tb-m1', name: '', root: { id: 'tb-m1', type: 'row', children: [{ id: 'p4', type: 'block', content: { terminal: 't4' } }] } }] },
+		{
+			id: 'sp-mac-2',
+			name: '',
+			folder: '/Users/lasse',
+			tabs: [
+				{ id: 'tb-m2', name: '', root: { id: 'tb-m2', type: 'row', children: [{ id: 'p13', type: 'block', content: { terminal: 't13' } }, { id: 'p14', type: 'block', content: { terminal: 't14' } }] } },
+				{ id: 'tb-m3', name: '', root: { id: 'tb-m3', type: 'row', children: [{ id: 'p15', type: 'block', content: { terminal: 't15' } }] } },
+			],
+		},
+		{ id: 'sp-mac-3', name: '', folder: '/Users/lasse', tabs: [{ id: 'tb-m4', name: '', root: { id: 'tb-m4', type: 'row', children: [] } }] },
+	],
+};
+
 describe('status mapping', () => {
 	const cases: [string | null, number, string | undefined, string][] = [
 		['working', 3, '1', 'working'],
@@ -169,6 +190,45 @@ describe('scope resolution', () => {
 		expect(resolveHcScope([], { vaultName: '', root: '' })).toEqual({ kind: 'none', method: 'none' });
 	});
 
+	it('finds each space’s first terminal in its tabs’ layout, as herdr-app walks it', () => {
+		const first = parseSpaces(MAC_DOC).map((space) => space.firstTerminal);
+		expect(first).toEqual(['t4', 't13', null]);
+		// Node before children, children in order, across tabs in order.
+		const nested = parseSpaces({
+			spaces: [{ id: 's', name: '', folder: '/', tabs: [
+				{ id: 'a', name: '', root: { id: 'a', type: 'row', children: [] } },
+				{ id: 'b', name: '', root: { id: 'b', type: 'column', children: [
+					{ id: 'x', type: 'stack', children: [{ id: 'y', type: 'block', content: { mod: 'files' } }, { id: 'z', type: 'block', content: { terminal: 't8' } }] },
+					{ id: 'w', type: 'block', content: { terminal: 't9' } },
+				] } },
+			] }],
+		});
+		expect(nested[0]?.firstTerminal).toBe('t8');
+	});
+
+	it('then an unnamed space whose first terminal runs in the vault (Mac hc, 2026-11-06)', () => {
+		const mac = parseSpaces(MAC_DOC);
+		const cwds: Record<string, string> = { t4: '/Users/lasse/code/x', t13: '/Users/lasse/Vaults/hvelv' };
+		const options = { vaultName: 'hvelv', root: '/Users/lasse/Vaults/hvelv', terminalCwd: (a: string) => cwds[a] };
+		expect(resolveHcScope(mac, options)).toEqual({ kind: 'space', id: 'sp-mac-2', name: 'hvelv', method: 'label' });
+		// Inside the vault counts too: git top is not on the wire, the cwd is.
+		cwds.t13 = '/Users/lasse/Vaults/hvelv/notes';
+		expect(resolveHcScope(mac, options)).toMatchObject({ id: 'sp-mac-2' });
+		// Several qualify: the first in document order.
+		cwds.t4 = '/Users/lasse/Vaults/hvelv';
+		expect(resolveHcScope(mac, options)).toMatchObject({ id: 'sp-mac-1' });
+		// Out of the vault, or not listed: the space's folder (here home), so cwd mode.
+		expect(resolveHcScope(mac, { ...options, terminalCwd: () => undefined })).toEqual({ kind: 'cwd', root: '/Users/lasse/Vaults/hvelv', method: 'cwd' });
+		expect(resolveHcScope(mac, { ...options, terminalCwd: () => '/Users/lasse/Vaults/hvelv2' })).toMatchObject({ kind: 'cwd' });
+		// A space with no terminal is named after its folder.
+		const empty = parseSpaces({ spaces: [{ id: 'sp-e', name: '', folder: '/Users/lasse/Vaults/hvelv', tabs: [] }] });
+		expect(resolveHcScope(empty, options)).toMatchObject({ id: 'sp-e', method: 'label' });
+		// A stored name still wins, and a named space is never matched by its terminal.
+		const named = parseSpaces({ spaces: [{ ...MAC_DOC.spaces[1], name: 'work' }, { id: 'sp-h', name: 'hvelv', folder: '/', tabs: [] }] });
+		expect(resolveHcScope(named, options)).toMatchObject({ id: 'sp-h' });
+		expect(resolveHcScope(named.slice(0, 1), options)).toMatchObject({ kind: 'cwd' });
+	});
+
 	it('labels tabs by name, or by position like herdr-app’s `where`', () => {
 		expect([...spaceTabLabels(spaces[1] ?? null)]).toEqual([
 			['tb1', '1'],
@@ -206,6 +266,16 @@ describe('HcScope', () => {
 		expect(s.method).toBe('cwd');
 		expect(s.list().map((row) => row.paneId)).toEqual(['t2']);
 		expect(s.space).toBeNull();
+	});
+
+	it('resolves the unnamed space Herdr UI calls after the vault, from its first terminal’s cwd', () => {
+		const { s, events } = scope({ vaultPath: '/Users/lasse/Vaults/hvelv' });
+		const t13 = record({ address: 't13', cwd: '/Users/lasse', foreground: { name: 'claude', argv: ['claude'], cwd: '/Users/lasse/Vaults/hvelv', pid: 9 }, labels: { 'herdr.space': 'sp-mac-2', 'herdr.tab': 'tb-m2' } });
+		s.reset(1, [record({ address: 't4', cwd: '/Users/lasse', foreground: null, labels: { 'herdr.space': 'sp-mac-1' } }), t13]);
+		s.setSpaces(parseSpaces(MAC_DOC));
+		expect(events).toEqual(['resolved sp-mac-2 label', 'added t13']);
+		expect(s.space).toEqual({ id: 'sp-mac-2', name: 'hvelv' });
+		expect(s.workspaceLabel).toBe('hvelv');
 	});
 
 	it('leaves federated machine/tN terminals out (ADR-0004)', () => {

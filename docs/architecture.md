@@ -383,8 +383,25 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   {name: "herdr-app"}` (live: `{value: {spaces: [{id, name, folder, tabs:
   [{id, name, root}]}]}, version}`), re-read on its `doc` event; a core without
   the document has no spaces. Order: the runtime's space (id or name), the
-  space named like the vault, then terminals whose cwd (`foreground.cwd`, else
-  `cwd`) is under the vault root. Members of a space carry `herdr.space=<id>`.
+  space named like the vault, an unnamed space whose first terminal runs in
+  the vault, then terminals whose cwd (`foreground.cwd`, else `cwd`) is under
+  the vault root. Members of a space carry `herdr.space=<id>`. Measured on the
+  Mac's hc 0.1.18, 2026-11-06: all three spaces had `name: ""` and `folder:
+  "/Users/lasse"`, and Herdr UI still showed one as "hvelv", because
+  herdr-app names an unnamed space after its first terminal (`space_name` in
+  herdr-app `src/model.rs`): the first `content.terminal` block of its tabs'
+  `root` trees, walked tab by tab, node before children (`Node::walk`,
+  floating blocks not walked), then that terminal's git top, else the
+  space's `folder`, shown by last path segment. The plugin has no git top,
+  so it takes the first terminal's cwd (`foreground.cwd`, else `cwd`), or
+  the space's `folder` when there is no first terminal or the core does not
+  list it, and matches when that is the vault root or inside it. That is an
+  approximation: a first terminal in a vault subfolder matches here, while
+  Herdr UI names it after the repository top, which is the vault for a vault
+  under git. The match moves with that cwd, as Herdr UI's name does. When
+  several unnamed spaces qualify, the first in document order wins, which is
+  Herdr UI's sidebar order. The plugin writes no labels to existing
+  terminals: it labels only agents it starts.
   The scope stays unresolved until the document has been read once. Terminals
   addressed `machine/tN` (federated) are left out on both targets, and so are
   finished ones. Rows group by `herdr.tab`, labelled with the space's tab

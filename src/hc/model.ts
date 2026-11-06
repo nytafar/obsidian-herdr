@@ -12,7 +12,8 @@
  *   `status.app`, or whose foreground program is a known agent.
  * - {@link parseSpaces} and {@link resolveHcScope}: the `herdr-app` document's
  *   spaces, and the scope order — the runtime's space override, the space
- *   named like the vault, then terminals whose cwd is under the vault root.
+ *   named like the vault, an unnamed space whose first terminal runs in the
+ *   vault, then terminals whose cwd is under the vault root.
  */
 
 import { isUnder, stripTitleSpinner, type PaneState, type ResolutionMethod } from '../herdr/scope';
@@ -380,6 +381,27 @@ export interface HcSpace {
 	name: string;
 	folder: string;
 	tabs: { id: string; name: string }[];
+	/**
+	 * The address of the space's first terminal: the first `content.terminal`
+	 * block walking its tabs in order, each tab's `root` depth-first, node
+	 * before children (herdr-app `Node::walk`; floating blocks are not
+	 * walked). herdr-app names an unnamed space after this terminal.
+	 */
+	firstTerminal: string | null;
+}
+
+/** herdr-app's `Node::terminals().next()` over one tab's `root`, as stored in the document. */
+function firstTerminalIn(node: unknown, depth = 0): string | null {
+	const n = record(node);
+	if (!n || depth > 64) return null;
+	const terminal = record(n.content)?.terminal;
+	if (typeof terminal === 'string' && terminal.length > 0) return terminal;
+	if (!Array.isArray(n.children)) return null;
+	for (const child of n.children) {
+		const found = firstTerminalIn(child, depth + 1);
+		if (found) return found;
+	}
+	return null;
 }
 
 /** The `herdr-app` document's spaces; anything malformed is skipped. */
@@ -391,13 +413,16 @@ export function parseSpaces(value: unknown): HcSpace[] {
 		const space = record(raw);
 		if (!space || typeof space.id !== 'string' || space.id.length === 0) continue;
 		const tabs: { id: string; name: string }[] = [];
+		let firstTerminal: string | null = null;
 		if (Array.isArray(space.tabs)) {
 			for (const rawTab of space.tabs) {
 				const tab = record(rawTab);
-				if (tab && typeof tab.id === 'string') tabs.push({ id: tab.id, name: str(tab.name) });
+				if (!tab) continue;
+				if (typeof tab.id === 'string') tabs.push({ id: tab.id, name: str(tab.name) });
+				firstTerminal ??= firstTerminalIn(tab.root);
 			}
 		}
-		out.push({ id: space.id, name: str(space.name), folder: str(space.folder), tabs });
+		out.push({ id: space.id, name: str(space.name), folder: str(space.folder), tabs, firstTerminal });
 	}
 	return out;
 }
@@ -422,11 +447,37 @@ export interface HcScopeOptions {
 	space?: string;
 	/** Compared against space names. */
 	vaultName: string;
-	/** The vault root on the target, for the cwd rule. */
+	/** The vault root on the target, for the unnamed-space and cwd rules. */
 	root: string;
+	/**
+	 * A terminal's current directory by address ({@link cwdOf}), for naming an
+	 * unnamed space after its first terminal; undefined when the core does not
+	 * list it.
+	 */
+	terminalCwd?: (address: string) => string | undefined;
 }
 
-/** ADR-0005's scope order: override, space named like the vault, then cwd under the root. */
+/**
+ * Where herdr-app would name an unnamed space from: its first terminal's
+ * folder, else the space's own folder (`Model::space_name`). herdr-app takes
+ * the git top of the terminal's checkout; the plugin has no git top over the
+ * wire, so it takes the terminal's cwd (`foreground.cwd`, else `cwd`), and
+ * the caller tests that for being the vault root or inside it.
+ */
+function unnamedSpaceFolder(space: HcSpace, terminalCwd: HcScopeOptions['terminalCwd']): string {
+	const cwd = space.firstTerminal ? terminalCwd?.(space.firstTerminal) : undefined;
+	return cwd || space.folder;
+}
+
+/** The last path segment, as herdr-app's `folder_name` shows a folder. */
+function lastSegment(path: string): string {
+	return path.split('/').filter((part) => part.length > 0).pop() ?? '';
+}
+
+/**
+ * ADR-0005's scope order: override, space named like the vault, an unnamed
+ * space whose first terminal runs in the vault, then cwd under the root.
+ */
 export function resolveHcScope(spaces: readonly HcSpace[], options: HcScopeOptions): HcScopeResolution {
 	const override = options.space?.trim() ?? '';
 	if (override) {
@@ -445,7 +496,17 @@ export function resolveHcScope(spaces: readonly HcSpace[], options: HcScopeOptio
 		if (match) return { kind: 'space', id: match.id, name: match.name || null, method: 'label' };
 	}
 	const root = options.root.trim();
-	if (root) return { kind: 'cwd', root, method: 'cwd' };
+	if (root) {
+		// herdr-app shows an unnamed space under its first terminal's checkout
+		// folder, so the space Herdr UI calls "hvelv" can have `name: ""` in
+		// the document. Several can qualify; the first in document order
+		// (Herdr UI's sidebar order) wins.
+		const unnamed = spaces.find(
+			(space) => space.name.trim() === '' && isUnder(unnamedSpaceFolder(space, options.terminalCwd), root),
+		);
+		if (unnamed) return { kind: 'space', id: unnamed.id, name: lastSegment(root) || null, method: 'label' };
+		return { kind: 'cwd', root, method: 'cwd' };
+	}
 	return { kind: 'none', method: 'none' };
 }
 
