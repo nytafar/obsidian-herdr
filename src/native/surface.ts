@@ -215,6 +215,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
 			resolveUri: (uri) => this.resolveUri(uri),
 			folds: this.folds,
+			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
 			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
 		});
 		this.todo = new TodoChip(root);
