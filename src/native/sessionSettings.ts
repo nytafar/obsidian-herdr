@@ -55,6 +55,12 @@ export interface SessionSettingsSender {
 	/** Why this pane's settings cannot be changed now, beyond its status, or null. */
 	unavailable?(paneId: string): string | null;
 	/**
+	 * Whether the pane's screen is the sender's now, or was a moment ago:
+	 * herdr calls Claude's picker `blocked`, and the waiting card reads and
+	 * draws nothing for it (review of #169).
+	 */
+	screenHeld?(paneId: string): boolean;
+	/**
 	 * Switches the model, by a name the agent takes (`AgentFormat.models`).
 	 * `ask` puts a question the agent asks on the way to the user ("Switch
 	 * model?" on herdr and herdr-core, #169); a "no" settles without a change

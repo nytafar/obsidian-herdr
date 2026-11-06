@@ -52,6 +52,8 @@ describe('the model picker', () => {
 			const picker = parse(`${p}model-picker.txt`) as ModelPickerScreen;
 			expect(rowsOf(picker)).toEqual(OPENED);
 			expect(picker.cursor).toBe(5);
+			// Rows 11-13 are hidden below (`↓ 10.`, `… +3 models`).
+			expect([picker.above, picker.below]).toEqual([false, true]);
 		});
 		it(`${p}model-picker-back: "No, go back" is the picker again, on the current model`, () => {
 			const picker = parse(`${p}model-picker-back.txt`) as ModelPickerScreen;
@@ -64,8 +66,36 @@ describe('the model picker', () => {
 			const picker = parse(`${p}model-picker-scrolled.txt`) as ModelPickerScreen;
 			expect(rowsOf(picker)).toEqual([...OPENED.slice(1), '11 Opus 4.7']);
 			expect(picker.cursor).toBe(11);
+			expect([picker.above, picker.below]).toEqual([true, true]);
 		});
 	}
+
+	it('herdr-model-picker-no-effort: the cursor on a model that takes no effort', () => {
+		const picker = parse('herdr-model-picker-no-effort.txt') as ModelPickerScreen;
+		expect(rowsOf(picker)).toEqual(OPENED);
+		expect(picker.cursor).toBe(6);
+		expect([picker.above, picker.below]).toEqual([false, true]);
+	});
+
+	it('hc-model-picker-scrolled-end: the end of the list, rows hidden above only', () => {
+		const picker = parse('hc-model-picker-scrolled-end.txt') as ModelPickerScreen;
+		expect(rowsOf(picker)).toEqual([
+			'4 Sonnet 5.5',
+			'5 Haiku 5.5',
+			'6 Haiku 4.5',
+			'7 Sonnet 5',
+			'8 Opus 5',
+			'9 Fable 5',
+			'10 Opus 4.8',
+			'11 Opus 4.7',
+			'12 Opus 4.6',
+			'13 Opus 4.5 *',
+		]);
+		expect(picker.cursor).toBe(13);
+		expect([picker.above, picker.below]).toEqual([true, false]);
+		// The newest Opus in sight is not the newest Opus: the driver reads the rest first.
+		expect(CLAUDE_SCREEN_SETTINGS.modelRow({ value: 'opus', label: 'Opus' }, picker.rows)?.label).toBe('Opus 5');
+	});
 
 	it('finds the row a choice means by name: the newest of its family, never the default row', () => {
 		const picker = parse('herdr-60-model-picker.txt') as ModelPickerScreen;
@@ -163,6 +193,39 @@ describe('the prompt and its footer', () => {
 		});
 		// Before anything was sent: no history.
 		expect((parse('hc-footer-manual.txt') as PromptScreen).last).toBeNull();
+	});
+
+	it("tells an empty input, Claude's suggestion and a draft apart", () => {
+		const input = (name: string): Pick<PromptScreen, 'input' | 'inputText'> => {
+			const prompt = parse(name) as PromptScreen;
+			return { input: prompt.input, inputText: prompt.inputText };
+		};
+		expect(input('herdr-footer-manual.txt')).toEqual({ input: 'placeholder', inputText: 'Try "how does <filepath> work?"' });
+		expect(input('hc-60-footer-manual.txt')).toEqual({ input: 'placeholder', inputText: 'Try "how does <filepath> work?"' });
+		for (const name of ['herdr-footer-plan.txt', 'hc-footer-plan.txt', 'herdr-footer-auto.txt']) {
+			expect(input(name)).toEqual({ input: 'empty', inputText: '' });
+		}
+		const typed = (line: string): SettingsScreen =>
+			parseClaudeSettingsScreen(
+				screen('herdr-footer-manual.txt').replace('❯\u00a0Try "how does <filepath> work?"', line),
+			);
+		expect(typed('❯\u00a0fix the failing test in parser')).toMatchObject({ input: 'draft', inputText: 'fix the failing test in parser' });
+		expect(typed('❯\u00a0Try "x" now')).toMatchObject({ input: 'draft' });
+		expect(typed('❯\u00a0/model')).toMatchObject({ input: 'draft' });
+		expect(typed('❯\u00a0Try "x"\n  and a second line')).toMatchObject({ input: 'draft', inputText: 'Try "x"\n  and a second line' });
+	});
+
+	it('on a styled read, tells the dim suggestion from the same words typed', () => {
+		const words = 'Try "edit <filepath> to..."';
+		expect(CLAUDE_SCREEN_SETTINGS.placeholderStyled?.(screen('herdr-prompt-placeholder.ansi'), words)).toBe(true);
+		expect(CLAUDE_SCREEN_SETTINGS.placeholderStyled?.(screen('herdr-prompt-draft.ansi'), words)).toBe(false);
+		// Words the input does not show are not judged.
+		expect(CLAUDE_SCREEN_SETTINGS.placeholderStyled?.(screen('herdr-prompt-placeholder.ansi'), 'Try "other"')).toBeNull();
+		// The text reads of both are one and the same.
+		const plain = (name: string): string =>
+			// eslint-disable-next-line no-control-regex -- stripping SGR sequences
+			screen(name).replace(/\u001b\[[0-9;]*m/g, '').split('\n').find((line) => line.startsWith('❯')) ?? '';
+		expect(plain('herdr-prompt-placeholder.ansi')).toBe(plain('herdr-prompt-draft.ansi'));
 	});
 
 	it('reads a footer it does not know as no mode', () => {

@@ -50,6 +50,7 @@ import {
 } from './promptSender';
 import type { SessionHandleOf, SessionModels, SessionModelView, Unsubscribe } from './sessionModel';
 import { clearTimer, setTimer } from '../timers';
+import { onPaneGateChange } from './paneGate';
 
 /** One prompt the plugin holds for a pane. */
 export interface QueuedPrompt {
@@ -109,6 +110,8 @@ export class PaneQueue {
 	private awaitingTurn = false;
 	private graceTimer: unknown = null;
 	private suspended = 0;
+	/** {@link retry} was asked while a row was on its way. */
+	private retryAfter = false;
 	private nextId = 1;
 	private readonly listeners = new Set<() => void>();
 
@@ -218,6 +221,17 @@ export class PaneQueue {
 		};
 	}
 
+	/**
+	 * Tries the oldest row again where nothing else would: the pane gate
+	 * opened (review of #169), after a held row was held back for it.
+	 */
+	retry(): void {
+		// A row on its way may yet be held back for what just changed: try
+		// again once it is.
+		if (this.delivering) this.retryAfter = true;
+		else this.pump();
+	}
+
 	/** Stops waiting; the rows go with the plugin. */
 	dispose(): void {
 		this.clearGrace();
@@ -235,14 +249,20 @@ export class PaneQueue {
 
 	private async deliver(row: QueuedPrompt): Promise<void> {
 		this.delivering = true;
+		this.retryAfter = false;
 		this.update(row.id, { sending: true });
 		try {
 			await this.options.send(row.text, row.images, { held: true });
 		} catch (error) {
 			this.delivering = false;
 			if (error instanceof PromptHeldBack) {
-				// Not now: the next transition out of `working` tries again.
+				// Not now: the next transition out of `working` tries again,
+				// or the pane gate opening meanwhile.
 				this.update(row.id, { sending: false });
+				if (this.retryAfter) {
+					this.retryAfter = false;
+					this.pump();
+				}
 			} else this.fail(row.id, error);
 			return;
 		}
@@ -317,6 +337,8 @@ export interface PromptQueuesOptions {
 	notify?: (message: string) => void;
 	timers?: QueueTimers;
 	turnGraceMs?: number;
+	/** Listens for the pane gate opening or shutting; the plugin's gate by default. */
+	gateChanges?: (listener: () => void) => () => void;
 }
 
 /** The registry key of a pane on a runtime; a newline is in neither id. */
@@ -331,8 +353,17 @@ function queueKey(endpointId: string, paneId: string): string {
  */
 export class PromptQueues implements PromptQueueSource {
 	private readonly queues = new Map<string, { queue: PaneQueue; release: () => void }>();
+	/** Stops listening to the pane gate. */
+	private readonly gateOff: () => void;
 
-	constructor(private readonly options: PromptQueuesOptions) {}
+	constructor(private readonly options: PromptQueuesOptions) {
+		// A row held back while the session bar drove a picker (the pane gate,
+		// review of #169) goes once the gate opens, with no status change to
+		// wake it.
+		this.gateOff = (options.gateChanges ?? onPaneGateChange)(() => {
+			for (const entry of this.queues.values()) entry.queue.retry();
+		});
+	}
 
 	queue(endpointId: string, paneId: string): PaneQueue {
 		const key = queueKey(endpointId, paneId);
@@ -364,6 +395,7 @@ export class PromptQueues implements PromptQueueSource {
 
 	/** Drops every queue and lets every model go. `onunload` only. */
 	dispose(): void {
+		this.gateOff();
 		for (const entry of this.queues.values()) {
 			entry.release();
 			entry.queue.dispose();

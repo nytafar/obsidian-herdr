@@ -32,6 +32,7 @@ import type { PaneQueue, PromptQueueSource } from './promptQueue';
 import { QueueRows } from './queueRows';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
+import { onPaneGateChange } from './paneGate';
 import type { SessionSettingsSender, SettingQuestion } from './sessionSettings';
 import { ConfirmModal } from '../views/modals';
 import type { ContextUsageReader } from './contextBreakdown';
@@ -214,6 +215,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private queueOff: (() => void) | null = null;
 	/** The session bar under the prompt box (#161); null while detached. */
 	private sessionBar: SessionBar | null = null;
+	/** Stops listening to the pane gate (`./paneGate.ts`); null while detached. */
+	private gateOff: (() => void) | null = null;
 	/** What the model does not hold, above the first turn (#152); null while detached. */
 	private earlierBar: EarlierTurnsBar | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
@@ -257,6 +260,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			vaultPath: options.vaultPath,
 			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
 			setPromptHidden: (hidden) => this.promptBox?.setHidden(hidden),
+			// herdr calls Claude's picker `blocked` while the session bar drives
+			// it, and a moment after: no card is read or drawn for it (#169).
+			screenHeld: () => this.options.sessionSettings?.()?.screenHeld?.(this.identity.paneId) ?? false,
 			notify: (message) => this.notify(message),
 		});
 	}
@@ -346,6 +352,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			sender: this.options.sender,
 			queue: () => this.queue,
 			onInput: this.options.onPromptInput,
+			notify: (message) => this.notify(message),
 		});
 		this.promptBox.mount(root);
 		// Its own row, not the box's: the waiting card hides the box and the
@@ -354,19 +361,33 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			paneId: () => this.identity.paneId,
 			sender: () => this.heldWhilePicking(this.options.sessionSettings?.() ?? null),
 			contextUsage: () => this.options.contextUsage?.() ?? null,
-			// `/context` on herdr and herdr-core: the prompt's own path (#171).
+			// `/context` on herdr and herdr-core: the prompt's own path (#171),
+			// behind the pane gate like every prompt (review of #169).
 			sendCommand: (paneId, text) => this.options.sender.send(paneId, text),
+			sendBlocked: (paneId) => this.options.sender.blocked?.(paneId) ?? null,
 			notify: (message) => this.notify(message),
+			// Claude's own words on both buttons (#169).
 			confirm: (question) =>
 				this.options.confirmSetting
 					? this.options.confirmSetting(question)
-					: new ConfirmModal(this.options.app, { title: question.title, body: question.body, confirm: question.confirm }).ask(),
+					: new ConfirmModal(this.options.app, {
+							title: question.title,
+							body: question.body,
+							confirm: question.confirm,
+							cancel: question.cancel,
+						}).ask(),
 		});
 		this.sessionBar.mount(root);
+		// The pane gate opened or shut (review of #169): what may be sent, and
+		// whether the waiting card may read the screen, follow it.
+		this.gateOff?.();
+		this.gateOff = onPaneGateChange(() => this.updateStatus());
 		this.bind();
 	}
 
 	async detach(): Promise<void> {
+		this.gateOff?.();
+		this.gateOff = null;
 		this.unbind();
 		this.waiting.detach();
 		this.promptBox?.destroy();
@@ -768,6 +789,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		if (!root) return;
 		const status = this.model?.agentStatus ?? 'unknown';
 		this.promptBox?.setStatus(status);
+		this.promptBox?.refresh();
 		this.queueRows?.render();
 		this.waiting.update(root, status);
 		this.lines?.updateStatus(status);

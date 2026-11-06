@@ -31,6 +31,13 @@ export interface ModelPickerScreen {
 	rows: PickerRow[];
 	/** The number of the row under the cursor. */
 	cursor: number;
+	/**
+	 * Whether rows are hidden above or below the ones shown (`↑ 2.`, `↓ 10.`,
+	 * `… +3 models`): a choice is made only from the whole list, so the
+	 * driver scrolls through them first.
+	 */
+	above: boolean;
+	below: boolean;
 }
 
 /** The effort slider (`/effort` with no argument). */
@@ -75,6 +82,17 @@ export interface PromptScreen {
 	kind: 'prompt';
 	/** The permission mode the footer shows, in the agent's word, or null when it shows none it knows. */
 	mode: string | null;
+	/**
+	 * What the input holds: nothing, the agent's own grey suggestion (Claude's
+	 * `Try "…"`), or a draft someone typed, which a command sent now would be
+	 * sent after, as one prompt. On a text read a draft that reads exactly
+	 * like a suggestion cannot be told from one; where the runtime reads
+	 * styles the driver checks the suggestion is drawn dim
+	 * ({@link ScreenSettingsReader.placeholderStyled}).
+	 */
+	input: 'empty' | 'placeholder' | 'draft';
+	/** The input's text as read, its lines joined with `\n`; '' when empty. */
+	inputText: string;
 	/**
 	 * The newest prompt or command in the history above the prompt, as echoed
 	 * (`/model`, `/effort high`), and what it printed under it, or null when
@@ -121,4 +139,10 @@ export interface ScreenSettingsReader {
 	 * words: the ones a picker can reach this way.
 	 */
 	readonly cycleModes: readonly string[];
+	/**
+	 * Whether the input's suggestion, on a screen read with its styles (ANSI),
+	 * is drawn as the agent draws a suggestion and not as typed text: true,
+	 * false, or null when the styled screen shows no suggestion to judge.
+	 */
+	placeholderStyled?(styled: string, placeholder: string): boolean | null;
 }

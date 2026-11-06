@@ -102,6 +102,25 @@ dialog.
 | `model-picker-back` | `esc` on the confirm: the picker again, cursor on the current model |
 | `footer-accept-edits`, `-plan`, `-auto` | `shift+tab` once, twice, three times |
 
+### Added with the safety review of #169 and #170
+
+Recorded 2026-11-06 by hand from the `oh-test-fix169-herdr` herdr tab (233
+columns, `pane.read {source: visible}`) on another account, scrubbed as
+above (`Claude Team` → `Claude Pro`), except
+`hc-model-picker-scrolled-end`, read by the review from the
+`oh-test-settings-hc` terminal. The scenario has a step for each.
+
+| File | State when read |
+| --- | --- |
+| `hc-model-picker-scrolled-end` | wide only: `down` ×8, cursor on the last row (13), `↑ 4.` on top, nothing below |
+| `herdr-model-picker-no-effort` | `down` once, cursor on Haiku 4.5: `○ Effort not supported for Haiku 4.5` |
+| `herdr-prompt-placeholder.ansi` | `format: ansi`: the empty input with Claude's dim suggestion `Try "edit <filepath> to..."` |
+| `herdr-prompt-draft.ansi` | the same words typed: plain. The text reads of the two are identical |
+
+The scenario types `Try "edit <filepath> to..."` for the draft; a session
+that suggests other words records a draft that is not a look-alike, and
+`tests/settingsScreen.test.ts` then needs the words of the new suggestion.
+
 ## Re-recording for a new Claude (issue #168)
 
 `npm run record-screens` re-records this set for the Claude Code on the PATH

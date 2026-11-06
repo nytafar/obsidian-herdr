@@ -828,6 +828,25 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
+ * Why nothing goes into the pane (review of #169): a change is driving one of
+ * Claude's pickers, or one may still be open in the terminal. Its own line
+ * under the pickers, in the warning colour, only while it says something.
+ */
+.herdr-native-session-bar:has(.herdr-native-session-note:not(.herdr-is-hidden)) {
+	flex-wrap: wrap;
+}
+
+.herdr-native-session-note {
+	color: var(--text-warning);
+	flex: 1 0 100%;
+	order: 1;
+}
+
+.herdr-native-session-note.herdr-is-hidden {
+	display: none;
+}
+
+/*
  * The context breakdown (#171): a popover over the bar's far end, the
  * agent's categories as a table. The bar is its anchor; the table takes the
  * reading view's own table styles from the `markdown-rendered` ancestor.

@@ -355,13 +355,29 @@ export function narrowSteps(p: string, t: NarrowTexts): Step[] {
 export function settingsSteps(p: string, wide: boolean): Step[] {
 	return [
 		{ do: 'record', name: `${p}footer-manual`, expect: null, until: 'manual mode on' },
+		...(wide
+			? ([
+					// Claude's dim suggestion in the empty input, then the same words
+					// typed: one text read, two styled ones (herdr only reads styles).
+					{ do: 'record', name: `${p}prompt-placeholder`, expect: null, until: 'manual mode on', ansi: true },
+					{ do: 'type', text: 'Try "edit <filepath> to..."' },
+					{ do: 'record', name: `${p}prompt-draft`, expect: null, until: 'manual mode on', ansi: true },
+					{ do: 'keys', keys: ['ctrl+u'] },
+				] satisfies Step[])
+			: []),
 		{ do: 'command', text: '/model' },
 		{ do: 'record', name: `${p}model-picker`, expect: null, until: 'Select model' },
 		...(wide
 			? ([
+					// Haiku 4.5 takes no effort: the effort row says so instead.
+					{ do: 'keys', keys: DOWN(1) },
+					{ do: 'record', name: `${p}model-picker-no-effort`, expect: null, until: 'Effort not supported' },
 					// Past row 10 the list scrolls: `↑ 2.` on top, `… +2 models` under it.
-					{ do: 'keys', keys: DOWN(6) },
+					{ do: 'keys', keys: DOWN(5) },
 					{ do: 'record', name: `${p}model-picker-scrolled`, expect: null, until: '↑ 2.' },
+					// At the end of the list: rows hidden above only.
+					{ do: 'keys', keys: DOWN(2) },
+					{ do: 'record', name: `${p}model-picker-scrolled-end`, expect: null, until: '↑ 4.' },
 				] satisfies Step[])
 			: []),
 		{ do: 'answer', keys: ['esc'] },

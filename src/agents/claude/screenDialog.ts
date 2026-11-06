@@ -509,8 +509,12 @@ const MODEL_ROW = /^ {3}([❯↑↓ ]) (\d+)\.\s+(\S.*)$/;
 const CURRENT_TICK = ' ✔';
 /** The `… +3 models` line under a scrolled list. */
 const MORE_MODELS = /^ +… \+\d+ models?$/;
-/** The effort row inside the model picker (`◐ Medium effort (default) ←/→ to adjust`). */
-const EFFORT_ROW = /^ {3}\S+ .*effort.* ←\/→ to adjust$/;
+/**
+ * The effort row inside the model picker (`◐ Medium effort (default) ←/→ to
+ * adjust`), or, with the cursor on a model that takes none, `○ Effort not
+ * supported for Haiku 4.5` (fixture `herdr-model-picker-no-effort`).
+ */
+const EFFORT_ROW = /^ {3}\S+ (?:.*effort.* ←\/→ to adjust|Effort not supported for .+)$/;
 const SWITCH_ROW = /^ {3}([❯ ]) ([12])\. (\S.*)$/;
 const SWITCH_YES = /^Yes, switch to (.+)$/;
 const SWITCH_NO = 'No, go back';
@@ -557,6 +561,7 @@ function parseModelPicker(region: string[]): ModelPickerScreen | null {
 		at++;
 	}
 	const rows: PickerRow[] = [];
+	const marks: string[] = [];
 	let cursor: number | null = null;
 	let cursors = 0;
 	for (; at < region.length; at++) {
@@ -575,17 +580,23 @@ function parseModelPicker(region: string[]): ModelPickerScreen | null {
 			cursors++;
 		}
 		rows.push({ number, label, current });
+		marks.push(row[1] ?? ' ');
 		// A description wraps under its own column, past the name's.
 		const column = line.length - text.length + named.length;
 		while (at + 1 < region.length && describes(region[at + 1] ?? '', column)) at++;
 	}
-	if (MORE_MODELS.test(region[at] ?? '')) at++;
+	const more = MORE_MODELS.test(region[at] ?? '');
+	if (more) at++;
 	if (EFFORT_ROW.test(region[at] ?? '')) at++;
 	const hint = region.slice(at);
 	if (hint.length === 0 || !hint.every((line) => /^ {3}\S/.test(line)) || joinWrapped(hint) !== MODEL_HINT) return null;
 	if (rows.length < 2 || cursors !== 1 || cursor === null) return null;
 	if (rows.filter((row) => row.current).length > 1) return null;
-	return { kind: 'model-picker', rows, cursor };
+	// A scrolled list marks the first row shown `↑` and the last `↓`, with
+	// `… +N models` under it; a list that does not start at 1 is scrolled too.
+	const above = marks[0] === '↑' || (rows[0]?.number ?? 1) > 1;
+	const below = marks[marks.length - 1] === '↓' || more;
+	return { kind: 'model-picker', rows, cursor, above, below };
 }
 
 /** A line of a description wrapped under a model row: indented past the row's name. */
@@ -675,7 +686,64 @@ function parsePrompt(lines: string[]): PromptScreen | null {
 	if (top < 0 || !(lines[top + 1] ?? '').startsWith(CURSOR)) return null;
 	const footer = lines[lines.length - 1] ?? '';
 	const mode = FOOTER_MODES.find(([pattern]) => pattern.test(footer))?.[1] ?? null;
-	return { kind: 'prompt', mode, last: lastEcho(lines.slice(0, top)) };
+	const { input, inputText } = promptInput(lines.slice(top + 1, bottom));
+	return { kind: 'prompt', mode, input, inputText, last: lastEcho(lines.slice(0, top)) };
+}
+
+/**
+ * Claude's suggestion in an empty input, drawn dim after the prompt glyph:
+ * `Try "how does <filepath> work?"`, `Try "edit <filepath> to..."`.
+ */
+const PLACEHOLDER = /^Try "[^"]*"$/;
+
+/**
+ * What the input between the prompt's rules holds, from its lines with their
+ * trailing blanks (the no-break space after `❯` among them) trimmed: `❯`
+ * alone is empty; one line `❯\u00a0Try "…"` is Claude's suggestion; anything
+ * else, a second line included, is a draft. On a text read a draft typed to
+ * read exactly like a suggestion is taken for one; where the runtime reads
+ * styles the driver checks it is drawn dim ({@link placeholderStyled}).
+ */
+function promptInput(box: readonly string[]): Pick<PromptScreen, 'input' | 'inputText'> {
+	const first = box[0] ?? '';
+	const text = [first.slice(CURSOR.length).replace(/^\s+/, ''), ...box.slice(1)].join('\n');
+	if (box.length === 1 && text === '') return { input: 'empty', inputText: '' };
+	if (box.length === 1 && first.startsWith(`${CURSOR}\u00a0`) && PLACEHOLDER.test(text)) {
+		return { input: 'placeholder', inputText: text };
+	}
+	return { input: 'draft', inputText: text };
+}
+
+/** An SGR sequence at the start of a string, and anywhere in one. */
+// eslint-disable-next-line no-control-regex -- an escape sequence is the point
+const SGR_AT_START = /^\u001b\[([0-9;]*)m/;
+// eslint-disable-next-line no-control-regex -- an escape sequence is the point
+const SGR_ANYWHERE = /\u001b\[[0-9;]*m/g;
+
+/**
+ * Whether `placeholder` is drawn dim after the prompt glyph on a styled
+ * (ANSI) read, as Claude draws its suggestion, and not plain, as typed text
+ * is: true or false, or null when no input line shows that text. Measured on
+ * 2.1.318 and herdr 0.9.5 (`pane.read format: ansi`): the suggestion is
+ * `❯\u00a0ESC[0mESC[2mTry "…"ESC[0m`, the same words typed are
+ * `❯\u00a0Try "…"`.
+ */
+export function placeholderStyled(styled: string, placeholder: string): boolean | null {
+	for (const raw of styled.split('\n')) {
+		const line = raw.replace(/\r$/, '');
+		if (!line.startsWith(`${CURSOR}\u00a0`)) continue;
+		let rest = line.slice(CURSOR.length + 1);
+		let dim = false;
+		for (let match = SGR_AT_START.exec(rest); match; match = SGR_AT_START.exec(rest)) {
+			const params = (match[1] ?? '').split(';');
+			if (params.includes('2')) dim = true;
+			else if (params.some((param) => param === '' || param === '0' || param === '22')) dim = false;
+			rest = rest.slice(match[0].length);
+		}
+		if (rest.replace(SGR_ANYWHERE, '').replace(/\s+$/, '') !== placeholder) continue;
+		return dim;
+	}
+	return null;
 }
 
 /**
@@ -752,6 +820,7 @@ export const CLAUDE_SCREEN_SETTINGS: ScreenSettingsReader = {
 		return best?.row ?? null;
 	},
 	isModel: (choice, label) => modelName(label)?.family === choice.value.toLowerCase(),
+	placeholderStyled,
 	sameMode(a, b) {
 		const plain = (mode: string): string => (mode === 'manual' ? 'default' : mode);
 		return plain(a) === plain(b);

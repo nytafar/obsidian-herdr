@@ -549,7 +549,7 @@ describe('screen dialogs: the settings pickers and footers (#169, #170) are no d
 	// Read by `parseClaudeSettingsScreen` (`tests/settingsScreen.test.ts`); the
 	// answer driver must never take one for a dialog to answer.
 	const names = readdirSync(DIR).filter((file) => /-(model-picker|effort-picker|switch-model|footer-)/.test(file));
-	it('has them', () => expect(names.length).toBe(38));
+	it('has them', () => expect(names.length).toBe(40));
 	for (const name of names) fixture(name, (dialog) => expect(dialog.kind).toBe('unknown'));
 });
 

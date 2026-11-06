@@ -2126,6 +2126,52 @@ mode menu opens and after every change, until the transcript's next prompt
 says a mode; before that the transcript's mode carries "(at the last
 prompt)" in its tooltip. One change per pane at a time, plugin-wide.
 
+Since the safety review of #169 and #170:
+
+- **The pane gate** (`src/native/paneGate.ts`). A change claims its pane for
+  its whole run, and every prompt the views type into a herdr or hc pane
+  waits on the same gate: the kinds' prompt senders are wrapped
+  (`gatePromptSender`), so the prompt box, the readout's `/context`, the
+  queue's automatic delivery and its Send now (#159), and an image prompt
+  all refuse with the gate's words, and a change does not start while one of
+  them is on its way. The driver sends its own command through the
+  unwrapped sender. No status could do this: hc's `terminal.send` of the
+  driver's `/model` is pending about 5 s while hc reports `done`, and herdr
+  says `blocked` only once the picker is drawn. A change that touched the
+  terminal and ended on anything but the plain prompt (`s` not taking,
+  Claude's line never coming, a picker that would not close) keeps the pane
+  shut, whatever it reported: the driver reads every second (every 5 s after
+  a minute) and opens it when a read shows the prompt, or when the
+  connection is another. The bar says why under the pickers; the box's Send
+  is disabled with the same words; a queued row waits silently and goes
+  when the gate opens. While a change runs, and 2 s after one that touched
+  the terminal, the waiting card neither reads nor draws (herdr's `blocked`
+  for the picker); a pane shut after a failure is not held, so the card
+  sends the user to the terminal.
+- **Nothing is sent after a draft.** A command goes only into an input that
+  holds nothing (`❯` alone) or Claude's suggestion: one line `❯` + no-break
+  space + `Try "…"`. Anything else, a second line included, is a draft, and
+  the change refuses ("…holds a draft…; nothing was changed"); the mode,
+  which sends no text, goes ahead. On a text read a draft typed to read
+  exactly like the suggestion cannot be told from it, so on herdr the
+  driver also reads the screen with its styles (`pane.read {format:
+  ansi}`, `ScreenAccess.readStyled`) and takes the suggestion only when it
+  is drawn dim (`placeholderStyled`). hc reads text only; there the
+  look-alike draft is the one case taken for the suggestion. A picker that
+  never opened after the command, or a turn the command started, is
+  reported as such with "look in the terminal", never "nothing was
+  changed".
+- **A model is chosen from the whole list.** When the picker shows rows
+  hidden above (`↑ N.`, a first row past 1) or below (`↓ N.`, `… +N
+  models`), the driver moves the cursor up to the top and down to the end,
+  one key and one read at a time, before it picks; the choice is the newest
+  `<Family> <version>` of all rows, and Claude's line must name that model,
+  not merely the row moved to. Moves change nothing Claude acts on (ADR-0009
+  §2).
+- **The mode cycle** reads the agent's status before every `shift+tab` and
+  stops on anything but `idle` or `done`, naming the mode the footer last
+  showed. "Already current" exits that could not close the picker say so.
+
 **The `claude` kind's sender (#162)** is control requests over the agent's
 headless process (`ClaudeProcess.sessionControl`, built by
 `sessionControlRequest` and written through `encodeLine`): `set_model`,
@@ -2288,6 +2334,27 @@ before it, so no model call):
 - **herdr 0.9.5 reports `agent_session` at `agent start`**, before any
   prompt (source `herdr:claude`), unlike 0.8.2 below; the transcript file
   appears with the first prompt or slash command.
+- **The input's suggestion and a draft, measured 2026-11-06** (2.1.318,
+  herdr 0.9.5, hc 0.1.18, `oh-test-fix169-*` in `/tmp`, haiku). A fresh
+  session shows `❯` + no-break space + `Try "edit <filepath> to..."` (the
+  words vary per session); the same words typed read the same on
+  `format: text` and on hc's `terminal.read`. herdr's `format: ansi` draws
+  the suggestion `ESC[0mESC[2m…ESC[0m` (dim) and typed text plain
+  (fixtures `herdr-prompt-placeholder.ansi`, `herdr-prompt-draft.ansi`).
+  The suggestion comes back when the input is cleared (`ctrl+u`) and is gone
+  after a command has run (`❯` alone). `· ← for agents` after the footer's
+  mode shows on a fresh session only and is no signal for either.
+- **A model that takes no effort** draws its effort row as `○ Effort not
+  supported for Haiku 4.5` while the cursor is on it (fixture
+  `herdr-model-picker-no-effort`); the list is the same on another account
+  but for its last row (row 13 was Sonnet 4.6 on one, Opus 4.5 on the
+  other), and `… +1 model` is singular. Reading the whole 13-row list and
+  switching from row 13 to Opus 5.5 for this session took 2.2 s on herdr
+  and 7.0 s on hc (5 s of it the `/model` send). With the pane gate live, a
+  prompt sent while a change ran, and while a picker was left open (`s`
+  withheld by the check), was refused with the gate's words on both
+  runtimes, and the gate opened within a second of `esc` in the terminal;
+  `settings.json` stayed byte-identical through all of it.
 
 ## A second agent: Codex
 

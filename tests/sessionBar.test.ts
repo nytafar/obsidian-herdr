@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { hostEl, type FakeElement } from './fixtures/dom';
-import { MarkdownRenderer, Menu } from './fixtures/obsidian';
+import { builtSettings, MarkdownRenderer, Menu } from './fixtures/obsidian';
+import { ConfirmModal } from '../src/views/modals';
 import { CLAUDE_FORMAT } from '../src/agents/claude/format';
 import { emptyTranscript, reduce, type TranscriptState } from '../src/agents/claude/transcript';
 import type { AgentFormat } from '../src/agents/format';
@@ -484,6 +485,112 @@ describe('the session bar in the native surface (#161)', () => {
 		await surface.attach(host);
 		await surface.detach();
 		expect(el.findAll('herdr-native-session-bar')).toEqual([]);
+	});
+});
+
+describe('the pane gate in the view (review of #169)', () => {
+	beforeEach(() => {
+		vi.stubGlobal('window', globalThis);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const REASON = "Claude's picker may still be open in the terminal; Gjetr sends nothing to this pane until it is closed there.";
+
+	it('sends nothing from the prompt box or the readout while the gate is shut, and says why on the bar', async () => {
+		const model = new FakeModel();
+		const sent: string[] = [];
+		let reason: string | null = REASON;
+		const sender = {
+			send: async (paneId: string, text: string) => void sent.push(`${paneId} ${text}`),
+			blocked: () => reason,
+		};
+		const { surface, el, host, notices } = surfaceOn(model, new FakeSender(), { sender });
+		await surface.attach(host);
+		model.read(LINES.slice(0, 4));
+
+		const send = el.find('herdr-native-prompt-send');
+		expect(send.disabled).toBe(true);
+		expect(send.getAttribute('aria-label')).toBe(REASON);
+		const input = el.find('herdr-native-prompt-input');
+		input.value = 'hello';
+		input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
+		await settle();
+		expect(sent).toEqual([]);
+		expect(input.value).toBe('hello');
+		expect(notices).toEqual([`Gjetr: could not send the prompt (${REASON})`]);
+
+		const readout = el.find('herdr-native-session-context');
+		expect(readout.disabled).toBe(true);
+		readout.dispatch('click');
+		await settle();
+		expect(sent).toEqual([]);
+
+		const note = el.find('herdr-native-session-note');
+		expect(note.textContent).toBe(REASON);
+		expect(note.hasClass('herdr-is-hidden')).toBe(false);
+
+		// The gate opens: the view follows on its next update.
+		reason = null;
+		model.emit();
+		expect(send.disabled).toBe(false);
+		expect(send.getAttribute('aria-label')).toBeNull();
+		expect(readout.disabled).toBe(false);
+		expect(note.hasClass('herdr-is-hidden')).toBe(true);
+		input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
+		await settle();
+		expect(sent).toEqual(['w4:p1 hello']);
+	});
+
+	it("draws no waiting card, and reads no screen, while the session bar's change holds it", async () => {
+		const model = new FakeModel();
+		let held = true;
+		let reads = 0;
+		const sender = new FakeSender() as FakeSender & { screenHeld: () => boolean };
+		sender.screenHeld = () => held;
+		const { surface, el, host } = surfaceOn(model, sender, {
+			screen: () => {
+				reads++;
+				return null;
+			},
+		});
+		await surface.attach(host);
+		model.read(LINES.slice(0, 3));
+		// herdr calls Claude's picker `blocked`.
+		model.agentStatus = 'blocked';
+		model.emit();
+		expect(el.findAll('herdr-native-waiting')).toEqual([]);
+		expect(reads).toBe(0);
+		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(false);
+
+		held = false;
+		model.emit();
+		expect(el.findAll('herdr-native-waiting')).toHaveLength(1);
+		expect(reads).toBe(1);
+		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(true);
+	});
+});
+
+describe("the confirm in Claude's words (review of #169)", () => {
+	it('names both buttons as Claude does', () => {
+		const modal = new ConfirmModal({} as App, {
+			title: 'Switch model?',
+			body: 'Switching to Sonnet 5.5 means the full history gets re-read.',
+			confirm: 'Yes, switch to Sonnet 5.5',
+			cancel: 'No, go back',
+		});
+		modal.onOpen();
+		const buttons = builtSettings(modal.contentEl).flatMap((row) => row.components) as unknown as { text: string }[];
+		expect(buttons.map((button) => button.text)).toEqual(['No, go back', 'Yes, switch to Sonnet 5.5']);
+	});
+
+	it('keeps Cancel where a question has no word of its own for it', () => {
+		const modal = new ConfirmModal({} as App, { title: 'Close?', body: 'Close the pane.', confirm: 'Close' });
+		modal.onOpen();
+		const buttons = builtSettings(modal.contentEl).flatMap((row) => row.components) as unknown as { text: string }[];
+		expect(buttons.map((button) => button.text)).toEqual(['Cancel', 'Close']);
 	});
 });
 

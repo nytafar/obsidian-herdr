@@ -87,6 +87,12 @@ export interface SessionBarOptions {
 	 * readout opens nothing.
 	 */
 	sendCommand?: (paneId: string, text: string) => Promise<void>;
+	/**
+	 * Why nothing may be typed into the pane now (the pane gate, review of
+	 * #169): the readout's context command waits, and the bar says why under
+	 * the pickers, since the prompt box only disables its button.
+	 */
+	sendBlocked?: (paneId: string) => string | null;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -142,6 +148,8 @@ export class SessionBar {
 	private readoutEl: HTMLButtonElement | null = null;
 	private tokensEl: HTMLElement | null = null;
 	private percentEl: HTMLElement | null = null;
+	/** Why nothing may be typed into the pane now, when something stops it. */
+	private noteEl: HTMLElement | null = null;
 	/** True from a click on the readout until the breakdown came or failed. */
 	private contextBusy = false;
 	/** A context command waiting for its output in the transcript. */
@@ -187,6 +195,8 @@ export class SessionBar {
 			void this.openContext();
 		});
 		this.readoutEl = readoutEl;
+		this.noteEl = root.createDiv({ cls: ['herdr-native-session-note', 'herdr-is-hidden'] });
+		this.noteEl.setAttr('role', 'status');
 		this.rootEl = root;
 		this.draw();
 	}
@@ -203,6 +213,7 @@ export class SessionBar {
 		this.readoutEl = null;
 		this.tokensEl = null;
 		this.percentEl = null;
+		this.noteEl = null;
 	}
 
 	/** The session moved: rewrites what changed in place. */
@@ -294,6 +305,11 @@ export class SessionBar {
 			const label = reason ? `${name}: ${value}. ${reason}` : `${name}: ${value}`;
 			if (picker.buttonEl.getAttribute('aria-label') !== label) picker.buttonEl.setAttr('aria-label', label);
 		}
+		const blocked = this.sendBlocked();
+		if (this.noteEl) {
+			setTextIfChanged(this.noteEl, blocked ?? '');
+			this.noteEl.toggleClass('herdr-is-hidden', blocked === null);
+		}
 		const readout = contextReadout(info);
 		if (this.tokensEl) setTextIfChanged(this.tokensEl, readout.tokens);
 		if (this.percentEl) setTextIfChanged(this.percentEl, readout.percent);
@@ -317,7 +333,14 @@ export class SessionBar {
 			paneId: this.options.paneId(),
 			reader: Boolean(this.options.contextUsage?.()),
 			command: this.options.sendCommand ? this.state.format?.contextCommand : undefined,
+			sendBlock: this.sendBlocked(),
 		});
+	}
+
+	/** Why nothing may be typed into the pane now, or null. */
+	private sendBlocked(): string | null {
+		const paneId = this.options.paneId();
+		return paneId ? (this.options.sendBlocked?.(paneId) ?? null) : null;
 	}
 
 	/**
