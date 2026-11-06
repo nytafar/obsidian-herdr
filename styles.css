@@ -328,13 +328,19 @@
 	height: var(--icon-s);
 }
 
-.herdr-agent-kind.mod-brand svg {
+/* Wherever a mark is drawn (rows, the + button's menu, settings), Obsidian
+   gives it the class of its icon id, `herdr-kind-<kind>`, so the fill is keyed
+   on that rather than on the row: in a menu nothing else restores it, and the
+   mark painted black on a dark theme. */
+.herdr-agent-kind.mod-brand svg,
+svg.svg-icon[class*='herdr-kind-'] {
 	fill: currentColor;
 	stroke: none;
 }
 
 /* Lettered fallback badges: the frame is a path, the letter is SVG text. */
-.herdr-agent-kind.mod-brand svg text {
+.herdr-agent-kind.mod-brand svg text,
+svg.svg-icon[class*='herdr-kind-'] text {
 	font-size: 44px;
 	font-weight: var(--font-bold);
 }
