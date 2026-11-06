@@ -46,6 +46,7 @@ import {
 } from './transcriptSource';
 import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
 import type { PendingRequest } from './pendingRequest';
+import { PlanTracker, planFilePath } from './planFile';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
@@ -86,6 +87,12 @@ export interface SessionModelView {
 	 * so a fake need not say it; a missing value is no problem.
 	 */
 	readonly readProblem?: string | null;
+	/**
+	 * Reads the transcript again from its start, on a fresh tail, which is what
+	 * the read-problem line's "Try again" does (#146). Optional so a fake need
+	 * not have it; a model without one offers no retry.
+	 */
+	retryRead?(): void;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	/**
@@ -98,6 +105,15 @@ export interface SessionModelView {
 	 * reports one (ADR-0007); null otherwise. Optional so a fake need not say it.
 	 */
 	readonly request?: PendingRequest | null;
+	/**
+	 * The plan Claude is waiting to have approved, read from its plan file
+	 * (#148), while the pane is blocked in plan mode on no request of the
+	 * runtime's own; null otherwise, and until the file has been read. Claude
+	 * writes `ExitPlanMode` to the transcript only with its answer, so this is
+	 * where a herdr or herdr-core pane's plan comes from. Optional so a fake
+	 * need not say it.
+	 */
+	readonly plan?: string | null;
 	/**
 	 * Whether the model's own runtime is the connected one. False while another
 	 * runtime is active or none is: the content stays as it was, the status is
@@ -210,6 +226,17 @@ export class SessionModel implements SessionModelView {
 	private lostBefore = 0;
 	/** Whether the runtime says the agent stopped while its session stays (#135). */
 	private stopped = false;
+	/** The session's slug and plan mode, from the lines read so far (#148). */
+	private readonly planTracker = new PlanTracker();
+	/** The plan file's text while it is wanted and has been read, else null. */
+	private planText: string | null = null;
+	/**
+	 * Which plan file read is current: the file generation and the plan file's
+	 * path, or empty while no plan is wanted. A read whose key is no longer
+	 * this one is dropped, and a block that ends empties it, so the next block
+	 * reads the file again (a rejected plan comes back revised).
+	 */
+	private planKey = '';
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -281,6 +308,10 @@ export class SessionModel implements SessionModelView {
 		return this.pending;
 	}
 
+	get plan(): string | null {
+		return this.planText;
+	}
+
 	get connected(): boolean {
 		return this.watcher !== null;
 	}
@@ -307,11 +338,30 @@ export class SessionModel implements SessionModelView {
 		return () => this.listeners.delete(listener);
 	}
 
+	/**
+	 * Drops the tail and its problem and follows the pane again from scratch:
+	 * the source and the watcher as they are now, the file from its start
+	 * (#146). A tail with limits of its own (herdr-core) also looks again on
+	 * its own poll; this is the reader not wanting to wait for it.
+	 */
+	retryRead(): void {
+		// Not connected: nothing would reopen it, and a local tail that still
+		// follows would be lost for nothing.
+		if (!this.watcher) return;
+		const hadProblem = this.problem !== null;
+		this.closeStream();
+		this.rebind();
+		// A source that is gone reopens nothing and says nothing; the problem
+		// line it cleared is still news to the view.
+		if (hadProblem && !this.stream) this.emit({ changedTurnIds: [], reset: false });
+	}
+
 	/** Closes the tail and drops every subscriber, here and in the runtime. */
 	dispose(): void {
 		this.unbind();
 		this.closeStream();
 		this.listeners.clear();
+		this.planKey = '';
 	}
 
 	/** Subscribes to this runtime's watcher as it is now, dropping any older one. */
@@ -353,6 +403,7 @@ export class SessionModel implements SessionModelView {
 		this.block = null;
 		this.pending = null;
 		this.blockClaim = null;
+		this.refreshPlan();
 		// Said every time, cheaply: the view's status line reads `connected`.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -394,6 +445,7 @@ export class SessionModel implements SessionModelView {
 		this.pending = request;
 		// The block is over, so the next one is a block of its own to answer.
 		if (status !== 'blocked') this.blockClaim = null;
+		this.refreshPlan();
 		if (this.setStopped(stopped)) return;
 		// No turn changed; the view redraws what it shows between blocks.
 		this.emit({ changedTurnIds: [], reset: false });
@@ -419,6 +471,9 @@ export class SessionModel implements SessionModelView {
 		this.status = status;
 		this.block = block;
 		if (status !== 'blocked') this.blockClaim = null;
+		// Before the file changes too: a plan wanted for this file is read now,
+		// and one that no longer is goes with the status that ended it.
+		this.refreshPlan();
 		const path = pane?.agentSession
 			? pane.transcriptPath ||
 				transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
@@ -480,6 +535,9 @@ export class SessionModel implements SessionModelView {
 		this.readingReports.clear();
 		this.linesRead = 0;
 		this.lostBefore = 0;
+		this.planTracker.reset();
+		this.planText = null;
+		this.planKey = '';
 	}
 
 	/**
@@ -492,6 +550,9 @@ export class SessionModel implements SessionModelView {
 		this.delivered = true;
 		const { state, changedTurnIds, removedTurnIds } = this.reduceLines(lines);
 		this.transcript = state;
+		this.planTracker.feed(lines);
+		// The block may have come before the lines that say it is plan mode.
+		this.refreshPlan();
 		if (restart) this.emit({ changedTurnIds: [], reset: true });
 		else if (removedTurnIds.length) this.emit({ changedTurnIds, removedTurnIds, reset: false });
 		else this.emit({ changedTurnIds, reset: false });
@@ -599,6 +660,48 @@ export class SessionModel implements SessionModelView {
 			if (report) return report;
 		}
 		return '';
+	}
+
+	/**
+	 * The plan file this pane's block wants read, as `<generation>\n<path>`, or
+	 * empty when it wants none (#148): blocked in plan mode on no request of
+	 * the runtime's own (the `claude` kind's carries its plan), and on no block
+	 * the runtime named as something other than a permission. Read through the
+	 * source the tail came from, so a remote runtime's plan is read on its own
+	 * machine, and only where its transcript already is.
+	 */
+	private wantedPlan(): string {
+		if (this.status !== 'blocked' || this.pending) return '';
+		if (this.block !== null && this.block !== 'permission') return '';
+		if (!this.planTracker.planMode || !this.currentPath || !(this.streamSource ?? this.source)) return '';
+		const path = planFilePath(this.currentPath, this.planTracker.slug);
+		return path ? `${this.generation}\n${path}` : '';
+	}
+
+	/**
+	 * Starts reading the plan file when the block wants one it has not asked
+	 * for, and drops the plan it held when it no longer wants that one. Says
+	 * nothing itself: a plan that went goes with a change the caller emits, and
+	 * one that was read is emitted when it lands.
+	 */
+	private refreshPlan(): void {
+		const key = this.wantedPlan();
+		if (key === this.planKey) return;
+		this.planKey = key;
+		this.planText = null;
+		if (key) void this.readPlan(key);
+	}
+
+	private async readPlan(key: string): Promise<void> {
+		const source = this.streamSource ?? this.source;
+		const path = key.slice(key.indexOf('\n') + 1);
+		const text = source ? await source.read(path).catch(() => null) : null;
+		// The block ended, the slug changed or the file did, meanwhile.
+		if (key !== this.planKey) return;
+		const plan = text?.trim() ? text : null;
+		if (plan === this.planText) return;
+		this.planText = plan;
+		this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	/** `<session>/subagents/agent-<task id>.jsonl`, beside the session's transcript. */

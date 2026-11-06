@@ -514,8 +514,10 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * open-at-bottom and following (#106), the TOC's jumps (#100) and the
  * `content-visibility` estimates (#101). The prompt box is an ordinary flex
  * sibling at the bottom rather than a sticky child, so no transcript can show
- * through beside or beneath it. `container-type` makes the root the box the
- * prompt box's cap is half of.
+ * through beside or beneath it. `container` makes the root the box the
+ * prompt box's cap is half of, and the box the narrow layout below measures
+ * (#146): a sidebar is narrow on a desktop too, so the view's own width
+ * decides, never the window's.
  *
  * No padding under the box: #103 asks for it flush with the view's bottom
  * edge, and the root's bottom padding was the last strip of background between
@@ -523,7 +525,7 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * read against.
  */
 .herdr-native-view {
-	container-type: size;
+	container: herdr-native / size;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -537,7 +539,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * and the status line come and go — so the order is stated here instead of
  * being the order they were appended in (#97).
  */
-.herdr-native-empty {
+.herdr-native-empty,
+.herdr-native-read-failure {
 	order: 1;
 }
 
@@ -584,6 +587,70 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	order: 3;
 }
 
+/*
+ * The jump back to the end (#149): a row of no height straight under the
+ * transcript, so the button floats over the transcript's bottom edge without
+ * taking room from it or changing what scrolls. Same order as the turns, and
+ * appended after them, so it is the next thing down.
+ */
+.herdr-native-jump-row {
+	flex: 0 0 0;
+	height: 0;
+	order: 2;
+	position: relative;
+}
+
+.herdr-native-jump {
+	align-items: center;
+	bottom: var(--size-4-2);
+	box-shadow: var(--shadow-s);
+	display: flex;
+	gap: var(--size-4-1);
+	inset-inline-end: var(--size-4-2);
+	position: absolute;
+	transition: opacity 120ms ease-out;
+	z-index: 1;
+}
+
+.herdr-native-jump.is-new {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.herdr-native-view .herdr-native-jump.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-jump-icon {
+	display: flex;
+}
+
+/*
+ * Find in the conversation (#145): the match a pick jumps to, through the CSS
+ * Custom Highlight API so the rendered Markdown is not touched, and the class
+ * that stands in for it where that API is missing. The theme's own search
+ * highlight colour.
+ */
+::highlight(herdr-native-find) {
+	background-color: var(--text-highlight-bg);
+	color: var(--text-normal);
+}
+
+.herdr-native-find-hit {
+	background-color: var(--text-highlight-bg);
+}
+
+/* One row of the find picker: the snippet with its match marked, and where it is. */
+.herdr-native-find-snippet {
+	color: var(--text-normal);
+	overflow-wrap: anywhere;
+}
+
+.herdr-native-find-where {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
 .herdr-native-prompt-box {
 	flex: 0 0 auto;
 	order: 4;
@@ -608,6 +675,46 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
+ * A transcript the view cannot read (#146): one line saying so with Try again
+ * beside it, the runtime's own words behind Details. Built once and hidden
+ * while the transcript reads, so it is scoped to the view to outrank the
+ * readable-width sizer it also carries.
+ */
+.herdr-native-read-failure {
+	color: var(--text-muted);
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-native-view .herdr-native-read-failure.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-read-failure-line {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-read-failure-text {
+	color: var(--text-error);
+}
+
+.herdr-native-read-details {
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+}
+
+.herdr-native-read-details > summary {
+	cursor: var(--cursor);
+}
+
+.herdr-native-read-detail {
+	overflow-wrap: anywhere;
+	padding-top: var(--size-4-1);
+}
+
+/*
  * One turn: the human prompt, then what the agent did (#93). `content-visibility`
  * lets the browser skip laying out turns that are scrolled away, which is what
  * makes a whole session's history affordable (native-view-design.md).
@@ -623,6 +730,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	contain-intrinsic-size: auto 200px;
 	content-visibility: auto;
 	margin-bottom: var(--size-4-6);
+	/* A long path or URL wraps rather than widening the view (#146). */
+	overflow-wrap: break-word;
 }
 
 /*
@@ -729,6 +838,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	field-sizing: content;
 	/* Zero basis: the row's width is the text area's, whatever the button needs. */
 	flex: 1 1 0;
+	/* A text area's own minimum is its `cols`, wider than a narrow sidebar (#146). */
+	min-width: 0;
 	font-family: var(--font-text);
 	max-height: 50vh;
 	max-height: 50cqh;
@@ -1257,6 +1368,84 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 .herdr-native-change.is-error {
 	color: var(--text-error);
+}
+
+/*
+ * A narrow view (#146). The native view is often a sidebar, which is narrow on
+ * a desktop too, so these are container queries on the view, never media
+ * queries on the window. The view's own padding stays (a container cannot
+ * query itself). Nothing may scroll sideways at 280px: the indents inside a
+ * turn give back their width, a table and a code block scroll inside
+ * themselves, a text area gives up its `cols` minimum, and at the narrowest the
+ * prompt box's buttons go under the text area instead of beside it.
+ */
+@container herdr-native (max-width: 480px) {
+	.herdr-native-prompt,
+	.herdr-native-steer,
+	.herdr-native-thought,
+	.herdr-native-report {
+		padding-left: var(--size-4-2);
+	}
+
+	.herdr-native-tool {
+		padding-left: var(--size-4-2);
+	}
+
+	.herdr-native-waiting {
+		padding: var(--size-4-2);
+	}
+
+	.herdr-native-turn table {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
+	}
+
+	.herdr-native-turn pre {
+		max-width: 100%;
+		overflow-x: auto;
+	}
+}
+
+@container herdr-native (max-width: 360px) {
+	.herdr-native-prompt-row {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	.herdr-native-prompt-input {
+		flex-basis: 100%;
+	}
+}
+
+/*
+ * A pointer that cannot aim finely — a finger, a pen (#146): the native view's
+ * disclosures and buttons get room enough to be hit.
+ */
+@media (pointer: coarse) {
+	.herdr-native-tools-summary,
+	.herdr-native-thinking-summary,
+	.herdr-native-read-details > summary {
+		padding-block: var(--size-4-2);
+	}
+
+	.herdr-native-waiting-choice {
+		padding-block: var(--size-4-2);
+	}
+}
+
+/*
+ * Reduced motion (#146): nothing in the native view slides or fades for a
+ * reader who asked the system for less. A theme's smooth scrolling on the
+ * transcript is turned off too, which also keeps following's pins instant.
+ */
+@media (prefers-reduced-motion: reduce) {
+	.herdr-native-view,
+	.herdr-native-view * {
+		animation: none;
+		scroll-behavior: auto;
+		transition: none;
+	}
 }
 
 /* File explorer folder hover button (issue #30) ---------------------------- */

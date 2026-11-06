@@ -135,6 +135,7 @@ import {
 } from '../native/paneSurface';
 import { NativePaneSurface } from '../native/surface';
 import { PromptSuggest } from '../native/promptSuggest';
+import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { linkSourcePath } from '../native/noteLinks';
 
@@ -864,6 +865,16 @@ export class TerminalView extends ItemView {
 					// runtime's connection for herdr-core over SSH (ADR-0006).
 					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
 					paneId: () => this.paneId,
+					// The most used commands first (#149), counted in the plugin's
+					// data whatever runtime the pane is on.
+					usage: () => normalizeCommandUsage(this.plugin.settings.commandUsage),
+					onCommandUsed: (name) => {
+						this.plugin.settings.commandUsage = withCommandUsed(
+							normalizeCommandUsage(this.plugin.settings.commandUsage),
+							name,
+						);
+						void this.plugin.saveSettings();
+					},
 					// The agent opens a mention on its own machine: on an SSH
 					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {
@@ -913,6 +924,12 @@ export class TerminalView extends ItemView {
 	/** The runtime of {@link nativePaneId}'s pane, or '' when that is ''. */
 	nativeEndpointId(): string {
 		return this.nativePaneId() ? this.terminal.identity.endpointId : '';
+	}
+
+	/** The native surface this tab shows, or null while it shows a terminal. */
+	nativeSurface(): NativePaneSurface | null {
+		const surface = this.surfaces.current;
+		return surface instanceof NativePaneSurface ? surface : null;
 	}
 
 	/** Brings a turn into view, for a click in the table of contents (#100). */
@@ -1608,5 +1625,24 @@ export function switchRenderModeCommand(app: App, checking: boolean): boolean {
 	const view = app.workspace.getActiveViewOfType(TerminalView);
 	if (!view) return false;
 	if (!checking) view.showRenderModeMenu();
+	return true;
+}
+
+/** What a native view command does to the surface of the active tab (#145). */
+export type NativeViewAction = 'focus-prompt' | 'next-turn' | 'previous-turn' | 'find';
+
+/**
+ * The native view's commands (#145), registered in `main.ts` with no default
+ * hotkey. Offered only while the active tab shows the native view, whatever
+ * runtime its pane is on; the terminal view has its own keys for all of this.
+ * Focusing the prompt is offered only while there is a box to take it.
+ */
+export function nativeViewCommand(app: App, action: NativeViewAction, checking: boolean): boolean {
+	const surface = app.workspace.getActiveViewOfType(TerminalView)?.nativeSurface();
+	if (!surface) return false;
+	if (action === 'focus-prompt') return checking ? surface.canFocusPrompt() : surface.focusPrompt();
+	if (checking) return true;
+	if (action === 'find') surface.findInConversation();
+	else surface.stepTurn(action === 'next-turn' ? 1 : -1);
 	return true;
 }

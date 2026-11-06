@@ -245,6 +245,29 @@ export class FuzzySuggestModal<T> extends Modal {
 	}
 }
 
+/**
+ * Stand-in for the suggest modal behind "Find in conversation" (#145). Every
+ * opened modal is kept in {@link SuggestModal.opened}, so a test can type into
+ * one (`getSuggestions`) and pick (`onChooseSuggestion`) as Obsidian would.
+ */
+export class SuggestModal<T> extends Modal {
+	static readonly opened: SuggestModal<unknown>[] = [];
+	emptyStateText = '';
+	placeholder = '';
+	setPlaceholder(placeholder: string): void {
+		this.placeholder = placeholder;
+	}
+	open(): void {
+		SuggestModal.opened.push(this);
+	}
+	close(): void {}
+	getSuggestions(_query: string): T[] | Promise<T[]> {
+		return [];
+	}
+	renderSuggestion(_value: T, _el: HTMLElement): void {}
+	onChooseSuggestion(_item: T, _evt?: unknown): void {}
+}
+
 export class Notice {
 	constructor(public message: string) {}
 }

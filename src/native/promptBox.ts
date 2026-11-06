@@ -242,6 +242,23 @@ export class PromptBox {
 		this.rootEl?.toggleClass('herdr-is-hidden', hidden);
 	}
 
+	/**
+	 * Puts the cursor in the text area (#145). False when there is none to
+	 * take it: not mounted, hidden behind the waiting card, or locked because
+	 * there is no agent.
+	 */
+	focus(): boolean {
+		if (!this.canFocus()) return false;
+		this.inputEl?.focus();
+		return true;
+	}
+
+	/** Whether {@link focus} would take; see there. */
+	canFocus(): boolean {
+		const inputEl = this.inputEl;
+		return Boolean(inputEl && !inputEl.disabled && !this.rootEl?.hasClass('herdr-is-hidden'));
+	}
+
 	/** herdr's view of the agent changed; the button follows it. */
 	setStatus(status: AgentStatus): void {
 		if (status === this.status) return;
