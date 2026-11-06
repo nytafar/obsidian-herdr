@@ -45,7 +45,14 @@ export type Step =
 	/** Commits: presses the keys, then waits for Claude to go idle, cancelling any dialog that follows. */
 	| { do: 'answer'; keys: ScreenKey[] }
 	/** herdr only: holds the pane at another size. */
-	| { do: 'resize'; size: Size };
+	| { do: 'resize'; size: Size }
+	/**
+	 * Sends a slash command once Claude is idle and waits for the screen to
+	 * change and hold: a picker, not a dialog Claude blocks on (#169).
+	 */
+	| { do: 'command'; text: string }
+	/** Sends a prompt that asks for no tool, and waits for the reply (#169). */
+	| { do: 'say'; text: string };
 
 export interface Session {
 	/** Also the tab label or terminal name: always `oh-test-…`. */
@@ -334,6 +341,53 @@ export function narrowSteps(p: string, t: NarrowTexts): Step[] {
 	];
 }
 
+// --- The session settings pickers (#169, #170) -------------------------------
+
+/**
+ * Claude's `/model` and `/effort` pickers, the "Switch model?" confirm, and
+ * the footer in every mode `shift+tab` reaches. Nothing is ever chosen:
+ * `enter` in a picker saves the default, so the pickers are left with `esc`;
+ * `s` (this session only) is pressed once, in a conversation with a reply,
+ * to bring up the confirm, which `esc` leaves for the picker again. The
+ * cursor starts on Haiku 5.5 (`--model haiku`), and `up` moves it to Sonnet
+ * 5.5 on this account. The mode is cycled back to manual at the end.
+ */
+export function settingsSteps(p: string, wide: boolean): Step[] {
+	return [
+		{ do: 'record', name: `${p}footer-manual`, expect: null, until: 'manual mode on' },
+		{ do: 'command', text: '/model' },
+		{ do: 'record', name: `${p}model-picker`, expect: null, until: 'Select model' },
+		...(wide
+			? ([
+					// Past row 10 the list scrolls: `↑ 2.` on top, `… +2 models` under it.
+					{ do: 'keys', keys: DOWN(6) },
+					{ do: 'record', name: `${p}model-picker-scrolled`, expect: null, until: '↑ 2.' },
+				] satisfies Step[])
+			: []),
+		{ do: 'answer', keys: ['esc'] },
+		{ do: 'command', text: '/effort' },
+		{ do: 'record', name: `${p}effort-picker`, expect: null, until: 'Smarter' },
+		{ do: 'keys', keys: ['right'] },
+		{ do: 'record', name: `${p}effort-picker-right`, expect: null, until: 'Smarter' },
+		{ do: 'answer', keys: ['esc'] },
+		{ do: 'say', text: 'Reply with the single word ok. Use no tools.' },
+		{ do: 'command', text: '/model' },
+		{ do: 'keys', keys: ['up', 's'] },
+		{ do: 'record', name: `${p}switch-model`, expect: null, until: 'Switch model?' },
+		// "No, go back" is the picker again, the cursor on the current model.
+		{ do: 'keys', keys: ['esc'] },
+		{ do: 'record', name: `${p}model-picker-back`, expect: null, until: 'Select model' },
+		{ do: 'answer', keys: ['esc'] },
+		{ do: 'keys', keys: ['shift+tab'] },
+		{ do: 'record', name: `${p}footer-accept-edits`, expect: null, until: 'accept edits on' },
+		{ do: 'keys', keys: ['shift+tab'] },
+		{ do: 'record', name: `${p}footer-plan`, expect: null, until: 'plan mode on' },
+		{ do: 'keys', keys: ['shift+tab'] },
+		{ do: 'record', name: `${p}footer-auto`, expect: null, until: 'auto mode on' },
+		{ do: 'mode', mode: 'default' },
+	];
+}
+
 /** Every session, in the order they run. */
 export function sessions(): Session[] {
 	return [
@@ -401,5 +455,9 @@ export function sessions(): Session[] {
 			trust: true,
 			steps: [{ do: 'record', name: 'hc-60-trust', expect: 'trust' }],
 		},
+		{ name: 'oh-test-settings-herdr', runtime: 'herdr', folder: '/tmp/oh-test-settings-herdr', size: WIDE_HERDR, steps: settingsSteps('herdr-', true) },
+		{ name: 'oh-test-settings-hc', runtime: 'hc', folder: '/tmp/oh-test-settings-hc', size: WIDE_HC, steps: settingsSteps('hc-', true) },
+		{ name: 'oh-test-settings-herdr60', runtime: 'herdr', folder: '/tmp/oh-test-settings-herdr60', size: NARROW_60, steps: settingsSteps('herdr-60-', false) },
+		{ name: 'oh-test-settings-hc60', runtime: 'hc', folder: '/tmp/oh-test-settings-hc60', size: NARROW_60, steps: settingsSteps('hc-60-', false) },
 	];
 }

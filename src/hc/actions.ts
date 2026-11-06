@@ -430,3 +430,23 @@ export function hcScreenAccess(client: () => PromptClient | null): ScreenAccess 
 		},
 	};
 }
+
+/**
+ * The terminal's agent status as hc reports it now (`terminal.get`'s
+ * `status.state`: `idle`, `working`, `blocked`, `done`), or null while the
+ * agent reports none: what the session settings driver checks before it
+ * sends anything (#169, #170).
+ */
+export function hcAgentStatus(client: () => PromptClient | null): (paneId: string) => Promise<string | null> {
+	return async (paneId) => {
+		const connected = client();
+		if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+		let result: unknown;
+		try {
+			result = await connected.request<unknown>('terminal.get', { terminal: paneId });
+		} catch (error) {
+			throw new Error(describe(error));
+		}
+		return parseTerminal(result)?.status?.state ?? null;
+	};
+}

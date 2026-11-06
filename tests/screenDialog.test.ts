@@ -545,6 +545,14 @@ describe('screen dialogs: the dialog after an approved plan (#165’s live run)'
 	fixture('hc-write-after-plan.txt', (d) => expectPermission(d, write));
 });
 
+describe('screen dialogs: the settings pickers and footers (#169, #170) are no dialog', () => {
+	// Read by `parseClaudeSettingsScreen` (`tests/settingsScreen.test.ts`); the
+	// answer driver must never take one for a dialog to answer.
+	const names = readdirSync(DIR).filter((file) => /-(model-picker|effort-picker|switch-model|footer-)/.test(file));
+	it('has them', () => expect(names.length).toBe(38));
+	for (const name of names) fixture(name, (dialog) => expect(dialog.kind).toBe('unknown'));
+});
+
 describe('screen dialogs: every fixture is checked', () => {
 	it('has a check for each recorded screen', () => {
 		const files = readdirSync(DIR).filter((file) => file.endsWith('.txt'));

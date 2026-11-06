@@ -17,7 +17,7 @@ import type { ModeLabel, SettingChoice } from '../../native/sessionSettings';
 import { builtinCatalog, LocalCommandCatalog } from './commands';
 import { subagentTranscript, transcriptPath } from './paths';
 import { PlanTracker, planFilePath } from './planFile';
-import { parseClaudeScreen } from './screenDialog';
+import { CLAUDE_SCREEN_SETTINGS, parseClaudeScreen } from './screenDialog';
 import { claudeSubagents, claudeWrittenAt } from './subagents';
 import {
 	CLAUDE_EFFORTS,
@@ -173,6 +173,7 @@ export const CLAUDE_FORMAT: AgentFormat<TranscriptState> = {
 	models: CLAUDE_MODELS,
 	modeLabels: CLAUDE_MODE_LABELS,
 	screenDialog: parseClaudeScreen,
+	screenSettings: CLAUDE_SCREEN_SETTINGS,
 	// Its output is read into `SessionInfo.contextReport`, never a turn (#171).
 	contextCommand: '/context',
 };

@@ -34,7 +34,8 @@
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
 import { defaultDeps, expandHome, resolveHerdrBinary, type DiscoveryDeps, type DiscoveryResult } from '../herdr/binary';
 import { probeLocal, probeOverHc, readHcTemplates } from '../agents/probe';
-import { HcActions, hcKeySender, hcPromptSender, hcScreenAccess } from '../hc/actions';
+import { HcActions, hcAgentStatus, hcKeySender, hcPromptSender, hcScreenAccess } from '../hc/actions';
+import { screenSettingsSender } from '../native/screenSettings';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
@@ -318,6 +319,19 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 		promptSender: (client) => hcPromptSender(client),
 		keySender: (client) => hcKeySender(client),
 		screen: (client) => hcScreenAccess(client),
+		// The session bar's pickers (#169, #170), as on herdr.
+		sessionSettings: (client, format) =>
+			format?.screenSettings
+				? screenSettingsSender({
+						screen: hcScreenAccess(client),
+						prompt: hcPromptSender(client),
+						reader: format.screenSettings,
+						status: hcAgentStatus(client),
+						owner: () => client(),
+						models: format.models,
+						modeLabels: format.modeLabels,
+					})
+				: null,
 		createTabLabels: (connection) => new HcTabLabels(connection.scope),
 		statusLines: (connection) => (connection ? hcStatusLines(connection) : null),
 	};

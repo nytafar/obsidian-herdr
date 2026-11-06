@@ -48,12 +48,27 @@ export interface SessionSettingsSender {
 	readonly midTurn: boolean;
 	/** Why this pane's settings cannot be changed now, beyond its status, or null. */
 	unavailable?(paneId: string): string | null;
-	/** Switches the model, by a name the agent takes (`AgentFormat.models`). */
-	setModel(paneId: string, model: string, scope: SettingScope): Promise<void>;
+	/**
+	 * Switches the model, by a name the agent takes (`AgentFormat.models`).
+	 * `ask` puts a question the agent asks on the way to the user ("Switch
+	 * model?" on herdr and herdr-core, #169); a "no" settles without a change
+	 * and without an error. Without `ask` the pick itself is the answer.
+	 */
+	setModel(paneId: string, model: string, scope: SettingScope, ask?: (question: SettingQuestion) => Promise<boolean>): Promise<void>;
 	/** Sets the reasoning effort, in the agent's word (`AgentFormat.efforts`). */
 	setEffort(paneId: string, effort: string, scope: SettingScope): Promise<void>;
 	/** Sets the permission mode, in the agent's word (`AgentFormat.modes`). */
 	setMode(paneId: string, mode: string): Promise<void>;
+}
+
+/** A question the agent asks on the way to a change, in its own words, for the user to answer. */
+export interface SettingQuestion {
+	title: string;
+	body: string;
+	/** The yes, as the agent words it (`Yes, switch to Sonnet 5.5`). */
+	confirm: string;
+	/** The no (`No, go back`). */
+	cancel: string;
 }
 
 /** One value a picker offers: the word the agent takes, and the name to show. */

@@ -1746,7 +1746,10 @@ these are the facts it relies on.
   `read`, `press` one key, `type` text; the herdr and herdr-core kinds supply
   it through `RuntimeKindAdapter.screen`, the `claude` kind has none. Keys
   are one spelling for both runtimes: `up down left right tab shift+tab enter
-  esc ctrl+u` and the digits 1-9, never a letter. Measured 2026-11-06 (herdr
+  esc ctrl+u` and the digits 1-9, and one letter, `s`, which only the
+  session settings driver presses (#169; herdr's `agent.send_keys ["s"]` and
+  hc's `terminal.keys` both delivered it to Claude's pickers, 2026-11-06).
+  The answer driver presses no letter. Measured 2026-11-06 (herdr
   0.9.5, hc 0.1.18, `oh-test-screen*` in `/tmp`): herdr takes these
   lowercase names (`pane.send_keys` into `cat -v` gave `^[[B ^[[A ^[[D ^[[C`,
   `^[[Z` for `shift+tab`, `^[` for `esc`; `agent.send_keys ctrl+u` emptied
@@ -2035,10 +2038,31 @@ keeps icons only. A picker's menu lists the format's vocabulary
 `SessionSettingsSender` (`RuntimeKindAdapter.sessionSettings`,
 `src/native/sessionSettings.ts`): `setModel`, `setEffort` (both with a scope,
 `session` or `default`) and `setMode`, with the scopes, settings and whether
-it works mid-turn as its capabilities. A kind without one (herdr, herdr-core
-until #169 and #170) shows the values disabled, with the reason. Nothing is
-shown as changed until the runtime or the transcript says it is; a refusal is
-a notice with the runtime's words.
+it works mid-turn as its capabilities. A kind without one shows the values
+disabled, with the reason. Nothing is shown as changed until the runtime or
+the transcript says it is; a refusal is a notice with the runtime's words.
+
+**herdr and herdr-core's sender (#169, #170)** drives Claude's own pickers on
+the pane's screen (`src/native/screenSettings.ts`), with the screens read by
+the format (`AgentFormat.screenSettings`, `parseClaudeSettingsScreen` in
+`src/agents/claude/screenDialog.ts`, fixtures `*-model-picker*`,
+`*-effort-picker*`, `*-switch-model`, `*-footer-*` in
+`tests/fixtures/screens/claude-2.1.318/`). Idle or done only, and only from
+a screen that shows the prompt with nothing over it. This session only: the
+bare `/model` or `/effort` through the prompt path, the picker read, the
+cursor moved one key per call to the row by its name (a choice's row is
+`<Family> <version>` with the highest version, never "Default
+(recommended)") or the slider to the level, each move read back, a fresh
+read showing the target, then `s`; confirmed by the line Claude prints under
+the echo ("… for this session only"), and a line that says the default was
+saved is a notice saying so. "Use for new sessions too": `/model <alias>` or
+`/effort <level>`, confirmed the same way. "Switch model?" is put to the user
+in Claude's words (a confirm modal); yes is `enter` after a read showed the
+cursor on "Yes, switch to <the row picked>", no is `esc` back to the picker
+and `esc` out of it ("Kept model as …"), and the bar stays. Any mismatch
+inside a picker the run opened ends with `esc` and a notice; on any other
+screen nothing is pressed. One change per pane at a time, plugin-wide. The
+mode picker stays disabled on these kinds for now (#170).
 
 **The `claude` kind's sender (#162)** is control requests over the agent's
 headless process (`ClaudeProcess.sessionControl`, built by
@@ -2161,6 +2185,44 @@ before it, so no model call):
 - **Permission mode** on 2.1.318: `shift+tab` cycled manual, accept edits,
   plan, auto, manual (footer through `pane.read`); the next `user` line had
   the new `permissionMode`, the `permission-mode` line lagged, as on 2.1.281.
+- **The pickers on screen, measured 2026-11-06 for #169 and #170** (Claude
+  Code 2.1.318, herdr 0.9.5, hc 0.1.18, `oh-test-settings-*`,
+  `oh-test-live169-*` in `/tmp`, haiku; recorded by `npm run record-screens`
+  at 233x62, 200x120 and 60x40). A picker sits under a rule of `▔` (sometimes
+  carrying `◐ medium · /effort` near its end) in place of the prompt and
+  footer. Model rows are `❯ N.  <Name> [✔]  <description>`, the description
+  wrapping under its own column; past row 10 the list scrolls with `↑ 2.` /
+  `↓ 10.` in the cursor column and `… +N models` under it; an effort row
+  (`◐ Medium effort (default) ←/→ to adjust`) shows the effort the picked row
+  would run with. The effort slider is `Faster … Smarter`, a `─` line with
+  `▲` over the level, `low medium high xhigh max` (no `auto`), one line on the
+  cost, the hint. The footer: `⏸ manual mode on` (`· ← for agents` after it
+  on a fresh session), `⏵⏵ accept edits on (shift+tab to cycle)`, `⏸ plan
+  mode on …`, `⏵⏵ auto mode on …`, with the user's own statusline between it
+  and the prompt's lower rule. Under the echo `❯ /model` the result is `⎿
+  Set model to Sonnet 5.5 for this session only` (no backticks on screen;
+  the transcript has them).
+- **`esc` on "Switch model?" goes back to the picker**, its cursor on the
+  current model; a second `esc` leaves it with "Kept model as …". (After
+  `/model <alias>` the spike saw `esc` leave at once; the driver presses
+  `esc` while a read shows the picker or the confirm, either way.)
+- **A command sent while a picker is open is typed into the picker, and its
+  Enter saves the default.** Measured by accident: `/model` sent through
+  `agent.prompt` while the model picker was up set "Haiku 5.5 and saved as
+  your default for new sessions" and wrote `model` in `settings.json`
+  (restored from the backup). The driver therefore sends nothing unless the
+  screen shows the prompt, and the prompt box is no safer: a picker left
+  open in the terminal turns the next prompt into a saved default.
+- **herdr calls a picker `blocked`** (`agent explain`: screen rules) and goes
+  back to `done` about a second after it closes; a change right after
+  another waits up to 5 s for that. The native view's waiting card may show
+  for that second.
+- **hc's prompt path takes about 5 s per command** (`terminal.send`): a
+  session-only switch took 5.4-6.7 s on hc against 0.8-1.1 s on herdr, the
+  mode 130-530 ms on hc and 200-710 ms on herdr. `settings.json` stayed
+  byte-identical through every session-only change on both runtimes, and the
+  transcript had "Set model to \`Sonnet 5.5\` for this session only" and
+  "Set effort level to low (this session only): …".
 - **herdr 0.9.5 reports `agent_session` at `agent start`**, before any
   prompt (source `herdr:claude`), unlike 0.8.2 below; the transcript file
   appears with the first prompt or slash command.

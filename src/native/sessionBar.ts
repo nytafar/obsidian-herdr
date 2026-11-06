@@ -58,6 +58,7 @@ import {
 	type SessionSetting,
 	type SessionSettingsSender,
 	type SettingChoice,
+	type SettingQuestion,
 	type SettingScope,
 } from './sessionSettings';
 
@@ -88,6 +89,12 @@ export interface SessionBarOptions {
 	sendCommand?: (paneId: string, text: string) => Promise<void>;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
+	/**
+	 * Puts a question the agent asks on the way to a change to the user
+	 * ("Switch model?" on herdr and herdr-core, #169), resolving true for yes.
+	 * Without it the pick itself is the answer.
+	 */
+	confirm?: (question: SettingQuestion) => Promise<boolean>;
 }
 
 /** Why a context command's output never came. */
@@ -108,6 +115,12 @@ const SETTING_NAMES: Readonly<Record<SessionSetting, string>> = {
 
 /** What the second group of a menu is called, for a kind that can also save the default. */
 const DEFAULT_SCOPE_LABEL = 'Use for new sessions too';
+
+/** What the second group does, under its name (finding `native-view-session-settings` §3). */
+export function defaultScopeNote(setting: SessionSetting, agent: string): string {
+	const what = setting === 'effort' ? 'default for this model in new sessions' : 'default for new sessions';
+	return `Also becomes ${agent}'s ${what}, in and outside Obsidian.`;
+}
 
 interface Picker {
 	setting: SessionSetting;
@@ -380,10 +393,12 @@ export class SessionBar {
 		const choices = this.choices(picker.setting);
 		const menu = new Menu();
 		const scopes = picker.setting === 'mode' ? sender.scopes.slice(0, 1) : sender.scopes;
+		const agent = this.state.format?.name ?? 'the agent';
 		scopes.forEach((scope, index) => {
 			if (index > 0) {
 				menu.addSeparator();
 				menu.addItem((item) => item.setTitle(DEFAULT_SCOPE_LABEL).setIsLabel(true));
+				menu.addItem((item) => item.setTitle(defaultScopeNote(picker.setting, agent)).setIsLabel(true));
 			}
 			for (const choice of choices) {
 				menu.addItem((item) =>
@@ -408,9 +423,15 @@ export class SessionBar {
 		target.busy = true;
 		this.draw();
 		try {
-			if (target.setting === 'model') await sender.setModel(paneId, value, scope);
-			else if (target.setting === 'effort') await sender.setEffort(paneId, value, scope);
-			else await sender.setMode(paneId, value);
+			const pending =
+				target.setting === 'model'
+					? sender.setModel(paneId, value, scope, this.options.confirm)
+					: target.setting === 'effort'
+						? sender.setEffort(paneId, value, scope)
+						: sender.setMode(paneId, value);
+			// A kind that changes one thing at a time says so now (`unavailable`).
+			this.draw();
+			await pending;
 		} catch (error) {
 			this.notify(settingFailureMessage(target.setting, error));
 		} finally {

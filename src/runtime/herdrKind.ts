@@ -37,7 +37,8 @@ import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
 import { defaultDeps as sshDefaultDeps, SshTunnel, terminalArgvPrefix, type RunCommand } from '../herdr/ssh';
 import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
-import { herdrScreenAccess } from '../native/screenAccess';
+import { herdrAgentStatus, herdrScreenAccess } from '../native/screenAccess';
+import { screenSettingsSender } from '../native/screenSettings';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { herdrSessionWatcher, sessionBelongsTo } from '../herdr/sessionWatcher';
 import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
@@ -243,6 +244,20 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		promptSender: (client) => clientPromptSender(client),
 		keySender: (client) => clientKeySender(client),
 		screen: (client) => herdrScreenAccess(client),
+		// The session bar's pickers (#169, #170): Claude's own pickers and
+		// footer on the pane's screen, for an agent whose format reads them.
+		sessionSettings: (client, format) =>
+			format?.screenSettings
+				? screenSettingsSender({
+						screen: herdrScreenAccess(client),
+						prompt: clientPromptSender(client),
+						reader: format.screenSettings,
+						status: herdrAgentStatus(client),
+						owner: () => client(),
+						models: format.models,
+						modeLabels: format.modeLabels,
+					})
+				: null,
 		// One `tab.list` cache per connection (issue #43), over its own client
 		// and scope.
 		createTabLabels: (connection, alive) => {

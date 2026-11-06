@@ -928,8 +928,14 @@ export class TerminalView extends ItemView {
 			// kind with one and an agent whose dialogs its format reads.
 			screen: () => this.screenAnswering(),
 			// The session bar's pickers (#161), for a kind that can change the
-			// model, effort and mode; asked of the kind as it is now.
-			sessionSettings: () => this.kind().sessionSettings?.(nativeClient) ?? null,
+			// model, effort and mode; asked of the kind as it is now, every draw,
+			// so the pane is read by `glance`. herdr and herdr-core drive the
+			// agent's own pickers, read by its format (#169, #170).
+			sessionSettings: () => {
+				const agent = this.paneGlance()?.agent;
+				const format = agent ? agentFormat(agent) : defaultAgentFormat();
+				return this.kind().sessionSettings?.(nativeClient, format ?? null) ?? null;
+			},
 			// The readout's breakdown (#171), for a kind that asks without
 			// writing to the conversation; the others send `/context`.
 			contextUsage: () => this.kind().contextUsage?.(nativeClient) ?? null,

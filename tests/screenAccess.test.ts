@@ -293,8 +293,8 @@ describe('screen access through the kind adapter', () => {
 });
 
 describe('screen text and keys', () => {
-	it('takes no letters as keys: text goes through type', () => {
-		expect(SCREEN_KEYS.some((key) => /^[a-z]$/i.test(key))).toBe(false);
+	it('takes one letter as a key, the pickers\' lower-case s: other text goes through type', () => {
+		expect(SCREEN_KEYS.filter((key) => /^[a-z]$/i.test(key))).toEqual(['s']);
 	});
 
 	it('names on hc only the characters terminal.keys types exactly (#172)', () => {
