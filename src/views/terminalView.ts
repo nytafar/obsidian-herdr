@@ -862,6 +862,7 @@ export class TerminalView extends ItemView {
 					// The commands of the machine the agent runs on: over the
 					// runtime's connection for herdr-core over SSH (ADR-0006).
 					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
+					paneId: () => this.paneId,
 					// The agent opens a mention on its own machine: on an SSH
 					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {

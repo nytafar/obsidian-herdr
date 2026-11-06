@@ -316,10 +316,61 @@ view sets `capabilities.nativeView` and supplies `RuntimeKindAdapter.native`, a
 herdr's watcher is `src/herdr/sessionWatcher.ts`: cwd and status from the
 scope, `agent_session` from the raw `PaneInfo`, and rotation read off
 `pane.updated` one microtask after the client's dispatch, so the scope has
-ingested the update first. It reports no transcript path and no block kind; the
-model derives the path from cwd and session, and the waiting card guesses the
-block from the transcript. herdr-core's watcher and sources are in
-"herdr-core: the native view" below.
+ingested the update first. It reports no block kind, and the waiting card
+guesses the block from the transcript. On a local herdr it works out the
+transcript path from the pane's Claude process (next section); until that is
+known, and over SSH, the model derives the path from cwd and session under
+`~/.claude`. herdr-core's watcher and sources are in "herdr-core: the native
+view" below.
+
+### A pane's Claude process: config dir and real cwd (issue #132)
+
+Claude files a session under its configuration folder (`CLAUDE_CONFIG_DIR`,
+else `~/.claude`) and the real cwd: a session started in a symlinked folder is
+filed under the link's target (measured 2026-11-06, the `claude` kind's table
+below). What herdr 0.9.5 gives towards that, verified 2026-11-06 against the
+running server and the herdr source (`herdrdev/herdr` master):
+
+- **No transcript path.** The Claude hook (integration v10, installed here)
+  sends `agent_session_path` (the hook's `transcript_path`) with every
+  `pane.report_agent_session`, and herdr drops it: `session_ref_from_report`
+  (`src/agent_resume.rs`) keeps a path only for `pi` and `omp`, and every
+  other agent's `agent_session` is `{"kind":"id","value":<uuid>}`. All 36
+  `agent_session` values in `pane list` on this machine were `kind: "id"`.
+  `AgentSessionInfo.kind` can be `"path"`, but not for Claude.
+- **The pane's `cwd` is the shell's report.** `Pane::cwd` (`src/pane.rs`)
+  returns the cwd the shell last reported in its prompt (an OSC sequence) when
+  there is one, and only otherwise the shell process's cwd read from the OS.
+  A shell reports its logical `$PWD`, so a pane started in a link can report
+  the link. `foreground_cwd` (`Pane::foreground_cwd`) is the foreground
+  group leader's cwd read from the OS. Read from the source, not measured in
+  a symlinked pane: no pane here sits in a link, and none was made.
+- **The pid and a resolved cwd, from `pane.process_info`** (present in 0.9.1
+  and 0.9.5): `{shell_pid, foreground_process_group_id, tty?,
+  foreground_processes: [{pid, name, argv, argv0?, cmdline, cwd}]}`. For a
+  Claude pane the list holds `claude` (name `claude`, pid equal to the
+  foreground group id) and its MCP servers. The process `cwd` is read from the
+  OS (`/proc/<pid>/cwd` on Linux), which is the resolved path.
+- **No environment.** Neither `pane.get`, `pane.list` nor `pane.process_info`
+  carries one. On Linux `/proc/<pid>/environ` of the same user's Claude is
+  readable (59 variables for pane `w1:p1A`'s Claude, `HERDR_PANE_ID` among
+  them). No Claude on this machine had `CLAUDE_CONFIG_DIR` set when measured.
+
+So for a local herdr (`src/herdr/paneClaude.ts`): `pane.process_info`, the
+process called `claude` (by name or program file name; else the foreground
+group's leader), its `cwd` as the real cwd, and its `CLAUDE_CONFIG_DIR` from
+`/proc/<pid>/environ` (Linux) or `ps -wwE -o command= -p <pid>` (macOS, parsed
+as Ovis does); a relative value is taken from Claude's cwd. No process: the
+pane's `cwd` through `realpath` here. No environment read: `~/.claude`. An
+answer is kept per pane and agent session, 30 s when the environment was read
+and 2 s when anything fell back, and refreshed on that pane's updates only
+while a session model follows it. The watcher pushes the path as soon as it is
+known, and every later `pane.updated` carries it, so the model's dedupe holds.
+The `/` list's user scope and plugins come from the same configuration folder.
+
+**herdr over SSH is unchanged:** its panes have no transcript adapter and stay
+terminals (ADR-0002), and nothing here reads a remote process. Its prompt box
+is not offered either, so the `/` list question does not arise.
 
 Session models are keyed by runtime id and pane id (`SessionModelRegistry`).
 Each model asks for its own runtime's watcher and source on every connection
