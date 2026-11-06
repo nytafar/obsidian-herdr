@@ -49,6 +49,7 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 			transcriptPath: agent.transcriptPath,
 			agentStatus: agent.status === 'unknown' ? 'idle' : paneStatusOf(agent.status),
 		};
+		if (agent.status === 'stopped') pane.stopped = true;
 		if (agent.blockKind) pane.blockKind = agent.blockKind;
 		if (agent.request) pane.request = agent.request;
 		return pane;
@@ -64,7 +65,10 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 		},
 		onStatus(handler): Unsubscribe {
 			// One call per actual change of status, block kind or request.
-			const last = new Map<string, { status: AgentStatus; kind: BlockKind | null; request: PendingRequest | null }>();
+			const last = new Map<
+				string,
+				{ status: AgentStatus; kind: BlockKind | null; request: PendingRequest | null; stopped: boolean }
+			>();
 			return agents.on((runtime, agentId, change) => {
 				if (runtime !== runtimeId) return;
 				if (change === 'removed') {
@@ -73,9 +77,21 @@ export function claudeSessionWatcher(agents: ClaudeAgents, runtimeId: string): S
 				}
 				const pane = snapshot(agentId);
 				if (!pane) return;
-				const next = { status: pane.agentStatus, kind: pane.blockKind ?? null, request: pane.request ?? null };
+				const next = {
+					status: pane.agentStatus,
+					kind: pane.blockKind ?? null,
+					request: pane.request ?? null,
+					// A stop reads as `idle`, so it is a change of its own (#135).
+					stopped: pane.stopped === true,
+				};
 				const before = last.get(agentId);
-				if (before && before.status === next.status && before.kind === next.kind && before.request === next.request) {
+				if (
+					before &&
+					before.status === next.status &&
+					before.kind === next.kind &&
+					before.request === next.request &&
+					before.stopped === next.stopped
+				) {
 					return;
 				}
 				last.set(agentId, next);

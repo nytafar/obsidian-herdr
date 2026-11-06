@@ -81,6 +81,13 @@ export interface ThinkingEntry {
 export interface TaskNotification {
 	/** The task's own id; also the name of the subagent transcript. */
 	taskId: string;
+	/**
+	 * Whose notification it is, by what its summary says (#135): a subagent's
+	 * (`Agent "…" finished`), a background command's (`Background command "…"
+	 * completed`), or something else's (a monitor). Only a subagent has a
+	 * report to read.
+	 */
+	kind: 'agent' | 'command' | 'other';
 	/** The file the task wrote, empty when the notification named none. */
 	outputFile: string;
 }
@@ -97,8 +104,10 @@ export interface TaskNotification {
  * - `error` — the result carried `is_error`, which is what a failed call and a
  *   call the user refused both look like, or the notification reported
  *   anything other than completion.
+ * - `lost` — it was running when the agent went away, and nothing will ever
+ *   report it (#135). Set by {@link markLost}, never by a transcript line.
  */
-export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
+export type ToolStatus = 'pending' | 'running' | 'done' | 'error' | 'lost';
 
 /** A tool call and, once it lands, the result that answered it. */
 export interface ToolEntry {
@@ -394,6 +403,7 @@ function taskNotification(
 	content: string,
 ): { toolUseId: string; completed: boolean; notification: TaskNotification } | null {
 	if (!content.trimStart().startsWith('<task-notification>')) return null;
+	const summary = notificationField(content, 'summary');
 	return {
 		toolUseId: notificationField(content, 'tool-use-id'),
 		// `completed`, `failed` and `killed` are the three values this machine's
@@ -401,10 +411,24 @@ function taskNotification(
 		completed: notificationField(content, 'status') === 'completed',
 		notification: {
 			taskId: notificationField(content, 'task-id'),
+			kind: summary.startsWith('Agent "')
+				? 'agent'
+				: summary.startsWith('Background command')
+					? 'command'
+					: 'other',
 			outputFile: notificationField(content, 'output-file'),
 		},
 	};
 }
+
+/** Tool names of a subagent call, as `./toolCalls.ts` aliases them. */
+const AGENT_TOOL = /^(agent|task)$/i;
+
+/**
+ * How a background command's `tool_result` opens: the command went to the
+ * background and its notification will say how it ended (2.1.286, 2.1.318).
+ */
+const BACKGROUND_COMMAND_NOTICE = /^command running in background with id:/i;
 
 /**
  * How an async `Agent` call's `tool_result` opens: the launch notice Claude
@@ -421,6 +445,12 @@ const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
  */
 export function isAsyncLaunchNotice(result: string | null): boolean {
 	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
+}
+
+/** Whether a tool result says the work went on in the background (#91, #135). */
+function isBackgroundLaunch(result: string): boolean {
+	const text = result.trimStart();
+	return ASYNC_LAUNCH_NOTICE.test(text) || BACKGROUND_COMMAND_NOTICE.test(text);
 }
 
 /**
@@ -806,6 +836,29 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	 * Opens the turn a human prompt starts, after dropping what a rewind or a
 	 * re-send left behind (#131).
 	 */
+	/**
+	 * A background task's notification, applied to the call it names (#96,
+	 * #135). Claude Code writes one notification as its enqueue, a mid-turn
+	 * attachment, a `user` line, or several of these, so applying it is
+	 * idempotent: the same notification again changes nothing. A background
+	 * command's notification never ends a subagent's call.
+	 */
+	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>): void => {
+		const entry = draft.toolEntry(task.toolUseId);
+		if (!entry) return;
+		if (task.notification.kind === 'command' && AGENT_TOOL.test(entry.name.trim())) return;
+		const status: ToolStatus = task.completed ? 'done' : 'error';
+		const same =
+			entry.notification?.taskId === task.notification.taskId &&
+			entry.notification.outputFile === task.notification.outputFile &&
+			entry.status === status;
+		if (same) return;
+		entry.notification = task.notification;
+		// The background work is over, one way or the other (#91).
+		entry.status = status;
+		const turn = draft.turnOf(task.toolUseId);
+		if (turn) draft.touch(turn.id);
+	};
 	const openPrompt = (line: Json, prompt: string): Turn => {
 		branch.fork(line, draft);
 		const turn = draft.open(stringField(line, 'uuid') || `turn-${draft.length}`, prompt);
@@ -842,7 +895,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// queue moved on, and the pairing has already been made by then.
 				if (stringField(parsed, 'operation') === 'enqueue') {
 					const content = stringField(parsed, 'content');
-					if (content) pendingQueue.push(content);
+					// A notification is read from whichever record carries it, and
+					// some reach the transcript as their enqueue alone (#135).
+					const task = taskNotification(content);
+					if (task) notify(task);
+					else if (content) pendingQueue.push(content);
 				}
 				countRaw(type);
 				continue;
@@ -851,6 +908,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				const attachment = isRecord(parsed.attachment) ? parsed.attachment : null;
 				const origin = attachment && isRecord(attachment.origin) ? attachment.origin : null;
 				const human = attachment?.type === 'queued_command' && origin?.kind === 'human';
+				// A notification taken in mid-turn is this attachment, with no
+				// `user` line after it (#135).
+				const task =
+					attachment?.type === 'queued_command' ? taskNotification(stringField(attachment, 'prompt')) : null;
+				if (task) {
+					notify(task);
+					countRaw(type);
+					continue;
+				}
 				if (!human) {
 					countRaw(type);
 					continue;
@@ -895,12 +961,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						entry.result = resultText(block.content);
 						// A failed call and one the user refused both arrive as
 						// `is_error`; a launch notice means the work goes on (#91).
-						entry.status =
-							block.is_error === true
-								? 'error'
-								: isAsyncLaunchNotice(entry.result)
-									? 'running'
-									: 'done';
+						// A notification that already landed has said how it ended.
+						if (!entry.notification) {
+							entry.status =
+								block.is_error === true
+									? 'error'
+									: isBackgroundLaunch(entry.result)
+										? 'running'
+										: 'done';
+						}
 						// The turn that changed is the one holding the call, which is
 						// not always the turn now open: a background command answers
 						// after the next prompt has started one (#93, #94).
@@ -924,25 +993,21 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
+				const task = taskNotification(content);
+				if (task) {
+					// Never a prompt, whether or not its enqueue was seen (#96, #135).
+					notify(task);
+					countRaw(type);
+					continue;
+				}
 				const queued = pendingQueue.indexOf(content);
 				if (queued !== -1 && isStreamPrompt(parsed, content)) {
 					// Its own enqueue, spent; then an ordinary prompt below.
 					pendingQueue.splice(queued, 1);
 				} else if (queued !== -1) {
-					// Enqueued before it arrived: a subagent's task notification, or a
-					// steer that has already been rendered from its attachment.
+					// Enqueued before it arrived: a steer that has already been
+					// rendered from its attachment, or other injected content.
 					pendingQueue.splice(queued, 1);
-					// A notification belongs to the call it names, not to the
-					// conversation: it is how a background task says it finished (#96).
-					const task = taskNotification(content);
-					const entry = task ? draft.toolEntry(task.toolUseId) : null;
-					if (task && entry) {
-						entry.notification = task.notification;
-						// The background work is over, one way or the other (#91).
-						entry.status = task.completed ? 'done' : 'error';
-						const turn = draft.turnOf(task.toolUseId);
-						if (turn) draft.touch(turn.id);
-					}
 					countRaw(type);
 					continue;
 				}
@@ -1090,6 +1155,25 @@ export function attachSubagentReport(
 	if (entry && turn) {
 		entry.report = report;
 		draft.touch(turn.id);
+	}
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+}
+
+/**
+ * Every call still running marked lost (#135): the agent that ran it is gone,
+ * and nothing will report it. Pure, like {@link attachSubagentReport}; the
+ * session model decides when the agent is gone.
+ */
+export function markLost(state: TranscriptState): ReduceResult {
+	const draft = new Draft(state.turns);
+	for (const turn of state.turns) {
+		for (const entry of turn.entries) {
+			if (entry.kind !== 'tool' || entry.status !== 'running') continue;
+			const owned = draft.toolEntry(entry.id);
+			if (owned) owned.status = 'lost';
+			draft.touch(turn.id);
+		}
 	}
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
 	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };

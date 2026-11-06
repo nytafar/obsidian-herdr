@@ -210,10 +210,14 @@ export interface ToolGroupHeader {
 export function toolGroupHeader(tools: readonly ToolEntry[], state: ToolGroupState): ToolGroupHeader {
 	const title = state === 'live' ? 'Working…' : state === 'waiting' ? 'Needs you' : 'Worked';
 	const failures = tools.filter((entry) => entry.status === 'error').length;
+	// Work the agent left running when it went away (#135) is as much a thing
+	// a glance must not miss as a failure.
+	const lost = tools.filter((entry) => entry.status === 'lost').length;
+	const parts = [failures > 0 ? `${failures} failed` : '', lost > 0 ? `${lost} lost` : ''].filter(Boolean);
 	return {
 		title,
 		counts: toolGroupCounts(tools),
-		failed: failures > 0 ? `${failures} failed` : null,
+		failed: parts.length ? parts.join(', ') : null,
 	};
 }
 

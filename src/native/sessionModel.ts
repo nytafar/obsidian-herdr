@@ -33,6 +33,7 @@ import {
 	attachSubagentReport,
 	emptyTranscript,
 	lastAssistantText,
+	markLost,
 	reduce,
 	type TaskNotification,
 	type TranscriptState,
@@ -149,6 +150,13 @@ export interface SessionModelOptions {
 	 * machine's.
 	 */
 	home?: string;
+	/**
+	 * Transcripts a model stopped following, with how many lines it had read
+	 * of each (#135), shared by the registry's models. The agent that wrote
+	 * them went away, or the session moved on, so if one is followed again —
+	 * Claude resumed on it — what was running in its first lines is lost.
+	 */
+	ended?: Map<string, number>;
 }
 
 /** One pane's transcript, reduced, kept current. */
@@ -193,6 +201,15 @@ export class SessionModel implements SessionModelView {
 	private generation = 0;
 	/** Calls whose report is being read, so a second batch does not read it twice. */
 	private readingReports = new Set<string>();
+	/** Lines of the current file reduced so far (#135). */
+	private linesRead = 0;
+	/**
+	 * Lines at the start of the current file that an agent now gone wrote, 0
+	 * when none are known to be (#135): what was running in them is lost.
+	 */
+	private lostBefore = 0;
+	/** Whether the runtime says the agent stopped while its session stays (#135). */
+	private stopped = false;
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -368,12 +385,16 @@ export class SessionModel implements SessionModelView {
 		if (paneId !== this.paneId) return;
 		const block = status === 'blocked' ? (kind ?? null) : null;
 		const request = status === 'blocked' ? (this.watcher?.snapshot(paneId)?.request ?? null) : null;
-		if (status === this.status && block === this.block && request === this.pending) return;
+		const stopped = this.watcher?.snapshot(paneId)?.stopped === true;
+		if (status === this.status && block === this.block && request === this.pending && stopped === this.stopped) {
+			return;
+		}
 		this.status = status;
 		this.block = block;
 		this.pending = request;
 		// The block is over, so the next one is a block of its own to answer.
 		if (status !== 'blocked') this.blockClaim = null;
+		if (this.setStopped(stopped)) return;
 		// No turn changed; the view redraws what it shows between blocks.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -409,12 +430,23 @@ export class SessionModel implements SessionModelView {
 		if (path === this.currentPath && (path === null || this.streamSource === source)) {
 			// The same session, so nothing to reload. A status read here rather
 			// than off a transition, as after a rebind, is still news to the view.
+			if (this.setStopped(pane?.stopped === true)) return;
 			if (statusMoved) this.emit({ changedTurnIds: [], reset: false });
 			return;
+		}
+		// The session shown is over for this pane: its agent went away or moved
+		// to another file. If Claude comes back to it, what ran here is lost (#135).
+		if (this.currentPath && path !== this.currentPath && this.linesRead > 0) {
+			this.options.ended?.set(this.currentPath, this.linesRead);
 		}
 		this.closeStream();
 		this.currentPath = path;
 		this.restart();
+		this.stopped = pane?.stopped === true;
+		if (path) {
+			this.lostBefore = this.options.ended?.get(path) ?? 0;
+			this.options.ended?.delete(path);
+		}
 		// Said now, not when the new file's first lines land: a tail delivers
 		// those asynchronously, and the session that is gone must not still be on
 		// screen in between.
@@ -446,6 +478,8 @@ export class SessionModel implements SessionModelView {
 		this.blockClaim = null;
 		this.generation++;
 		this.readingReports.clear();
+		this.linesRead = 0;
+		this.lostBefore = 0;
 	}
 
 	/**
@@ -456,12 +490,56 @@ export class SessionModel implements SessionModelView {
 	private onLines(lines: string[], restart: boolean): void {
 		if (restart) this.restart();
 		this.delivered = true;
-		const { state, changedTurnIds, removedTurnIds } = reduce(this.transcript, lines);
+		const { state, changedTurnIds, removedTurnIds } = this.reduceLines(lines);
 		this.transcript = state;
 		if (restart) this.emit({ changedTurnIds: [], reset: true });
 		else if (removedTurnIds.length) this.emit({ changedTurnIds, removedTurnIds, reset: false });
 		else this.emit({ changedTurnIds, reset: false });
 		this.readReports(changedTurnIds);
+	}
+
+	/**
+	 * Reduces a batch, marking lost what an agent now gone left running (#135):
+	 * everything while the runtime says it stopped, and in a file Claude
+	 * resumed, what was running when the lines its earlier run wrote ran out.
+	 */
+	private reduceLines(lines: string[]): ReturnType<typeof reduce> {
+		const before = this.linesRead;
+		this.linesRead += lines.length;
+		const cut = this.lostBefore - before;
+		let result: ReturnType<typeof reduce>;
+		if (cut > 0 && cut <= lines.length) {
+			const earlier = reduce(this.transcript, lines.slice(0, cut));
+			const lost = markLost(earlier.state);
+			const later = reduce(lost.state, lines.slice(cut));
+			const changed = new Set([...earlier.changedTurnIds, ...lost.changedTurnIds, ...later.changedTurnIds]);
+			const kept = new Set(later.state.turns.map((turn) => turn.id));
+			result = {
+				state: later.state,
+				changedTurnIds: [...changed].filter((id) => kept.has(id)),
+				removedTurnIds: [...earlier.removedTurnIds, ...later.removedTurnIds].filter((id) => !kept.has(id)),
+			};
+			this.lostBefore = 0;
+		} else result = reduce(this.transcript, lines);
+		if (!this.stopped) return result;
+		const lost = markLost(result.state);
+		const changed = new Set([...result.changedTurnIds, ...lost.changedTurnIds]);
+		return { ...result, state: lost.state, changedTurnIds: [...changed] };
+	}
+
+	/**
+	 * Takes the runtime's word on whether the agent stopped (#135). A stop
+	 * marks lost what it left running, and says so as a change; true when it
+	 * emitted one.
+	 */
+	private setStopped(stopped: boolean): boolean {
+		if (stopped === this.stopped) return false;
+		this.stopped = stopped;
+		if (!stopped) return false;
+		const { state, changedTurnIds } = markLost(this.transcript);
+		this.transcript = state;
+		this.emit({ changedTurnIds, reset: false });
+		return true;
 	}
 
 	/**
@@ -480,8 +558,10 @@ export class SessionModel implements SessionModelView {
 			for (const entry of turn.entries) {
 				if (entry.kind !== 'tool' || entry.report !== null) continue;
 				// Only a subagent has a report; a background command's output file
-				// is its stdout, which the tool group already accounts for.
-				if (!entry.notification || toolKind(entry.name) !== 'agent') continue;
+				// is its stdout, which the tool group already accounts for. The
+				// notification says whose it is (#135).
+				if (!entry.notification || entry.notification.kind === 'command') continue;
+				if (toolKind(entry.name) !== 'agent') continue;
 				if (this.readingReports.has(entry.id)) continue;
 				this.readingReports.add(entry.id);
 				void this.readReport(entry.id, entry.notification);
@@ -564,6 +644,8 @@ function modelKey(endpointId: string, paneId: string): string {
  */
 export class SessionModelRegistry implements SessionModels {
 	private readonly models = new Map<string, { model: SessionModel; holders: number }>();
+	/** What every model stopped following, and how far it had read (#135). */
+	private readonly ended = new Map<string, number>();
 
 	constructor(private readonly options: SessionModelRegistryOptions) {}
 
@@ -588,6 +670,7 @@ export class SessionModelRegistry implements SessionModels {
 					watcher: () => this.options.watcher(endpointId),
 					source: () => this.options.source(endpointId),
 					home: this.options.home,
+					ended: this.ended,
 				}),
 				holders: 0,
 			};

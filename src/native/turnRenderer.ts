@@ -644,6 +644,7 @@ function renderToolGroup(tools: readonly ToolEntry[], context: ItemContext): Ite
 			text: detail ? `${entry.name} ${detail}` : entry.name,
 		});
 		if (entry.status === 'error') rowEl.addClass('is-error');
+		if (entry.status === 'lost') rowEl.addClass('is-lost');
 	}
 	context.disclose(details, toolGroupStartsOpen(state));
 	return { el: details };

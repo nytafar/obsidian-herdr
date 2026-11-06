@@ -308,3 +308,32 @@ describe('the runtime’s notices and bash mode (#133)', () => {
 		expect(toc.rows()).toEqual(['Look', '! ls -la']);
 	});
 });
+
+describe('background work left behind (#135)', () => {
+	it('says in the tool group what was lost, and strikes its row', async () => {
+		const model = new FakeModel();
+		const el = await surfaceOn(model);
+
+		model.push(
+			[
+				turn('u1', 'Start it', [
+					{
+						kind: 'tool',
+						id: 't1',
+						name: 'Bash',
+						input: { command: 'sleep 600', run_in_background: true },
+						result: 'Command running in background with ID: b1.',
+						status: 'lost',
+						notification: null,
+						report: null,
+					},
+				]),
+			],
+			{ changedTurnIds: ['u1'], reset: false },
+		);
+
+		const group = el.find('herdr-native-tools');
+		expect(group.find('herdr-native-tools-failed').textContent).toBe('1 lost');
+		expect(group.find('herdr-native-tool').hasClass('is-lost')).toBe(true);
+	});
+});

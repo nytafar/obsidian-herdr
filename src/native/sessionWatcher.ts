@@ -59,6 +59,13 @@ export interface PaneSnapshot {
 	 */
 	transcriptPath?: string;
 	agentStatus: AgentStatus;
+	/**
+	 * The agent's process has ended while the runtime keeps its session on
+	 * show (the `claude` kind keeps a stopped agent's): whatever it had running
+	 * in the background is lost (#135). Absent where the runtime drops the
+	 * session with the process, as herdr and herdr-core do.
+	 */
+	stopped?: boolean;
 	/** The kind of block, while `blocked` and only when the runtime knows it. */
 	blockKind?: BlockKind;
 	/**

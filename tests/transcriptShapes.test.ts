@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { emptyTranscript, reduce, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, markLost, reduce, type ToolEntry, type TranscriptState } from '../src/native/reducer';
 
 /** A fixture transcript's lines, newline-split the way a tail delivers them. */
 function fixtureLines(name: string): string[] {
@@ -410,5 +410,100 @@ describe('a /clear inside the same file (#134)', () => {
 		]);
 
 		expect(state.turns.map((turn) => turn.prompt)).toEqual(['/github-explore find a way']);
+	});
+});
+
+describe('background notifications (#135)', () => {
+	const call = (state: TranscriptState, id: string): ToolEntry | undefined =>
+		state.turns
+			.flatMap((turn) => turn.entries)
+			.find((entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === id);
+
+	it('runs a background command until its notification, and updates it once', () => {
+		// Recorded on 2.1.318: the launch result, then the notification as its
+		// enqueue and as a `user` line.
+		const lines = fixtureLines('background-command');
+		const id = 'toolu_01A33MC8USCwTrLZnPZCMkZR';
+		const enqueue = lines.findIndex((line) => line.includes('"operation":"enqueue"'));
+		const before = reduce(emptyTranscript(), lines.slice(0, enqueue));
+		expect(call(before.state, id)?.status).toBe('running');
+
+		const queued = reduce(before.state, lines.slice(enqueue, enqueue + 1));
+		const userLine = lines.findIndex((line, index) => index > enqueue && line.includes('"type":"user"'));
+		const again = reduce(queued.state, lines.slice(enqueue + 1, userLine + 1));
+
+		expect(call(queued.state, id)).toMatchObject({ status: 'done', notification: { kind: 'command', taskId: 'bwrgqc4ez' } });
+		expect(queued.changedTurnIds).toHaveLength(1);
+		expect(again.changedTurnIds).toEqual([]);
+		expect(cold(lines).turns.map((turn) => turn.prompt)).toEqual(['great, wait for the other session and check back']);
+		expect(live(lines)).toEqual(cold(lines));
+	});
+
+	it('ends a subagent from a notification taken in mid-turn, and reads it once', () => {
+		// Recorded on 2.1.318: the notification as its enqueue, a `remove`, and
+		// the `queued_command` attachment, with no `user` line at all.
+		const lines = fixtureLines('subagent-notification');
+		const id = 'toolu_015dmny5S9fW7gz3wk9eweTn';
+		const state = cold(lines);
+
+		expect(call(state, id)).toMatchObject({ status: 'done', notification: { kind: 'agent', taskId: 'a615da8d9e3c64686' } });
+		const attachment = lines.findIndex((line) => line.includes('"commandMode":"task-notification"'));
+		const upTo = reduce(emptyTranscript(), lines.slice(0, attachment));
+		expect(reduce(upTo.state, lines.slice(attachment, attachment + 1)).changedTurnIds).toEqual([]);
+		expect(live(lines)).toEqual(state);
+	});
+
+	it('does not take a background command’s notification for a subagent’s', () => {
+		const notification = [
+			'<task-notification>',
+			'<task-id>a1</task-id>',
+			'<tool-use-id>toolu_a1</tool-use-id>',
+			'<status>completed</status>',
+			'<summary>Background command "sleep 5" completed (exit code 0)</summary>',
+			'</task-notification>',
+		].join('\n');
+		const state = cold([
+			JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Go' } }),
+			JSON.stringify({
+				type: 'assistant',
+				message: { id: 'm1', content: [{ type: 'tool_use', id: 'toolu_a1', name: 'Agent', input: {} }] },
+			}),
+			JSON.stringify({
+				type: 'user',
+				message: {
+					role: 'user',
+					content: [{ type: 'tool_result', tool_use_id: 'toolu_a1', content: 'Async agent launched successfully.' }],
+				},
+			}),
+			JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: notification }),
+		]);
+
+		expect(call(state, 'toolu_a1')?.status).toBe('running');
+	});
+
+	it('never opens a turn for a notification whose enqueue it did not see', () => {
+		const state = cold([
+			JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Go' } }),
+			JSON.stringify({
+				type: 'user',
+				uuid: 'n1',
+				message: { role: 'user', content: '<task-notification>\n<task-id>x</task-id>\n</task-notification>' },
+			}),
+		]);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Go']);
+	});
+
+	it('marks what was running lost, and leaves what ended alone', () => {
+		const lines = fixtureLines('background-command');
+		const enqueue = lines.findIndex((line) => line.includes('"operation":"enqueue"'));
+		const running = reduce(emptyTranscript(), lines.slice(0, enqueue)).state;
+
+		const { state, changedTurnIds } = markLost(running);
+
+		expect(call(state, 'toolu_01A33MC8USCwTrLZnPZCMkZR')?.status).toBe('lost');
+		expect(changedTurnIds).toEqual([running.turns[0]?.id]);
+		expect(call(running, 'toolu_01A33MC8USCwTrLZnPZCMkZR')?.status).toBe('running');
+		expect(markLost(state).changedTurnIds).toEqual([]);
 	});
 });

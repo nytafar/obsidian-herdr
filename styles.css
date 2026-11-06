@@ -1057,6 +1057,12 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	color: var(--text-error);
 }
 
+/* Left running when the agent went away (#135): struck, not red. */
+.herdr-native-tool.is-lost {
+	color: var(--text-faint);
+	text-decoration: line-through;
+}
+
 /*
  * The agent's to-do list (#143): an update where the turn made it, and the
  * chip with the current list between the turns and the prompt box. One row per

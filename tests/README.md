@@ -434,6 +434,11 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 - `in-file-clear.jsonl` — the three `/clear` lines recorded at the start of a
   rotated 2.1.286 file, with a turn and a late tool result written around them
   in the same shapes (no transcript here clears inside its own file).
+- `background-command.jsonl` — a background command's launch and its
+  notification as enqueue and `user` line, 2.1.318.
+- `subagent-notification.jsonl` — a background subagent's notification taken
+  in mid-turn: its enqueue, a `remove` and the `queued_command` attachment,
+  with no `user` line, 2.1.318.
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:
