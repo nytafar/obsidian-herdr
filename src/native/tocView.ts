@@ -204,7 +204,7 @@ export class TocPanel {
 	/** One turn: its prompt, then the headings of its prose, nested under it. */
 	private renderTurn(listEl: HTMLElement, turn: Turn): void {
 		const turnEl = listEl.createDiv({ cls: 'herdr-toc-turn' });
-		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], firstLine(turn.prompt), turn.id);
+		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], turnLabel(turn), turn.id);
 		turn.headings.forEach((heading, index) => {
 			this.renderRow(
 				turnEl,
@@ -262,6 +262,16 @@ export class TocPanel {
 			heading,
 		);
 	}
+}
+
+/**
+ * What a turn's row says: its prompt's first line, or for a prompt that was
+ * only a picture, that it was one (#129).
+ */
+export function turnLabel(turn: Turn): string {
+	const line = firstLine(turn.prompt);
+	if (line) return line;
+	return turn.entries[0]?.kind === 'image' ? 'Image' : '';
 }
 
 /** A prompt's first line, which is all a one-line row can say. */

@@ -21,6 +21,7 @@
 
 import {
 	isAsyncLaunchNotice,
+	type ImageEntry,
 	type ThinkingEntry,
 	type TextEntry,
 	type SteerEntry,
@@ -337,7 +338,17 @@ export type TurnItem =
 	| { kind: 'group'; tools: ToolEntry[] }
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
-	| { kind: 'report'; entry: ToolEntry };
+	| { kind: 'report'; entry: ToolEntry }
+	| MarkItem;
+
+/**
+ * The entries that are neither the agent speaking nor a call it made, each
+ * drawn as an item of its own kind: a picture sent with the prompt (#129).
+ */
+export type MarkEntry = ImageEntry;
+
+/** One {@link MarkEntry} as an item, under its own kind. */
+export type MarkItem = { kind: 'image'; entry: ImageEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -349,6 +360,14 @@ export type TurnItem =
  */
 function rendersNothing(entry: TurnEntry): boolean {
 	return (entry.kind === 'thinking' || entry.kind === 'text') && !entry.text.trim();
+}
+
+/** A {@link MarkEntry} under its own kind, for the switch that draws it. */
+function markItem(entry: MarkEntry): MarkItem {
+	switch (entry.kind) {
+		case 'image':
+			return { kind: 'image', entry };
+	}
 }
 
 /**
@@ -385,6 +404,12 @@ export function turnItems(
 		if (entry.kind === 'steer') {
 			group = null;
 			items.push({ kind: 'steer', entry });
+			continue;
+		}
+		if (entry.kind !== 'tool') {
+			// Visible, so it ends the run like a steer does.
+			group = null;
+			items.push(markItem(entry));
 			continue;
 		}
 		const kind = toolKind(entry.name);

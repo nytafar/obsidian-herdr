@@ -16,7 +16,7 @@
  */
 
 import { Component } from 'obsidian';
-import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
+import type { ImageEntry, TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
 import {
 	changedPath,
 	changeLine,
@@ -267,6 +267,9 @@ export class TurnRenderer {
 				// A steer is shown where it entered the running turn (CONTEXT.md).
 				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), item.entry.text);
 				return;
+			case 'image':
+				renderImage(turnEl, item.entry);
+				return;
 		}
 	}
 
@@ -428,4 +431,17 @@ export class TurnRenderer {
 			});
 		}
 	}
+}
+
+/**
+ * A picture sent with the prompt, as a placeholder (#129): the bytes stay in
+ * the transcript, and the line says one was there and of what type.
+ */
+export function imageLabel(entry: ImageEntry): string {
+	const subtype = entry.mediaType.split('/')[1]?.trim();
+	return subtype ? `Image (${subtype.toUpperCase()})` : 'Image';
+}
+
+function renderImage(turnEl: HTMLElement, entry: ImageEntry): void {
+	turnEl.createDiv({ cls: 'herdr-native-image', text: imageLabel(entry) });
 }

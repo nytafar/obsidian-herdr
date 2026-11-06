@@ -415,6 +415,17 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
    lists its transcripts; the one named by that pane's `agent_session.value` in
    `herdr agent list` is the file the view is showing.
 
+## Recorded transcript fixtures (#129–#135)
+
+`tests/transcriptShapes.test.ts` reads fixtures cut from real Claude Code
+transcripts on this machine and scrubbed: prose, commands, tool input and
+output replaced, paths moved under `/home/user`, image bytes cut to a stub,
+bookkeeping lines (`api-request`, `ai-title`, …) dropped. Ids, parents,
+timestamps, types and the tags the reducer reads are kept as recorded.
+
+- `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
+  (no 2.1.318 transcript on this machine has one).
+
 ## Smoking live updates and session following (#94)
 
 The tail is tested against a real temp file and the following against fake

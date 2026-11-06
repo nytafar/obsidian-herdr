@@ -18,6 +18,8 @@
  *   `claude` kind, ADR-0007) is enqueued and dequeued before its `user` line
  *   as a matter of course, and that line says where it came from
  *   (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`), so it is a prompt.
+ *   A prompt written as content blocks — a pasted image — is a prompt too
+ *   (#129): its text blocks are the prompt and each image a placeholder entry.
  * - A **steer** — a prompt accepted while the agent was working — never becomes
  *   a `user` line at all. It shows as a `queued_command` attachment with
  *   `origin.kind: "human"`, and belongs inline in the turn already running.
@@ -133,7 +135,19 @@ export interface SteerEntry {
 	text: string;
 }
 
-export type TurnEntry = TextEntry | ThinkingEntry | ToolEntry | SteerEntry;
+/**
+ * A picture the human sent with a prompt (#129), kept as a placeholder: the
+ * bytes stay in the transcript, and the view says only that one was there.
+ * Placed first in its turn's entries, so it reads under the prompt it came
+ * with.
+ */
+export interface ImageEntry {
+	kind: 'image';
+	/** The picture's media type as the transcript gave it, '' when it gave none. */
+	mediaType: string;
+}
+
+export type TurnEntry = TextEntry | ThinkingEntry | ToolEntry | SteerEntry | ImageEntry;
 
 /** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
 export interface TurnHeading {
@@ -308,6 +322,42 @@ const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
  */
 export function isAsyncLaunchNotice(result: string | null): boolean {
 	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
+}
+
+/**
+ * The marker Claude Code writes when the human stops a turn, as a `user` line
+ * of content blocks: `[Request interrupted by user]`, or `… for tool use]`.
+ * It is the runtime's bookkeeping, not anything the human typed.
+ */
+const INTERRUPTED = /^\[Request interrupted by user/;
+
+/**
+ * A prompt written as content blocks rather than a string (#129): what a TUI
+ * prompt with a pasted image is (`[{text: "[Image #3]"}, {image}]`, measured
+ * on 2.1.283), with no `isMeta`. The text blocks are the prompt; each image is
+ * kept as a placeholder. Null for a line that is no prompt: one that carries
+ * nothing but tool results, an interruption marker, or a task notification.
+ */
+function blockPrompt(
+	line: Json,
+	content: readonly unknown[],
+): { text: string; images: ImageEntry[] } | null {
+	if (line.isMeta === true || typeof line.interruptedMessageId === 'string') return null;
+	const texts: string[] = [];
+	const images: ImageEntry[] = [];
+	for (const block of content) {
+		if (!isRecord(block)) continue;
+		if (block.type === 'text') {
+			const text = stringField(block, 'text');
+			if (INTERRUPTED.test(text) || taskNotification(text)) continue;
+			if (text.trim()) texts.push(text);
+		} else if (block.type === 'image') {
+			const source = isRecord(block.source) ? block.source : {};
+			images.push({ kind: 'image', mediaType: stringField(source, 'media_type') });
+		}
+	}
+	if (texts.length === 0 && images.length === 0) return null;
+	return { text: texts.join('\n'), images };
 }
 
 /** True for a `user` line that is a local command's own output, not a prompt. */
@@ -529,6 +579,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						const turn = draft.turnOf(toolUseId);
 						if (turn) draft.touch(turn.id);
 						attached = true;
+					}
+					// A prompt of content blocks — a pasted image, a pasted block —
+					// is a prompt like a string one (#129). A line of tool results
+					// carries no text of the human's and opens nothing.
+					const sent = blockPrompt(parsed, content);
+					if (sent) {
+						const turn = draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, sent.text);
+						turn.entries.push(...sent.images);
+						continue;
 					}
 					if (!attached) countRaw(type);
 					continue;
