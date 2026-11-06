@@ -44,7 +44,7 @@ import { HcTabLabels } from '../hc/tabLabels';
 import { hcSessionWatcher } from '../hc/sessionWatcher';
 import { HcTranscriptSource } from '../hc/transcriptSource';
 import { HcCommandCatalog } from '../hc/commandCatalog';
-import { BUILTIN_CATALOG_SOURCE } from '../native/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../agents/claude/commands';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';

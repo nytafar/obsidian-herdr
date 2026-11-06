@@ -23,7 +23,7 @@ import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import type { WaitingAnswer } from '../src/native/pendingRequest';
-import { encodeProjectDir } from '../src/native/transcriptSource';
+import { encodeProjectDir } from '../src/agents/claude/paths';
 import {
 	claudeEnv,
 	createClaudeKind,

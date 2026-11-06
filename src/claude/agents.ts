@@ -80,7 +80,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { isAbsolute, resolve, type PlatformPath } from 'node:path';
-import { claudeTranscriptFile } from '../native/transcriptSource';
+import { claudeTranscriptFile } from '../agents/claude/paths';
 import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,

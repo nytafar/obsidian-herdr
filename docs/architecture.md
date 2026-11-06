@@ -319,9 +319,33 @@ scope, `agent_session` from the raw `PaneInfo`, and rotation read off
 ingested the update first. It reports no block kind, and the waiting card
 guesses the block from the transcript. On a local herdr it works out the
 transcript path from the pane's Claude process (next section); until that is
-known, and over SSH, the model derives the path from cwd and session under
-`~/.claude`. herdr-core's watcher and sources are in "herdr-core: the native
-view" below.
+known, and over SSH, the model asks the agent's format for the path, which
+for Claude is cwd and session under `~/.claude`. herdr-core's watcher and
+sources are in "herdr-core: the native view" below.
+
+### The agent seam: formats and session bindings (issue #137, ADR-0010)
+
+What a pane's session *means* is the agent's, not the runtime's. The
+snapshot names the pane's agent (`PaneSnapshot.agent`: herdr's
+`PaneInfo.agent`; `claude` for an hc terminal whose Claude hook label was
+accepted, and on the `claude` kind; absent reads as the catalog's default
+agent), and the session model reads the session with that agent's
+`AgentFormat` (`src/agents/format.ts`). A format supplies the parser into
+the neutral model (`src/native/conversation.ts`), the transcript path when
+the runtime names none, images, the call a block is about, background
+reports, the plan file, tool names, the `/` catalogue and session info.
+Claude Code's is `src/agents/claude/`. Above the seam nothing imports it.
+
+The native view is offered for a pane only when a format exists for its
+agent **and** the runtime's session binding for that agent is `trusted`
+(`AGENT_SESSIONS` in `src/runtime/kind.ts`: herdr `{claude: trusted, codex:
+hint}`, herdr-core and the `claude` kind `{claude: trusted}`, anything
+unlisted `absent`). herdr's and herdr-core's watchers word a refusal through
+`nativeAgentReason` (`src/native/agentSupport.ts`), and the catalog's
+`native` flag is `offersNativeView` for the runtime's kind, so the + menu,
+the settings and the view agree. A runtime that knows session info sooner
+than the transcript puts it in `PaneSnapshot.sessionInfo`; the model lays it
+over the format's reading per field.
 
 ### A pane's Claude process: config dir and real cwd (issue #132)
 
@@ -1374,7 +1398,7 @@ scratch pane created with `tab create` and `agent start`.
     after approval, and the `permission-mode` lines Claude writes at each
     flush with the mode then. A rejected plan leaves the mode at `plan`.
 
-  The session model (`src/native/planFile.ts`) follows the last slug and the
+  The session model (`src/agents/claude/planFile.ts`) follows the last slug and the
   last word on the mode from the lines it reads, and while the pane is
   `blocked` in plan mode, on no runtime request and no kind other than
   `permission`, reads the plan file three levels above the transcript
@@ -1611,7 +1635,11 @@ Measured 2026-11-06 for issues #110 and #111 against Claude Code 2.1.318,
 herdr 0.9.5 and hc 0.1.18, in `oh-test-*` panes and `claude -p` stream-json
 processes under `/tmp`. The finding `native-view-session-settings` in the
 docs root has the measurements; `native-view-header` the context and
-placement. Nothing in the plugin reads or sets these yet.
+placement. Claude's agent format reads the `model` attachment, each main-chain
+reply's `message.model`, `effort` and usage, and the prompt's
+`permissionMode` into `SessionInfo` (#137, `src/agents/claude/transcript.ts`);
+nothing shows or sets them yet, and the stdout lines and `/context` are not
+read.
 
 - **What the transcript says.** Every `assistant` line: `message.model`
   and top-level `effort` (and `perTurnEffort`). A `model` attachment
@@ -1700,9 +1728,10 @@ and `tests/codexFixtures.test.ts` pins the facts below that rest on them.
   kind runs only Claude. Until #155 no code path read the pane's agent before
   it offered the native view, so a Codex pane on herdr was offered a view that
   derived a Claude transcript path from Codex's thread id. Now herdr's and
-  herdr-core's session watchers refuse a pane whose agent is not Claude
-  (`src/native/agentSupport.ts`), through the pane-reason path, and the pane
-  stays a terminal that names its agent.
+  herdr-core's session watchers refuse a pane whose agent has no format or
+  no trusted session binding (`src/native/agentSupport.ts`, the agent seam
+  above), through the pane-reason path, and the pane stays a terminal that
+  names its agent. herdr's Codex binding is a `hint` (next item).
 - **The session is a thread id, and the transcript is a rollout file.**
   `~/.codex/sessions/YYYY/MM/DD/rollout-<local start time>-<thread id>.jsonl`
   (`$CODEX_HOME` moves `~/.codex`). It is created at the first prompt, not at

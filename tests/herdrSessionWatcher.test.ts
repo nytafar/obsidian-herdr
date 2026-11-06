@@ -272,8 +272,8 @@ describe('herdrSessionWatcher: only a Claude pane has a native view (#155)', () 
 		expect(watcher?.unavailable?.('w4:p1')).toBeNull();
 		// Not an agent pane, so not in the scope: nothing to refuse.
 		expect(watcher?.unavailable?.('w4:p2')).toBeNull();
-		expect(nativeAgentReason(null)).toBeNull();
-		expect(nativeAgentReason('')).toBeNull();
+		expect(nativeAgentReason('herdr', null)).toBeNull();
+		expect(nativeAgentReason('herdr', '')).toBeNull();
 	});
 
 	it('says when a pane’s answer may have moved: a Codex pane joining, or its agent changing', () => {

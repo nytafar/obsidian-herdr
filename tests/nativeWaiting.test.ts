@@ -24,12 +24,8 @@ import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
 import { PLAN_IN_TERMINAL, QUESTION_IN_TERMINAL } from '../src/native/waitingCardView';
-import {
-	emptyTranscript,
-	type ToolEntry,
-	type TranscriptState,
-	type Turn,
-} from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { ToolEntry, Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,

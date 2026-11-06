@@ -1,10 +1,12 @@
 /**
- * The transcript reducer (issue #93, ADR-0003).
+ * Claude Code's transcript parser (issues #93, #137; ADR-0003, ADR-0010).
  *
  * Pure, and the only place that knows what a Claude Code transcript line means.
- * `reduce(state, lines)` folds a batch of NDJSON lines — a whole file on open,
- * a tail's worth afterwards — into the session model's state and says which
- * turns changed, so the native surface can redraw those and nothing else.
+ * It sits behind the agent seam (`../format.ts`): `reduce(state, lines)` folds a
+ * batch of NDJSON lines — a whole file on open, a tail's worth afterwards —
+ * into the agent-neutral conversation model (`../../native/conversation.ts`)
+ * and says which turns changed, so the native surface can redraw those and
+ * nothing else.
  *
  * The rules come from the verified facts in `docs/architecture.md` (section
  * "Agent prompts and session identity") and the design (`native-view-design.md`
@@ -33,9 +35,34 @@
  *   written tail — is raw too rather than an error. Unknown types are normal:
  *   a newer Claude Code writes line types this build has never seen.
  *
- * What is deliberately *not* here: status (that is herdr's `agent_status`, and
- * the session model's), following (also the session model's), and rendering.
+ * Claude writes no turn lifecycle, no text phase and no outcome apart from
+ * `is_error`, so its turns have no `outcome`, its text no `phase`, and its
+ * calls end `done` or `error`, never `declined` or `unknown`.
+ *
+ * What is deliberately *not* here: status (that is the runtime's
+ * `agent_status`, and the session model's), following (also the session
+ * model's), and rendering.
  */
+
+import {
+	TurnDraft as Draft,
+	type ConversationParser,
+	type ImageBytes,
+	type ImageEntry,
+	type ReduceResult as ConversationReduceResult,
+	type SessionInfo,
+	type ShellEntry,
+	type TaskNotification,
+	type TextEntry,
+	type ThinkingEntry,
+	type ToolEntry,
+	type ToolStatus,
+	type Turn,
+	type TurnEntry,
+} from '../../native/conversation';
+
+/** What one batch did to a Claude session's state. */
+export type ReduceResult = ConversationReduceResult<TranscriptState>;
 
 /**
  * A human prompt written by a stream-json host rather than typed in a
@@ -50,222 +77,7 @@ function isStreamPrompt(line: Record<string, unknown>, content: string): boolean
 	return line.promptSource === 'sdk' || line.entrypoint === 'sdk-cli';
 }
 
-/** One assistant message's prose, merged across every line that carried it. */
-export interface TextEntry {
-	kind: 'text';
-	messageId: string;
-	text: string;
-}
-
-/**
- * That a message thought before it spoke, and what it thought.
- *
- * The text is kept because the view shows it in a collapsed disclosure (#95).
- * A block that carries only a `signature` — an encrypted thought this build may
- * not read — has an empty text, and the view shows nothing for it.
- */
-export interface ThinkingEntry {
-	kind: 'thinking';
-	messageId: string;
-	text: string;
-}
-
-/**
- * A background task's completion, as its `<task-notification>` reported it
- * (issue #96, `docs/architecture.md`).
- *
- * The notification names the tool call it belongs to and the file the task
- * wrote. For an `Agent` call that file is the subagent's own transcript, and
- * the report is the last thing it said; the reducer does not read it, because
- * reading is not pure — the session model does, and feeds the text back.
- */
-export interface TaskNotification {
-	/** The task's own id; also the name of the subagent transcript. */
-	taskId: string;
-	/**
-	 * Whose notification it is, by what its summary says (#135): a subagent's
-	 * (`Agent "…" finished`), a background command's (`Background command "…"
-	 * completed`), or something else's (a monitor). Only a subagent has a
-	 * report to read.
-	 */
-	kind: 'agent' | 'command' | 'other';
-	/** The file the task wrote, empty when the notification named none. */
-	outputFile: string;
-}
-
-/**
- * Where a tool call has got to, in the four states of the normalized model
- * (#91). What each means in a Claude Code transcript:
- *
- * - `pending` — the `tool_use` block is there and nothing has answered it.
- * - `running` — the result came back but the work did not: an async subagent's
- *   launch notice, whose real answer is the task notification later on.
- * - `done` — a result answered, or the notification reported the background
- *   work completed.
- * - `error` — the result carried `is_error`, which is what a failed call and a
- *   call the user refused both look like, or the notification reported
- *   anything other than completion.
- * - `lost` — it was running when the agent went away, and nothing will ever
- *   report it (#135). Set by {@link markLost}, never by a transcript line.
- */
-export type ToolStatus = 'pending' | 'running' | 'done' | 'error' | 'lost';
-
-/** A tool call and, once it lands, the result that answered it. */
-export interface ToolEntry {
-	kind: 'tool';
-	id: string;
-	name: string;
-	/**
-	 * The call's input, exactly as the transcript gave it. The reducer knows no
-	 * tool: which field is a path, a command or a query is the view's kind table
-	 * (`./toolCalls.ts`), so that stays one place and this stays dumb.
-	 */
-	input: Record<string, unknown>;
-	/** null until the `tool_result` line arrives. */
-	result: string | null;
-	/** How far the call has got; the view says so for a vault change (#95). */
-	status: ToolStatus;
-	/**
-	 * The task notification that reported this call finished, for the background
-	 * calls that get one; null for every other call.
-	 */
-	notification: TaskNotification | null;
-	/**
-	 * A background subagent's report, once it has been read out of the file the
-	 * notification named. Written by the session model, never by a transcript
-	 * line. A synchronous subagent has no notification and its report is simply
-	 * its {@link ToolEntry.result}.
-	 */
-	report: string | null;
-}
-
-/** A human prompt consumed inside a running turn, shown where it entered. */
-export interface SteerEntry {
-	kind: 'steer';
-	text: string;
-}
-
-/**
- * A picture the human sent with a prompt (#129). The bytes stay in the
- * transcript: the entry says where they are, the record and which of its
- * images, and the view reads them when it shows the thumbnail (#144), so a
- * session's pictures are never all held at once. Placed first in its turn's
- * entries, so it reads under the prompt it came with; a steer's follow the
- * steer.
- */
-export interface ImageEntry {
-	kind: 'image';
-	/** Stable within the session: the record and the index, for the view's item names. */
-	id: string;
-	/** The uuid of the transcript record that carries the bytes, '' when it had none. */
-	record: string;
-	/** Which of that record's images this is, from 0. */
-	index: number;
-	/** The picture's media type as the transcript gave it, '' when it gave none. */
-	mediaType: string;
-}
-
-/**
- * Where the agent's context was compacted (#130): the conversation before it
- * was folded into a summary, which the agent continues from. Shown as a
- * divider with the summary folded, at the point it happened, never as a
- * prompt.
- */
-export interface CompactionEntry {
-	kind: 'compaction';
-	/** The summary the agent continued from, as Markdown. */
-	summary: string;
-}
-
-/**
- * The runtime speaking to the human, not the agent (#133): an unknown
- * command, a usage limit reached or reset, a connection dropped. Shown where
- * it was written, in the turn running then, and never as a turn of its own.
- */
-export interface NoticeEntry {
-	kind: 'notice';
-	text: string;
-	/** When it was written, '' when the line did not say; lines a moment apart join. */
-	at: string;
-}
-
-/**
- * A command the human ran in the agent's shell (bash mode, `!` in Claude
- * Code), and what it printed (#133). It opens a turn as a prompt does.
- */
-export interface ShellEntry {
-	kind: 'shell';
-	command: string;
-	/** What it printed, null until the output has arrived. */
-	stdout: string | null;
-	stderr: string;
-}
-
-export type TurnEntry =
-	| TextEntry
-	| ThinkingEntry
-	| ToolEntry
-	| SteerEntry
-	| ImageEntry
-	| CompactionEntry
-	| NoticeEntry
-	| ShellEntry;
-
-/** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
-export interface TurnHeading {
-	/** 1 to 6, as the number of `#` says. */
-	level: number;
-	text: string;
-}
-
-/** A human prompt and everything the agent did until it stopped. */
-export interface Turn {
-	/** The prompt line's uuid; stable, so a view can redraw one turn in place. */
-	id: string;
-	prompt: string;
-	entries: TurnEntry[];
-	/**
-	 * The headings of this turn's assistant prose, in order (#100). Computed
-	 * here so the table of contents parses nothing; recomputed whenever the turn
-	 * changes, because prose arrives a block at a time.
-	 */
-	headings: TurnHeading[];
-}
-
-/** A Markdown ATX heading: up to three spaces, one to six hashes, then text. */
-const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
-/** A fenced code block's fence, which is what a heading inside one is not. */
-const FENCE = /^ {0,3}(```|~~~)/;
-
-/**
- * The headings of a turn's assistant prose (#100).
- *
- * Only `text` entries are read: a thought is not prose, a prompt is the turn's
- * own title and a tool call's output is not the agent speaking. Lines inside a
- * fenced code block are skipped, because a shell comment opens with the same
- * character as a heading and a transcript is full of them. The trailing hashes
- * of a closed ATX heading are dropped, the way Markdown reads them.
- */
-export function turnHeadings(entries: readonly TurnEntry[]): TurnHeading[] {
-	const headings: TurnHeading[] = [];
-	for (const entry of entries) {
-		if (entry.kind !== 'text') continue;
-		let fenced = false;
-		for (const line of entry.text.split('\n')) {
-			if (FENCE.test(line)) {
-				fenced = !fenced;
-				continue;
-			}
-			if (fenced) continue;
-			const match = HEADING.exec(line);
-			if (!match) continue;
-			const text = (match[2] ?? '').replace(/[ \t]+#*[ \t]*$/, '').trim();
-			if (text) headings.push({ level: (match[1] ?? '').length, text });
-		}
-	}
-	return headings;
-}
-
+/** A Claude session's state: the conversation, and what the parser keeps across batches. */
 export interface TranscriptState {
 	turns: Turn[];
 	/**
@@ -282,6 +94,11 @@ export interface TranscriptState {
 	pendingQueue: string[];
 	/** Which records the conversation stands on, for a rewind (#131). */
 	branch: BranchState;
+	/**
+	 * The model and token usage of the newest answer (#110, #111): Claude
+	 * writes both on every assistant message, and no effort or context window.
+	 */
+	info: SessionInfo;
 }
 
 /** Where one record landed, for a prompt that later hangs from it (#131). */
@@ -324,17 +141,6 @@ export interface BranchState {
 	caveat: { uuid: string; parent: string } | null;
 }
 
-export interface ReduceResult {
-	state: TranscriptState;
-	/** Turn ids created or changed by this batch, in order, each once. */
-	changedTurnIds: string[];
-	/**
-	 * Turn ids the state held before this batch and holds no more: a rewind's
-	 * abandoned turns and a cancelled prompt's (#131). A view drops them.
-	 */
-	removedTurnIds: string[];
-}
-
 /** The state a session starts from, and what a rotation goes back to. */
 export function emptyTranscript(): TranscriptState {
 	return {
@@ -342,8 +148,67 @@ export function emptyTranscript(): TranscriptState {
 		raw: {},
 		pendingQueue: [],
 		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
+		info: {},
 	};
 }
+
+/**
+ * What a main-chain assistant message says of the session: its model and its
+ * usage (`input_tokens`, `cache_creation_input_tokens`,
+ * `cache_read_input_tokens`, `output_tokens`). The context in use is the sum
+ * of the three input counts (#111, checked against `/context`). The info
+ * object is replaced only when it changed, so a batch that says nothing new
+ * leaves it as it was. The model's label is its id until a name table lands
+ * (#110).
+ */
+function messageInfo(info: SessionInfo, message: Json, effort: string): SessionInfo {
+	const model = stringField(message, 'model');
+	const usage = isRecord(message.usage) ? message.usage : null;
+	const count = (key: string): number => {
+		const value = usage?.[key];
+		return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+	};
+	const next: SessionInfo = { ...info };
+	// `<synthetic>` is what Claude writes on an answer no model gave (an API error).
+	if (model && model !== '<synthetic>' && model !== info.model?.id) next.model = { id: model, label: model };
+	// The top-level `effort` of the line: what this reply ran with.
+	if (effort) next.effort = effort;
+	if (usage) {
+		const cached = count('cache_read_input_tokens');
+		const input = count('input_tokens') + count('cache_creation_input_tokens') + cached;
+		next.contextUsed = input;
+		next.usage = { input, output: count('output_tokens'), ...(cached ? { cached } : {}) };
+	}
+	const same =
+		next.model === info.model &&
+		next.effort === info.effort &&
+		next.contextUsed === info.contextUsed &&
+		next.usage?.input === info.usage?.input &&
+		next.usage?.output === info.usage?.output &&
+		next.usage?.cached === info.usage?.cached;
+	return same ? info : next;
+}
+
+/** A `model` attachment's `identity`: the id, and the name Claude shows (`marketingName`). */
+function modelIdentity(info: SessionInfo, identity: Json): SessionInfo {
+	const id = stringField(identity, 'modelId');
+	if (!id) return info;
+	const label = stringField(identity, 'marketingName') || id;
+	if (info.model?.id === id && info.model.label === label) return info;
+	return { ...info, model: { id, label } };
+}
+
+/** The permission mode a prompt line states (`permissionMode`), as the session's now. */
+function promptInfo(info: SessionInfo, line: Json): SessionInfo {
+	const mode = stringField(line, 'permissionMode');
+	return mode && mode !== info.permissionMode ? { ...info, permissionMode: mode } : info;
+}
+
+/** Claude Code's reasoning efforts, as `/effort` and `--effort` take them (#110). */
+export const CLAUDE_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
+
+/** Claude Code's permission modes, as `permissionMode` writes them (#110). */
+export const CLAUDE_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
 
 /** Raw counter key for a line that was not JSON. */
 const UNPARSED = '(unparsed)';
@@ -452,15 +317,6 @@ const BACKGROUND_COMMAND_NOTICE = /^command running in background with id:/i;
  * id, the output file and instructions never to quote any of it.
  */
 const ASYNC_LAUNCH_NOTICE = /^async agent launched/i;
-
-/**
- * Whether a tool result is an async subagent's launch notice rather than
- * anything it did: the work is still running and its report will come from the
- * file the notification names (`docs/architecture.md`, #96).
- */
-export function isAsyncLaunchNotice(result: string | null): boolean {
-	return ASYNC_LAUNCH_NOTICE.test((result ?? '').trimStart());
-}
 
 /** Whether a tool result says the work went on in the background (#91, #135). */
 function isBackgroundLaunch(result: string): boolean {
@@ -636,163 +492,6 @@ function isLocalCommandOutput(content: string): boolean {
 	return content.startsWith('<local-command-stdout>');
 }
 
-/** A working copy of one turn, so the reducer never mutates the state it was given. */
-class Draft {
-	private readonly turns: Turn[];
-	/** The turns as the batch found them, for what it removed. */
-	private readonly initial: readonly Turn[];
-	/** Turns this batch removed, by id. */
-	private readonly removed = new Set<string>();
-	private readonly changed: string[] = [];
-	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
-	private readonly changedIds = new Set<string>();
-	/** Turns already copied in this batch, by id: copy once, then mutate freely. */
-	private readonly mine = new Set<string>();
-
-	constructor(turns: Turn[]) {
-		this.initial = turns;
-		this.turns = [...turns];
-	}
-
-	/** The id of the turn open for new content, '' before the first. */
-	lastId(): string {
-		return this.turns[this.turns.length - 1]?.id ?? '';
-	}
-
-	/** Drops one turn, if it is still here (#131). */
-	remove(turnId: string): void {
-		const index = this.turns.findIndex((turn) => turn.id === turnId);
-		if (index === -1) return;
-		this.removed.add(turnId);
-		this.turns.splice(index, 1);
-	}
-
-	/**
-	 * Drops every turn after `turnId`, or every turn for '' (#131). A turn
-	 * that is no longer here drops nothing: what it named is already gone.
-	 */
-	dropAfter(turnId: string): void {
-		const index = turnId ? this.turns.findIndex((turn) => turn.id === turnId) : -1;
-		if (turnId && index === -1) return;
-		for (const turn of this.turns.splice(index + 1)) this.removed.add(turn.id);
-	}
-
-	/** The turn open for new content, or null before the first prompt. */
-	current(): Turn | null {
-		const last = this.turns[this.turns.length - 1];
-		return last ? this.own(last) : null;
-	}
-
-	open(id: string, prompt: string): Turn {
-		const turn: Turn = { id, prompt, entries: [], headings: [] };
-		this.turns.push(turn);
-		this.mine.add(id);
-		this.touch(id);
-		return turn;
-	}
-
-	/**
-	 * Marks a turn as changed by this batch. Asked once per line, so the
-	 * "already marked?" question is a set rather than a scan of the list: a
-	 * first batch is the whole file, and a scan each would be quadratic in the
-	 * number of turns (#101).
-	 */
-	touch(id: string): void {
-		if (this.changedIds.has(id)) return;
-		this.changedIds.add(id);
-		this.changed.push(id);
-	}
-
-	/**
-	 * The turn holding the tool call `toolUseId`, searched from the newest back:
-	 * a result always answers a call that is already in the state.
-	 */
-	toolEntry(toolUseId: string): ToolEntry | null {
-		for (let i = this.turns.length - 1; i >= 0; i--) {
-			const turn = this.turns[i];
-			if (!turn) continue;
-			const found = turn.entries.find(
-				(entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === toolUseId,
-			);
-			if (!found) continue;
-			const owned = this.own(turn);
-			return (
-				owned.entries.find(
-					(entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === toolUseId,
-				) ?? null
-			);
-		}
-		return null;
-	}
-
-	/** The turn holding the tool call `toolUseId`, or null when none does. */
-	turnOf(toolUseId: string): Turn | null {
-		for (let i = this.turns.length - 1; i >= 0; i--) {
-			const turn = this.turns[i];
-			if (!turn) continue;
-			const found = turn.entries.some(
-				(entry) => entry.kind === 'tool' && entry.id === toolUseId,
-			);
-			if (found) return turn;
-		}
-		return null;
-	}
-
-	/** How many turns the draft holds, for naming a turn whose line had no uuid. */
-	get length(): number {
-		return this.turns.length;
-	}
-
-	/**
-	 * The turns as they now stand; the caller assembles the state around them.
-	 *
-	 * The headings of every turn this batch touched are recomputed here, in one
-	 * place: prose arrives a block at a time, and a turn the batch did not touch
-	 * still says what it said (#100).
-	 */
-	finish(): { turns: Turn[]; changedTurnIds: string[]; removedTurnIds: string[] } {
-		const removedTurnIds = this.removedIds();
-		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed, removedTurnIds };
-		// Indexed once rather than searched per id: the first batch of a tail is
-		// the whole file, so every turn in a long session can be in `changed`, and
-		// a `find` each would be quadratic in exactly the case the native view's
-		// open time is measured on (#101).
-		const byId = new Map(this.turns.map((turn) => [turn.id, turn]));
-		for (const id of this.changed) {
-			const turn = byId.get(id);
-			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
-		}
-		// A turn opened and dropped within the batch was never anyone's to draw.
-		const changedTurnIds = this.removed.size
-			? this.changed.filter((id) => byId.has(id))
-			: this.changed;
-		return { turns: this.turns, changedTurnIds, removedTurnIds };
-	}
-
-	/** The turns the batch found and no longer holds, in their old order. */
-	private removedIds(): string[] {
-		if (this.removed.size === 0) return [];
-		const kept = new Set(this.turns.map((turn) => turn.id));
-		return this.initial.map((turn) => turn.id).filter((id) => this.removed.has(id) && !kept.has(id));
-	}
-
-	/**
-	 * A copy of `turn` that this batch owns, swapped into the list on first ask.
-	 *
-	 * The entries are copied too, one object each: a text merge, a tool result,
-	 * a notification and a report all write into an entry, and a snapshot the
-	 * view already drew must keep saying what it said. The `input` record and
-	 * the notification inside an entry are replaced rather than written into, so
-	 * sharing those costs nothing.
-	 */
-	private own(turn: Turn): Turn {
-		if (this.mine.has(turn.id)) return turn;
-		const copy: Turn = { ...turn, entries: turn.entries.map((entry) => ({ ...entry })) };
-		this.turns[this.turns.indexOf(turn)] = copy;
-		this.mine.add(turn.id);
-		return copy;
-	}
-}
 
 /**
  * What a record hangs from: its `parentUuid`, or for a compaction's boundary,
@@ -919,6 +618,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const raw = { ...state.raw };
 	const pendingQueue = [...state.pendingQueue];
 	const branch = new Branch(state.branch);
+	let info = state.info;
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
@@ -999,6 +699,10 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				const attachment = isRecord(parsed.attachment) ? parsed.attachment : null;
 				const origin = attachment && isRecord(attachment.origin) ? attachment.origin : null;
 				const human = attachment?.type === 'queued_command' && origin?.kind === 'human';
+				// The model's id and display name, before the first reply after a
+				// switch and at the first prompt (#110).
+				const identity = attachment?.type === 'model' && isRecord(attachment.identity) ? attachment.identity : null;
+				if (identity && parsed.isSidechain !== true) info = modelIdentity(info, identity);
 				// A notification taken in mid-turn is this attachment, with no
 				// `user` line after it (#135).
 				const task =
@@ -1044,6 +748,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'user': {
 				const message = isRecord(parsed.message) ? parsed.message : null;
 				const content = message?.content;
+				if (parsed.isSidechain !== true) info = promptInfo(info, parsed);
 				if (parsed.isCompactSummary === true) {
 					// Not the human speaking, however much it reads like a prompt: a
 					// divider in the turn it happened in (#130).
@@ -1174,6 +879,8 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				const messageId = stringField(message, 'id');
+				// A sidechain's answers are a subagent's, not the session's model.
+				if (parsed.isSidechain !== true) info = messageInfo(info, message, stringField(parsed, 'effort'));
 				// Content before any prompt (a transcript read from the middle) still
 				// belongs somewhere: it opens a turn with no prompt of its own.
 				const turn = draft.current() ?? draft.open(messageId || 'turn-0', '');
@@ -1251,50 +958,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 
 	branch.settle(draft);
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { turns, raw, pendingQueue, branch: branch.finish() }, changedTurnIds, removedTurnIds };
-}
-
-/**
- * A background subagent's report, attached to the call that launched it (#96).
- *
- * The read itself is the session model's: this is the pure half, so a report
- * that arrives long after its lines did still goes through one place and comes
- * back as a changed turn id like everything else. An id no turn holds changes
- * nothing, which is what a rotation between the read and its answer looks like.
- */
-export function attachSubagentReport(
-	state: TranscriptState,
-	toolUseId: string,
-	report: string,
-): ReduceResult {
-	const draft = new Draft(state.turns);
-	const entry = draft.toolEntry(toolUseId);
-	const turn = entry ? draft.turnOf(toolUseId) : null;
-	if (entry && turn) {
-		entry.report = report;
-		draft.touch(turn.id);
-	}
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
-}
-
-/**
- * Every call still running marked lost (#135): the agent that ran it is gone,
- * and nothing will report it. Pure, like {@link attachSubagentReport}; the
- * session model decides when the agent is gone.
- */
-export function markLost(state: TranscriptState): ReduceResult {
-	const draft = new Draft(state.turns);
-	for (const turn of state.turns) {
-		for (const entry of turn.entries) {
-			if (entry.kind !== 'tool' || entry.status !== 'running') continue;
-			const owned = draft.toolEntry(entry.id);
-			if (owned) owned.status = 'lost';
-			draft.touch(turn.id);
-		}
-	}
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+	return { state: { turns, raw, pendingQueue, branch: branch.finish(), info }, changedTurnIds, removedTurnIds };
 }
 
 /**
@@ -1325,13 +989,6 @@ export function lastAssistantText(lines: readonly string[]): string {
 		if (text) return text;
 	}
 	return '';
-}
-
-/** An image's bytes as the transcript holds them (#144). */
-export interface ImageBytes {
-	mediaType: string;
-	/** base64, as written. */
-	data: string;
 }
 
 /**
@@ -1373,3 +1030,9 @@ export function transcriptImage(text: string, record: string, index: number): Im
 	}
 	return null;
 }
+
+/** Claude Code's parser, as the agent seam takes it (`../format.ts`). */
+export const claudeParser: ConversationParser<TranscriptState> = {
+	empty: emptyTranscript,
+	reduce,
+};

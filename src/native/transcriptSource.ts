@@ -1,84 +1,24 @@
 /**
  * The transcript source (issue #93, ADR-0003, ADR-0006).
  *
- * Deliberately dumb: where the file is, how to read it whole, and — from issue
- * #94 — how to follow it. Nothing here knows what a line means (that is
- * `./reducer.ts`) or which session is current (that is `./sessionModel.ts`).
- * The interface is "tail and read a path", which is the whole of what a
- * runtime kind supplies for a target whose transcripts are not on this
- * machine (herdr-core's `file.read` over its connection, ADR-0006).
- *
- * The path is Claude Code's own layout, `~/.claude/projects/<encoded
- * cwd>/<agent session>.jsonl`, with the encoding read off Claude Code 2.1.266
- * and checked against every project folder on this machine: every character
- * that is not a letter or a digit becomes a dash, and a name longer than 200
- * characters is cut to 200 with a hash of the whole path appended.
+ * Deliberately dumb: how to read a file whole and — from issue #94 — how to
+ * follow it. Nothing here knows what a line means (that is the agent's parser,
+ * `../agents/format.ts`), where an agent keeps its session (also the agent's
+ * format) or which session is current (that is `./sessionModel.ts`). The
+ * interface is "tail and read a path", which is the whole of what a runtime
+ * kind supplies for a target whose transcripts are not on this machine
+ * (herdr-core's `file.read` over its connection, ADR-0006).
  */
 
 import { watch, type FSWatcher, type Stats } from 'node:fs';
 import { open, readFile, type FileHandle } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { clearTimer, setTimer } from '../timers';
-
-/** Claude Code's cap on a project folder name before it hashes the rest. */
-const MAX_PROJECT_DIR = 200;
-
-/**
- * Claude Code's string hash: `h = h * 31 + c`, wrapped to int32. Only used for
- * the tail of an over-long project folder name.
- */
-function pathHash(path: string): number {
-	let hash = 0;
-	for (let i = 0; i < path.length; i++) hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
-	return hash;
-}
-
-/**
- * The folder under `~/.claude/projects` that holds the transcripts of sessions
- * started in `cwd`.
- */
-export function encodeProjectDir(cwd: string): string {
-	const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-	if (encoded.length <= MAX_PROJECT_DIR) return encoded;
-	return `${encoded.slice(0, MAX_PROJECT_DIR)}-${Math.abs(pathHash(cwd)).toString(36)}`;
-}
-
-export interface TranscriptLocation {
-	/** The pane's working directory, as herdr reports it. */
-	cwd: string;
-	/** herdr's `agent_session` value; empty until the first prompt. */
-	agentSession: string;
-	/** Home directory of the host the transcript lives on. Defaults to this one. */
-	home?: string;
-}
-
-/**
- * Where a pane's current transcript is, or null when there is not one yet: a
- * freshly started Claude has no `agent_session` and no file until its first
- * turn begins (docs/architecture.md).
- */
-export function transcriptPath(location: TranscriptLocation): string | null {
-	if (!location.cwd || !location.agentSession) return null;
-	const home = location.home ?? homedir();
-	return `${home}/.claude/projects/${encodeProjectDir(location.cwd)}/${location.agentSession}.jsonl`;
-}
-
-/**
- * Where Claude Code keeps a session's transcript, given its configuration
- * folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the cwd as Claude itself
- * sees it, which is the real path: a session started in a symlinked folder is
- * filed under the folder the link points to (measured 2026-11-06).
- */
-export function claudeTranscriptFile(configDir: string, realCwd: string, sessionId: string): string {
-	return join(configDir, 'projects', encodeProjectDir(realCwd), `${sessionId}.jsonl`);
-}
 
 /**
  * Reading a transcript, on whatever host it lives. Two calls: `read` for a file
  * wanted once (a subagent's report), and `open` to follow one that is still
  * being written. Following is all this does — deciding *which* file to follow,
- * and what the lines mean, belongs to the session model and the reducer.
+ * and what the lines mean, belongs to the session model and the parser.
  *
  * A runtime kind supplies one per target (`RuntimeKindAdapter.native`): herdr
  * and a local herdr-core read this machine's files ({@link

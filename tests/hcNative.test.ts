@@ -20,7 +20,7 @@ import {
 } from '../src/hc/sessionWatcher';
 import { HC_TRANSCRIPT_UNREADABLE, HcTranscriptSource } from '../src/hc/transcriptSource';
 import { HcCommandCatalog } from '../src/hc/commandCatalog';
-import { BUILTIN_CATALOG_SOURCE } from '../src/native/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../src/agents/claude/commands';
 import type { HcTerminal } from '../src/hc/model';
 import type { HcEvent } from '../src/hc/streams';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';

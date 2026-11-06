@@ -1,7 +1,9 @@
 /**
  * The `/` catalog of a herdr-core runtime over SSH: the commands and skills
  * of the machine the agent runs on, read through the runtime's own
- * connection (issue #98, ADR-0006).
+ * connection (issue #98, ADR-0006). The layout it reads is Claude Code's
+ * (`../agents/claude/commands.ts`): herdr-core's native view follows Claude
+ * sessions only, through the Claude hook's label.
  *
  * hc has `file.read` but no way to list a directory, so the tree is read
  * with **one `machine.exec`**: a POSIX `sh` script ({@link CATALOG_SCRIPT})
@@ -50,15 +52,9 @@
  * they are another machine's.
  */
 
+import { CATALOG_TTL_MS, type CatalogEntry, type CommandCatalogSource } from '../native/commandCatalog';
+import { builtinCatalog, loadCommandCatalog, type CatalogFs } from '../agents/claude/commands';
 import { posix } from 'node:path';
-import {
-	builtinCatalog,
-	CATALOG_TTL_MS,
-	loadCommandCatalog,
-	type CatalogEntry,
-	type CatalogFs,
-	type CommandCatalogSource,
-} from '../native/commandCatalog';
 import { clearTimer, setTimer } from '../timers';
 import type { HcTimers } from './client';
 

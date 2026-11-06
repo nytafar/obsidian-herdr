@@ -570,3 +570,16 @@ no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
    not exist and press **Done**: it shows in the menu as "(not found)", and
    its settings row says "was not found on …". Install it and press **Check
    again**: the mark goes without a reconnect.
+
+## The agent seam (#137)
+
+`tests/agentSeam.test.ts` reads the recorded Codex rollouts
+(`fixtures/codex/`) with a stub parser behind the seam's interface and puts
+the result through the session model, the turn renderer, the tool groups,
+the table of contents, copy, find and the waiting card: nothing above the
+seam knows the session is not Claude's. No Codex format is registered, so
+the native view is not offered for Codex. `tests/agentFormat.test.ts` covers
+the registry, the gate (a format and a trusted session binding), the
+catalog's `native` flag, and what Claude's format reads: the dialogs it
+blocks on, where a background report is, and session info. Nothing here
+needs Obsidian: a Claude pane looks as it did before.

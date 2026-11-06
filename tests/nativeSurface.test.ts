@@ -13,12 +13,8 @@ import { MarkdownRenderer } from './fixtures/obsidian';
 import { READ_FAILURE_LINE } from '../src/native/sessionLines';
 import { NativePaneSurface } from '../src/native/surface';
 import type { FoldMemory } from '../src/native/foldMemory';
-import {
-	emptyTranscript,
-	type ToolEntry,
-	type TranscriptState,
-	type Turn,
-} from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { ToolEntry, Turn } from '../src/native/conversation';
 import type { ToolGroupPresentation } from '../src/native/toolCalls';
 import type {
 	BlockKind,

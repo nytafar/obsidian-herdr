@@ -22,7 +22,8 @@ import {
 	readRemoteCatalog,
 	type HcExecRequester,
 } from '../src/hc/commandCatalog';
-import { builtinCatalog, CATALOG_TTL_MS, loadCommandCatalog, type CatalogEntry } from '../src/native/commandCatalog';
+import { CATALOG_TTL_MS, type CatalogEntry } from '../src/native/commandCatalog';
+import { builtinCatalog, loadCommandCatalog } from '../src/agents/claude/commands';
 import { fakeSpawner, machineExec, RpcError, settle } from './fixtures/fakeHc';
 
 let root = '';

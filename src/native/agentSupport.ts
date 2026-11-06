@@ -1,35 +1,46 @@
 /**
- * Which agents the native view can show (issue #155).
+ * Which panes the native view can show, by the agent they run (issues #155,
+ * #137; ADR-0010).
  *
- * The native view reads Claude Code's transcript, so a pane running any other
- * agent stays a terminal and says why. A runtime's session watcher asks this
- * with the pane's agent kind as the runtime reports it (finding
- * `agent-codex`, fact 1): herdr's `PaneInfo.agent`, herdr-core's
- * `agentKindOf`; the `claude` kind runs only Claude and never asks. Without
- * this a Codex pane on herdr opened an empty native view, its thread id taken
- * for a Claude session.
- *
- * The one place the rule lives: #137 replaces "is Claude" with "a transcript
- * format is registered for the agent and its session binding is trusted".
+ * A runtime's session watcher asks this with its own kind and the pane's
+ * agent as the runtime reports it (finding `agent-codex`, fact 1): herdr's
+ * `PaneInfo.agent`, herdr-core's `agentKindOf`; the `claude` kind runs only
+ * Claude and never asks. The answer is the agent seam's gate
+ * (`offersNativeView` in `../agents/format.ts`): a format for the agent, and a
+ * session binding the runtime can vouch for. This module only words the
+ * refusal, so the + menu, the settings and the native view agree because they
+ * read one rule.
  */
 
 import { BUILTIN_AGENTS } from '../agents/catalog';
-
-/** The agent kind the native view reads. */
-export const NATIVE_AGENT_KIND = 'claude';
+import { agentFormat, formatAgents, nativeSupport } from '../agents/format';
+import type { RuntimeKind } from '../runtimes';
 
 /** An agent kind's name as the menu shows it, or the kind itself. */
 function agentName(kind: string): string {
 	return BUILTIN_AGENTS.find((agent) => agent.kind === kind)?.name ?? kind;
 }
 
+/** The agents the native view reads, as a sentence names them: "Claude", "Claude or Codex". */
+function readableAgents(): string {
+	const names = formatAgents().map((agent) => agentFormat(agent)?.name ?? agent);
+	if (names.length <= 1) return names[0] ?? 'no agent';
+	return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1] ?? ''}`;
+}
+
 /**
- * Why a pane running `agent` cannot be shown natively, or null when it can or
- * runs no agent yet: a pane with no agent behaves as it always did, and its
- * runtime decides.
+ * Why a pane running `agent` on a runtime of `kind` cannot be shown
+ * natively, or null when it can or runs no agent yet: a pane with no agent
+ * behaves as it always did, and its runtime decides.
  */
-export function nativeAgentReason(agent: string | null | undefined): string | null {
-	const kind = agent?.trim().toLowerCase() ?? '';
-	if (!kind || kind === NATIVE_AGENT_KIND) return null;
-	return `this pane runs ${agentName(kind)}, and the native view reads only Claude`;
+export function nativeAgentReason(kind: RuntimeKind, agent: string | null | undefined): string | null {
+	const id = agent?.trim().toLowerCase() ?? '';
+	if (!id) return null;
+	const { format, binding } = nativeSupport(kind, id);
+	if (!format) return `this pane runs ${agentName(id)}, and the native view reads only ${readableAgents()}`;
+	if (binding === 'hint') {
+		return `this pane runs ${agentName(id)}, and the session this runtime reports for it may be another pane's`;
+	}
+	if (binding === 'absent') return `this pane runs ${agentName(id)}, and this runtime reports no session for it`;
+	return null;
 }

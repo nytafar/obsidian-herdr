@@ -12,7 +12,8 @@ import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer, TFile } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
 import { HOVER_LINK_SOURCE } from '../src/native/noteLinks';
-import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,

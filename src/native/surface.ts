@@ -21,7 +21,7 @@ import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
 import { TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
 import { TodoChip } from './todoList';
-import type { Turn } from './reducer';
+import type { Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import type { WaitingResponder } from './pendingRequest';
@@ -336,7 +336,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * Brings one heading of a turn's prose into view, which is what a click on a
 	 * heading in the table of contents does (#118).
 	 *
-	 * The index is the heading's place in `Turn.headings`, which the reducer
+	 * The index is the heading's place in `Turn.headings`, which the parser
 	 * computes by regex, and the elements are what Obsidian's renderer
 	 * produced; when they disagree, or the index names no heading, the turn is
 	 * what a click can still promise (`TurnRenderer.headingEl`).

@@ -14,13 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	encodeProjectDir,
 	DEFAULT_CHUNK_BYTES,
 	LocalTranscriptSource,
-	transcriptPath,
 	type TailOptions,
 	type TranscriptStream,
 } from '../src/native/transcriptSource';
+import { encodeProjectDir, transcriptPath } from '../src/agents/claude/paths';
 
 describe('encodeProjectDir (ADR-0003)', () => {
 	it('replaces everything that is not a letter or a digit with a dash', () => {

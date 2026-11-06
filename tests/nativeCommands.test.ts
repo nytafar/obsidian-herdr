@@ -19,7 +19,8 @@ import {
 	type FindHit,
 } from '../src/native/conversationFind';
 import { nativeViewCommand } from '../src/views/terminalView';
-import { emptyTranscript, type TranscriptState, type Turn } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,

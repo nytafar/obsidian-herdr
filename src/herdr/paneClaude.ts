@@ -24,7 +24,8 @@ import { execFile } from 'node:child_process';
 import { readFile, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
 import { claudeConfigDir } from '../claude/agents';
-import { LocalCommandCatalog, type CatalogEntry, type CommandCatalogSource } from '../native/commandCatalog';
+import type { CatalogEntry, CommandCatalogSource } from '../native/commandCatalog';
+import { LocalCommandCatalog } from '../agents/claude/commands';
 import type { PaneProcessInfo, PaneProcessInfoProcess } from './types.gen';
 
 /** What a pane's Claude says about where its files are. */

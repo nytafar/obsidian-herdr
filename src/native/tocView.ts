@@ -3,7 +3,7 @@
  *
  * A right-sidebar view listing the turns of the **active native view**, each
  * turn's headings nested beneath it, the way Obsidian's own outline lists a
- * note. Headings are computed in the reducer (`turnHeadings`, #100), so nothing
+ * note. Headings are computed in the parser (`turnHeadings`, #100), so nothing
  * here parses Markdown; a click scrolls the view through its seams,
  * `NativePaneSurface.scrollToTurn` for a prompt and `scrollToHeading` for a
  * heading (#118), both of which switch following off (#106).
@@ -27,7 +27,7 @@ import { Component, ItemView, type App, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { TerminalView, TERMINAL_VIEW_TYPE } from '../views/terminalView';
 import type { SessionHandleOf, SessionModels, SessionModelView } from './sessionModel';
-import type { Turn } from './reducer';
+import type { Turn } from './conversation';
 
 export const TOC_VIEW_TYPE = 'herdr-toc';
 
@@ -83,7 +83,7 @@ export interface TocPanelOptions {
 	): void;
 	/**
 	 * The same for one heading of a turn's prose (#118). The index is the
-	 * heading's place in that turn's `headings`, which is the order the reducer
+	 * heading's place in that turn's `headings`, which is the order the parser
 	 * computes and this list draws; the surface pairs it with the elements
 	 * Obsidian rendered, and falls back to the turn when they cannot be paired.
 	 */
