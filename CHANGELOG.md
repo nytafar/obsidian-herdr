@@ -85,7 +85,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   while a switch runs waits for it. Stop, Forget, Continue in and unloading
   hold the agent while they end it, so nothing (a tab opening, a turn
   ending) starts it again behind them, and Continue in starts the session on
-  the other runtime only once the process here is gone. Permissions asked in the terminal are answered there,
+  the other runtime only once the process here is gone. A stopped agent's
+  terminal tab that was hidden says the agent stopped when you show it again,
+  and starts it only when you click Reconnect. Permissions asked in the terminal are answered there,
   and the agent list follows the status Claude reports to the terminal; a
   terminal that reports none (Claude before 2.1.295) shows as unknown, and
   moving it to the native view asks first, since a turn may be running.

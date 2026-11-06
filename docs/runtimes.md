@@ -368,7 +368,9 @@ run and how many are stopped.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
   Nothing starts the agent again behind a stop: a tab opened while it stops
-  says so, and opening it once it has stopped resumes it.
+  says so, and opening it once it has stopped resumes it. A tab that was
+  hidden through the stop says the agent stopped when you show it again;
+  **Reconnect** resumes it there.
   **Forget agent** removes a stopped row; Claude keeps its transcript in
   `~/.claude/projects` (or under `$CLAUDE_CONFIG_DIR`). **Continue in
   herdr** or **Continue in herdr-core** appears when such a runtime is

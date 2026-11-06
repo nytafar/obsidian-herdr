@@ -596,6 +596,18 @@ describe('PaneTerminal mount and dispose races', () => {
 		expect(h.scheduler.pending).toBe(0);
 	});
 
+	it('tells the session a reveal is a reveal, and a reconnect or a first open is not', async () => {
+		const h = harness();
+		await h.terminal.attach(h.hostEl);
+		expect(h.session(0).options.revealed).toBeUndefined();
+		await h.terminal.setVisible(false);
+		await h.terminal.setVisible(true);
+		// A `claude` agent stopped while the leaf was hidden stays stopped on this one.
+		expect(h.session(1).options.revealed).toBe(true);
+		await h.terminal.reconnect();
+		expect(h.session(2).options.revealed).toBeUndefined();
+	});
+
 	it('a stale mount continuation replays no snapshot into the renderer it lost', async () => {
 		const h = harness();
 		await h.terminal.attach(h.hostEl);

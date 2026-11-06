@@ -53,7 +53,13 @@ export interface PtyAttachment {
 }
 
 /** Finds the pty a tab asks for; throws a readable error when there is none. */
-export type PtyOpen = (target: string, viewer: PtyViewer) => PtyAttachment;
+export type PtyOpen = (target: string, viewer: PtyViewer, how?: PtyOpenHow) => PtyAttachment;
+
+/** How a tab came to attach. */
+export interface PtyOpenHow {
+	/** A hidden tab shown again, not a person asking (`TerminalSessionOptions.revealed`). */
+	revealed?: boolean;
+}
 
 export interface SharedPtyOptions extends Omit<PtyProcessOptions, 'onData' | 'onExit'> {
 	replayLimit?: number;

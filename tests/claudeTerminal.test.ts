@@ -630,6 +630,35 @@ describe('switches and stops that race a tab (the D2 review)', () => {
 		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the TUI on reconnect');
 	});
 
+	it('keeps a stopped agent stopped when a hidden tab is shown again, until Reconnect', async () => {
+		const h = harness({ row: 'started' });
+		openTab(h, AGENT);
+		await reported(h);
+		await h.kind.agents.stop(h.runtimeId, AGENT);
+		// Hidden past its grace period, the tab gave its session up and heard
+		// nothing of the Stop; shown again, it says so and starts nothing.
+		const shown = openTab(h, AGENT, { revealed: true });
+		expect(shown.closed).toEqual([AGENT_STOPPED]);
+		await pause(50);
+		expect(h.pty.children).toHaveLength(1);
+		expect(streamStarts(h)).toEqual([]);
+		expect(agent(h, AGENT)?.status).toBe('stopped');
+		// Reconnect is a person asking.
+		openTab(h, AGENT);
+		await waitFor(() => agent(h, AGENT)?.mode === 'tui', 'the TUI on reconnect');
+		expect(h.pty.children).toHaveLength(2);
+	});
+
+	it('attaches a hidden tab shown again to a TUI that still runs', async () => {
+		const h = harness({ row: 'started' });
+		openTab(h, AGENT);
+		await reported(h);
+		const shown = openTab(h, AGENT, { revealed: true });
+		expect(shown.closed).toEqual([]);
+		expect(shown.frames[0]?.meta.full).toBe(true);
+		expect(h.pty.children).toHaveLength(1);
+	});
+
 	it('leaves no process behind a Forget that a tab opening raced, before or after unload', async () => {
 		const h = harness();
 		const paneId = await streamAgent(h);

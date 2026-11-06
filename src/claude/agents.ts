@@ -62,8 +62,9 @@
  * a removed runtime and unload hold the row before the process is told to
  * end, so nothing that arrives meanwhile (a tab attaching, a turn ending,
  * the runtime connecting) starts it again: only a person does, once a Stop
- * is over (a tab opened then, a prompt, Resume); a released row only when
- * graduation gives it back. Unload also ends every process the table ever
+ * is over (a tab opened or reconnected then, a prompt, Resume); a released
+ * row only when graduation gives it back. A hidden tab shown again is not a
+ * person asking: it says the agent stopped, and waits for a Reconnect. Unload also ends every process the table ever
  * started, in a row or not, and nothing starts after it.
  *
  * No Obsidian: everything outside the table comes through {@link ClaudeAgentsHost}.
@@ -92,7 +93,7 @@ import { ClaudeProcess, type ClaudeSpawn, type ClaudeTimers } from './process';
 import { PROGRAM_STATUS_REPLY, ProgramStatusScanner, type ProgramState, type ProgramStatusScan } from './programStatus';
 import type { LocalSettingsTarget } from './projectRoot';
 import type { PtyPlatform, PtySpawn, PtyTools } from './pty';
-import { SharedPty, type PtyAttachment, type PtyViewer } from './sharedPty';
+import { SharedPty, type PtyAttachment, type PtyOpenHow, type PtyViewer } from './sharedPty';
 import { planViewSwitch, TUI_BUSY, type ClaudeProcessMode } from './viewSwitch';
 
 /** One stored row, as `data.json` keeps it under `claudeSessions[runtimeId]`. */
@@ -392,7 +393,8 @@ interface QueuedPrompt {
  * (a tab attaching, a turn ending, the runtime connecting) restarts it:
  *
  * - `stopped`: Stop. A person starting it again lifts it: opening a tab
- *   once the stop is over, a prompt, Resume.
+ *   or clicking Reconnect once the stop is over, a prompt, Resume. A hidden
+ *   tab shown again does not.
  * - `released`: graduation. Only {@link ClaudeAgents.reclaim} lifts it,
  *   when the session did not move after all.
  * - `gone`: Forget, a removed runtime, unload. For good.
@@ -675,7 +677,8 @@ export class ClaudeAgents {
 	/**
 	 * Stops the agent's process, in the ADR's order (a TUI in its own); the
 	 * row stays, stopped, and its terminal tabs say so. Nothing restarts it
-	 * until a person does (a tab opened after the stop, a prompt, Resume).
+	 * until a person does (a tab opened or reconnected after the stop, a
+	 * prompt, Resume); a hidden tab shown again is not one.
 	 */
 	async stop(runtimeId: string, agentId: string): Promise<void> {
 		const record = this.table(runtimeId).get(agentId);
@@ -741,14 +744,18 @@ export class ClaudeAgents {
 	 * when nothing runs, switched to when the headless process is idle, and
 	 * waited for while a turn runs or a switch is under way. Throws when this
 	 * machine has no pty, and while the agent may not start (it is stopping,
-	 * moving to another runtime, forgotten, or the plugin is unloading).
+	 * moving to another runtime, forgotten, or the plugin is unloading), or
+	 * when a hidden tab is shown again (`how.revealed`) on a stopped agent:
+	 * that is no person asking, so it says the agent stopped instead.
 	 */
-	openTerminal(runtimeId: string, agentId: string, viewer: PtyViewer): PtyAttachment {
+	openTerminal(runtimeId: string, agentId: string, viewer: PtyViewer, how: PtyOpenHow = {}): PtyAttachment {
 		const record = this.record(runtimeId, agentId);
 		if (!this.host.pty) throw new Error('the terminal view is not available on this platform');
 		if (record.stored.allowOnceOnly) throw new Error(ALLOW_ONCE_NO_TERMINAL);
 		if (record.stopping && record.hold) throw new Error(record.hold.reason);
 		this.refuseHeld(record);
+		// A tab coming back into view did not ask for anything: Reconnect does.
+		if (how.revealed && record.hold) throw new Error(record.hold.reason);
 		// Opening a tab on a stopped agent is a person resuming it.
 		record.hold = null;
 		const entry: AgentViewer = { viewer, inner: null, waiting: null, looking: false };

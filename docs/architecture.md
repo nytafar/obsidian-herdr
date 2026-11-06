@@ -1007,7 +1007,13 @@ renderer:
   ending, the runtime connecting) starts it: before this, a tab opened
   during Forget left an untracked TUI running past unload, and one opened
   during graduation ran a second Claude on the session. Unload also stops
-  every process and shell the kind started, in a row or not.
+  every process and shell the kind started, in a row or not. Only an
+  explicit act lifts a Stop's hold: a prompt, Resume, opening a tab, or a
+  Reconnect click. A tab hidden past its grace period has given its session
+  up, so Stop's close never reached it; shown again, its start carries
+  `revealed` (`TerminalSessionOptions`), and the agent table answers it with
+  "the agent stopped; reconnect to resume it here" instead of starting the
+  TUI. A reveal onto a TUI that still runs attaches as before.
 - **Reattach.** The TUI belongs to the agent, not to the tab. A tab's session
   only attaches and detaches; a reopened tab got the same TUI pid and
   repainted from a replay of the raw output (`replay.ts`): at most 1 MiB, cut

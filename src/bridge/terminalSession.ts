@@ -60,6 +60,13 @@ export interface TerminalSessionOptions {
 	 * session does not take the shared terminal's size with it.
 	 */
 	provisionalSize?: boolean;
+	/**
+	 * This start is a hidden tab shown again, not a person asking for the
+	 * pane. herdr's bridge and herdr-core ignore it; a `claude` agent that
+	 * was stopped stays stopped and the tab says so, since only an explicit
+	 * act (a prompt, Resume, a Reconnect click) starts it again.
+	 */
+	revealed?: boolean;
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
 	/** How long `release()` waits for a clean exit before SIGTERM. */

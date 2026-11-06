@@ -75,7 +75,11 @@ export class ClaudeTerminalSession implements PaneSession {
 	start(): void {
 		if (this.attachment || this.disposed) return;
 		try {
-			this.attachment = this.open(this.options.target, this.viewer());
+			this.attachment = this.open(
+				this.options.target,
+				this.viewer(),
+				this.options.revealed ? { revealed: true } : {},
+			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.emit('error', new Error(message));

@@ -1124,19 +1124,24 @@ export class PaneTerminal {
 		this.hostEl?.empty();
 	}
 
-	/** The leaf is back: mount a fresh renderer, replay the snapshot, reattach. */
+	/**
+	 * The leaf is back: mount a fresh renderer, replay the snapshot, reattach.
+	 * The session is told it is a reveal, not a person asking, so a `claude`
+	 * agent stopped meanwhile is not started again behind the user's back.
+	 */
 	private async resume(): Promise<void> {
 		if (!this.opened || !this.isSuspended) return;
 		this.isSuspended = false;
 		if (!this.paneIdentity.paneId) return;
-		await this.start();
+		await this.start({ revealed: true });
 	}
 
 	/**
 	 * (Re)starts the bridge: releases the old session, makes sure the renderer is
 	 * mounted, fits it, then spawns `herdr terminal session <mode> <pane>`.
+	 * `revealed`: a hidden leaf shown again (`TerminalSessionOptions.revealed`).
 	 */
-	private async start(): Promise<void> {
+	private async start({ revealed = false }: { revealed?: boolean } = {}): Promise<void> {
 		const { paneId, mode, endpointId } = this.paneIdentity;
 		const hostEl = this.hostEl;
 		if (!paneId || !hostEl) return;
@@ -1218,6 +1223,7 @@ export class PaneTerminal {
 				cols,
 				rows,
 				...(measured ? {} : { provisionalSize: true }),
+				...(revealed ? { revealed: true } : {}),
 				env: this.host.env(),
 			},
 			endpoint,

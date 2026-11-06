@@ -310,12 +310,12 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		createTerminalSession: (options, endpoint) => {
 			if (!pty) throw refuse();
 			const runtimeId = endpoint.runtime.id;
-			return new ClaudeTerminalSession(options, (target, viewer) => {
+			return new ClaudeTerminalSession(options, (target, viewer, how) => {
 				if (isShellId(target)) {
 					if (!shells) throw refuse();
 					return shells.attach(target, viewer);
 				}
-				return agents.openTerminal(runtimeId, target, viewer);
+				return agents.openTerminal(runtimeId, target, viewer, how);
 			});
 		},
 		paneNativeReason: (paneId) => (isShellId(paneId) ? SHELL_NO_NATIVE : null),
