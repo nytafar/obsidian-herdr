@@ -46,6 +46,7 @@ import {
 	type CallKind,
 	type FoundReceipt,
 } from './screenCard';
+import { sessionStarted } from './trustWatch';
 import { setTimer } from '../timers';
 import {
 	projectGrantText,
@@ -246,6 +247,8 @@ export interface WaitingCardViewOptions {
 const READ_ATTEMPTS = 5;
 /** Between those reads: Claude draws its dialog shortly after it reports the block. */
 const READ_RETRY_MS = 700;
+/** How long the trust prompt must stay up before the card offers it (`./trustWatch.ts`). */
+const TRUST_SETTLE_MS = 1500;
 /** After an answer went through, how long before the card reads what the terminal shows next. */
 const NEXT_READ_MS = 1500;
 
@@ -831,8 +834,10 @@ export class WaitingCardView {
 	/**
 	 * The card for a herdr or herdr-core pane whose dialog can be read off the
 	 * screen (ADR-0009). True when it drew the card (or kept the one drawn);
-	 * false leaves the block to the card that only describes it: the trust
-	 * prompt and a sign-in.
+	 * false leaves the block to the card that only describes it: a sign-in.
+	 * The trust prompt is one of these cards (#167): its button is offered
+	 * only once the screen shows the prompt for the pane's own folder, and
+	 * answering it unasked is the tab's trust watch (`./trustWatch.ts`).
 	 *
 	 * The card is built once per block and kept while the block is the same,
 	 * so what was chosen and typed on it stays. While an answer runs nothing
@@ -851,7 +856,7 @@ export class WaitingCardView {
 			plan: model?.plan ?? null,
 			format: model?.format,
 		});
-		if (card.kind === 'startup' || card.kind === 'auth' || !format?.screenDialog) return false;
+		if (card.kind === 'auth' || !format?.screenDialog) return false;
 		const turns = model?.state.turns ?? [];
 		const dangling = danglingToolUse(turns);
 		const session = `${model?.agentSession ?? ''}\n${model?.path ?? ''}`;
@@ -947,6 +952,14 @@ export class WaitingCardView {
 			else this.screenNone(state, requests.reason);
 			return;
 		}
+		if (dialog.kind === 'trust' && attempt === 0) {
+			// Claude draws the trust prompt twice at startup, the cursor back on
+			// "No, exit" the second time (#167): offer it once it has stayed up.
+			setTimer(() => {
+				if (this.screenState === state) void this.readScreen(state, screen, attempt + 1);
+			}, screen.retryMs ?? TRUST_SETTLE_MS);
+			return;
+		}
 		let detail = '';
 		for (const expectation of requests.expectations) {
 			const inspection = await screen.answerer.inspect(paneId, expectation, screen.statusMessage);
@@ -987,6 +1000,8 @@ export class WaitingCardView {
 				return `${name} wants to use ${expectation.tool}`;
 			case 'plan':
 				return `${name} is ready to code`;
+			case 'trust':
+				return `${name} is asking whether to trust this folder`;
 			default:
 				return state.card.title;
 		}
@@ -1125,6 +1140,13 @@ export class WaitingCardView {
 			}));
 			return;
 		}
+		if (dialog.kind === 'trust' && expectation?.kind === 'trust') {
+			// The folder as the pane reports it, which the prompt was matched against.
+			el.createDiv({ cls: 'herdr-native-waiting-body', text: expectation.cwd });
+			const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+			button(actions, 'Yes, I trust this folder', ['mod-cta', 'herdr-native-waiting-trust'], () => ({ kind: 'trust' }));
+			return;
+		}
 		if (dialog.kind === 'plan') {
 			const planEl = el.createDiv({ cls: 'herdr-native-waiting-plan' });
 			const markdown = this.options.model()?.plan ?? null;
@@ -1215,6 +1237,14 @@ export class WaitingCardView {
 			if (!model) return;
 			let off: (() => void) | null = null;
 			const check = (): void => {
+				if (expectation.kind === 'trust') {
+					// No transcript: the session starting is the receipt (#167).
+					if (!sessionStarted(model)) return;
+					off?.();
+					off = null;
+					resolve({ kind: 'started' });
+					return;
+				}
 				const found = findReceipt(model.state.turns, expectation, state.known, state.callKind);
 				if (!found) return;
 				off?.();

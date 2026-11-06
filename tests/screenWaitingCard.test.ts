@@ -25,6 +25,7 @@ import {
 	FakeClaudeScreen,
 	planDialog,
 	questionDialog,
+	trustDialog,
 	writeDialog,
 	type SimDialog,
 	type SimOptions,
@@ -58,6 +59,12 @@ class FakeModel implements SessionModelView {
 	setStatus(status: AgentStatus, blockKind: BlockKind | null = null): void {
 		this.agentStatus = status;
 		this.blockKind = status === 'blocked' ? blockKind : null;
+		this.emit();
+	}
+
+	/** Claude got past the trust prompt: the runtime names its session. */
+	start(): void {
+		this.agentSession = 'session-2';
 		this.emit();
 	}
 
@@ -135,7 +142,12 @@ async function setup(dialog: SimDialog, options: SimOptions = {}, statusMessage:
 			options.onKey?.(call, s);
 			remember(s.dialog);
 			// The transcript gets the call and its result once Claude received it.
-			while (written < s.results.length) model.add(entryFor(s.results[written++] as SimResult, dialogs));
+			while (written < s.results.length) {
+				const result = s.results[written++] as SimResult;
+				// The trust prompt has no transcript: the session starts instead.
+				if (result.kind === 'trust') model.start();
+				else model.add(entryFor(result, dialogs));
+			}
 		},
 	});
 	const answering: ScreenAnswering = {
@@ -397,5 +409,30 @@ describe('screen card: plans', () => {
 		press(s.el, 'Tell Claude what to change');
 		await outcome(s.el, /Claude received your answer|^Sent\./);
 		expect(s.sim.keys).toEqual(['down', 'down', 'text:name it e.txt', 'enter']);
+	});
+});
+
+describe('screen card: the trust prompt (#167)', () => {
+	it('offers to trust the folder only once the screen shows the prompt for it, and trusts with down enter', async () => {
+		const s = await setup(trustDialog(CWD));
+		s.model.path = null;
+		s.model.agentSession = '';
+		s.model.setStatus('blocked');
+		await ready(s.el, 'Claude is asking whether to trust this folder');
+		expect(labels(s.el)).toEqual(['Yes, I trust this folder', 'Open in terminal']);
+		expect(s.el.find('herdr-native-waiting-body').textContent).toBe(CWD);
+		press(s.el, 'Yes, I trust this folder');
+		await outcome(s.el, 'Claude received your answer.');
+		expect(s.sim.keys).toEqual(['down', 'enter']);
+	});
+
+	it('offers no trust for a prompt that names another folder', async () => {
+		const s = await setup(trustDialog('/tmp/somewhere-else'));
+		s.model.path = null;
+		s.model.agentSession = '';
+		s.model.setStatus('blocked');
+		await vi.waitFor(() => expect(labels(s.el)).toEqual(['Read the terminal again', 'Open in terminal']));
+		expect(s.el.find('herdr-native-waiting-hint').textContent).toMatch(/names another folder/);
+		expect(s.sim.keys).toEqual([]);
 	});
 });

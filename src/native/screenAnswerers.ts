@@ -1,7 +1,9 @@
 /**
  * One answer driver per runtime and agent format, for the whole plugin
  * (ADR-0009 §5): the driver's one-answer-per-pane guard is per instance, and
- * two tabs on one pane must share it.
+ * two tabs on one pane, or a tab and the trust watch, must share it. Also the
+ * claim that makes the trust prompt answered unasked at most once per pane
+ * start (#167).
  */
 
 import type { ScreenDialog } from '../agents/screenDialog';
@@ -28,6 +30,7 @@ export interface ScreenAnswering {
 
 export class ScreenAnswerers {
 	private readonly answerers = new Map<string, ScreenAnswerer>();
+	private readonly trustClaims = new Set<string>();
 
 	/**
 	 * The driver for `key` (runtime, kind and agent), made by `make` the first
@@ -41,5 +44,17 @@ export class ScreenAnswerers {
 			this.answerers.set(key, answerer);
 		}
 		return answerer;
+	}
+
+	/** Claims a pane's trust prompt for answering unasked: true for the first caller only. */
+	claimTrust(paneKey: string): boolean {
+		if (this.trustClaims.has(paneKey)) return false;
+		this.trustClaims.add(paneKey);
+		return true;
+	}
+
+	/** Lets the pane's next trust prompt be claimed: its session started, or nothing was sent. */
+	releaseTrust(paneKey: string): void {
+		this.trustClaims.delete(paneKey);
 	}
 }

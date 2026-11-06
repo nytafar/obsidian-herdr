@@ -1844,6 +1844,48 @@ these are the facts it relies on.
   and agent, shared by every tab (`ScreenAnswerers`); its receipt is the
   session model's transcript: the card's call by id, else a call the
   transcript did not hold when the card was built with the same request.
+- **The trust prompt's folder, measured 2026-11-06** (Claude Code 2.1.318,
+  herdr 0.9.5, hc 0.1.18): the prompt names the folder absolute, never with
+  `~` (a folder in the home directory read `/home/lasse/oh-test-…`), and with
+  symlinks resolved (started in `/var/tmp/oh-test-…-link`, a link to
+  `…-real`, it named `…-real`). hc's `terminal.get` gave that resolved path as
+  `foreground.cwd` (its `cwd` kept the link), and herdr's `pane.get` gave it
+  as `cwd`. `/tmp` itself is trusted on this machine (no prompt there), so
+  trust checks run in `/var/tmp`.
+- **On hc Claude draws the trust prompt twice.** Read every 200 ms from start,
+  the prompt showed about 0.3 s after `terminal.run`; a `down` sent at once
+  showed (`❯ Yes, I trust this folder`) and 0.2 s later the prompt was drawn
+  again with the cursor back on `❯ No, exit`, where it stayed. A `down` sent
+  0.3, 0.6, 1 or 2 s after the prompt showed stayed. An `enter` meant for
+  "Yes" can land on "No, exit", which exits Claude, so the trust answer waits
+  until the prompt has been read on reads at least 1.5 s apart.
+- **Trust through the driver, as built (#167).** "Trust new folders
+  automatically" is the tab's (`src/native/trustWatch.ts`): while the pane
+  has no session and is `blocked` (herdr) or reports nothing (hc), the tab
+  reads its screen once a second, at most 60 times per start, and answers
+  `down` `enter` through the shared driver when `inspect` found the prompt
+  for the pane's folder, exactly, as above; one answer per pane start,
+  claimed across tabs (`ScreenAnswerers.claimTrust`). The receipt is the
+  session starting (a session, or `idle`, `working`, `done`); a key that did
+  not take is a notice, never a second press. The waiting card's trust button
+  is offered only once its read found the prompt for the pane's folder.
+- **Run live through the card's own code (#166, #167), 2026-11-06**, herdr
+  0.9.5 and hc 0.1.18, Claude Code 2.1.318 (haiku), the native surface and
+  its waiting card driven by a session model read from the real transcript:
+  a single-choice question (`Coffee`), a multi-select with two ticks and
+  `Mango, Ripe 2` through "Send answers" (herdr read off the screen, no call;
+  hc from the dangling call), Bash allow once, Bash deny with words (Claude
+  asked again with `mkdir`), a stale card (the model held while the terminal
+  moved on to another Bash request) refused with nothing pressed, plan reject
+  with words, the replanned plan approved with manual edits, and the Write
+  that followed allowed with no call in the transcript (found by its file);
+  every outcome `answered` against the transcript. The plan file was shown
+  as Markdown on both (its words were the screen's). Trust: unasked on both
+  runtimes (about 2.5 s after start on hc, 4 s on herdr), a watch given
+  another folder than the prompt's pressed nothing over five reads, and the
+  herdr card's button trusted a fresh folder. Unlike the spike, the dangling
+  `AskUserQuestion` was there in both hc questions and missing in both herdr
+  ones.
 
 ## Model, effort, permission mode and context
 
