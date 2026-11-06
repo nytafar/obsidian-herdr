@@ -1,0 +1,31 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Pro
+ ▝▝   ▝▝   /tmp/oh-test-ask-hc
+
+
+❯ Use the AskUserQuestion tool now to ask me exactly one single-choice question: 'Which drink do you want?' with header 'Drink' and options Tea, Coffee, Water. After my answer, reply with one word:
+  the answer. Do nothing else.
+
+● User answered Claude's questions:
+  ⎿  · Which drink do you want? → Coffee
+
+● Coffee
+
+✻ Brewed for 3s · done 4:44 PM
+
+❯ Use the AskUserQuestion tool now to ask me exactly one multi-select question (multiSelect true): 'Which fruits do you like?' with header 'Fruit' and options Apple, Banana, Cherry, Durian. After my
+  answer, reply with my answer verbatim. Do nothing else.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Fruit  ✔ Submit  →
+
+Review your answers
+
+ ● Which fruits do you like?
+   → Apple, Cherry, "Mango, Ripe 2"
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

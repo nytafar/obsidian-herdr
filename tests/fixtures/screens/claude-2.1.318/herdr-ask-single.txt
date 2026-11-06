@@ -1,0 +1,23 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Pro
+ ▝▝   ▝▝   /tmp/oh-test-ask-herdr
+
+
+❯ Use the AskUserQuestion tool now to ask me exactly one single-choice question: 'Which drink do you want?' with header 'Drink' and options Tea, Coffee, Water. After my answer, reply with one word: the answer. Do nothing else.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Drink
+
+Which drink do you want?
+
+❯ 1. Tea
+     Tea
+  2. Coffee
+     Coffee
+  3. Water
+     Water
+  4. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
