@@ -893,11 +893,16 @@ bare repository, which Claude reads with checks not mirrored here.
 
 **Row actions.** `capabilities.resumable` turns close into **Stop agent**
 (the row stays), adds **Forget agent** for a stopped row, and graduation:
-**Continue in herdr / herdr-core** for every local runtime of those kinds.
-Graduation stops the process, switches to the target, waits for its scope to
-resolve, and calls that runtime's own `startAgentHere(cwd, {kind: 'claude',
-args: ['--resume', <session>]})`: `agent.start`'s `args` on herdr, the launch
-line on herdr-core (plain words only, since it is a single-quoted shell line).
+**Continue in herdr / herdr-core** for every local runtime of those kinds,
+offered only for a row whose session has `started` (`PaneState.started`),
+since `claude --resume` of a session with no transcript says "No conversation
+found". Graduation stops the process, switches to the target, waits for its
+scope to resolve, and calls that runtime's own `startAgentHere(cwd, {kind:
+'claude', args: ['--permission-mode', <runtime's mode>, '--resume',
+<session>]})` (`graduationArgs`), so the pane keeps the mode the row ran in
+rather than the user's own default: `agent.start`'s `args` on herdr, the
+launch line on herdr-core (plain words only, since it is a single-quoted
+shell line; every mode is one).
 The row is forgotten once the agent runs there, so one conversation is never
 resumed in two places. SSH runtimes are not offered: the transcript is this
 machine's.

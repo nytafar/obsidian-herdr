@@ -53,6 +53,7 @@ export function toClaudePaneState(agent: ClaudeAgentView, scopeId: string): Pane
 		tokens: {},
 		statusChangedSeq: agent.statusSeq,
 		stopped: agent.status === 'stopped',
+		started: agent.started,
 	};
 }
 

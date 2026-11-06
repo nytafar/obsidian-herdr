@@ -116,6 +116,12 @@ export interface PaneState {
 	 * and herdr-core never set it: their panes exist or are gone.
 	 */
 	stopped?: boolean;
+	/**
+	 * The agent's session has had a turn, so it has a conversation another
+	 * runtime can resume (the `claude` kind's graduation, ADR-0007). Only that
+	 * kind sets it.
+	 */
+	started?: boolean;
 }
 
 export interface ScopeEventMap {

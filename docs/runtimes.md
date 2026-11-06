@@ -293,10 +293,13 @@ run and how many are stopped.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
   **Forget agent** removes a stopped row; Claude keeps its transcript in
-  `~/.claude/projects` (or under `$CLAUDE_CONFIG_DIR`). **Continue in herdr** or **Continue in herdr-core**
-  appears when such a runtime is configured on this machine: it stops the
-  process, starts `claude --resume <session>` in the same folder on that
-  runtime, switches the list there, and removes the row here.
+  `~/.claude/projects` (or under `$CLAUDE_CONFIG_DIR`). **Continue in
+  herdr** or **Continue in herdr-core** appears when such a runtime is
+  configured on this machine and the session has had a turn (before that
+  there is no conversation to continue): it stops the process, starts
+  `claude --permission-mode <mode> --resume <session>` in the same folder on
+  that runtime, in this runtime's permission mode rather than your own
+  default, switches the list there, and removes the row here.
 - Pins work as on herdr, stored in the plugin's settings.
 
 ### Limits

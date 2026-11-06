@@ -271,6 +271,11 @@ export class ClaudeAgents {
 		return record ? this.view(runtimeId, record) : null;
 	}
 
+	/** The permission mode a runtime's agents start in; null before it is configured. */
+	permissionMode(runtimeId: string): ClaudePermissionMode | null {
+		return this.setups.get(runtimeId)?.permissionMode ?? null;
+	}
+
 	/** Names in use on a runtime, for a new agent's name. */
 	names(runtimeId: string): Set<string> {
 		return new Set([...this.table(runtimeId).values()].map((record) => record.stored.name));

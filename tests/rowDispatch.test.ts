@@ -611,7 +611,7 @@ describe('a row of agents the plugin runs itself (ADR-0007)', () => {
 	}
 
 	it('stops a running row after asking, and keeps its pin', async () => {
-		const world = fake({ capabilities: resumable, pins: [`${LOCAL}|w4:p3`] });
+		const world = fake({ capabilities: resumable, panes: [pane({ started: true })], pins: [`${LOCAL}|w4:p3`] });
 		withExtras(world);
 		world.setClose(() => Promise.resolve(true));
 		world.dispatch.contextMenu(event(row('w4:p3').text));
@@ -629,7 +629,7 @@ describe('a row of agents the plugin runs itself (ADR-0007)', () => {
 	});
 
 	it('forgets a stopped row after asking, and drops its pin', async () => {
-		const world = fake({ capabilities: resumable, panes: [pane({ stopped: true })], pins: [`${LOCAL}|w4:p3`] });
+		const world = fake({ capabilities: resumable, panes: [pane({ stopped: true, started: true })], pins: [`${LOCAL}|w4:p3`] });
 		withExtras(world);
 		world.setClose(() => Promise.resolve(true));
 		world.dispatch.contextMenu(event(row('w4:p3').text));
@@ -639,7 +639,7 @@ describe('a row of agents the plugin runs itself (ADR-0007)', () => {
 	});
 
 	it('continues a row on the runtime its entry names', async () => {
-		const world = fake({ capabilities: resumable });
+		const world = fake({ capabilities: resumable, panes: [pane({ started: true })] });
 		withExtras(world);
 		world.setClose(() => Promise.resolve(true));
 		world.dispatch.contextMenu(event(row('w4:p3').text));
@@ -649,6 +649,15 @@ describe('a row of agents the plugin runs itself (ADR-0007)', () => {
 			ref: { endpointId: LOCAL, paneId: 'w4:p3' },
 			extra: 'local',
 		});
+	});
+
+	it('offers no graduation for a row whose session never had a turn', () => {
+		const running = fake({ capabilities: resumable });
+		running.dispatch.contextMenu(event(row('w4:p3').text));
+		expect(running.menus[0]?.items.map((item) => item.action)).toEqual(['pin', 'close']);
+		const stopped = fake({ capabilities: resumable, panes: [pane({ stopped: true })] });
+		stopped.dispatch.contextMenu(event(row('w4:p3').text));
+		expect(stopped.menus[0]?.items.map((item) => item.action)).toEqual(['pin', 'forget']);
 	});
 
 	it('offers no graduation entry when no runtime takes one', () => {

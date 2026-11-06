@@ -66,7 +66,7 @@ export interface RowTarget {
 }
 
 /** What the dispatcher needs of a pane: enough to name it and to rename it. */
-export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'> & Pick<Partial<PaneState>, 'stopped'>;
+export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'> & Pick<Partial<PaneState>, 'stopped' | 'started'>;
 
 /** The bit of a mouse event read here. Structural, so a test needs no DOM. */
 export interface RowPointerEvent {
@@ -199,6 +199,7 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 			pinned: this.host.pinned(ref),
 			name: pane.name,
 			stopped: pane.stopped === true,
+			started: pane.started === true,
 		};
 		this.host.showRowMenu(event, rowMenuItems(row, this.can()), (item) => {
 			void this.runMenuItem(item, row, target);

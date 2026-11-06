@@ -548,6 +548,26 @@ describe('the claude kind over a fake claude', () => {
 		expect(again.notices).toEqual([]);
 	});
 
+	it('hands a started session to another runtime with its permission mode, and keeps a fresh one', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const actions = h.kind.createActions(actionHost(h));
+		// Never prompted: no transcript, so nothing another runtime could resume.
+		expect(await actions.releaseForGraduation?.(paneId)).toBeNull();
+		expect(status(h, paneId)).toBe('idle');
+		expect(h.scope.get(paneId)?.started).toBe(false);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		expect(h.scope.get(paneId)?.started).toBe(true);
+		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId;
+		expect(await actions.releaseForGraduation?.(paneId)).toEqual({
+			cwd: h.dir,
+			sessionId,
+			permissionMode: h.connection.endpoint.runtime.permissionMode,
+		});
+		expect(h.scope.get(paneId)?.stopped).toBe(true);
+	});
+
 	it('stops every process on unload, denying what is pending first', async () => {
 		const h = harness();
 		const paneId = await started(h);

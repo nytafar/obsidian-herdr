@@ -66,8 +66,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   approval, or its rejection with feedback. Nothing is answered for you and
   nothing times out. A **Stop** button interrupts the running turn. The row
   menu has **Stop agent**, **Forget agent** for a stopped row, and **Continue
-  in herdr** or **Continue in herdr-core**, which hands the conversation to
-  such a runtime with `claude --resume`. The permission mode is a runtime
+  in herdr** or **Continue in herdr-core** once the session has had a turn,
+  which hands the conversation to such a runtime with `claude --resume`, in
+  the same permission mode. The permission mode is a runtime
   setting (default: ask). Agents end when Obsidian closes or the plugin
   unloads. There is no terminal view for this kind yet. See
   [docs/runtimes.md](docs/runtimes.md).

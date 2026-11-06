@@ -18,11 +18,25 @@
  */
 
 import { buildAgentName, folderName, type ActionHost } from '../actions';
-import type { RuntimeActions } from '../runtime/kind';
+import type { GraduationRelease, RuntimeActions } from '../runtime/kind';
 import type { ClaudeAgents } from './agents';
 
 function describe(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The arguments after `claude` that continue a graduated row on another
+ * runtime: its permission mode, so the pane does not come up in the user's
+ * own default, then `--resume <session>`. Every value is a plain word, which
+ * herdr-core's single-quoted launch line requires.
+ */
+export function graduationArgs(release: GraduationRelease): string[] {
+	return [
+		...(release.permissionMode ? ['--permission-mode', release.permissionMode] : []),
+		'--resume',
+		release.sessionId,
+	];
 }
 
 export interface StartedClaudeAgent {
@@ -115,13 +129,16 @@ export class ClaudeActions implements RuntimeActions {
 		return true;
 	}
 
-	async releaseForGraduation(paneId: string): Promise<{ cwd: string; sessionId: string } | null> {
+	async releaseForGraduation(paneId: string): Promise<GraduationRelease | null> {
 		const agent = this.agents.get(this.runtimeId, paneId);
-		if (!agent) return null;
+		// A session with no turn has no transcript, so `--resume` elsewhere
+		// would find no conversation; the menu does not offer it either.
+		if (!agent?.started) return null;
 		await this.agents.stop(this.runtimeId, paneId);
 		// The session as it is after the stop: a `/clear` may have rotated it.
 		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
-		return { cwd: after.cwd, sessionId: after.sessionId };
+		const permissionMode = this.agents.permissionMode(this.runtimeId);
+		return { cwd: after.cwd, sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) };
 	}
 
 	private unsupported(what: string): null {

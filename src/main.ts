@@ -59,6 +59,7 @@ import { createHerdrKind } from './runtime/herdrKind';
 import { createHerdrCoreKind } from './runtime/herdrCoreKind';
 import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
 import { normalizeClaudeSessions } from './claude/agents';
+import { graduationArgs } from './claude/actions';
 import type { GraduationTarget } from './views/rowMenu';
 import { RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
@@ -681,7 +682,7 @@ export default class HerdrPlugin extends Plugin {
 		}
 		const started = await this.actions.startAgentHere(released.cwd, {
 			kind: 'claude',
-			args: ['--resume', released.sessionId],
+			args: graduationArgs(released),
 		});
 		if (!started) return;
 		await this.claudeKind.agents.forget(endpointId, paneId);

@@ -230,9 +230,18 @@ export interface RuntimeActions {
 	forgetAgent?(paneId: string, endpointId: string): Promise<boolean>;
 	/**
 	 * What graduating a row needs (ADR-0007): its cwd and session, after its
-	 * process has stopped. Null when the row has none.
+	 * process has stopped, and the permission mode it ran in. Null when the
+	 * row has no conversation to continue.
 	 */
-	releaseForGraduation?(paneId: string): Promise<{ cwd: string; sessionId: string } | null>;
+	releaseForGraduation?(paneId: string): Promise<GraduationRelease | null>;
+}
+
+/** A row handed to another runtime (ADR-0007). */
+export interface GraduationRelease {
+	cwd: string;
+	sessionId: string;
+	/** The `--permission-mode` the row ran with, so the new pane keeps it; absent for none. */
+	permissionMode?: string;
 }
 
 /** The agent `startAgentHere` starts, when it is not the default one. */

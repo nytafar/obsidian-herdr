@@ -8,7 +8,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { App } from 'obsidian';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
+import { graduationArgs } from '../src/claude/actions';
 import { agentLaunchLine } from '../src/hc/actions';
+import { CLAUDE_PERMISSION_MODES } from '../src/runtimes';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus } from '../src/herdr/types.gen';
 import type { PendingRequest, WaitingAnswer } from '../src/native/pendingRequest';
@@ -75,6 +77,22 @@ describe('the launch line with arguments (graduation on herdr-core)', () => {
 		);
 		expect(() => agentLaunchLine('claude', ["x'; rm -rf ~; '"])).toThrow();
 		expect(() => agentLaunchLine('claude', ['$(id)'])).toThrow();
+	});
+
+	it('keeps the row’s permission mode, which every mode passes as a plain word', () => {
+		const sessionId = '3b3ad50c-0000-4000-8000-000000000001';
+		expect(graduationArgs({ cwd: '/vault', sessionId, permissionMode: 'acceptEdits' })).toEqual([
+			'--permission-mode',
+			'acceptEdits',
+			'--resume',
+			sessionId,
+		]);
+		expect(graduationArgs({ cwd: '/vault', sessionId })).toEqual(['--resume', sessionId]);
+		for (const permissionMode of CLAUDE_PERMISSION_MODES) {
+			expect(agentLaunchLine('claude', graduationArgs({ cwd: '/vault', sessionId, permissionMode }))).toContain(
+				`-ic 'claude --permission-mode ${permissionMode} --resume ${sessionId}; exec`,
+			);
+		}
 	});
 });
 

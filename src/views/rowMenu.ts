@@ -14,7 +14,8 @@
  * kind, ADR-0007) close is "Stop agent", since the row stays as a stopped,
  * resumable session; a stopped row gets "Forget agent" instead, which removes
  * it; and "Continue in herdr" or "Continue in herdr-core" moves the
- * conversation to such a runtime when one is configured.
+ * conversation to such a runtime when one is configured and the session has
+ * had a turn.
  *
  * Pure like `listMenu.ts`: no `obsidian` import, no plugin, no DOM. This module
  * says what to draw and which `RowMenuAction` a choice means; the view maps the
@@ -38,6 +39,12 @@ export interface RowMenuRow {
 	name?: string;
 	/** The row is a stored session with no process (ADR-0007). */
 	stopped?: boolean;
+	/**
+	 * The row's session has had a turn, so another runtime can resume it
+	 * (ADR-0007). Graduation is offered only then: `claude --resume` of a
+	 * session with no transcript finds no conversation.
+	 */
+	started?: boolean;
 }
 
 /** One entry of the context menu. */
@@ -104,7 +111,7 @@ export function rowMenuItems(
 		});
 	}
 	if (can.resumable) {
-		for (const target of can.graduation ?? []) {
+		for (const target of row.started === true ? (can.graduation ?? []) : []) {
 			items.push({
 				action: 'continue',
 				label: `Continue in ${target.label}`,
