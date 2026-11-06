@@ -21,6 +21,7 @@ import {
 	runtimeSummary,
 } from '../src/runtimes';
 import { endpointOf } from '../src/connection';
+import { posix, win32 } from 'node:path';
 
 const SESSION = '3b3ad50c-0000-4000-8000-000000000001';
 
@@ -97,6 +98,19 @@ describe('data.json across the new kind', () => {
 		});
 		expect(normalizeClaudeSessions(null)).toEqual({});
 		expect(normalizeClaudeSessions([])).toEqual({});
+	});
+
+	it('keeps a row whose cwd is absolute on the platform, Windows drive paths included', () => {
+		const rows = {
+			'rt-c': [
+				{ id: 'cl-1', sessionId: SESSION, cwd: 'C:\\Users\\u\\vault', name: 'win' },
+				{ id: 'cl-2', sessionId: SESSION, cwd: '\\\\server\\share\\vault', name: 'unc' },
+				{ id: 'cl-3', sessionId: SESSION, cwd: 'vault\\notes', name: 'relative' },
+				{ id: 'cl-4', sessionId: SESSION, cwd: '/vault', name: 'posix' },
+			],
+		};
+		expect(normalizeClaudeSessions(rows, win32)['rt-c']?.map((row) => row.name)).toEqual(['win', 'unc', 'posix']);
+		expect(normalizeClaudeSessions(rows, posix)['rt-c']?.map((row) => row.name)).toEqual(['posix']);
 	});
 
 	it('keeps whether a session has started, and only a real true', () => {

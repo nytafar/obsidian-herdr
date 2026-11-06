@@ -14,7 +14,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ActionHost } from '../src/actions';
 import type { StoredClaudeSession } from '../src/claude/agents';
@@ -625,6 +625,24 @@ describe('claudeEnv and ids', () => {
 			'/home/u/.local/bin/claude',
 		);
 		expect(env).toEqual({ PATH: '/home/u/.local/bin:/usr/bin', CLAUDE_CODE_USE_BEDROCK: '1' });
+	});
+
+	it('uses the platform’s own paths and PATH separator, as on Windows', () => {
+		const env = claudeEnv(
+			{ Path: 'C:\\Windows\\system32;C:\\tools', CLAUDECODE: '1' },
+			'C:\\Users\\u\\.local\\bin\\claude.exe',
+			win32,
+		);
+		// The one variable Windows has, whatever its case, with the binary's folder first.
+		expect(env).toEqual({ Path: 'C:\\Users\\u\\.local\\bin;C:\\Windows\\system32;C:\\tools' });
+		expect(claudeEnv({ PATH: 'C:\\tools' }, 'claude', win32)).toEqual({ PATH: 'C:\\tools' });
+		// Already there: left as it is.
+		expect(claudeEnv({ PATH: 'C:\\tools' }, 'C:\\tools\\claude.exe', win32)).toEqual({ PATH: 'C:\\tools' });
+		// A POSIX PATH that happens to be spelled otherwise is another variable.
+		expect(claudeEnv({ Path: '/x', PATH: '/usr/bin' }, '/opt/claude/claude', posix)).toEqual({
+			Path: '/x',
+			PATH: '/opt/claude:/usr/bin',
+		});
 	});
 
 	it('makes row ids that never collide with taken ones', () => {

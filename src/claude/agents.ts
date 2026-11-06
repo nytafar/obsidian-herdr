@@ -45,7 +45,8 @@
 import type { BlockKind } from '../native/sessionWatcher';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import * as nodePath from 'node:path';
+import { isAbsolute, resolve, type PlatformPath } from 'node:path';
 import { claudeTranscriptFile } from '../native/transcriptSource';
 import type { ClaudePermissionMode } from '../runtimes';
 import {
@@ -92,8 +93,15 @@ export function claudeConfigDir(env: NodeJS.ProcessEnv, home: string, cwd: strin
 	return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
 
-/** Whatever `data.json` holds, turned into stored rows; anything else is dropped. */
-export function normalizeClaudeSessions(value: unknown): Record<string, StoredClaudeSession[]> {
+/**
+ * Whatever `data.json` holds, turned into stored rows; anything else is
+ * dropped. A cwd must be absolute on this platform (`paths`, injected so
+ * Windows' drive and UNC paths are tested here too).
+ */
+export function normalizeClaudeSessions(
+	value: unknown,
+	paths: Pick<PlatformPath, 'isAbsolute'> = nodePath,
+): Record<string, StoredClaudeSession[]> {
 	const result: Record<string, StoredClaudeSession[]> = {};
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
 	for (const [runtimeId, list] of Object.entries(value as Record<string, unknown>)) {
@@ -106,7 +114,7 @@ export function normalizeClaudeSessions(value: unknown): Record<string, StoredCl
 			const id = typeof row.id === 'string' ? row.id : '';
 			const sessionId = typeof row.sessionId === 'string' ? row.sessionId : '';
 			const cwd = typeof row.cwd === 'string' ? row.cwd : '';
-			if (!id || seen.has(id) || !SESSION_ID_RE.test(sessionId) || !cwd.startsWith('/')) continue;
+			if (!id || seen.has(id) || !SESSION_ID_RE.test(sessionId) || !paths.isAbsolute(cwd)) continue;
 			seen.add(id);
 			sessions.push({
 				id,

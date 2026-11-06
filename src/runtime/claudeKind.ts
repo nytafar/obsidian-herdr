@@ -24,7 +24,8 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
-import { dirname } from 'node:path';
+import * as nodePath from 'node:path';
+import type { PlatformPath } from 'node:path';
 import type { ConnectionTunnel } from '../connection';
 import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
 import { ClaudeActions } from '../claude/actions';
@@ -70,14 +71,26 @@ export const INHERITED_SESSION_VARIABLES: readonly string[] = [
 	'HERDR_WORKSPACE_ID',
 ];
 
-/** The environment an agent starts with: the given one, its binary's folder on PATH, no inherited session. */
-export function claudeEnv(base: NodeJS.ProcessEnv, binary: string): NodeJS.ProcessEnv {
+/**
+ * The environment an agent starts with: the given one, its binary's folder on
+ * PATH, no inherited session. `paths` is the platform's (`node:path`; tests
+ * pass `win32`): an absolute binary by its rules, PATH split on its
+ * delimiter, and on Windows the one PATH variable whatever its case (`Path`
+ * there), since a copied environment is no longer case-insensitive.
+ */
+export function claudeEnv(
+	base: NodeJS.ProcessEnv,
+	binary: string,
+	paths: Pick<PlatformPath, 'isAbsolute' | 'dirname' | 'delimiter'> = nodePath,
+): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...base };
 	for (const name of INHERITED_SESSION_VARIABLES) delete env[name];
-	if (binary.startsWith('/')) {
-		const dir = dirname(binary);
-		const parts = (env.PATH ?? '').split(':').filter(Boolean);
-		if (!parts.includes(dir)) env.PATH = [dir, ...parts].join(':');
+	if (paths.isAbsolute(binary)) {
+		const windows = paths.delimiter === ';';
+		const key = (windows ? Object.keys(env).find((name) => name.toUpperCase() === 'PATH') : undefined) ?? 'PATH';
+		const dir = paths.dirname(binary);
+		const parts = (env[key] ?? '').split(paths.delimiter).filter(Boolean);
+		if (!parts.includes(dir)) env[key] = [dir, ...parts].join(paths.delimiter);
 	}
 	return env;
 }
