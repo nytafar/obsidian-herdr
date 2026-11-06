@@ -1716,6 +1716,49 @@ prompt; these are the facts a build may rely on.
   one cursor, rows numbered from 1. Text is kept per screen line and
   compared with `wrappedEquals`, which allows a run of spaces and one line
   break, or nothing, at each wrap point and nothing else.
+- **The answer driver, as built (#165).** `ScreenAnswerer`
+  (`src/native/screenAnswer.ts`) takes a runtime's `ScreenAccess` and an
+  agent format's reader. Every read is matched against the request
+  (`matchScreen`) and, before keys, hc's status `msg` (`statusAgrees`);
+  moves go one key per call, then reads every 100 ms until the screen shows
+  the intended state (3 s, never repeated); a commit key goes alone after a
+  read that showed it; the final key is followed by reads for 1.5 s and the
+  transcript's result (`receiptAgrees`). No digit is pressed. Run live
+  2026-11-06 through the built code on herdr 0.9.5 and hc 0.1.18
+  (`oh-test-ans*` in `/tmp`, Claude Code 2.1.318, haiku), each answered
+  and judged against the transcript in 0.3-1.7 s: a single choice (`down`
+  `enter`), a multi-select with two ticks and the typed `Mango, Ripe 2`
+  through the review, Bash allow once (`enter`), Bash deny with feedback
+  (`down`×3 `tab`, the words, `enter`), plan reject with feedback (`down`
+  `down`, the words, `enter`; Claude replanned under the same slug), plan
+  approve with manual edits (herdr and hc); a Bash request matched against
+  another command was refused with nothing sent, on both.
+- **The arrows on a question's own-answer row move within the words.** With
+  the cursor on the multi-select's text row (typed or not), `right` did not
+  change tab on either runtime; `up` to an option row and then `right`
+  opened the review, the typed words kept. So the driver leaves the text row
+  upwards before `left`/`right`, and never goes down onto `Submit`.
+- **The dangling `AskUserQuestion` is not reliably there.** In four of five
+  questions asked live (both runtimes), the transcript had no `assistant`
+  line with the call while the dialog was up, for over a minute; the call
+  and its result were written together on the answer, as on 2.1.281. A Bash
+  call was written about half a second after its dialog showed. A card that
+  builds a question's request from the transcript has none to offer most of
+  the time; hc's `msg` names the question and labels, not headers,
+  descriptions or `multiSelect`.
+- **What the transcript says after an answer**, as the driver judges it:
+  `The user answered: "<question>"="<answer>". …` or `Your questions have
+  been answered: …` (both seen on 2.1.318), with `toolUseResult.answers`; a
+  typed answer with a comma is quoted inside unescaped,
+  `"Which fruits do you like?"="Apple, Cherry, "Mango, Ripe 2""`. A denial
+  or rejected plan starts `The user doesn't want to proceed with this tool
+  use.` and carries `the user said:\n<words>`; an approved plan starts
+  `User has approved your plan`.
+- **After a plan is approved, a titled rule sits under the next dialog.** The
+  Write permission that followed showed, below its hint line, a rule ending
+  in the plan's name (`──── create-d-txt-file ─`), on herdr and on hc. The
+  parser reads such a screen as `unknown`, so the driver refuses there; the
+  parser does not know this line yet.
 
 ## Model, effort, permission mode and context
 
