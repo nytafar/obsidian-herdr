@@ -919,7 +919,10 @@ rather than the user's own default: `agent.start`'s `args` on herdr, the
 launch line on herdr-core (plain words only, since it is a single-quoted
 shell line; every mode is one).
 The row is forgotten once the agent runs there, so one conversation is never
-resumed in two places. SSH runtimes are not offered: the transcript is this
+resumed in two places. Until then the row is held (`ClaudeAgents.release`):
+nothing in this plugin starts its session, and the target starts only once
+the process here has exited; when the move fails the row is given back
+(`reclaim`), stopped. SSH runtimes are not offered: the transcript is this
 machine's.
 
 **The terminal view** (D2; `src/claude/pty.ts`, `sharedPty.ts`,
@@ -976,7 +979,17 @@ renderer:
   3.2–3.4 s to its first full paint with `--resume` (Claude's own startup);
   TUI to headless 0.80 s. A native turn, then a TUI turn, then a native
   question about both answered "HERON PELICAN": the conversation carried
-  across both switches.
+  across both switches. A switch keeps the target it started with: a native
+  prompt that set it off is written to the headless process it starts, and
+  `agent.prompt` settles only then (or rejects when a stop overtook it); a
+  tab that attaches meanwhile waits, then follows whatever runs.
+- **Stops hold the row** (the D2 review). Stop, Forget, graduation, a
+  removed runtime and unload mark the row before the process is told to
+  end, and nothing that comes during the stop (a tab attaching, a turn
+  ending, the runtime connecting) starts it: before this, a tab opened
+  during Forget left an untracked TUI running past unload, and one opened
+  during graduation ran a second Claude on the session. Unload also stops
+  every process and shell the kind started, in a row or not.
 - **Reattach.** The TUI belongs to the agent, not to the tab. A tab's session
   only attaches and detaches; a reopened tab got the same TUI pid and
   repainted from a replay of the raw output (`replay.ts`): at most 1 MiB, cut

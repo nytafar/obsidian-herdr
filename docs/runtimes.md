@@ -341,7 +341,11 @@ run and how many are stopped.
   and the other starts with the same conversation, about a second for the
   switch and two or three more while Claude draws its screen. While the agent
   is working, or waiting for an answer in the native view, the switch waits
-  for the turn to end and the tab says so. Closing the tab leaves Claude
+  for the turn to end and the tab says so. A prompt from the native view to
+  an agent in its terminal moves the agent back first and goes to it there;
+  the send waits for that, and fails with the reason if a Stop comes first.
+  A tab opened while a switch runs waits for it and then shows whatever
+  runs. Closing the tab leaves Claude
   running; opening the row again, in the same Obsidian session, shows the
   same screen. The list shows its status as Claude reports it to the
   terminal (working, done, blocked); a `/clear` typed in the terminal is not
@@ -353,14 +357,19 @@ run and how many are stopped.
   starts a new one in the same folder.
 - **The row menu** has **Stop agent** for a running row: the turn is
   interrupted, the process ends, and the row stays as a stopped session.
+  Nothing starts the agent again behind a stop: a tab opened while it stops
+  says so, and opening it once it has stopped resumes it.
   **Forget agent** removes a stopped row; Claude keeps its transcript in
   `~/.claude/projects` (or under `$CLAUDE_CONFIG_DIR`). **Continue in
   herdr** or **Continue in herdr-core** appears when such a runtime is
   configured on this machine and the session has had a turn (before that
-  there is no conversation to continue): it stops the process, starts
+  there is no conversation to continue): it stops the process and, once it
+  is gone, starts
   `claude --permission-mode <mode> --resume <session>` in the same folder on
   that runtime, in this runtime's permission mode rather than your own
-  default, switches the list there, and removes the row here.
+  default, switches the list there, and removes the row here. Until then the
+  row cannot be started here; if the other runtime does not take it, the row
+  stays stopped here, to resume as before.
 - Pins work as on herdr, stored in the plugin's settings.
 
 ### Limits

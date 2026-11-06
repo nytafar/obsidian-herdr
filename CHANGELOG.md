@@ -78,7 +78,13 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   permission mode. An agent runs one Claude at a time, so switching the view
   moves it between the headless process and the terminal with
   `claude --resume`, between turns only; while it works, the switch waits and
-  the tab says why. Permissions asked in the terminal are answered there,
+  the tab says why. A prompt sent from the native view to an agent in its
+  terminal moves it back first and is delivered there, or the send fails
+  with the reason (a Stop came first); it is never sent later. A tab opened
+  while a switch runs waits for it. Stop, Forget, Continue in and unloading
+  hold the agent while they end it, so nothing (a tab opening, a turn
+  ending) starts it again behind them, and Continue in starts the session on
+  the other runtime only once the process here is gone. Permissions asked in the terminal are answered there,
   and the agent list follows the status Claude reports to the terminal.
   Closing the tab keeps Claude running, and opening it again in the same
   session shows the same screen. Resizing reaches Claude. A watchdog beside

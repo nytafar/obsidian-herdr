@@ -75,8 +75,14 @@ export function announce(command: string): string {
 	return `printf '\\033[1m$ %s\\033[0m\\n' ${shellQuote(command)}; ${command}`;
 }
 
+/** Said by a tab that attaches once the plugin is unloading. */
+export const SHELLS_UNLOADING = 'the plugin is unloading';
+
 export class ClaudeShells {
 	private readonly entries = new Map<string, ShellEntry>();
+	/** Every shell started that has not exited, its id forgotten or not: unload ends them all. */
+	private readonly live = new Set<SharedPty>();
+	private disposed = false;
 
 	constructor(private readonly host: ClaudeShellsHost) {}
 
@@ -107,6 +113,7 @@ export class ClaudeShells {
 
 	/** A tab attaches: the running shell, or a new one in the folder. */
 	attach(id: string, viewer: PtyViewer): PtyAttachment {
+		if (this.disposed) throw new Error(SHELLS_UNLOADING);
 		const entry = this.entries.get(id);
 		if (!entry) throw new Error(SHELL_GONE);
 		if (!entry.pty?.alive || entry.pty.isStopping) this.start(entry, viewer.size() ?? { cols: 80, rows: 24 });
@@ -123,11 +130,11 @@ export class ClaudeShells {
 		await entry.pty?.stop();
 	}
 
-	/** Every shell ends: the plugin is unloading. */
+	/** Every shell ends, a closing one too, and none starts again: the plugin is unloading. */
 	async stopAll(): Promise<void> {
-		const entries = [...this.entries.values()];
+		this.disposed = true;
 		this.entries.clear();
-		await Promise.all(entries.map((entry) => entry.pty?.stop() ?? Promise.resolve()));
+		await Promise.all([...this.live].map((pty) => pty.stop()));
 	}
 
 	private start(entry: ShellEntry, size: { cols: number; rows: number }): void {
@@ -149,6 +156,7 @@ export class ClaudeShells {
 			timers: this.host.timers,
 			...(this.host.replayLimit ? { replayLimit: this.host.replayLimit } : {}),
 			onExit: (info) => {
+				this.live.delete(pty);
 				if (entry.pty !== pty) return;
 				entry.pty = null;
 				entry.error = info.error;
@@ -157,5 +165,6 @@ export class ClaudeShells {
 		});
 		entry.pty = pty;
 		pty.start();
+		if (pty.alive) this.live.add(pty);
 	}
 }

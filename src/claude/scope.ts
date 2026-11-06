@@ -222,8 +222,11 @@ export class ClaudeClient implements ConnectionClient {
 		try {
 			switch (method) {
 				case 'agent.prompt':
-					this.agents.prompt(this.runtimeId, target, typeof args.text === 'string' ? args.text : '');
-					break;
+					// Settles once the prompt is written, which a switch from the
+					// terminal view can take a moment to allow, or never will be.
+					return this.agents
+						.prompt(this.runtimeId, target, typeof args.text === 'string' ? args.text : '')
+						.then(() => null as T);
 				case 'agent.interrupt':
 					this.agents.interrupt(this.runtimeId, target);
 					break;

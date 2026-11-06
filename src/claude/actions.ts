@@ -10,7 +10,8 @@
  *   Claude keeps it.
  * - **Resume:** opening a stopped row spawns it with `--resume`.
  * - **Graduation:** the process stops and the row's cwd and session go to the
- *   runtime it continues on (`main.ts` runs that half).
+ *   runtime it continues on (`main.ts` runs that half), only once the process
+ *   is confirmed gone; the row stays held until it is forgotten or given back.
  * - **Open shell here:** a plain shell in the folder, in a terminal tab
  *   (ADR-0008), with an optional command run first; not a row.
  * - New tab, split, rename and focus have no meaning without a multiplexer:
@@ -138,7 +139,13 @@ export class ClaudeActions implements RuntimeActions {
 		// A session with no turn has no transcript, so `--resume` elsewhere
 		// would find no conversation; the menu does not offer it either.
 		if (!agent?.started) return null;
-		await this.agents.stop(this.runtimeId, paneId);
+		// Held from here on: nothing in this plugin starts the session again
+		// while the target resumes it, and it is not handed over until its
+		// process here is confirmed gone.
+		if (!(await this.agents.release(this.runtimeId, paneId))) {
+			this.agents.reclaim(this.runtimeId, paneId);
+			throw new Error('the agent did not stop, so it was not moved');
+		}
 		// The session as it is after the stop: a `/clear` may have rotated it.
 		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
 		const permissionMode = this.agents.permissionMode(this.runtimeId, paneId);

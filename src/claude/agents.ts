@@ -46,13 +46,25 @@
  * attaches asks for the TUI; a tab switched to the native view, or a native
  * prompt, asks for the headless process. The process changes only between
  * turns (`./viewSwitch.ts`): the old one stops in its own stop order and the
- * other starts with `--resume`, about a second either way. The TUI keeps
- * running when its tabs close, and a reopened tab repaints from its replay
- * buffer. Its status is what Claude reports with OSC 7501
+ * other starts with `--resume`, about a second either way. A native prompt
+ * that sets off a switch is delivered to the headless process the switch
+ * starts, and its `send` settles then; if a stop overtakes the switch it is
+ * rejected, never kept for later. A tab that attaches during a switch waits
+ * for it and then follows whatever runs; it never turns the switch into a
+ * stop. The TUI keeps running when its tabs close, and a reopened tab
+ * repaints from its replay buffer. Its status is what Claude reports with OSC 7501
  * (`./programStatus.ts`), which the plugin turns on by answering Claude's
  * probe; a blocked TUI is answered in the terminal, since there is no
  * `can_use_tool` there. A `/clear` typed in the TUI is not seen: the row
  * keeps the session from before it.
+ *
+ * **Stopping holds** (the D2 review). Stop, Forget, graduation's release,
+ * a removed runtime and unload hold the row before the process is told to
+ * end, so nothing that arrives meanwhile (a tab attaching, a turn ending,
+ * the runtime connecting) starts it again: only a person does, once a Stop
+ * is over (a tab opened then, a prompt, Resume); a released row only when
+ * graduation gives it back. Unload also ends every process the table ever
+ * started, in a row or not, and nothing starts after it.
  *
  * No Obsidian: everything outside the table comes through {@link ClaudeAgentsHost}.
  */
@@ -256,6 +268,16 @@ export const MOVED_TO_NATIVE = 'the agent moved to the native view; reconnect to
 export const AGENT_STOPPED = 'the agent stopped; reconnect to resume it here';
 /** What a tab says when Claude itself quit (`/exit`). */
 export const CLAUDE_QUIT = 'Claude quit; reconnect to resume it here';
+/** Said while a Stop runs: nothing starts the agent until it is over. */
+export const AGENT_STOPPING = 'the agent is stopping';
+/** Said while graduation moves the session to another runtime. */
+export const AGENT_RELEASED = 'the agent is moving to another runtime';
+/** Said by a tab whose agent was forgotten, or whose runtime was removed. */
+export const AGENT_FORGOTTEN = 'the agent was removed from the list';
+/** Said once the plugin is unloading: nothing starts any more. */
+export const PLUGIN_UNLOADING = 'the plugin is unloading';
+/** A native prompt waiting for a switch that a stop overtook. */
+export const PROMPT_NOT_SENT_STOPPED = 'the prompt was not sent: the agent was stopped first';
 
 interface AgentRecord {
 	stored: StoredClaudeSession;
@@ -294,12 +316,56 @@ interface AgentRecord {
 	want: 'stream' | 'tui';
 	/** Terminal tabs on the agent. */
 	viewers: Set<AgentViewer>;
-	/** A switch is stopping the old process. */
-	switching: boolean;
-	/** Native prompts waiting for the headless process a switch starts. */
-	queued: string[];
+	/** A switch is stopping the old process, and starts this one once it has exited. */
+	switching: 'stream' | 'tui' | null;
+	/** Native prompts waiting for the headless process a switch starts; each settles its `send`. */
+	queued: QueuedPrompt[];
 	/** Bumped by every stop, so a switch overtaken by one starts nothing. */
 	epoch: number;
+	/** A Stop, Forget, graduation or unload is ending the process; settles once it has. */
+	stopping: Promise<void> | null;
+	/** Why nothing may start this agent's process now; null when anything may. */
+	hold: Hold | null;
+}
+
+/** A native prompt that waits for its switch: delivered then, or rejected. */
+interface QueuedPrompt {
+	text: string;
+	resolve(): void;
+	reject(error: Error): void;
+}
+
+/**
+ * Why an agent's process must not start again (the D2 review). Set by
+ * whatever ended it, before it ends, so nothing that comes during the stop
+ * (a tab attaching, a turn ending, the runtime connecting) restarts it:
+ *
+ * - `stopped`: Stop. A person starting it again lifts it: opening a tab
+ *   once the stop is over, a prompt, Resume.
+ * - `released`: graduation. Only {@link ClaudeAgents.reclaim} lifts it,
+ *   when the session did not move after all.
+ * - `gone`: Forget, a removed runtime, unload. For good.
+ */
+interface Hold {
+	kind: 'stopped' | 'released' | 'gone';
+	/** What a tab and a prompt are told. */
+	reason: string;
+}
+
+const HOLD_RANK: Record<Hold['kind'], number> = { stopped: 0, released: 1, gone: 2 };
+const STOPPED_HOLD: Hold = { kind: 'stopped', reason: AGENT_STOPPED };
+
+/** What a tab that attaches during a switch to the headless process says until it is over. */
+export const WAIT_FOR_NATIVE_SWITCH = 'waiting for the agent to move to the native view first';
+/** What a tab says while the agent's TUI starts for it. */
+export const STARTING_TUI = 'starting Claude in the terminal';
+/** Said to a native prompt while the agent moves to its terminal view. */
+export const SWITCHING_TO_TUI = 'the agent is moving to its terminal view; prompt it there once it has';
+/** A native prompt whose switch could not stop the TUI. */
+export const PROMPT_NOT_SENT_STUCK = 'the prompt was not sent: the terminal view did not stop';
+
+function asError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
 }
 
 type Listener = (runtimeId: string, agentId: string, change: ClaudeAgentChange) => void;
@@ -327,9 +393,11 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		tuiTurned: false,
 		want: 'stream',
 		viewers: new Set(),
-		switching: false,
+		switching: null,
 		queued: [],
 		epoch: 0,
+		stopping: null,
+		hold: null,
 	};
 }
 
@@ -360,6 +428,13 @@ export class ClaudeAgents {
 	private statusSeq = 0;
 	/** Records whose switch is being planned, so a status change inside it does not plan again. */
 	private readonly settling = new Set<AgentRecord>();
+	/**
+	 * Every process this table started that has not exited, row or no row,
+	 * and how to stop it: unload ends all of them, not only the table's.
+	 */
+	private readonly live = new Map<object, () => Promise<void>>();
+	/** The plugin is unloading: nothing starts any more. */
+	private disposed = false;
 
 	constructor(private readonly host: ClaudeAgentsHost) {}
 
@@ -428,34 +503,53 @@ export class ClaudeAgents {
 		return this.view(runtimeId, record);
 	}
 
-	/** Spawns a stopped agent's process again (`--resume`), with no prompt. */
+	/** Spawns a stopped agent's process again (`--resume`), with no prompt. Throws while it may not start. */
 	resume(runtimeId: string, agentId: string): void {
 		const record = this.record(runtimeId, agentId);
-		if (!record.process && !record.tui && !record.switching) this.spawn(runtimeId, record);
+		this.refuseHeld(record);
+		if (record.process || record.tui || record.switching) return;
+		// A person asked: a Stop no longer holds it.
+		record.hold = null;
+		this.spawn(runtimeId, record);
 	}
 
 	/**
 	 * Sends a prompt, resuming a stopped agent first. An agent in its terminal
 	 * view moves to a headless process once its TUI is idle, and gets the
-	 * prompt there. Throws a readable error.
+	 * prompt there: the promise settles once the prompt is written to that
+	 * process, or rejects with why it never will be (a stop came first, the
+	 * process could not start). Never kept for later. Rejects with a readable
+	 * error.
 	 */
-	prompt(runtimeId: string, agentId: string, text: string): void {
+	prompt(runtimeId: string, agentId: string, text: string): Promise<void> {
+		try {
+			return this.promptNow(runtimeId, agentId, text);
+		} catch (error) {
+			return Promise.reject(asError(error));
+		}
+	}
+
+	private promptNow(runtimeId: string, agentId: string, text: string): Promise<void> {
 		const record = this.record(runtimeId, agentId);
-		if (record.tui || (record.switching && record.want === 'stream')) {
-			if (record.tui && !record.switching) {
-				// A stop, not a switch: as for a headless agent.
-				if (record.tui.isStopping) throw new Error('the agent is stopping');
-				const status = this.statusOf(record);
-				if (status === 'working' || status === 'blocked') throw new Error(TUI_BUSY);
-			} else if (record.want !== 'stream') {
-				throw new Error('the agent is stopping');
-			}
-			record.queued.push(text);
+		this.refuseHeld(record);
+		if (record.switching === 'tui') throw new Error(SWITCHING_TO_TUI);
+		if (record.switching === 'stream') {
+			// The switch under way delivers it with the others.
+			this.wantStream(record);
+			return this.enqueue(record, text);
+		}
+		if (record.tui) {
+			if (record.tui.isStopping) throw new Error(AGENT_STOPPING);
+			const status = this.statusOf(record);
+			if (status === 'working' || status === 'blocked') throw new Error(TUI_BUSY);
+			const sent = this.enqueue(record, text);
 			this.wantStream(record);
 			this.settle(runtimeId, record);
-			return;
+			return sent;
 		}
-		if (record.process?.isStopping) throw new Error('the agent is stopping');
+		if (record.process?.isStopping) throw new Error(AGENT_STOPPING);
+		// A person prompting a stopped agent resumes it.
+		record.hold = null;
 		this.wantStream(record);
 		if (!record.process) this.spawn(runtimeId, record);
 		const process = record.process;
@@ -465,6 +559,23 @@ export class ClaudeAgents {
 		record.turns++;
 		record.finished = false;
 		this.update(runtimeId, record);
+		return Promise.resolve();
+	}
+
+	/** Throws while a stop runs, or while a hold only something else may lift is on. */
+	private refuseHeld(record: AgentRecord): void {
+		if (this.disposed) throw new Error(PLUGIN_UNLOADING);
+		if (record.hold && record.hold.kind !== 'stopped') throw new Error(record.hold.reason);
+		if (record.stopping) throw new Error(AGENT_STOPPING);
+	}
+
+	private enqueue(record: AgentRecord, text: string): Promise<void> {
+		return new Promise<void>((resolve, reject) => record.queued.push({ text, resolve, reject }));
+	}
+
+	/** Rejects every prompt still waiting for a switch: none is ever sent later. */
+	private dropQueued(record: AgentRecord, reason: string): void {
+		for (const prompt of record.queued.splice(0)) prompt.reject(new Error(reason));
 	}
 
 	/** The `interrupt` control request, while a turn runs; Esc for a TUI, which is Claude's own key for it. */
@@ -504,42 +615,89 @@ export class ClaudeAgents {
 
 	/**
 	 * Stops the agent's process, in the ADR's order (a TUI in its own); the
-	 * row stays, stopped, and its terminal tabs say so.
+	 * row stays, stopped, and its terminal tabs say so. Nothing restarts it
+	 * until a person does (a tab opened after the stop, a prompt, Resume).
 	 */
 	async stop(runtimeId: string, agentId: string): Promise<void> {
 		const record = this.table(runtimeId).get(agentId);
-		if (!record) return;
+		if (record) await this.halt(runtimeId, record, STOPPED_HOLD);
+	}
+
+	/**
+	 * Graduation (ADR-0007): stops the agent's process and holds the row so
+	 * that nothing here starts its session again while another runtime
+	 * resumes it. True once the process is confirmed gone; the row stays
+	 * held until it is forgotten or {@link reclaim}ed.
+	 */
+	async release(runtimeId: string, agentId: string): Promise<boolean> {
+		const record = this.table(runtimeId).get(agentId);
+		if (!record) return false;
+		await this.halt(runtimeId, record, { kind: 'released', reason: AGENT_RELEASED });
+		return !record.process && !record.tui;
+	}
+
+	/** Graduation did not move the session after all: the row is stopped, and a person may resume it. */
+	reclaim(runtimeId: string, agentId: string): void {
+		const record = this.table(runtimeId).get(agentId);
+		if (record?.hold?.kind === 'released') record.hold = STOPPED_HOLD;
+	}
+
+	/**
+	 * Ends the agent's processes and holds it (above) before anything is
+	 * awaited, so whatever comes during the stop starts nothing: prompts
+	 * waiting for a switch are rejected, tabs waiting for one are closed, and
+	 * a tab or a prompt that arrives is refused until it is over.
+	 */
+	private async halt(runtimeId: string, record: AgentRecord, hold: Hold): Promise<void> {
+		if (!record.hold || HOLD_RANK[hold.kind] >= HOLD_RANK[record.hold.kind]) record.hold = hold;
 		record.epoch++;
 		record.want = 'stream';
-		record.queued = [];
-		// Tabs waiting for a switch get nothing now.
+		this.dropQueued(record, PROMPT_NOT_SENT_STOPPED);
 		for (const entry of [...record.viewers]) {
 			if (entry.inner) continue;
 			record.viewers.delete(entry);
-			entry.viewer.closed(AGENT_STOPPED);
+			entry.viewer.closed(record.hold.reason);
 		}
 		const stops: Promise<void>[] = [];
 		const process = record.process;
 		if (process) stops.push(process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] }));
 		if (record.tui) stops.push(record.tui.stop());
 		if (stops.length === 0) return;
+		const stopping: Promise<void> = Promise.all(stops).then(
+			() => undefined,
+			() => undefined,
+		);
+		record.stopping = stopping;
 		// The waiting card says the agent is stopping until it has.
 		this.update(runtimeId, record);
-		await Promise.all(stops);
+		try {
+			await stopping;
+		} finally {
+			if (record.stopping === stopping) record.stopping = null;
+		}
 	}
 
 	/**
 	 * A terminal tab asks for the agent (ADR-0007's D2): its TUI, started now
 	 * when nothing runs, switched to when the headless process is idle, and
-	 * waited for while a turn runs. Throws when this machine has no pty.
+	 * waited for while a turn runs or a switch is under way. Throws when this
+	 * machine has no pty, and while the agent may not start (it is stopping,
+	 * moving to another runtime, forgotten, or the plugin is unloading).
 	 */
 	openTerminal(runtimeId: string, agentId: string, viewer: PtyViewer): PtyAttachment {
 		const record = this.record(runtimeId, agentId);
 		if (!this.host.pty) throw new Error('the terminal view is not available on this platform');
+		if (record.stopping && record.hold) throw new Error(record.hold.reason);
+		this.refuseHeld(record);
+		// Opening a tab on a stopped agent is a person resuming it.
+		record.hold = null;
 		const entry: AgentViewer = { viewer, inner: null, waiting: null, looking: false };
 		record.viewers.add(entry);
 		record.want = 'tui';
 		if (record.tui?.alive && !record.tui.isStopping && !record.switching) this.attachViewer(record, entry);
+		// A switch decides nothing for it; the tab waits for the switch, then for whatever runs.
+		else if (record.switching === 'stream') this.tellWaiting(record, WAIT_FOR_NATIVE_SWITCH);
+		else if (record.switching === 'tui') this.tellWaiting(record, STARTING_TUI);
 		const attachment: PtyAttachment = {
 			write: (data) => entry.inner?.write(data) ?? false,
 			resize: (cols, rows) => entry.inner?.resize(cols, rows) ?? false,
@@ -586,29 +744,42 @@ export class ClaudeAgents {
 		}
 	}
 
-	/** Stops the agent if it runs and removes its row. The transcript stays. */
+	/** Stops the agent if it runs and removes its row, which nothing starts again. The transcript stays. */
 	async forget(runtimeId: string, agentId: string): Promise<void> {
-		await this.stop(runtimeId, agentId);
 		const table = this.table(runtimeId);
-		if (!table.delete(agentId)) return;
+		const record = table.get(agentId);
+		if (!record) return;
+		await this.halt(runtimeId, record, { kind: 'gone', reason: AGENT_FORGOTTEN });
+		if (table.get(agentId) !== record) return;
+		table.delete(agentId);
 		this.persist(runtimeId);
 		this.emit(runtimeId, agentId, 'removed');
 	}
 
-	/** Stops every process of every runtime: the plugin is unloading. */
+	/**
+	 * Stops every process this table ever started, in a row or not: the
+	 * plugin is unloading. Nothing starts after it.
+	 */
 	stopAll(): Promise<void> {
+		this.disposed = true;
 		const stops: Promise<void>[] = [];
 		for (const [runtimeId, table] of this.runtimes) {
-			for (const agentId of table.keys()) stops.push(this.stop(runtimeId, agentId));
+			for (const record of table.values()) {
+				stops.push(this.halt(runtimeId, record, { kind: 'gone', reason: PLUGIN_UNLOADING }));
+			}
 		}
+		// Whatever a row no longer tracks; a process already stopping returns its own stop.
+		for (const stop of this.live.values()) stops.push(stop());
 		return Promise.all(stops).then(() => undefined);
 	}
 
-	/** Drops the runtimes no longer configured, stopping their processes. */
+	/** Drops the runtimes no longer configured, stopping their processes for good. */
 	prune(runtimeIds: ReadonlySet<string>): void {
 		for (const [runtimeId, table] of [...this.runtimes]) {
 			if (runtimeIds.has(runtimeId)) continue;
-			for (const agentId of table.keys()) void this.stop(runtimeId, agentId);
+			for (const record of table.values()) {
+				void this.halt(runtimeId, record, { kind: 'gone', reason: AGENT_FORGOTTEN });
+			}
 			this.runtimes.delete(runtimeId);
 			this.setups.delete(runtimeId);
 		}
@@ -640,9 +811,11 @@ export class ClaudeAgents {
 	/**
 	 * Starts the agent's process. `how` forces one way of starting, for the
 	 * second attempt after Claude refused the first; `replay` are the prompts
-	 * that attempt never read, written again here.
+	 * that attempt never read, written again here. Returns how many of them
+	 * were written. Throws while the agent may not start.
 	 */
-	private spawn(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith'], replay: string[] = []): void {
+	private spawn(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith'], replay: string[] = []): number {
+		this.mayStart(record);
 		const setup = this.setups.get(runtimeId);
 		if (!setup) throw new Error('the runtime has not found claude yet');
 		const { cwd, sessionId } = record.stored;
@@ -682,17 +855,27 @@ export class ClaudeAgents {
 		record.pending.clear();
 		process.start();
 		// A spawn that failed outright has already exited and cleared the record.
-		if (record.process !== process) return;
+		if (record.process !== process) return 0;
+		this.live.set(process, () => process.stop({ busy: true, pending: [] }));
+		let written = 0;
 		for (const text of replay) {
 			try {
 				process.send(userMessage(text));
 			} catch {
 				break;
 			}
+			written++;
 			record.unclaimed.push(text);
 			record.turns++;
 		}
 		this.update(runtimeId, record);
+		return written;
+	}
+
+	/** Throws when nothing may start the agent's process: unload, or a hold (see {@link Hold}). */
+	private mayStart(record: AgentRecord): void {
+		if (this.disposed) throw new Error(PLUGIN_UNLOADING);
+		if (record.hold) throw new Error(record.hold.reason);
 	}
 
 	/** Where Claude writes the row's current transcript (`claudeConfigDir`, the real cwd). */
@@ -740,13 +923,15 @@ export class ClaudeAgents {
 				return;
 			}
 			case 'result': {
-				record.turns = Math.max(0, record.turns - 1);
 				// A `--resume` Claude refused at startup reports it as a result
-				// before any init; its exit decides what happens next.
+				// before any init; its exit decides what happens next. No turn
+				// ended: the agent is not idle, so no switch takes it away before
+				// the other way of starting gets its prompts.
 				if (event.isError && !record.initSeen && record.spawnedWith === 'resume') {
 					this.update(runtimeId, record);
 					return;
 				}
+				record.turns = Math.max(0, record.turns - 1);
 				if (!event.isError) this.markStarted(runtimeId, record);
 				if (record.turns === 0) record.finished = true;
 				if (event.isError && !event.terminalReason.startsWith('aborted')) {
@@ -788,6 +973,7 @@ export class ClaudeAgents {
 		process: ClaudeProcess,
 		info: { code: number | null; stopping: boolean; error: string },
 	): void {
+		this.live.delete(process);
 		if (record.process !== process) return;
 		record.process = null;
 		record.turns = 0;
@@ -848,6 +1034,8 @@ export class ClaudeAgents {
 		if (record.switching || this.settling.has(record)) return;
 		// A forgotten row, or a removed runtime's, has nothing to start.
 		if (this.runtimes.get(runtimeId)?.get(record.stored.id) !== record) return;
+		// Stopped, released, forgotten or unloading: only a person starts it again.
+		if (record.hold || this.disposed) return;
 		this.settling.add(record);
 		try {
 			const step = planViewSwitch({
@@ -873,7 +1061,7 @@ export class ClaudeAgents {
 					this.spawnStreamOrNotice(runtimeId, record);
 					return;
 				case 'switch':
-					void this.switchProcess(runtimeId, record);
+					void this.switchProcess(runtimeId, record, record.want);
 					return;
 			}
 		} finally {
@@ -890,38 +1078,64 @@ export class ClaudeAgents {
 	}
 
 	/**
-	 * Stops what runs (it is idle: no interrupt, no pending request) and starts
-	 * what the views want once it has exited, unless a stop overtook it.
+	 * Stops what runs (it is idle: no interrupt, no pending request) and,
+	 * once it has exited, starts `target`, unless a stop overtook it. What
+	 * comes meanwhile does not change the target: a native prompt joins the
+	 * queue a switch to the headless process delivers, and a tab that
+	 * attaches waits, then follows whatever runs. Only a switch to the
+	 * headless process that carries no prompt gives way to a tab that asked
+	 * for the TUI since, since the last view to ask wins.
 	 */
-	private async switchProcess(runtimeId: string, record: AgentRecord): Promise<void> {
+	private async switchProcess(runtimeId: string, record: AgentRecord, target: 'stream' | 'tui'): Promise<void> {
 		const epoch = record.epoch;
-		record.switching = true;
-		if (record.want === 'tui') this.tellWaiting(record, 'starting Claude in the terminal');
+		record.switching = target;
+		if (target === 'tui') this.tellWaiting(record, STARTING_TUI);
 		try {
 			if (record.tui) await record.tui.stop();
 			else if (record.process) await record.process.stop({ busy: false, pending: [] });
 		} finally {
-			record.switching = false;
+			record.switching = null;
 		}
-		if (record.epoch !== epoch || record.process || record.tui) {
+		if (record.epoch !== epoch || record.hold || record.process || record.tui) {
+			// A stop already rejected its prompts; an old process that would not
+			// stop leaves them nowhere to go.
+			this.dropQueued(record, record.epoch !== epoch || record.hold ? PROMPT_NOT_SENT_STOPPED : PROMPT_NOT_SENT_STUCK);
 			this.update(runtimeId, record);
 			return;
 		}
-		if (record.want === 'tui' && record.viewers.size > 0) this.startTuiOrClose(runtimeId, record);
+		const tabsWant = record.want === 'tui' && record.viewers.size > 0;
+		if (target === 'stream' && (record.queued.length > 0 || !tabsWant)) this.spawnStreamOrNotice(runtimeId, record);
+		else if (tabsWant) this.startTuiOrClose(runtimeId, record);
 		else if (record.want === 'stream') this.spawnStreamOrNotice(runtimeId, record);
 		else this.update(runtimeId, record);
 	}
 
+	/**
+	 * Starts the headless process with the prompts queued for it, and settles
+	 * each one's `send`: written, or rejected with why not.
+	 */
 	private spawnStreamOrNotice(runtimeId: string, record: AgentRecord): void {
 		const queued = record.queued.splice(0);
+		let written: number;
 		try {
-			this.spawn(runtimeId, record, undefined, queued);
-		} catch (error) {
-			this.host.notice(
-				`Herdr: ${record.stored.name || 'Claude'} could not start: ${error instanceof Error ? error.message : String(error)}`,
+			written = this.spawn(
+				runtimeId,
+				record,
+				undefined,
+				queued.map((prompt) => prompt.text),
 			);
+		} catch (error) {
+			const message = asError(error).message;
+			for (const prompt of queued) prompt.reject(new Error(message));
+			// Nobody waits on a send to hear it otherwise.
+			if (queued.length === 0) this.host.notice(`Herdr: ${record.stored.name || 'Claude'} could not start: ${message}`);
 			this.update(runtimeId, record);
+			return;
 		}
+		queued.forEach((prompt, index) => {
+			if (index < written) prompt.resolve();
+			else prompt.reject(new Error('the prompt was not sent: the agent could not be started'));
+		});
 	}
 
 	private startTuiOrClose(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith']): void {
@@ -952,6 +1166,7 @@ export class ClaudeAgents {
 	 * forces the way of starting, for the second attempt after a refusal.
 	 */
 	private spawnTui(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith']): void {
+		this.mayStart(record);
 		const setup = this.setups.get(runtimeId);
 		if (!setup) throw new Error('the runtime has not found claude yet');
 		const pty = this.host.pty;
@@ -996,6 +1211,7 @@ export class ClaudeAgents {
 		tui.start();
 		// A spawn that failed outright has already exited and closed the tabs.
 		if (record.tui !== tui) return;
+		this.live.set(tui, () => tui.stop());
 		for (const entry of record.viewers) this.attachViewer(record, entry);
 		this.update(runtimeId, record);
 	}
@@ -1034,6 +1250,7 @@ export class ClaudeAgents {
 		tui: SharedPty,
 		info: { code: number | null; stopping: boolean; error: string },
 	): void {
+		this.live.delete(tui);
 		if (record.tui !== tui) return;
 		record.tui = null;
 		record.tuiState = null;
@@ -1042,7 +1259,9 @@ export class ClaudeAgents {
 		const output = tui.outputText();
 		// Claude refused how it was started; once more the other way, for the tabs still there.
 		const fallback =
-			!info.stopping && !record.retried && !record.tuiTurned ? startupFallback(record.spawnedWith, output) : null;
+			!info.stopping && !record.retried && !record.tuiTurned && !record.hold
+				? startupFallback(record.spawnedWith, output)
+				: null;
 		if (fallback) {
 			if (fallback === 'resume') record.stored.started = true;
 			else delete record.stored.started;
@@ -1053,11 +1272,15 @@ export class ClaudeAgents {
 				return;
 			}
 		}
-		const reason = record.switching && record.want === 'stream' ? MOVED_TO_NATIVE : info.stopping ? AGENT_STOPPED : CLAUDE_QUIT;
-		const viewers = [...record.viewers];
-		record.viewers.clear();
-		for (const entry of viewers) {
+		// A switch to the headless process lets the tabs it showed go, and
+		// keeps the ones that attached during it: they wait for the switch.
+		const toNative = record.switching === 'stream' && !record.hold;
+		const reason = toNative ? MOVED_TO_NATIVE : info.stopping ? (record.hold?.reason ?? AGENT_STOPPED) : CLAUDE_QUIT;
+		for (const entry of [...record.viewers]) {
+			const attached = entry.inner !== null;
 			entry.inner = null;
+			if (toNative && !attached) continue;
+			record.viewers.delete(entry);
 			entry.viewer.closed(reason);
 		}
 		if (!record.switching) record.want = 'stream';

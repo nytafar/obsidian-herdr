@@ -51,6 +51,7 @@ import {
 } from './runtimes';
 import {
 	nativeAdapterFor,
+	type GraduationRelease,
 	type RuntimeActions,
 	type RuntimeCapabilities,
 	type RuntimeKindAdapter,
@@ -680,34 +681,50 @@ export default class HerdrPlugin extends Plugin {
 	/**
 	 * Graduation (ADR-0007): stops a `claude` row's process, switches to the
 	 * target runtime, and starts `claude --resume <session>` in the same cwd
-	 * through that runtime's own start-agent path. The row is forgotten once
-	 * the agent runs there, so the conversation is never resumed in two places.
-	 * Anything that fails on the way leaves the row stopped, where it can be
-	 * resumed as before.
+	 * through that runtime's own start-agent path, only once the process here
+	 * is confirmed gone. The row is held meanwhile, so nothing here starts the
+	 * session again, and forgotten once the agent runs there, so the
+	 * conversation is never resumed in two places. Anything that fails on the
+	 * way gives the row back, stopped, where it can be resumed as before.
 	 */
 	async continueIn(paneId: string, endpointId: string, runtimeId: string): Promise<void> {
 		const target = runtimeById(this.settings, runtimeId);
 		if (!target || this.endpoint.id !== endpointId) return;
-		const released = await this.actions.releaseForGraduation?.(paneId);
+		// Resolves once this plugin's process for the session is confirmed
+		// gone, and holds the row so nothing here starts it again meanwhile.
+		let released: GraduationRelease | null;
+		try {
+			released = (await this.actions.releaseForGraduation?.(paneId)) ?? null;
+		} catch (error) {
+			new Notice(`Herdr: could not continue the agent. ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 		if (!released) {
 			new Notice('Herdr: that agent has no session to continue.');
 			return;
 		}
-		const name = runtimeDisplayName(target);
-		await this.switchRuntime(runtimeId);
-		if (!(await this.scopeReady(runtimeId))) {
-			new Notice(
-				`Herdr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
-			);
-			return;
+		let moved = false;
+		try {
+			const name = runtimeDisplayName(target);
+			await this.switchRuntime(runtimeId);
+			if (!(await this.scopeReady(runtimeId))) {
+				new Notice(
+					`Herdr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
+				);
+				return;
+			}
+			const started = await this.actions.startAgentHere(released.cwd, {
+				kind: 'claude',
+				args: graduationArgs(released),
+			});
+			if (!started) return;
+			moved = true;
+			await this.claudeKind.agents.forget(endpointId, paneId);
+			this.detachTerminalLeaves(paneId, endpointId);
+		} finally {
+			// The session did not move: the row is stopped here, for the user to resume.
+			if (!moved) this.claudeKind.agents.reclaim(endpointId, paneId);
 		}
-		const started = await this.actions.startAgentHere(released.cwd, {
-			kind: 'claude',
-			args: graduationArgs(released),
-		});
-		if (!started) return;
-		await this.claudeKind.agents.forget(endpointId, paneId);
-		this.detachTerminalLeaves(paneId, endpointId);
 	}
 
 	/** Waits until `runtimeId` is published with a resolved scope; false after the timeout. */
@@ -777,7 +794,7 @@ export default class HerdrPlugin extends Plugin {
 				try {
 					const unique = buildAgentName(name, { folder: '', vault: '' }, agents.names(runtimeId));
 					paneId = agents.start(runtimeId, cwd, unique, { permissionMode }).id;
-					agents.prompt(runtimeId, paneId, prompt);
+					await agents.prompt(runtimeId, paneId, prompt);
 				} catch (error) {
 					new Notice(`Herdr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);
 					return null;

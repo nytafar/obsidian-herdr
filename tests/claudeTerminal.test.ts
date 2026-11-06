@@ -18,11 +18,21 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ActionHost } from '../src/actions';
 import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
-import { AGENT_STOPPED, CLAUDE_QUIT, MOVED_TO_NATIVE, WAIT_FOR_RUNTIME, type StoredClaudeSession } from '../src/claude/agents';
+import {
+	AGENT_FORGOTTEN,
+	AGENT_RELEASED,
+	AGENT_STOPPED,
+	CLAUDE_QUIT,
+	MOVED_TO_NATIVE,
+	PLUGIN_UNLOADING,
+	PROMPT_NOT_SENT_STOPPED,
+	WAIT_FOR_RUNTIME,
+	type StoredClaudeSession,
+} from '../src/claude/agents';
 import type { ClaudeChild } from '../src/claude/process';
 import { PROGRAM_STATUS_REPLY } from '../src/claude/programStatus';
 import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
-import { SHELL_ENDED, SHELL_GONE, isShellId } from '../src/claude/shells';
+import { SHELL_ENDED, SHELL_GONE, SHELLS_UNLOADING, isShellId } from '../src/claude/shells';
 import { FRAME_BYTES } from '../src/claude/terminalSession';
 import { planViewSwitch, TUI_BUSY, WAIT_FOR_ANSWER, WAIT_FOR_STOP, WAIT_FOR_TURN } from '../src/claude/viewSwitch';
 import { endpointOf, type Connection } from '../src/connection';
@@ -541,6 +551,117 @@ describe('an agent in its terminal view', () => {
 	});
 });
 
+describe('switches and stops that race a tab (the D2 review)', () => {
+	const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+	it('delivers a native prompt in its switch when a tab attaches during the TUI stop, and the tab waits for it', async () => {
+		const h = harness({ row: 'started' });
+		const tab = openTab(h, AGENT);
+		await reported(h);
+		const sender = h.kind.promptSender(() => h.client);
+		const sending = sender.send(AGENT, 'from native');
+		const late = openTab(h, AGENT);
+		// `send` settles only once the prompt is in the headless process.
+		await sending;
+		await waitFor(() => streamPrompts(h).includes('from native'), 'the prompt in the headless process');
+		expect(tab.closed).toEqual([MOVED_TO_NATIVE]);
+		// The tab that came during the switch never turned it into a stop: it
+		// waits for the switch, then for the turn, then gets the TUI.
+		expect(late.closed).toEqual([]);
+		await waitFor(() => agent(h, AGENT)?.mode === 'tui', 'the TUI after the turn', 8000);
+		expect(late.waiting.at(-1)).toBeNull();
+		expect(h.pty.children).toHaveLength(2);
+		await reported(h, 2);
+		// Nothing queued resurfaces: the next native prompt goes alone.
+		await sender.send(AGENT, 'later');
+		await waitFor(() => streamPrompts(h).includes('later'), 'the later prompt');
+		expect(streamPrompts(h)).toEqual(['from native', 'later']);
+	});
+
+	it('rejects a native prompt a Stop overtakes during its switch, and never sends it later', async () => {
+		const h = harness({ row: 'started' });
+		openTab(h, AGENT);
+		await reported(h);
+		const sender = h.kind.promptSender(() => h.client);
+		const sending = sender.send(AGENT, 'never');
+		const stopping = h.kind.agents.stop(h.runtimeId, AGENT);
+		await expect(sending).rejects.toThrow(PROMPT_NOT_SENT_STOPPED);
+		await stopping;
+		await pause(50);
+		expect(agent(h, AGENT)?.status).toBe('stopped');
+		expect(streamStarts(h)).toEqual([]);
+		await sender.send(AGENT, 'after');
+		await waitFor(() => streamPrompts(h).includes('after'), 'the next prompt');
+		expect(streamPrompts(h)).toEqual(['after']);
+	});
+
+	it('starts nothing for a tab that opens while Stop runs; a reconnect afterwards resumes', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		const stopping = h.kind.createActions(actionHost(h)).closePane(paneId, h.connection.endpoint.id);
+		const tab = openTab(h, paneId);
+		await stopping;
+		await pause(100);
+		expect(tab.closed).toEqual([AGENT_STOPPED]);
+		expect(h.pty.children).toHaveLength(0);
+		expect(streamStarts(h)).toHaveLength(1);
+		expect(agent(h, paneId)?.status).toBe('stopped');
+		openTab(h, paneId);
+		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the TUI on reconnect');
+	});
+
+	it('leaves no process behind a Forget that a tab opening raced, before or after unload', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		const forgetting = h.kind.agents.forget(h.runtimeId, paneId);
+		const tab = openTab(h, paneId);
+		await forgetting;
+		await pause(100);
+		expect(agent(h, paneId)).toBeNull();
+		expect(tab.closed).toEqual([AGENT_FORGOTTEN]);
+		expect(h.pty.children).toHaveLength(0);
+		await h.kind.dispose();
+		expect(h.pty.children.every((child) => child.exited)).toBe(true);
+	});
+
+	it('keeps a released row from restarting until graduation gives it back, and confirms its process is gone', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		const sender = h.kind.promptSender(() => h.client);
+		await sender.send(paneId, 'hello');
+		await waitFor(() => agent(h, paneId)?.status === 'done', 'done');
+		const actions = h.kind.createActions(actionHost(h));
+		const releasing = actions.releaseForGraduation?.(paneId);
+		const during = openTab(h, paneId);
+		const released = await releasing;
+		expect(released).toMatchObject({ sessionId: agent(h, paneId)?.sessionId });
+		expect(agent(h, paneId)?.mode).toBe('stopped');
+		expect(during.closed).toEqual([AGENT_RELEASED]);
+		// While the target runtime starts, nothing here may start the session.
+		const after = openTab(h, paneId);
+		expect(after.closed).toEqual([AGENT_RELEASED]);
+		await expect(sender.send(paneId, 'no')).rejects.toThrow(AGENT_RELEASED);
+		await pause(100);
+		expect(h.pty.children).toHaveLength(0);
+		expect(streamStarts(h)).toHaveLength(1);
+		// Graduation failed: the row is the user's to resume again.
+		h.kind.agents.reclaim(h.runtimeId, paneId);
+		openTab(h, paneId);
+		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the TUI after the row came back');
+	});
+
+	it('starts nothing after unload, whatever a tab or a prompt asks', async () => {
+		const h = harness({ row: 'started' });
+		await h.kind.dispose();
+		const tab = openTab(h, AGENT);
+		expect(tab.closed).toEqual([PLUGIN_UNLOADING]);
+		await expect(h.kind.promptSender(() => h.client).send(AGENT, 'x')).rejects.toThrow(PLUGIN_UNLOADING);
+		await pause(50);
+		expect(h.pty.children).toHaveLength(0);
+		expect(streamStarts(h)).toEqual([]);
+	});
+});
+
 describe('shell tabs', () => {
 	it('opens a shell in the folder from the action, and runs the initial command first', async () => {
 		const h = harness();
@@ -576,6 +697,15 @@ describe('shell tabs', () => {
 		expect(h.pty.kills[0]).toEqual([h.pty.last.pid + 2, 'SIGHUP']);
 		expect(() => openTab(h, paneId).session).not.toThrow();
 		expect(h.kind.shells?.has(paneId)).toBe(false);
+	});
+
+	it('starts no shell once the plugin is unloading', async () => {
+		const h = harness();
+		await h.kind.dispose();
+		const paneId = h.kind.shells?.open(h.dir) ?? '';
+		const tab = openTab(h, paneId);
+		expect(tab.closed).toEqual([SHELLS_UNLOADING]);
+		expect(h.pty.children).toHaveLength(0);
 	});
 
 	it('says a restored tab’s shell is gone, and starts a new one after `exit` without the command', async () => {
