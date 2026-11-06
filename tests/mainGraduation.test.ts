@@ -10,7 +10,11 @@
  * agent table, and nothing else.
  */
 
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import type { ActionHost } from '../src/actions';
+import { ClaudeActions } from '../src/claude/actions';
+import { ClaudeAgents } from '../src/claude/agents';
 import HerdrPlugin from '../src/main';
 import type { GraduationRelease } from '../src/runtime/kind';
 import { newRuntime } from '../src/runtimes';
@@ -21,7 +25,11 @@ interface World {
 	targetId: string;
 }
 
-function world(options: { release: GraduationRelease | null | Error; ready: boolean; started: boolean }): World {
+function world(options: {
+	release: GraduationRelease | null | Error | ((paneId: string) => Promise<GraduationRelease | null>);
+	ready: boolean;
+	started: boolean;
+}): World {
 	const calls: string[] = [];
 	const target = newRuntime('herdr-core', 'local', []);
 	const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
@@ -30,8 +38,9 @@ function world(options: { release: GraduationRelease | null | Error; ready: bool
 	Object.defineProperty(plugin, 'endpoint', { value: { id: 'claude-runtime' } });
 	Object.defineProperty(plugin, 'actions', {
 		value: {
-			releaseForGraduation: () => {
+			releaseForGraduation: (paneId: string) => {
 				calls.push('release');
+				if (typeof options.release === 'function') return options.release(paneId);
 				return options.release instanceof Error ? Promise.reject(options.release) : Promise.resolve(options.release);
 			},
 			startAgentHere: () => {
@@ -87,5 +96,74 @@ describe('graduation in the plugin', () => {
 		const w = world({ release: new Error('the agent did not stop, so it was not moved'), ready: true, started: true });
 		await graduate(w);
 		expect(w.calls).toEqual(['release']);
+	});
+});
+
+/** A stream claude that ignores stdin EOF, SIGTERM and SIGKILL: stuck in the kernel, say. */
+class StuckChild extends EventEmitter {
+	readonly pid = 4242;
+	readonly signals: string[] = [];
+	readonly stdout = new EventEmitter();
+	readonly stderr = new EventEmitter();
+	readonly stdin = {
+		write: (): boolean => true,
+		end: (): void => undefined,
+		on: () => this.stdin,
+	};
+
+	kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
+		this.signals.push(signal);
+		return true;
+	}
+}
+
+describe('graduation of a process that will not die (the final D2 review)', () => {
+	it('throws, gives the row back stopped, and starts nothing on the target', async () => {
+		const runtimeId = 'claude-runtime';
+		const children: StuckChild[] = [];
+		const agents = new ClaudeAgents({
+			load: () => [{ id: 'cl-1', sessionId: RELEASE.sessionId, cwd: '/vault', name: 'a', started: true }],
+			save: () => undefined,
+			env: () => ({}),
+			exists: () => false,
+			notice: () => undefined,
+			newSessionId: () => RELEASE.sessionId,
+			newAgentId: () => 'cl-2',
+			spawn: () => {
+				const child = new StuckChild();
+				children.push(child);
+				return child;
+			},
+			// Every stop wait runs out at once.
+			timers: { setTimeout: (handler) => setTimeout(handler, 0), clearTimeout: (handle) => clearTimeout(handle as never) },
+		});
+		agents.configure(runtimeId, { binary: '/opt/fake/claude', permissionMode: 'manual' });
+		agents.resume(runtimeId, 'cl-1');
+		expect(children).toHaveLength(1);
+		const actions = new ClaudeActions({ runtime: () => ({ id: runtimeId }) } as unknown as ActionHost, agents);
+
+		let thrown: unknown = null;
+		const w = world({
+			release: (paneId) =>
+				actions.releaseForGraduation(paneId).catch((error: unknown) => {
+					thrown = error;
+					throw error;
+				}),
+			ready: true,
+			started: true,
+		});
+		await graduate(w);
+		expect(String(thrown)).toContain('the agent did not stop');
+		expect(children[0]?.signals).toEqual(['SIGTERM', 'SIGKILL']);
+		// The Notice says why; the target is never switched to or started on.
+		expect(w.calls).toEqual(['release']);
+		expect(agents.get(runtimeId, 'cl-1')?.mode).toBe('stream');
+
+		// The row was given back, stopped: once the old process is really gone, a
+		// person may resume it here, which a released row refuses.
+		children[0]?.emit('exit', null, 'SIGKILL');
+		expect(agents.get(runtimeId, 'cl-1')?.status).toBe('stopped');
+		expect(() => agents.resume(runtimeId, 'cl-1')).not.toThrow();
+		expect(children).toHaveLength(2);
 	});
 });

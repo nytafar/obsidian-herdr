@@ -21,6 +21,7 @@ import type { ActionHost } from '../src/actions';
 import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
 import {
 	AGENT_FORGOTTEN,
+	AGENT_STOPPING,
 	ALLOW_ONCE_NO_TERMINAL,
 	AGENT_RELEASED,
 	AGENT_STOPPED,
@@ -669,6 +670,28 @@ describe('switches and stops that race a tab (the D2 review)', () => {
 		await waitFor(() => agent(h, paneId)?.mode === 'tui', 'the TUI after the row came back');
 	});
 
+	it('waits on unload for the TUI of a runtime removed just before', async () => {
+		const h = harness({ row: 'started' });
+		openTab(h, AGENT);
+		await reported(h);
+		// The runtime goes from the settings, then the plugin unloads at once:
+		// the row is gone, its TUI is still stopping, and unload waits for it.
+		h.kind.agents.prune(new Set());
+		expect(h.pty.last.exited).toBe(false);
+		await h.kind.dispose();
+		expect(h.pty.last.exited).toBe(true);
+	});
+
+	it('says the agent is stopping to a Resume that comes while Stop runs', async () => {
+		const h = harness();
+		const paneId = await streamAgent(h);
+		const stopping = h.kind.agents.stop(h.runtimeId, paneId);
+		expect(() => h.kind.agents.resume(h.runtimeId, paneId)).toThrow(AGENT_STOPPING);
+		await stopping;
+		expect(agent(h, paneId)?.status).toBe('stopped');
+		expect(streamStarts(h)).toHaveLength(1);
+	});
+
 	it('starts nothing after unload, whatever a tab or a prompt asks', async () => {
 		const h = harness({ row: 'started' });
 		await h.kind.dispose();
@@ -787,6 +810,31 @@ describe('a TUI that never reports its status', () => {
 		await pause(50);
 		expect(h.pty.last.exited).toBe(false);
 		expect(streamStarts(h)).toEqual([]);
+	});
+
+	it('rejects the waiting prompt when Stop comes while the user is asked, and never sends it after Resume', async () => {
+		let answer: (yes: boolean) => void = () => undefined;
+		const h = harness({
+			row: 'started',
+			silentTui: true,
+			host: { confirm: () => new Promise<boolean>((done) => (answer = done)) },
+		});
+		await typedTui(h);
+		const sending = h.kind.promptSender(() => h.client).send(AGENT, 'stale');
+		let settled = 'pending';
+		sending.then(
+			() => (settled = 'resolved'),
+			(error: Error) => (settled = error.message),
+		);
+		await pause(20);
+		await h.kind.agents.stop(h.runtimeId, AGENT);
+		answer(true);
+		await pause(50);
+		expect(settled).toBe(PROMPT_NOT_SENT_STOPPED);
+		h.kind.agents.resume(h.runtimeId, AGENT);
+		await waitFor(() => streamStarts(h).length === 1, 'the resumed process');
+		await pause(100);
+		expect(streamPrompts(h)).toEqual([]);
 	});
 
 	it('refuses a native prompt where nobody can be asked', async () => {
