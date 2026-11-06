@@ -8,7 +8,9 @@
  * banner at start, `system:init` only once a prompt arrives, `can_use_tool`
  * control requests for the prompts below, `control_cancel_request` and the
  * interrupt's own response, `conversation_reset` and a fresh init on
- * `/clear`, and `result` lines with `is_error` the way the CLI sends them.
+ * `/clear`, `result` lines with `is_error` the way the CLI sends them, and
+ * the session settings' answers (`set_model`, `apply_flag_settings`,
+ * `set_permission_mode`, #162).
  *
  * A prompt picks the behaviour by keyword:
  *   WRITE  a Write permission (suggestion: setMode acceptEdits, session)
@@ -64,7 +66,13 @@ const flag = (name) => {
 	return index >= 0 ? argv[index + 1] : undefined;
 };
 let session = flag('--session-id') ?? flag('--resume') ?? randomUUID();
-const permissionMode = flag('--permission-mode') ?? 'default';
+/** The session's mode and model, which `set_permission_mode` and `set_model` change (#162). */
+let permissionMode = flag('--permission-mode') ?? 'default';
+let model = 'claude-haiku-5-5';
+/** What `set_permission_mode` takes on 2.1.318, as its refusal lists them. */
+const MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'];
+/** The aliases `set_model` takes here, to the id it answers with. */
+const MODELS = { opus: 'claude-opus-5-5', sonnet: 'claude-sonnet-5-5', haiku: 'claude-haiku-5-5' };
 
 const configDir =
 	process.env.CLAUDE_CONFIG_DIR || (process.env.FAKE_CLAUDE_HOME ? `${process.env.FAKE_CLAUDE_HOME}/.claude` : '');
@@ -112,7 +120,7 @@ function result(fields = {}) {
 		result: 'ok',
 		num_turns: 1,
 		credential_expires_at: '2026-12-02T18:07:48.095Z',
-		modelUsage: { 'claude-haiku-5-5': { inputTokens: 3, contextWindow: 1000000 } },
+		modelUsage: { [model]: { inputTokens: 3, contextWindow: 1000000 } },
 		...answered,
 		...fields,
 	};
@@ -132,7 +140,7 @@ function finishTurn() {
 }
 
 function init() {
-	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, model: 'claude-haiku-5-5', slash_commands: ['clear', 'compact'] });
+	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, model, slash_commands: ['clear', 'compact'] });
 }
 
 function ask(tool, input, extra = {}) {
@@ -336,6 +344,42 @@ function control(message) {
 		}
 		send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { still_queued: [] } } });
 		running?.();
+		return;
+	}
+	// The session settings (#162), with the answers and refusals measured on
+	// 2.1.318: `set_model` names the id, an unknown one is `not_found`;
+	// `apply_flag_settings` answers bare, whatever the level;
+	// `set_permission_mode` names the mode and says so in `system:status`,
+	// an unknown one is `invalid_mode`.
+	const ok = (response) =>
+		send({
+			type: 'control_response',
+			response: { subtype: 'success', request_id: message.request_id, ...(response ? { response } : {}) },
+		});
+	const refuse = (error, code, extra = {}) =>
+		send({ type: 'control_response', response: { subtype: 'error', request_id: message.request_id, error, error_code: code, ...extra } });
+	if (request.subtype === 'set_model') {
+		const id = MODELS[request.model];
+		if (!id) {
+			refuse(`Model '${request.model}' not found`, 'not_found', { model });
+			return;
+		}
+		model = id;
+		ok({ model });
+		return;
+	}
+	if (request.subtype === 'apply_flag_settings') {
+		ok();
+		return;
+	}
+	if (request.subtype === 'set_permission_mode') {
+		if (!MODES.includes(request.mode)) {
+			refuse(`Cannot set permission mode: must be one of ${MODES.join(', ')}`, 'invalid_mode');
+			return;
+		}
+		permissionMode = request.mode;
+		ok({ mode: permissionMode });
+		send({ type: 'system', subtype: 'status', status: null, permissionMode });
 		return;
 	}
 	send({

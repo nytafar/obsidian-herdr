@@ -157,6 +157,34 @@ export function interruptRequest(requestId: string): object {
 	return controlRequest(requestId, { subtype: 'interrupt' });
 }
 
+/**
+ * A session setting the plugin changes (#162): the model by an alias Claude
+ * takes, the reasoning effort, or the permission mode. Session only: none of
+ * them touches Claude's settings files (measured on 2.1.318,
+ * `docs/architecture.md`, "Model, effort, permission mode and context").
+ */
+export type SessionControl =
+	| { setting: 'model'; model: string }
+	| { setting: 'effort'; effort: string }
+	| { setting: 'mode'; mode: string };
+
+/**
+ * The control request for one {@link SessionControl}: `set_model`,
+ * `apply_flag_settings {effortLevel}` or `set_permission_mode`. These three
+ * and `interrupt` are every request the plugin makes; never `initialize` or
+ * `get_settings`, whose answers carry the account email.
+ */
+export function sessionControlRequest(requestId: string, control: SessionControl): object {
+	switch (control.setting) {
+		case 'model':
+			return controlRequest(requestId, { subtype: 'set_model', model: control.model });
+		case 'effort':
+			return controlRequest(requestId, { subtype: 'apply_flag_settings', settings: { effortLevel: control.effort } });
+		case 'mode':
+			return controlRequest(requestId, { subtype: 'set_permission_mode', mode: control.mode });
+	}
+}
+
 /** The success answer to one of Claude's control requests. */
 export function controlResponse(requestId: string, response: Record<string, unknown>): object {
 	return { type: 'control_response', response: { subtype: 'success', request_id: requestId, response } };
@@ -245,9 +273,20 @@ export type StreamEvent =
 	/**
 	 * The answer to one of the plugin's own requests, with the model or the
 	 * permission mode it says is now set (`set_model` answers `{model}`,
-	 * `set_permission_mode` `{mode}`); '' where it says neither.
+	 * `set_permission_mode` `{mode}`); '' where it says neither. A refusal
+	 * carries Claude's words and code (#162, measured on 2.1.318:
+	 * `invalid_mode` "Cannot set permission mode: must be one of …",
+	 * `not_found` "Model 'bogus' not found").
 	 */
-	| { type: 'response'; requestId: string; ok: boolean; model: string; mode: string }
+	| {
+			type: 'response';
+			requestId: string;
+			ok: boolean;
+			model: string;
+			mode: string;
+			error?: string;
+			errorCode?: string;
+	  }
 	/** Anything else: assistant and user messages, hooks, partials, rate limits. */
 	| { type: 'other' };
 
@@ -332,6 +371,17 @@ export function parseStreamLine(line: string): StreamEvent | null {
 			if (!requestId) return { type: 'other' };
 			const ok = response?.subtype === 'success';
 			const payload = ok ? record(response?.response) : null;
+			if (!ok) {
+				return {
+					type: 'response',
+					requestId,
+					ok,
+					model: '',
+					mode: '',
+					error: text(response?.error),
+					errorCode: text(response?.error_code),
+				};
+			}
 			return { type: 'response', requestId, ok, model: text(payload?.model), mode: text(payload?.mode) };
 		}
 		default:

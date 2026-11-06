@@ -15,6 +15,7 @@ import {
 	parseStreamLine,
 	pendingRequestOf,
 	permissionResponse,
+	sessionControlRequest,
 	userMessage,
 	type ToolPermissionRequest,
 } from '../src/claude/protocol';
@@ -188,6 +189,26 @@ describe('parseStreamLine', () => {
 		expect(response('success', { mode: 'plan' })).toMatchObject({ model: '', mode: 'plan' });
 		expect(response('success')).toMatchObject({ ok: true, model: '', mode: '' });
 		expect(response('error', { mode: 'plan' })).toMatchObject({ ok: false, mode: '' });
+	});
+
+	it('reads a refused session setting with Claude’s words and code (#162, measured on 2.1.318)', () => {
+		const refused = parseStreamLine(
+			'{"type":"control_response","response":{"subtype":"error","request_id":"c1","error":"Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan","error_code":"invalid_mode"}}',
+		);
+		expect(refused).toEqual({
+			type: 'response',
+			requestId: 'c1',
+			ok: false,
+			model: '',
+			mode: '',
+			error: 'Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan',
+			errorCode: 'invalid_mode',
+		});
+		// An unknown model's refusal names the current one; it is not taken as set.
+		const model = parseStreamLine(
+			`{"type":"control_response","response":{"subtype":"error","request_id":"c3","error":"Model 'nosuchmodel' not found","error_code":"not_found","model":"claude-opus-5-5"}}`,
+		);
+		expect(model).toMatchObject({ ok: false, model: '', errorCode: 'not_found' });
 	});
 
 	it('keys errors on is_error, not on subtype', () => {
@@ -376,5 +397,25 @@ describe('the response JSON of each answer', () => {
 			message: 'The user rejected the plan: also add a second line',
 		});
 		expect(respond(plan, { type: 'reject-plan', feedback: '' }).response.response.message).toBe('The user rejected the plan.');
+	});
+});
+
+describe('the session setting requests (#162)', () => {
+	it('builds set_model, apply_flag_settings and set_permission_mode, and nothing else', () => {
+		expect(sessionControlRequest('c1', { setting: 'model', model: 'sonnet' })).toEqual({
+			type: 'control_request',
+			request_id: 'c1',
+			request: { subtype: 'set_model', model: 'sonnet' },
+		});
+		expect(sessionControlRequest('c2', { setting: 'effort', effort: 'low' })).toEqual({
+			type: 'control_request',
+			request_id: 'c2',
+			request: { subtype: 'apply_flag_settings', settings: { effortLevel: 'low' } },
+		});
+		expect(sessionControlRequest('c3', { setting: 'mode', mode: 'plan' })).toEqual({
+			type: 'control_request',
+			request_id: 'c3',
+			request: { subtype: 'set_permission_mode', mode: 'plan' },
+		});
 	});
 });

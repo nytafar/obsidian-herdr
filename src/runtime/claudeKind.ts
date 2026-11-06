@@ -54,6 +54,7 @@ import { ClaudeClient, ClaudeScope, NoTabLabels } from '../claude/scope';
 import { localSettingsTarget, nodeProjectRootEnv, type LocalSettingsTarget } from '../claude/projectRoot';
 import { claudeSessionWatcher } from '../claude/sessionWatcher';
 import { NO_CONNECTION_MESSAGE } from '../native/promptSender';
+import type { SettingScope } from '../native/sessionSettings';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { CLAUDE_PERMISSION_MODE_LABELS, normalizePermissionMode } from '../runtimes';
@@ -361,6 +362,34 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 				await connected.request('agent.respond', { target: paneId, request: requestId, answer });
 			},
 		}),
+		// The session bar's pickers (#162): control requests over the agent's
+		// own process, session only, mid-turn too (they apply from the next
+		// turn). The default is never saved from here: how a `/model <alias>`
+		// user message behaves over stream-json is not measured.
+		sessionSettings: (client) => {
+			const request = async (method: string, params: Record<string, string>): Promise<void> => {
+				const connected = client();
+				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+				await connected.request(method, params);
+			};
+			const sessionOnly = (scope: SettingScope): void => {
+				if (scope !== 'session') throw new Error('Claude run by Obsidian changes this session only');
+			};
+			return {
+				scopes: ['session'],
+				settings: ['model', 'effort', 'mode'],
+				midTurn: true,
+				async setModel(paneId, model, scope) {
+					sessionOnly(scope);
+					await request('agent.set_model', { target: paneId, model });
+				},
+				async setEffort(paneId, effort, scope) {
+					sessionOnly(scope);
+					await request('agent.set_effort', { target: paneId, effort });
+				},
+				setMode: (paneId, mode) => request('agent.set_permission_mode', { target: paneId, mode }),
+			};
+		},
 		createTabLabels: () => new NoTabLabels(),
 		statusLines: (connection) => (connection ? claudeStatusLines(connection, terminalUnavailable) : null),
 	};

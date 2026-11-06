@@ -479,6 +479,136 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.notices.filter((notice) => !notice.startsWith('Gjetr: started'))).toEqual([]);
 	});
 
+	describe('session settings (#162)', () => {
+		function settings(h: Harness) {
+			const sender = h.kind.sessionSettings?.(() => h.client);
+			if (!sender) throw new Error('no session settings');
+			return sender;
+		}
+
+		function info(h: Harness, paneId: string) {
+			return h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.sessionInfo;
+		}
+
+		/** The control requests the fake read, by subtype. */
+		function controls(h: Harness): Record<string, unknown>[] {
+			return stdin(h.log)
+				.filter((message) => message.type === 'control_request')
+				.map((message) => message.request as Record<string, unknown>);
+		}
+
+		it('says what it can: every setting, this session only, mid-turn too', () => {
+			const sender = settings(harness());
+			expect(sender.scopes).toEqual(['session']);
+			expect(sender.settings).toEqual(['model', 'effort', 'mode']);
+			expect(sender.midTurn).toBe(true);
+		});
+
+		it('switches the model with set_model, and the answer updates the session info', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const told: string[] = [];
+			h.kind.native?.watcher(h.connection)?.onSessionInfo?.((pane) => told.push(pane));
+			await settings(h).setModel(paneId, 'sonnet', 'session');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_model', model: 'sonnet' });
+			expect(info(h, paneId)?.model).toEqual({ id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' });
+			// The window was the old model's.
+			expect(info(h, paneId)?.contextWindow).toBeUndefined();
+			expect(told).toContain(paneId);
+		});
+
+		it('sets the effort with apply_flag_settings, and records it, since the answer is bare', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await settings(h).setEffort(paneId, 'high', 'session');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } });
+			expect(info(h, paneId)?.effort).toBe('high');
+			// Claude says yes to a level it does not know; the plugin never asks it.
+			await expect(settings(h).setEffort(paneId, 'bogus', 'session')).rejects.toThrow('no effort level "bogus"');
+			expect(controls(h)).toHaveLength(1);
+		});
+
+		it('sets the permission mode with set_permission_mode, manual as Claude’s default', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await settings(h).setMode(paneId, 'plan');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_permission_mode', mode: 'plan' });
+			expect(info(h, paneId)?.permissionMode).toBe('plan');
+			await settings(h).setMode(paneId, 'manual');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_permission_mode', mode: 'default' });
+			expect(info(h, paneId)?.permissionMode).toBe('default');
+		});
+
+		it('rejects with Claude’s own words: invalid_mode, and an unknown model', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await expect(settings(h).setMode(paneId, 'bogus')).rejects.toThrow(
+				'Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan',
+			);
+			await expect(settings(h).setModel(paneId, 'nosuchmodel', 'session')).rejects.toThrow("Model 'nosuchmodel' not found");
+			// Nothing changed on a refusal.
+			expect(info(h, paneId)?.permissionMode).toBeUndefined();
+			expect(info(h, paneId)?.model).toBeUndefined();
+		});
+
+		it('changes a setting mid-turn, and the running turn goes on', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'SLOW');
+			await new Promise((done) => setTimeout(done, 60));
+			expect(status(h, paneId)).toBe('working');
+			await settings(h).setModel(paneId, 'opus', 'session');
+			expect(status(h, paneId)).toBe('working');
+			expect(info(h, paneId)?.model?.id).toBe('claude-opus-5-5');
+			await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+		});
+
+		it('never saves the default, refuses while stopping, and keeps an Allow once row’s mode', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await expect(settings(h).setModel(paneId, 'sonnet', 'default')).rejects.toThrow('this session only');
+			const pinned = h.kind.agents.start(h.runtimeId, h.dir, 'Install herdr-core', {
+				permissionMode: 'manual',
+				allowOnceOnly: true,
+			});
+			await expect(settings(h).setMode(pinned.id, 'auto')).rejects.toThrow('Allow once');
+			const stopping = h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await expect(settings(h).setEffort(paneId, 'low', 'session')).rejects.toThrow('the agent is stopping');
+			await stopping;
+			expect(controls(h)).toEqual([]);
+		});
+
+		it('resumes a stopped agent for a setting, as a prompt does', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await settings(h).setMode(paneId, 'acceptEdits');
+			expect(starts(h.log)).toHaveLength(2);
+			expect(starts(h.log)[1]).toContain('--resume');
+			expect(info(h, paneId)?.permissionMode).toBe('acceptEdits');
+		});
+
+		it('never asks Claude for its settings or initialization, whose answers carry the account email', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			const sender = settings(h);
+			await sender.setModel(paneId, 'haiku', 'session');
+			await sender.setEffort(paneId, 'low', 'session');
+			await sender.setMode(paneId, 'auto');
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const subtypes = controls(h).map((request) => request.subtype);
+			expect(subtypes).toEqual(['set_model', 'apply_flag_settings', 'set_permission_mode']);
+			expect(subtypes).not.toContain('get_settings');
+			expect(subtypes).not.toContain('initialize');
+		});
+	});
+
 	it('refuses an answer while the agent is stopping, and shows the request as stopping', async () => {
 		const h = harness();
 		const paneId = await started(h);
