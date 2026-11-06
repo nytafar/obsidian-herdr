@@ -1760,7 +1760,18 @@ prompt; these are the facts a build may rely on.
   moves go one key per call, then reads every 100 ms until the screen shows
   the intended state (3 s, never repeated); a commit key goes alone after a
   read that showed it; the final key is followed by reads for 1.5 s and the
-  transcript's result (`receiptAgrees`). No digit is pressed. Run live
+  transcript's result (`receiptAgrees`). No digit is pressed, and no lone
+  digit is typed. A plan is matched by its slug and by the plan lines the
+  card's read showed, a Write or Edit by its file and the lines between the
+  dotted rules (`withShown` completes the card's request from
+  `ScreenAnswerer.inspect`). A key that has not shown keeps the pane locked
+  and the transcript watched until the screen has been unchanged for 4.5 s
+  since the key and its last change (hc's 3 s hold plus the time a key takes
+  to show), at most 15 s, and the outcome says whether it may still land; a
+  request gone after a move or typed words is judged by the transcript too.
+  Any commit key, a toggle or a tab's answer included, ends cancelling. These
+  bounds are design (ADR-0009 §4), not measured: hc's hold was not provoked
+  live. Run live
   2026-11-06 through the built code on herdr 0.9.5 and hc 0.1.18
   (`oh-test-ans*` in `/tmp`, Claude Code 2.1.318, haiku), each answered
   and judged against the transcript in 0.3-1.7 s: a single choice (`down`
