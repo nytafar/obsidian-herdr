@@ -339,6 +339,62 @@ export interface ConversationState {
 	 * their content.
 	 */
 	readonly raw: Record<string, number>;
+	/**
+	 * How much of the session is held (#152): {@link turns} is then its newest
+	 * turns only, and the window names the earlier ones. Absent, every turn is
+	 * held. The session model sets it; a parser only folds through it.
+	 */
+	window?: TurnWindow;
+}
+
+/**
+ * A page of a session (#152): the newest this many turns, and at most this
+ * many bytes of transcript lines between them, are held. A session model
+ * holds one page, and one more on each "Load earlier turns".
+ */
+export interface TurnPage {
+	turns: number;
+	bytes: number;
+}
+
+/**
+ * The page a session is held in: 100 turns and 16 MiB of transcript. A turn
+ * on a real session is tens of kilobytes of transcript on average and the
+ * largest are megabytes, so either bound can be the one that holds; what a
+ * page costs is measured in the finding `native-view-performance`.
+ */
+export const DEFAULT_PAGE: TurnPage = { turns: 100, bytes: 16 * 1024 * 1024 };
+
+/**
+ * Which turns of a session are held and which are not (#152), folded in place
+ * with the turns. Earlier turns are dropped as the window fills, oldest first
+ * and never the newest, at the line that fills it, so where a tail cuts a
+ * file into batches never changes what is held (live equals cold).
+ *
+ * The turns that are not held are kept by id, in order: a rewind can reach
+ * back to one (#131), and then it drops everything after it, held or not.
+ */
+export interface TurnWindow {
+	/** The most turns held. */
+	turns: number;
+	/** The most transcript bytes held, counted over the lines read while each held turn was the newest. */
+	bytes: number;
+	/** The ids of the turns not held, oldest first. */
+	earlier: string[];
+	/** Transcript bytes counted to each held turn, by id. */
+	weights: Map<string, number>;
+	/** The sum of {@link weights}. */
+	held: number;
+}
+
+/** An empty window holding `pages` pages of `page` each. */
+export function turnWindow(pages = 1, page: TurnPage = DEFAULT_PAGE): TurnWindow {
+	return { turns: page.turns * pages, bytes: page.bytes * pages, earlier: [], weights: new Map(), held: 0 };
+}
+
+/** How many turns of the session `state` does not hold (#152). */
+export function earlierTurnCount(state: ConversationState): number {
+	return state.window?.earlier.length ?? 0;
 }
 
 /** What folding a batch did. */
@@ -365,6 +421,10 @@ export interface ReduceResult<S extends ConversationState = ConversationState> {
  * not the session behind it. What must not be changed — the session's state
  * while a line not yet finished is previewed over it ({@link previewTail}) —
  * is {@link ConversationParser.fork}ed first, and the fork is folded instead.
+ *
+ * A parser folds through a {@link TurnDraft} built on the state's turns and
+ * its {@link ConversationState.window}, and tells it each line's length
+ * ({@link TurnDraft.weigh}) so the window can count bytes (#152).
  */
 export interface ConversationParser<S extends ConversationState = ConversationState> {
 	/** The state a session starts from, and what a rotation goes back to. */
@@ -398,7 +458,19 @@ export interface ConversationParser<S extends ConversationState = ConversationSt
 export function forkConversation<S extends ConversationState>(state: S): S {
 	const turns = [...state.turns];
 	BORROWED.set(turns, new WeakSet(state.turns));
-	return { ...state, turns, raw: { ...state.raw } };
+	const fork: S = { ...state, turns, raw: { ...state.raw } };
+	// A preview adds to what is shown and never drops a turn (#152): the fork
+	// holds everything, and knows the earlier turns only for a rewind to name.
+	if (state.window) {
+		fork.window = {
+			turns: Infinity,
+			bytes: Infinity,
+			earlier: [...state.window.earlier],
+			weights: new Map(),
+			held: 0,
+		};
+	}
+	return fork;
 }
 
 /**
@@ -563,8 +635,14 @@ export class TurnDraft {
 	/** The turns still shared with the state this fork came from; null for a state's own turns. */
 	private readonly borrowed: WeakSet<Turn> | null;
 
-	/** `turns` is the state's own list, which this changes in place. */
-	constructor(private readonly turns: Turn[]) {
+	/**
+	 * `turns` is the state's own list, which this changes in place, and
+	 * `window` the state's window, if it has one (#152), which it keeps.
+	 */
+	constructor(
+		private readonly turns: Turn[],
+		private readonly window: TurnWindow | null = null,
+	) {
 		this.borrowed = BORROWED.get(turns) ?? null;
 	}
 
@@ -573,25 +651,57 @@ export class TurnDraft {
 		return this.turns[this.turns.length - 1]?.id ?? '';
 	}
 
-	/** Drops one turn, if it is still here (#131). */
+	/**
+	 * Counts `bytes` of transcript to the newest turn (#152), and drops the
+	 * earliest turns held while the window is over. A parser calls it once per
+	 * line, with the line's length, after the line is folded; a parser that
+	 * never calls it is held by its turn count alone.
+	 */
+	weigh(bytes: number): void {
+		const window = this.window;
+		const id = this.lastId();
+		if (!window || !id || bytes <= 0) return;
+		window.weights.set(id, (window.weights.get(id) ?? 0) + bytes);
+		window.held += bytes;
+		this.trim();
+	}
+
+	/** Drops one turn, if it is still here (#131), held or not (#152). */
 	remove(turnId: string): void {
 		const index = this.indexOf(turnId);
-		if (index === -1) return;
+		if (index === -1) {
+			const earlier = this.window?.earlier;
+			const at = earlier ? earlier.lastIndexOf(turnId) : -1;
+			if (earlier && at !== -1) earlier.splice(at, 1);
+			return;
+		}
 		this.noteFound();
 		this.turns.splice(index, 1);
 		this.left.add(turnId);
+		this.unweigh(turnId);
 	}
 
 	/**
 	 * Drops every turn after `turnId`, or every turn for '' (#131). A turn
-	 * that is no longer here drops nothing: what it named is already gone.
+	 * that is no longer here drops nothing: what it named is already gone. A
+	 * turn the window no longer holds (#152) drops every turn held and the
+	 * earlier ones after it.
 	 */
 	dropAfter(turnId: string): void {
-		const index = turnId ? this.indexOf(turnId) : -1;
-		if (turnId && index === -1) return;
+		let index = turnId ? this.indexOf(turnId) : -1;
+		const earlier = this.window?.earlier;
+		if (turnId && index === -1) {
+			const at = earlier ? earlier.lastIndexOf(turnId) : -1;
+			if (!earlier || at === -1) return;
+			earlier.splice(at + 1);
+		} else if (!turnId && earlier) earlier.length = 0;
 		if (index === this.turns.length - 1) return;
+		index = Math.max(index, -1);
 		this.noteFound();
-		for (const turn of this.turns.splice(index + 1)) this.left.add(turn.id);
+		for (const turn of this.turns.splice(index + 1)) {
+			this.left.add(turn.id);
+			this.unweigh(turn.id);
+		}
 	}
 
 	/** The turn open for new content, or null before the first prompt. */
@@ -612,6 +722,7 @@ export class TurnDraft {
 		this.turns.push(turn);
 		this.opened.add(turn);
 		this.touch(id);
+		this.trim();
 		return turn;
 	}
 
@@ -657,9 +768,12 @@ export class TurnDraft {
 		return null;
 	}
 
-	/** How many turns the draft holds, for naming a turn whose record had no id. */
+	/**
+	 * How many turns the session has, held or not (#152), for naming a turn
+	 * whose record had no id: the same name however much is held.
+	 */
 	get length(): number {
-		return this.turns.length;
+		return this.turns.length + (this.window?.earlier.length ?? 0);
 	}
 
 	/**
@@ -688,6 +802,32 @@ export class TurnDraft {
 			? [...new Set(this.found ?? [])].filter((id) => this.left.has(id) && !present.has(id))
 			: [];
 		return { turns: this.turns, changedTurnIds, removedTurnIds };
+	}
+
+	/**
+	 * Drops the earliest turns held while the window holds too many or too
+	 * many bytes (#152), never the newest. A dropped turn is reported removed,
+	 * like a rewind's, unless this batch opened it: nobody drew that one.
+	 */
+	private trim(): void {
+		const window = this.window;
+		if (!window) return;
+		while (this.turns.length > 1 && (this.turns.length > window.turns || window.held > window.bytes)) {
+			this.noteFound();
+			const turn = this.turns.shift() as Turn;
+			this.left.add(turn.id);
+			this.unweigh(turn.id);
+			window.earlier.push(turn.id);
+		}
+	}
+
+	/** Takes a turn that left the held ones out of the window's count. */
+	private unweigh(id: string): void {
+		const window = this.window;
+		const weight = window?.weights.get(id);
+		if (!window || weight === undefined) return;
+		window.weights.delete(id);
+		window.held -= weight;
 	}
 
 	/** Where turn `id` is, the newest first, or -1. */

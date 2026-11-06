@@ -24,7 +24,7 @@ import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
 import { subagentLabel, TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
 import { TodoChip } from './todoList';
-import type { ToolEntry, Turn } from './conversation';
+import { earlierTurnCount, type ToolEntry, type Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
@@ -50,6 +50,7 @@ import { WaitingCardView } from './waitingCardView';
 import { SessionLines } from './sessionLines';
 import { registerViewLinks } from './viewLinks';
 import { ConversationFindModal, highlightMatch, locateMatch, type FindHit } from './conversationFind';
+import { EarlierTurnsBar } from './earlierTurns';
 
 /** What {@link NativePaneSurface} needs from the view around it. */
 export interface NativePaneSurfaceOptions {
@@ -184,6 +185,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private promptBox: PromptBox | null = null;
 	/** The session bar under the prompt box (#161); null while detached. */
 	private sessionBar: SessionBar | null = null;
+	/** What the model does not hold, above the first turn (#152); null while detached. */
+	private earlierBar: EarlierTurnsBar | null = null;
 	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
 	/**
@@ -276,6 +279,12 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		});
 		this.rootEl = root;
 		this.component.load();
+		// First in the sizer, before any turn is drawn, and never cleared with them.
+		this.earlierBar = new EarlierTurnsBar(sizerEl, {
+			component: this.component,
+			onLoad: () => this.model?.loadEarlier?.(),
+			cls: 'herdr-native-earlier-view',
+		});
 		// The setting is the vault's, and it may move under an open view (#117).
 		this.applyReadableWidth();
 		this.component.register(
@@ -325,6 +334,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.turns = null;
 		this.lines = null;
 		this.todo = null;
+		this.earlierBar = null;
 	}
 
 	/**
@@ -474,10 +484,13 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	findInConversation(): void {
 		if (!this.rootEl) return;
+		const state = this.model?.state;
 		new ConversationFindModal(
 			this.options.app,
 			() => this.model?.state.turns ?? [],
 			(hit, query) => this.revealMatch(hit, query),
+			// What it cannot search, and where its turns count from (#152).
+			state ? earlierTurnCount(state) : 0,
 		).open();
 	}
 
@@ -539,7 +552,16 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	/** Draws a change: a reset redraws everything, else only the turns named. */
 	private applyChange(change: SessionChange): void {
 		if (!this.rootEl) return;
-		if (change.reset) {
+		if (change.reset && change.earlier) {
+			// The same session with earlier turns loaded (#152): drawn above the
+			// turn the reader had first, which stays where they saw it.
+			const anchorId = this.turns?.firstTurnId() ?? null;
+			const anchorEl = anchorId ? this.turns?.turnEl(anchorId) : undefined;
+			const offset = anchorEl ? (this.follower?.offsetOf(anchorEl) ?? 0) : 0;
+			this.renderAll();
+			const nowEl = anchorId ? this.turns?.turnEl(anchorId) : undefined;
+			if (nowEl) this.follower?.keepAt(nowEl, offset);
+		} else if (change.reset) {
 			// Another session (`/clear`, `--resume`): its latest turn is what to
 			// show, whatever the reader was reading in the one that is gone.
 			this.follower?.follow();
@@ -574,6 +596,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.activeTurnId = latest ?? null;
 			this.todo?.update(todo?.items ?? null);
 			this.updateEmpty();
+			this.updateEarlier();
 			// Written while the reader is away from the end: the jump button
 			// says so (#149). A status change alone writes nothing.
 			if (change.changedTurnIds.length > 0) this.follower?.arrived();
@@ -596,8 +619,15 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		this.activeTurnId = turns.at(-1)?.id ?? null;
 		this.todo?.update(this.latestTodo?.items ?? null);
 		this.updateEmpty();
+		this.updateEarlier();
 		this.updateStatus();
 		this.follower?.settle();
+	}
+
+	/** How many earlier turns the model does not hold, and whether they are loading (#152). */
+	private updateEarlier(): void {
+		const model = this.model;
+		this.earlierBar?.update(model ? earlierTurnCount(model.state) : 0, model?.loadingEarlier ?? false);
 	}
 
 	/**

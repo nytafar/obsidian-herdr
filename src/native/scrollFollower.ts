@@ -193,6 +193,21 @@ export class ScrollFollower {
 		el.scrollIntoView({ block });
 	}
 
+	/** How far below the top of the view `el` sits now, for {@link keepAt} (#152). */
+	offsetOf(el: HTMLElement): number {
+		return el.getBoundingClientRect().top - this.scrollEl.getBoundingClientRect().top;
+	}
+
+	/**
+	 * Scrolls so `el` sits `offset` below the top of the view again, where the
+	 * reader last saw what it shows, unless the view follows the end (#152):
+	 * earlier turns drawn above it must not move what they were reading.
+	 */
+	keepAt(el: HTMLElement, offset: number): void {
+		if (this.disposed || this.following) return;
+		this.scrollEl.scrollTop += this.offsetOf(el) - offset;
+	}
+
 	/**
 	 * The next or the previous turn, for the commands (#145). Measured now, on
 	 * the reader's command, never on a scroll: the turns' tops against the

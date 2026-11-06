@@ -504,9 +504,15 @@ export class TurnRenderer {
 			for (const item of drawn.items.values()) item.component.unload();
 			drawn.promptComponent?.unload();
 			drawn.replyActions?.component.unload();
+			drawn.el.remove();
 		}
 		this.turns.clear();
-		this.sizerEl.empty();
+	}
+
+	/** The id of the earliest turn drawn, or null when none is (#152). */
+	firstTurnId(): string | null {
+		for (const id of this.turns.keys()) return id;
+		return null;
 	}
 
 	/**

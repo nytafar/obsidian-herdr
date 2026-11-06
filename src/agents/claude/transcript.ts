@@ -73,6 +73,7 @@ import {
 	type ToolStatus,
 	type Turn,
 	type TurnEntry,
+	type TurnWindow,
 } from '../../native/conversation';
 import { emptyResume, Resumes, stampReply, type ResumeState } from './resume';
 import { CONTEXT_NAME, emptyReading, SessionReader, type SessionReading } from './sessionInfo';
@@ -109,6 +110,8 @@ export interface TranscriptState {
 	 * attachments, and the view has no use for their content.
 	 */
 	raw: Record<string, number>;
+	/** Which turns are held, when the session model holds only some (#152). */
+	window?: TurnWindow;
 	/**
 	 * Contents of queue enqueues not yet spent, oldest first: by a `user`
 	 * line or a steer of the same words, by a `remove` or `popAll` naming
@@ -669,7 +672,7 @@ class Branch {
  * {@link forkTranscript}`(state)`.
  */
 export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
-	const draft = new Draft(state.turns);
+	const draft = new Draft(state.turns, state.window ?? null);
 	const raw = state.raw;
 	const pendingQueue = state.pendingQueue;
 	let dequeued = state.dequeued;
@@ -750,9 +753,14 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 		return turn;
 	};
 
+	// Each line counts to the turn that is newest once it is folded (#152),
+	// weighed as the next one starts, so no `continue` below can skip it.
+	let weight = 0;
 	for (const line of lines) {
 		// The line before this one has landed; where is what a rewind reads.
 		branch.settle(draft);
+		draft.weigh(weight);
+		weight = line.length;
 		if (!line.trim()) continue;
 		let parsed: unknown;
 		try {
@@ -1091,6 +1099,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	}
 
 	branch.settle(draft);
+	draft.weigh(weight);
 	const { changedTurnIds, removedTurnIds } = draft.finish();
 	const { info, reading } = reader.finish();
 	state.dequeued = dequeued;
