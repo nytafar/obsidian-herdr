@@ -36,6 +36,7 @@
  */
 
 import {
+	attachSubagentProgress,
 	attachSubagentReport,
 	emptyConversation,
 	markLost,
@@ -50,8 +51,10 @@ import {
 import type { TranscriptSource, TranscriptStream } from './transcriptSource';
 import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
 import type { PendingRequest } from './pendingRequest';
+import { SubagentFollower, type SubagentTimers, type SubagentTranscript } from './subagents';
 import { agentFormat, type AgentFormat, type PlanReader } from '../agents/format';
 import { DEFAULT_AGENT_KIND } from '../agents/catalog';
+import { clearTimer, setTimer } from '../timers';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
@@ -157,6 +160,19 @@ export interface SessionModelView {
 	 * block the view answers by itself.
 	 */
 	claimBlock(toolUseId: string): boolean;
+	/**
+	 * Says a visible view shows the session, until the returned function is
+	 * called (#147): only then are its subagents' transcripts followed, and
+	 * their progress written onto the calls they hang under
+	 * (`ToolEntry.subagent`). Optional so a fake need not follow any.
+	 */
+	showSubagents?(): Unsubscribe;
+	/**
+	 * The transcript of the subagent shown under a call, followed while it is
+	 * held, or null when there is none to follow (#147). Optional so a fake
+	 * need not have any.
+	 */
+	subagentTranscript?(callId: string): SubagentTranscript | null;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
 }
 
@@ -202,7 +218,17 @@ export interface SessionModelOptions {
 	 * (`../agents/format.ts`); a test gives its own.
 	 */
 	formats?: (agent: string) => AgentFormat | null;
+	/**
+	 * How long subagents stay followed after the last view showing them went
+	 * (#147), so a tab switched away and back does not read them again.
+	 */
+	subagentGraceMs?: number;
+	/** The timers subagents are followed with; the real ones when left out. */
+	subagentTimers?: SubagentTimers;
 }
+
+/** How long subagents stay followed once no view shows them. */
+const SUBAGENT_GRACE_MS = 10_000;
 
 /** One pane's transcript, reduced, kept current. */
 export class SessionModel implements SessionModelView {
@@ -282,6 +308,14 @@ export class SessionModel implements SessionModelView {
 	 * reads the file again (a rejected plan comes back revised).
 	 */
 	private planKey = '';
+	/** The subagents of the file being shown, while any are followed (#147). */
+	private follower: SubagentFollower | null = null;
+	/** Views that show the session now (#147). */
+	private viewers = 0;
+	/** Whether subagents are followed: a view shows them, or did a moment ago. */
+	private showingSubagents = false;
+	/** The wait before subagents stop being followed, once no view shows them. */
+	private subagentGrace: unknown = null;
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -417,6 +451,32 @@ export class SessionModel implements SessionModelView {
 		return this.currentFormat?.readImage(text, image) ?? null;
 	}
 
+	showSubagents(): Unsubscribe {
+		this.viewers++;
+		this.setShowingSubagents(true);
+		let live = true;
+		return () => {
+			if (!live) return;
+			live = false;
+			this.viewers--;
+			if (this.viewers > 0) return;
+			const grace = this.options.subagentGraceMs ?? SUBAGENT_GRACE_MS;
+			if (grace <= 0) {
+				this.setShowingSubagents(false);
+				return;
+			}
+			this.clearSubagentGrace();
+			this.subagentGrace = this.subagentTimers().set(() => {
+				this.subagentGrace = null;
+				if (this.viewers === 0) this.setShowingSubagents(false);
+			}, grace);
+		};
+	}
+
+	subagentTranscript(callId: string): SubagentTranscript | null {
+		return this.subagentFollower()?.open(callId) ?? null;
+	}
+
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
 	on(listener: (change: SessionChange) => void): Unsubscribe {
 		this.listeners.add(listener);
@@ -445,6 +505,7 @@ export class SessionModel implements SessionModelView {
 	dispose(): void {
 		this.unbind();
 		this.closeStream();
+		this.clearSubagentGrace();
 		this.listeners.clear();
 		this.planKey = '';
 	}
@@ -483,6 +544,8 @@ export class SessionModel implements SessionModelView {
 	}
 
 	private closeStream(): void {
+		// The subagents were read through the same source.
+		this.dropSubagents();
 		this.stream?.close();
 		this.stream = null;
 		this.streamSource = null;
@@ -656,6 +719,7 @@ export class SessionModel implements SessionModelView {
 		this.planReader?.reset();
 		this.planText = null;
 		this.planKey = '';
+		this.dropSubagents();
 	}
 
 	/**
@@ -675,6 +739,7 @@ export class SessionModel implements SessionModelView {
 		else if (removedTurnIds.length) this.emit({ changedTurnIds, removedTurnIds, reset: false });
 		else this.emit({ changedTurnIds, reset: false });
 		this.readReports(changedTurnIds);
+		this.syncSubagents();
 	}
 
 	/**
@@ -749,6 +814,94 @@ export class SessionModel implements SessionModelView {
 				void this.readReport(entry, paths);
 			}
 		}
+	}
+
+	private subagentTimers(): SubagentTimers {
+		return (
+			this.options.subagentTimers ?? {
+				set: (callback, ms) => setTimer(callback, ms),
+				clear: (handle) => clearTimer(handle as ReturnType<typeof setTimer>),
+			}
+		);
+	}
+
+	private clearSubagentGrace(): void {
+		if (this.subagentGrace !== null) this.subagentTimers().clear(this.subagentGrace);
+		this.subagentGrace = null;
+	}
+
+	/** Starts or stops following the subagents a view shows (#147). */
+	private setShowingSubagents(showing: boolean): void {
+		if (showing) this.clearSubagentGrace();
+		if (showing === this.showingSubagents) return;
+		this.showingSubagents = showing;
+		this.syncSubagents();
+	}
+
+	/**
+	 * The follower of the file being shown, made on first need: a format that
+	 * names subagents, a file and the source its tail reads.
+	 */
+	private subagentFollower(): SubagentFollower | null {
+		if (this.follower) return this.follower;
+		const format = this.currentFormat;
+		const source = this.streamSource;
+		if (!format?.reports?.subagents || !this.currentPath || !source) return null;
+		this.follower = new SubagentFollower({
+			source,
+			format,
+			onChange: () => this.applySubagents(),
+			...(this.options.subagentTimers ? { timers: this.options.subagentTimers } : {}),
+		});
+		this.syncSubagents();
+		return this.follower;
+	}
+
+	/**
+	 * Tells the follower which subagents the records name now and whether a
+	 * view shows them (#147). Nothing is made for a session no view shows.
+	 */
+	private syncSubagents(): void {
+		const reports = this.currentFormat?.reports;
+		const path = this.currentPath;
+		if (!this.follower && !this.showingSubagents) return;
+		const follower = this.follower ?? this.subagentFollower();
+		if (!follower || !reports?.subagents || !path) return;
+		follower.sync(reports.subagents(this.transcript.turns, path), this.showingSubagents);
+		this.applySubagents();
+	}
+
+	/** Stops following every subagent; their progress goes with the file it was read for. */
+	private dropSubagents(): void {
+		const follower = this.follower;
+		if (!follower) return;
+		this.follower = null;
+		follower.dispose();
+		this.applySubagents();
+	}
+
+	/**
+	 * Writes each followed subagent's progress onto the call it hangs under,
+	 * and takes it off a call none is followed under any more, as an ordinary
+	 * changed turn (#147).
+	 */
+	private applySubagents(): void {
+		const updates: [string, ReturnType<SubagentFollower['progress']>][] = [];
+		for (const turn of this.transcript.turns) {
+			for (const entry of turn.entries) {
+				if (entry.kind !== 'tool') continue;
+				const progress = this.follower?.progress(entry.id);
+				if (progress !== entry.subagent) updates.push([entry.id, progress]);
+			}
+		}
+		if (!updates.length) return;
+		const changed = new Set<string>();
+		for (const [callId, progress] of updates) {
+			const result = attachSubagentProgress(this.transcript, callId, progress);
+			this.transcript = result.state;
+			for (const id of result.changedTurnIds) changed.add(id);
+		}
+		if (changed.size) this.emit({ changedTurnIds: [...changed], reset: false });
 	}
 
 	/** Reads one report and feeds it back, unless the session moved on meanwhile. */
@@ -853,6 +1006,10 @@ export interface SessionModelRegistryOptions {
 	home?: string;
 	/** The formats agents are read with; the registry in `../agents/format.ts` when not given. */
 	formats?: (agent: string) => AgentFormat | null;
+	/** See {@link SessionModelOptions.subagentGraceMs}. */
+	subagentGraceMs?: number;
+	/** See {@link SessionModelOptions.subagentTimers}. */
+	subagentTimers?: SubagentTimers;
 }
 
 /** The registry key of a pane on a runtime; a newline is in neither id. */
@@ -899,6 +1056,8 @@ export class SessionModelRegistry implements SessionModels {
 					home: this.options.home,
 					ended: this.ended,
 					...(this.options.formats ? { formats: this.options.formats } : {}),
+					subagentGraceMs: this.options.subagentGraceMs,
+					subagentTimers: this.options.subagentTimers,
 				}),
 				holders: 0,
 			};

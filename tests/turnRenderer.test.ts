@@ -573,3 +573,68 @@ describe('TurnRenderer: when, and for how long (#139)', () => {
 		expect(el.findAll('herdr-native-resume')[2]?.findAll('herdr-native-turn-meta')).toHaveLength(0);
 	});
 });
+
+describe('TurnRenderer: a subagent at work (#147)', () => {
+	function agentCall(progress?: ToolEntry['subagent']): ToolEntry {
+		return {
+			kind: 'tool',
+			id: 'toolu_a1',
+			name: 'Agent',
+			input: { description: 'Check the styles' },
+			result: 'Async agent launched successfully.',
+			status: 'running',
+			notification: null,
+			report: null,
+			...(progress ? { subagent: progress } : {}),
+		};
+	}
+
+	function on() {
+		const { el, host } = hostEl();
+		const opened: string[] = [];
+		const renderer = new TurnRenderer(host, {
+			presentation: () => 'highlight',
+			vaultPath: () => VAULT,
+			renderMarkdown: () => Promise.resolve(),
+			resolveUri: () => null,
+			openSubagent: (call) => opened.push(call.id),
+		});
+		return { el, renderer, opened };
+	}
+
+	it('says what it did last under the group that holds its call, and opens its transcript', () => {
+		const { el, renderer, opened } = on();
+		const read = tool('r1');
+		renderer.render(turn([agentCall({ running: true, latest: read, calls: 3 })]), 'working');
+
+		const line = el.find('herdr-native-subagent');
+		expect(line.find('herdr-native-subagent-title').textContent).toBe('Subagent working: Check the styles');
+		expect(line.find('herdr-native-subagent-count').textContent).toBe('3 calls');
+		expect(line.find('herdr-native-subagent-activity').textContent).toBe('Read r1.md');
+		// It does not end the run: the group above is still the one at work.
+		expect(el.find('herdr-native-tools').classList.has('is-live')).toBe(true);
+
+		line.find('herdr-native-subagent-open').dispatch('click');
+		expect(opened).toEqual(['toolu_a1']);
+	});
+
+	it('draws the line again when the subagent moves on, and nothing else', () => {
+		const { el, renderer } = on();
+		renderer.render(turn([agentCall({ running: true, latest: null, calls: 0 })]), 'working');
+		const group = el.find('herdr-native-tools');
+		expect(el.find('herdr-native-subagent-activity').textContent).toBe('Starting');
+
+		const said = { kind: 'text' as const, messageId: 's1', text: 'Checking the colours first.\nThen the fonts.' };
+		renderer.render(turn([agentCall({ running: true, latest: said, calls: 0 })]), 'working');
+		expect(el.find('herdr-native-subagent-activity').textContent).toBe('Checking the colours first.');
+		expect(el.find('herdr-native-tools')).toBe(group);
+	});
+
+	it('draws no line for a subagent no one follows, or one that stopped', () => {
+		const { el, renderer } = on();
+		renderer.render(turn([agentCall()]), 'working');
+		expect(el.findAll('herdr-native-subagent')).toHaveLength(0);
+		renderer.render(turn([agentCall({ running: false, latest: null, calls: 2 })]), 'working');
+		expect(el.findAll('herdr-native-subagent')).toHaveLength(0);
+	});
+});

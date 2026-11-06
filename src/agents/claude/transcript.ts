@@ -295,6 +295,28 @@ function taskNotification(
 /** Tool names of a subagent call, as `./toolCalls.ts` aliases them. */
 const AGENT_TOOL = /^(agent|task)$/i;
 
+/** The tool that sends a subagent a message. */
+const SEND_MESSAGE = /^sendmessage$/i;
+
+/**
+ * The call a subagent's notification that names no call belongs to (#147):
+ * the newest that started it or sent it a message. Measured 2026-11-06,
+ * 2.1.318: a subagent that stops again after taking in a message sent while
+ * it worked notifies with an empty `<tool-use-id>`, only its task id.
+ */
+function subagentCall(draft: Draft, notification: TaskNotification): string {
+	const id = notification.taskId;
+	if (notification.kind !== 'agent' || !id) return '';
+	return (
+		draft.findToolId((entry) => {
+			const name = entry.name.trim();
+			if (SEND_MESSAGE.test(name)) return entry.input.to === id;
+			if (!AGENT_TOOL.test(name)) return false;
+			return entry.notification?.taskId === id || (entry.result ?? '').includes(`agentId: ${id}`);
+		}) ?? ''
+	);
+}
+
 /**
  * How a background command's `tool_result` opens: the command went to the
  * background and its notification will say how it ended (2.1.286, 2.1.318).
@@ -650,10 +672,10 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	 * idempotent: the same notification again changes nothing. A background
 	 * command's notification never ends a subagent's call.
 	 */
-	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>, ts: string): void => {
+	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>, ts: string, enqueued = false): void => {
 		// After the answer, a notification is what sets Claude working again (#139).
 		resumes.notified(task.summary, ts);
-		const entry = draft.toolEntry(task.toolUseId);
+		const entry = draft.toolEntry(task.toolUseId || subagentCall(draft, task.notification));
 		if (!entry) return;
 		if (task.notification.kind === 'command' && AGENT_TOOL.test(entry.name.trim())) return;
 		const status: ToolStatus = task.completed ? 'done' : 'error';
@@ -661,8 +683,18 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			entry.notification?.taskId === task.notification.taskId &&
 			entry.notification.outputFile === task.notification.outputFile &&
 			entry.status === status;
-		if (same) return;
-		entry.notification = task.notification;
+		// When it stopped (#147) is its enqueue's time, which always comes first;
+		// the records after it carry the same notification, taken in later. A
+		// subagent notifies each time it stops, so a later enqueue is a later stop.
+		const at = enqueued || !entry.notification?.at ? ts : entry.notification.at;
+		if (same) {
+			if (!enqueued || !ts || ts === entry.notification?.at) return;
+			entry.notification = { ...task.notification, at: ts };
+			const turn = draft.turnOf(task.toolUseId);
+			if (turn) draft.touch(turn.id);
+			return;
+		}
+		entry.notification = at ? { ...task.notification, at } : task.notification;
 		// The background work is over, one way or the other (#91).
 		entry.status = status;
 		const turn = draft.turnOf(task.toolUseId);
@@ -710,7 +742,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// A notification is read from whichever record carries it, and
 					// some reach the transcript as their enqueue alone (#135).
 					const task = taskNotification(content);
-					if (task) notify(task, stringField(parsed, 'timestamp'));
+					if (task) notify(task, stringField(parsed, 'timestamp'), true);
 					else if (content) pendingQueue.push(content);
 				} else if (operation === 'remove' || operation === 'popAll') {
 					spend(content, false);

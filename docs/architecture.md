@@ -838,6 +838,11 @@ session model never reopens a tail for a source that did not change.
     while that agent is `working` or never reported, every 15 s otherwise.
   - `read(path)` (a subagent's `outputFile`, `subagents/agent-<id>.jsonl`)
     pages the whole file.
+  - A subagent followed while it works (#147) is a tail of its own, with
+    `pollMs` (1 s) in place of the working/idle poll and `budgetBytes`: a
+    look stops after the page that crosses the budget. There is no listing,
+    so a synchronous subagent is followed only once its answer names it,
+    which is when it ends.
 - **Senders** are the kind's `terminal.send` / `terminal.keys` over the tab's
   own runtime's client (`plugin.nativeClient`), as before.
 - **On SSH**, `@` mentions use the runtime's remote vault path (the agent opens
@@ -1325,6 +1330,37 @@ scratch pane created with `tab create` and `agent start`.
   command "…" completed (exit code 0)` / `failed with exit code N` / `was
   stopped …` for a shell command, `Monitor …` for a monitor. A background
   command's launch result opens `Command running in background with ID:`.
+- **A subagent at work, and where to read it** (#147, measured 2026-11-06
+  over every transcript on this machine, 693 subagents, 2.1.263 to 2.1.318).
+  Each subagent keeps `<session>/subagents/agent-<id>.jsonl` (every line
+  `isSidechain: true`, its own `agentId` and `timestamp`; the first a string
+  `user` line holding the call's prompt) and `agent-<id>.meta.json` beside it
+  (`toolUseId` = the `Agent` call, `requestShape` `background` (667) or
+  `foreground` (4), `description`, `agentType`). A background call's
+  `tool_result` is answered at once: `Async agent launched successfully.` …
+  `agentId: <id>` …, and `toolUseResult` carries `{isAsync: true, status:
+  "async_launched", agentId}`; it works until its notification. A synchronous
+  call's answer comes when the subagent ends, and is the first record in the
+  session to name the id, so until then its file is found only by its meta
+  file (a folder listing: the local source can, herdr-core's `file.read`
+  cannot). `SendMessage {to: <id>}` is answered at once, `{"success":true,
+  "message":"Message queued for delivery to <id> at its next tool round."}`
+  (99), `"Resuming agent …", resumedAgentId` (90), or a refusal or error
+  (91); 165 notifications
+  name a `SendMessage` call as their `<tool-use-id>`, so a stopped subagent a
+  message reached works again with nothing in the session's records until it
+  stops. Its note says so: "A task-notification fires each time this agent
+  stops … the same task-id may notify more than once." No `progress` record
+  is written into the session's transcript for a subagent at work.
+- **Following one** (`src/native/subagents.ts`): only while a visible view
+  shows the session (`SessionModelView.showSubagents`, kept 10 s after the
+  last view goes) or its transcript is open; at most 8 files, working first,
+  then the newest; one tail each on the session's own source, at most 1 MB per
+  look (`TailOptions.budgetBytes`; herdr-core stops after the page that
+  crosses it) and a look every second (`TailOptions.pollMs`, which herdr-core
+  also honours: no label names a subagent's file). A subagent is working
+  while its call is unanswered or launched and not notified, or when its own
+  file has a line written after its latest notification.
 - **The shapes a tool call's outcome comes in.** Measured 2026-09-15 over every
   transcript on this machine. A steer's queue enqueue always precedes its
   `queued_command` attachment and carries the identical string, so the two pair

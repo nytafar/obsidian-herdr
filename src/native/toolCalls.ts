@@ -29,6 +29,7 @@ import {
 	type ThinkingEntry,
 	type TextEntry,
 	type SteerEntry,
+	type SubagentProgress,
 	type ToolEntry,
 	type ToolStatus,
 	type Turn,
@@ -144,7 +145,10 @@ export function openRunIndex(items: readonly TurnItem[]): number {
 	for (let index = items.length - 1; index >= 0; index--) {
 		const kind = items[index]?.kind;
 		if (kind === 'group') return index;
-		if (kind !== 'change' && kind !== 'source' && kind !== 'todo' && kind !== 'notice') return -1;
+		// A subagent at work reads under its group and does not end the run.
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo' && kind !== 'notice' && kind !== 'subagent') {
+			return -1;
+		}
 	}
 	return -1;
 }
@@ -551,6 +555,37 @@ export function subagentReport(entry: ToolEntry, table?: ToolTable): string {
 	return report?.trim() ? report : '';
 }
 
+/** The longest a subagent's last words are shown in one line (#147). */
+const ACTIVITY_CHARS = 160;
+
+/**
+ * What a subagent at work is called (#147): the description its call gave,
+ * or the gist of the message that set it working again.
+ */
+export function subagentLabel(entry: ToolEntry): string {
+	for (const field of ['description', 'summary'] as const) {
+		const value = entry.input[field];
+		if (typeof value === 'string' && value.trim()) return firstLine(value);
+	}
+	return 'Subagent';
+}
+
+/**
+ * What a subagent did last, in one line (#147): its newest call as a tool
+ * row says it, or the start of what it last said; "Starting" before it did
+ * anything.
+ */
+export function subagentActivity(progress: SubagentProgress, vaultPath: string): string {
+	const latest = progress.latest;
+	if (!latest) return 'Starting';
+	if (latest.kind === 'tool') {
+		const detail = toolDetail(latest, vaultPath);
+		return detail ? `${latest.name} ${detail}` : latest.name;
+	}
+	const line = firstLine(latest.text);
+	return line.length > ACTIVITY_CHARS ? `${line.slice(0, ACTIVITY_CHARS - 1)}…` : line;
+}
+
 /** One thing the surface draws inside a turn, in the order it draws them. */
 export type TurnItem =
 	| { kind: 'text'; entry: TextEntry }
@@ -560,6 +595,11 @@ export type TurnItem =
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
 	| { kind: 'report'; entry: ToolEntry }
+	/**
+	 * A subagent at work (#147): what it did last, under the group that holds
+	 * the call it hangs under. Drawn while its progress says it is working.
+	 */
+	| { kind: 'subagent'; entry: ToolEntry }
 	/**
 	 * A to-do list update (#143). Whether it is the session's newest, the one
 	 * drawn open, is not the turn's to say (`ItemFacts.latestTodo`).
@@ -678,6 +718,10 @@ export function turnItems(
 			items.push({ kind: 'report', entry });
 			group = null;
 		}
+		// A subagent at work reads after the group that holds its call, which
+		// goes on taking the calls after it (#147); one at work again, after
+		// its report.
+		if (entry.subagent?.running) items.push({ kind: 'subagent', entry });
 	}
 	return items;
 }

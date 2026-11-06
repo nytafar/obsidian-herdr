@@ -11,7 +11,7 @@
  */
 
 import { watch, type FSWatcher, type Stats } from 'node:fs';
-import { open, readFile, type FileHandle } from 'node:fs/promises';
+import { open, readdir, readFile, type FileHandle } from 'node:fs/promises';
 import { clearTimer, setTimer } from '../timers';
 
 /**
@@ -27,6 +27,13 @@ import { clearTimer, setTimer } from '../timers';
 export interface TranscriptSource {
 	/** The whole file, or null when it does not exist or cannot be read. */
 	read(path: string): Promise<string | null>;
+	/**
+	 * The names in a folder, or null when it cannot be listed (#147): how a
+	 * subagent whose records do not name it yet is found. Optional: a source
+	 * that cannot list (herdr-core over SSH, whose `file.read` is all it has)
+	 * leaves such a subagent unfollowed until its records name it.
+	 */
+	list?(folder: string): Promise<string[] | null>;
 	/**
 	 * Follows `path`, delivering whole lines: what the file already holds first,
 	 * then every line appended to it, in order. A trailing partial line is held
@@ -54,6 +61,13 @@ export interface TailOptions {
 	pollMs?: number;
 	/** The most bytes one read takes; a longer file is read in pieces this size. */
 	chunkBytes?: number;
+	/**
+	 * The most bytes one look at the file reads (#147), for a file followed on
+	 * the side (a subagent's transcript): what is left waits for the next look,
+	 * a change or the poll, rather than being read in one go. No budget when
+	 * left out: the session's own transcript is read to its end every time.
+	 */
+	budgetBytes?: number;
 	/**
 	 * Why the tail cannot read the file although it is there, in words for
 	 * the view, or null once it can again. Only a source with limits of its
@@ -93,6 +107,15 @@ export class LocalTranscriptSource implements TranscriptSource {
 		} catch {
 			// A transcript that is not there yet is not an error: the session may
 			// not have taken its first prompt (ADR-0003).
+			return null;
+		}
+	}
+
+	async list(folder: string): Promise<string[] | null> {
+		try {
+			return await readdir(folder);
+		} catch {
+			// Not there yet: Claude makes the folder with its first subagent.
 			return null;
 		}
 	}
@@ -142,6 +165,8 @@ class LocalTranscriptTail implements TranscriptStream {
 	private readonly debounceMs: number;
 	private readonly pollMs: number;
 	private readonly chunkBytes: number;
+	/** The most bytes one pump reads, or Infinity for no budget. */
+	private readonly budgetBytes: number;
 
 	constructor(
 		private readonly path: string,
@@ -151,6 +176,7 @@ class LocalTranscriptTail implements TranscriptStream {
 		this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 		this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
 		this.chunkBytes = Math.max(1, options.chunkBytes ?? DEFAULT_CHUNK_BYTES);
+		this.budgetBytes = options.budgetBytes ? Math.max(1, options.budgetBytes) : Infinity;
 		this.watch();
 		this.schedulePoll();
 		// The file as it stands, before anything is appended to it.
@@ -244,11 +270,14 @@ class LocalTranscriptTail implements TranscriptStream {
 			handle = await open(this.path, 'r');
 			const stats = await handle.stat();
 			if (await this.replaced(handle, stats)) this.restart();
-			while (!this.closed && this.offset < stats.size) {
-				const chunk = Buffer.alloc(Math.min(this.chunkBytes, stats.size - this.offset));
+			// What this look may still read: the rest waits for the next one.
+			let budget = this.budgetBytes;
+			while (!this.closed && this.offset < stats.size && budget > 0) {
+				const chunk = Buffer.alloc(Math.min(this.chunkBytes, stats.size - this.offset, budget));
 				const { bytesRead } = await handle.read(chunk, 0, chunk.length, this.offset);
 				if (bytesRead === 0) break;
 				const read = chunk.subarray(0, bytesRead);
+				budget -= bytesRead;
 				if (this.head.length < HEAD_BYTES && this.offset === this.head.length) {
 					this.head = Buffer.concat([this.head, read.subarray(0, HEAD_BYTES - this.head.length)]);
 				}

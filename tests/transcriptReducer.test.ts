@@ -211,6 +211,8 @@ describe('reduce: steers and task notifications', () => {
 					// Its summary names an agent (#135).
 					kind: 'agent',
 					outputFile: '/tmp/claude-1000/-home-lasse-hvelv/s1/tasks/a1f2.output',
+					// When its first record was written (#147).
+					at: '2026-09-15T09:40:02.000Z',
 				},
 				report: null,
 			},

@@ -39,6 +39,8 @@ import {
 	changeLine,
 	changeStateClass,
 	sourceText,
+	subagentActivity,
+	subagentLabel,
 	subagentReport,
 	openRunIndex,
 	toolDetail,
@@ -201,6 +203,11 @@ export interface TurnRendererOptions {
 	 * (#139): `Date.now` when left out.
 	 */
 	now?: () => number;
+	/**
+	 * Opens the transcript of the subagent working under a call (#147). Left
+	 * out, a subagent at work is its line alone.
+	 */
+	openSubagent?: (call: ToolEntry) => void;
 }
 
 /** An image as the view shows it: a source an `img` takes, and what it is. */
@@ -321,6 +328,10 @@ const ITEM_KINDS: ItemKinds = {
 	report: {
 		signature: (item, facts) => subagentReport(item.entry, facts.toolTable),
 		render: (item, context) => renderSubagentReport(item.entry, context),
+	},
+	subagent: {
+		signature: (item, facts) => JSON.stringify(subagentLine(item.entry, facts.vaultPath)),
+		render: (item, context) => renderSubagent(item.entry, context),
 	},
 	todo: {
 		signature: (item, facts) => JSON.stringify([facts.latestTodo, todoList(item.entry, facts.toolTable)]),
@@ -903,6 +914,44 @@ function renderSubagentReport(entry: ToolEntry, context: ItemContext): ItemDraw 
 	const el = context.parent.createDiv({ cls: 'herdr-native-report' });
 	// Not prose either, as far as the headings go (#118).
 	void context.options.renderMarkdown(report, el, context.component);
+	return { el };
+}
+
+/** What a subagent at work's line says (#147): everything its render reads. */
+function subagentLine(entry: ToolEntry, vaultPath: string): { label: string; activity: string; calls: number } {
+	const progress = entry.subagent;
+	return {
+		label: subagentLabel(entry),
+		activity: progress ? subagentActivity(progress, vaultPath) : 'Starting',
+		calls: progress?.calls ?? 0,
+	};
+}
+
+/**
+ * A subagent at work (#147): what it is, what it did last and how many calls
+ * it made, with its whole transcript a click away where the view can open it.
+ */
+function renderSubagent(entry: ToolEntry, context: ItemContext): ItemDraw {
+	const line = subagentLine(entry, context.facts.vaultPath);
+	const el = context.parent.createDiv({ cls: 'herdr-native-subagent' });
+	const head = el.createDiv({ cls: 'herdr-native-subagent-head' });
+	head.createSpan({ cls: 'herdr-native-subagent-title', text: `Subagent working: ${line.label}` });
+	if (line.calls > 0) {
+		head.createSpan({
+			cls: 'herdr-native-subagent-count',
+			text: line.calls === 1 ? '1 call' : `${line.calls} calls`,
+		});
+	}
+	el.createDiv({ cls: 'herdr-native-subagent-activity', text: line.activity });
+	const open = context.options.openSubagent;
+	if (open) {
+		const button = el.createEl('button', {
+			cls: 'herdr-native-subagent-open',
+			text: 'Show transcript',
+			attr: { type: 'button' },
+		});
+		context.component.registerDomEvent(button, 'click', () => open(entry));
+	}
 	return { el };
 }
 

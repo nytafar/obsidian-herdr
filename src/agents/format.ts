@@ -36,6 +36,7 @@ import type {
 	SessionInfo,
 	ToolEntry,
 	ToolKind,
+	Turn,
 } from '../native/conversation';
 import type { PendingQuestionOption } from '../native/pendingRequest';
 import type { ModeLabel, SettingChoice } from '../native/sessionSettings';
@@ -94,6 +95,57 @@ export interface BackgroundReports {
 	paths(call: ToolEntry, transcript: string): string[];
 	/** The report in one of those files, '' when it holds none. */
 	read(lines: readonly string[]): string;
+	/**
+	 * The subagents the session's records name (#147), oldest first, each
+	 * under the newest call that started or resumed it. For an agent whose
+	 * subagents keep a transcript of their own, which the session model
+	 * follows while a view shows the call.
+	 */
+	subagents?(turns: readonly Turn[], transcript: string): SubagentRef[];
+	/**
+	 * When a line of a subagent's transcript was written, in ms since the
+	 * epoch, or null when it does not say (#147): a subagent written to after
+	 * it last stopped is working again.
+	 */
+	writtenAt?(line: string): number | null;
+}
+
+/** A subagent as the session's records name it (#147). */
+export interface SubagentRef {
+	/** The call its progress is shown under: the one that started it, or the newest that resumed it. */
+	callId: string;
+	/** Its own transcript, on the session transcript's host; '' while the records do not name it. */
+	path: string;
+	/** How to find its transcript while the records do not name it; null when there is no way. */
+	search: SubagentSearch | null;
+	/** Whether the records say it is working: started, and neither answered nor notified since. */
+	running: boolean;
+	/** When the records last said it stopped, ms since the epoch; null when they do not say. */
+	stoppedAt: number | null;
+	/**
+	 * A call after it stopped addressed it (a message to it), which may set it
+	 * working again with nothing in the records to say so until it stops:
+	 * only its own transcript, written after {@link stoppedAt}, can tell.
+	 */
+	resumed: boolean;
+}
+
+/**
+ * How a subagent's transcript is found among its siblings' while the records
+ * do not name it: a synchronous call is answered with its subagent's id only
+ * when it ends.
+ */
+export interface SubagentSearch {
+	/** The folder the subagents' transcripts are in. */
+	folder: string;
+	/**
+	 * For the names listed in that folder, the files that say whose a
+	 * transcript is: each a file to read (in the folder) and the transcript it
+	 * speaks for.
+	 */
+	candidates(names: readonly string[]): { probe: string; transcript: string }[];
+	/** Whether a probe's text says its transcript is this call's. */
+	owns(text: string): boolean;
 }
 
 /** The `/` list an agent offers. */

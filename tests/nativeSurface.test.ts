@@ -24,6 +24,7 @@ import type {
 	SessionModelView,
 } from '../src/native/sessionModel';
 import type { AgentStatus } from '../src/herdr/types.gen';
+import type { SubagentTranscript } from '../src/native/subagents';
 import type { App } from 'obsidian';
 import type { StatusLine } from '../src/views/paneTerminal';
 
@@ -38,7 +39,24 @@ class FakeModel implements SessionModelView {
 	blockKind: BlockKind | null = null;
 	connected = true;
 	readProblem: string | null = null;
+	/** Views that say they show the session's subagents now (#147). */
+	shown = 0;
+	/** What `subagentTranscript` hands out, by call (#147). */
+	transcripts = new Map<string, SubagentTranscript>();
 	private readonly listeners = new Set<(change: SessionChange) => void>();
+
+	showSubagents(): () => void {
+		this.shown++;
+		let live = true;
+		return () => {
+			if (live) this.shown--;
+			live = false;
+		};
+	}
+
+	subagentTranscript(callId: string): SubagentTranscript | null {
+		return this.transcripts.get(callId) ?? null;
+	}
 
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
@@ -124,6 +142,8 @@ function surfaceOn(
 		presentation?: ToolGroupPresentation;
 		vaultPath?: string;
 		onStatus?: (line: StatusLine) => void;
+		openSubagent?: (title: string, transcript: SubagentTranscript) => void;
+		notify?: (message: string) => void;
 	} = {},
 ): {
 	surface: NativePaneSurface;
@@ -153,6 +173,8 @@ function surfaceOn(
 		// view, and the vault is the app's, never a path this file invents.
 		presentation: () => options.presentation ?? 'highlight',
 		vaultPath: () => options.vaultPath ?? VAULT,
+		...(options.openSubagent ? { openSubagent: options.openSubagent } : {}),
+		...(options.notify ? { notify: options.notify } : {}),
 	});
 	return { surface, models, el, host, openLinkText, vault };
 }
@@ -1242,5 +1264,53 @@ describe('NativePaneSurface: where a tool group stands (#128)', () => {
 		});
 
 		expect(titles(el)).toEqual(['Worked', 'Working…']);
+	});
+});
+
+describe('NativePaneSurface: a subagent at work (#147)', () => {
+	it('says it shows the session’s subagents only while attached and shown', async () => {
+		const model = new FakeModel();
+		const { surface, host } = surfaceOn(model);
+		expect(model.shown).toBe(0);
+		await surface.attach(host);
+		expect(model.shown).toBe(1);
+		await surface.setVisible(false);
+		expect(model.shown).toBe(0);
+		await surface.setVisible(true);
+		expect(model.shown).toBe(1);
+		await surface.detach();
+		expect(model.shown).toBe(0);
+	});
+
+	it('opens the transcript of the subagent working under a call', async () => {
+		const model = new FakeModel();
+		const opened: string[] = [];
+		const notices: string[] = [];
+		const { surface, el, host } = surfaceOn(model, {
+			openSubagent: (title, transcript) => opened.push(`${title}: ${transcript.state.turns.length}`),
+			notify: (message) => notices.push(message),
+		});
+		await surface.attach(host);
+		const call: ToolEntry = {
+			...tool('toolu_a1', 'Agent', { description: 'Check the styles' }, 'Async agent launched successfully.'),
+			status: 'running',
+			subagent: { running: true, latest: null, calls: 0 },
+		};
+		model.transcripts.set('toolu_a1', {
+			state: { turns: [turn('s1', 'Check the styles')], raw: {} },
+			running: true,
+			on: () => () => {},
+			release: () => {},
+		});
+		model.agentStatus = 'working';
+		model.push([turn('u1', 'Start the long job', [call])], { changedTurnIds: ['u1'], reset: false });
+
+		el.find('herdr-native-subagent-open').dispatch('click');
+		expect(opened).toEqual(['Subagent: Check the styles: 1']);
+
+		// One the model cannot read says so.
+		model.transcripts.clear();
+		el.find('herdr-native-subagent-open').dispatch('click');
+		expect(notices).toEqual(['This subagent’s transcript cannot be read from here.']);
 	});
 });
