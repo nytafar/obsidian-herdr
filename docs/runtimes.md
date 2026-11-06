@@ -237,8 +237,11 @@ socket to set and nothing to forward.
    does when it adds a machine. hc must be installed on the host; nothing is
    needed locally but `ssh`.
 4. **Space** is optional. Empty matches the herdr-app space named like the
-   vault folder, else every terminal whose working directory is inside the
-   vault. Set it to a space's name or id to pin the runtime to that space.
+   vault folder, then an unnamed space whose first terminal runs inside the
+   vault (Herdr UI names such a space after that folder), else every terminal
+   whose working directory is inside the vault. Agents the plugin starts are
+   labelled for the matched space, so Herdr UI shows them there. Set it to a
+   space's name or id to pin the runtime to that space.
 5. Make it active from the list, the agent list's switcher or **Switch
    runtime**.
 

@@ -14,14 +14,19 @@ ones that belong to your vault into Obsidian:
   line per run, vault edits shown as links to the notes, a chat-style prompt box
   with `/` and `@` completion, and a table of contents where the outline lives.
   Made for knowledge work; the terminal is one click away on every tab.
+  Available on herdr on this machine, on herdr-core here and over SSH (with
+  the Claude session hook the plugin offers to install), and on Claude run
+  by Obsidian. herdr over SSH shows the terminal only.
 - **Terminals** as Obsidian tabs: open any agent's live terminal, type in it, or
   watch it read-only. Open it beside the note you are working on, or reuse one tab.
 - **Notifications** when an agent stops and wants you, or finishes, with a status
   bar count.
 - **Start agents from folders**: a hover button and a context-menu entry on any
   folder in the file explorer start an agent there, in the right herdr tab.
-- **Runtimes**: switch between herdr on this machine and herdr on other machines
-  over SSH, the same list, actions and terminals on each, as long as a remote
+- **Runtimes**: a list of places your agents run, and you switch between them:
+  the herdr TUI, herdr-core (`hc`, headless, with agents in Herdr UI's
+  spaces), each on this machine or over SSH, and Claude Code run by Obsidian
+  itself. The same list, actions and terminals on each, as long as a remote
   machine has a synced mirror of the vault.
 
 Nothing here changes how herdr behaves for anyone using it outside Obsidian. All
@@ -33,7 +38,9 @@ The plugin starts and recognises every agent kind herdr can start: **Claude
 Code**, **Codex**, **Gemini CLI**, **OpenCode**, **Pi**, **Cursor**, **Amp**,
 **GitHub Copilot CLI**, **Kimi**, **Droid**, **Grok** and the rest of herdr's
 list. The + button offers the ones installed on the active runtime's machine,
-plus your own entries (a wrapper, extra arguments) from the settings; see
+plus your own entries (a wrapper, extra arguments) from the settings, where
+each CLI also says which of your machines it was found on. A mise or asdf
+shim counts only when its tool is active in the vault folder; see
 [docs/runtimes.md](docs/runtimes.md#starting-agents-the--button-and-the-agent-catalog).
 Each has an icon in the list; a kind the plugin does not know yet gets a
 neutral one. Anything herdr can attach to also shows up, whatever started it.
@@ -48,7 +55,9 @@ neutral one. Anything herdr can attach to also shows up, whatever started it.
   [Getting started](#getting-started).
 - For a runtime over SSH: `ssh` on this machine, key-based login that does not
   prompt, and a copy of the vault on the remote host kept in sync by whatever you
-  already use (Obsidian Sync, Self-hosted LiveSync, Syncthing, git).
+  already use (Obsidian Sync, Self-hosted LiveSync, Syncthing, git). Leave the
+  remote binary empty and the plugin finds herdr or `hc` on the remote host
+  (its PATH, then Homebrew, `/usr/local/bin` and `~/.local/bin`).
 
 ## Install
 
@@ -112,8 +121,9 @@ Only panes that run an agent are listed; plain shells stay invisible.
 **The list.** Each row is one agent: a kind icon coloured by status (orange
 blocked, green done, blue working, faint idle), the agent's name, its current task
 from the terminal title, a prompt-cache countdown while one is running, and its
-folder. The header button sets sort (herdr's own priority order, or alphabetical)
-and grouping (herdr tab, working directory, or none). Clicking a row opens the
+folder. The toolbar at the top of the list switches runtime, sets sort (herdr's
+own priority order, or alphabetical) and grouping (herdr tab, working directory,
+or none), opens quick settings, and ends with the **+**. Clicking a row opens the
 agent's terminal; the button that appears on hover jumps to the pane in the herdr
 TUI. A setting swaps the two.
 
