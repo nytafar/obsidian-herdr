@@ -353,12 +353,36 @@ function typingClient(client: PromptClient): HcTypingClient | null {
 }
 
 /**
+ * `text` as `terminal.keys` names, one per character, or null when a
+ * character has no key name. hc 0.1.18 names only the unshifted keys of a US
+ * layout, lowercases a bare letter (a capital is `shift+<letter>`), calls a
+ * space `space`, and types `shift+<digit or punctuation>` as the unshifted
+ * character, so `!`, `?`, `:`, `(` and anything outside ASCII cannot go this
+ * way (measured 2026-11-06, `docs/architecture.md`, "Screen access, as
+ * built").
+ */
+export function hcTextKeys(text: string): string[] | null {
+	const keys: string[] = [];
+	for (const char of text) {
+		if (/^[a-z0-9,.;\-/\\'[\]=`]$/.test(char)) keys.push(char);
+		else if (/^[A-Z]$/.test(char)) keys.push(`shift+${char.toLowerCase()}`);
+		else if (char === ' ') keys.push('space');
+		else return null;
+	}
+	return keys;
+}
+
+/**
  * Screen access on herdr-core (#164, ADR-0009): `terminal.read {lines: 0}`
  * for the visible screen, `terminal.keys` with one key per call (its reply is
- * the status from before the key, so it confirms nothing and is not read),
- * and text as one AUTOMATIC_INPUT frame on a short resumed attach at the
- * terminal's own grid ({@link HcImageClient.input}): `terminal.keys` would
- * lowercase letters, and `terminal.send` presses Enter.
+ * the status from before the key, so it confirms nothing and is not read).
+ * Text goes key by key in one `terminal.keys` call when every character has a
+ * key name ({@link hcTextKeys}): that never touches the terminal's size, and
+ * the call answers once the keys are in, so a key pressed after it lands
+ * after the text. Other text goes as one AUTOMATIC_INPUT frame on a short
+ * resumed attach at the terminal's own grid ({@link HcImageClient.input}),
+ * which refuses where closing it would resize the terminal (#172);
+ * `terminal.send` presses Enter.
  */
 export function hcScreenAccess(client: () => PromptClient | null): ScreenAccess {
 	const connected = (): PromptClient => {
@@ -392,11 +416,14 @@ export function hcScreenAccess(client: () => PromptClient | null): ScreenAccess 
 		},
 		async type(paneId: string, text: string): Promise<void> {
 			checkScreenText(text);
-			const typer = typingClient(connected());
-			if (!typer) throw new Error('this herdr-core connection cannot type into a terminal');
+			const requester = connected();
 			if (!text) return;
+			const keys = hcTextKeys(text);
+			const typer = keys ? null : typingClient(requester);
+			if (!keys && !typer) throw new Error('this herdr-core connection cannot type into a terminal');
 			try {
-				await typer.input(paneId, text);
+				if (keys) await requester.request('terminal.keys', { terminal: paneId, keys });
+				else await typer?.input(paneId, text);
 			} catch (error) {
 				throw new Error(describe(error));
 			}

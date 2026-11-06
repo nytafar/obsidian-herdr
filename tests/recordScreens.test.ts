@@ -9,12 +9,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseClaudeScreen } from '../src/agents/claude/screenDialog';
+import { hcTextKeys } from '../src/hc/actions';
 import { NARROW_TEXTS, sessions } from '../scripts/record-screens/scenario';
 import {
 	dialogRegion,
 	findClaude,
 	fixtureText,
-	hcTypingKeys,
 	isMiseIndirection,
 	latestSet,
 	modeOf,
@@ -72,15 +72,10 @@ describe('finding the tools', () => {
 });
 
 describe('typing on hc key by key', () => {
-	it('names capitals and spaces the way terminal.keys takes them', () => {
-		expect(hcTypingKeys('Mango, Ripe 2.')).toEqual(['shift+m', 'a', 'n', 'g', 'o', ',', 'space', 'shift+r', 'i', 'p', 'e', 'space', '2', '.']);
-		expect(() => hcTypingKeys('a-b')).toThrow(/cannot type "-"/);
-	});
-
-	it('can type everything a narrow hc session types', () => {
+	it('can type everything a narrow hc session types, so its size stays (#172)', () => {
 		const texts = NARROW_TEXTS.hc;
 		for (const text of [texts.ownAnswer, texts.mango, texts.feedback, texts.planFeedback]) {
-			expect(() => hcTypingKeys(text), text).not.toThrow();
+			expect(hcTextKeys(text), text).not.toBeNull();
 		}
 	});
 });

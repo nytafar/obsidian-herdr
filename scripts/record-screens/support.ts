@@ -272,30 +272,3 @@ export function modeOf(screen: string): 'plan' | 'acceptEdits' | 'auto' | 'defau
 	if (/auto mode on/.test(tail)) return 'auto';
 	return 'default';
 }
-
-// --- Typing on hc, key by key -----------------------------------------------
-
-/** hc's size for a terminal no viewer leads ([[herdr-core-api]] §5). */
-export const HC_HEADLESS = { cols: 200, rows: 120 } as const;
-
-/**
- * `text` as `terminal.keys` names, one per character: hc lowercases a bare
- * letter, so a capital is `shift+<letter>`, and a space is `space`
- * (`docs/architecture.md`, "Answering Claude's dialogs from the screen").
- * Only letters, digits, spaces, commas and full stops, which is all the
- * scenario types; anything else throws.
- *
- * Used on a terminal started at another size than hc's headless one: the
- * plugin's typing attach (`HcClient.input`) put such a terminal back to
- * 200x120 when it detached (hc 0.1.18, measured 2026-11-06 by this script),
- * which re-wraps every screen after it. The narrow hc screens were typed
- * this way in #163.
- */
-export function hcTypingKeys(text: string): string[] {
-	return [...text].map((char) => {
-		if (/^[a-z0-9,.]$/.test(char)) return char;
-		if (/^[A-Z]$/.test(char)) return `shift+${char.toLowerCase()}`;
-		if (char === ' ') return 'space';
-		throw new Error(`cannot type "${char}" key by key on hc`);
-	});
-}

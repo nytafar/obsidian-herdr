@@ -1514,6 +1514,9 @@ and one-word prompts, checked against Claude's answers and the transcript.
   the terminal by `terminal.rm`); one `terminal.attach {cols, rows, history:
   0, resumed: true}` at the terminal's own grid, an AUTOMATIC_INPUT frame
   with the bracketed paste of the paths, CLOSE; then `terminal.send {text}`.
+  That CLOSE puts a terminal started at another size than 200x120 back to
+  200x120 when nothing else holds it, so the paste is refused there before
+  anything is typed or sent (#172, "Screen access, as built").
   Back to back with no waits the images still attached, though Claude placed
   their `[Image #N]` after the text (it resolves a paste asynchronously).
   `terminal.send` with empty text pastes nothing and presses Enter, which sent
@@ -1760,13 +1763,57 @@ these are the facts it relies on.
   refused before anything is sent. Remote (herdr over SSH, hc on another
   machine) is the same calls over the runtime's own client; not run live.
   **The typing attach does not keep a size the terminal was started at.**
-  Measured 2026-11-06 (hc 0.1.18, Claude Code 2.1.318, `npm run
-  record-screens`, #168): a terminal started with `terminal.run {size: 60x40}`
-  and no viewer read 60 columns wide until the first `HcClient.input`, and
-  200 wide from then on: when the resumed attach closed, the terminal went
-  back to hc's headless size, 200x120. One started at 200x120 is unaffected.
-  Whether a viewer that leads the size keeps it across the typing attach was
-  not measured.
+  Found by `npm run record-screens` (#168): a terminal started with
+  `terminal.run {size: 60x40}` read 60 columns wide until the first
+  `HcClient.input`, and 200 wide from then on. Measured 2026-11-06 (#172, hc
+  0.1.18, `cat -v` and `od` in `oh-test-172*` terminals in `/tmp`, sizes read
+  with `terminal.get`): **it is the close, not the input.** A terminal
+  started at 60x40 or 90x30 went to 200x120 when any attach closed with no
+  other viewer that is not an observer left on it: a resumed attach at its
+  own grid that sent nothing, one that sent AUTOMATIC_INPUT, one that sent
+  DATA, and an observer. While open, a resumed attach that sent
+  AUTOMATIC_INPUT kept 60x40 (and 90x30 for 2 s); one naming 50x20 made it
+  50x20. A viewer that is not an observer held across the typing attach kept
+  the size through its close: a control attach at 70x20 (the plugin's tab),
+  a resumed one at 60x40, and a real `hc attach` in a 90x30 pty; each put the
+  terminal back to 200x120 when it closed in turn. A held observer did not
+  (60x40 went to 200x120 on the typing attach's close). `terminal.keys`
+  never changed the size. A terminal at 200x120 is unaffected. So hc puts a
+  terminal back to its headless size when the last viewer that is not an
+  observer leaves, and the size `terminal.run` started it at is not its
+  headless size. The 0.1.18 source says the same (`viewers.rs`: `detach`
+  calls `apply_size`, whose leader is the viewer that is not an observer
+  with the latest `active_at`, a resumed one that never acted included, and
+  with none the config's `headless = "COLSxROWS"`, default 200x120; that is
+  also why a lone resumed attach naming 50x20 resized). There is no method
+  that sets a size without a viewer, so
+  nothing can restore it (recorded as an hc bug in the finding
+  `herdr-core-api`). Every viewer of a terminal started at another size,
+  this plugin's observe tabs included, ends with the same reset; #172 keeps
+  only typing from causing it.
+  **What typing does about it (#172).** `hcScreenAccess.type` sends text
+  whose every character has a key name as one `terminal.keys` call
+  (`hcTextKeys`), which never touches the size. hc 0.1.18 names only the
+  unshifted keys of a US layout: ``a-z 0-9 , . ; - / \ ' [ ] = ` ``, a capital
+  as `shift+<letter>`, a space as `space`; `:`, `_`, `!`, `?`, `"`, `(`,
+  `)`, `{`, `<`, `@`, `#`, `+`, `~`, `|`, `æ`, `é`, `—`, `✔`, `€` and emoji
+  are `unknown key`, and `shift+1`, `shift+;`, `shift+/` type `1`, `;`, `/`
+  (`od` on a raw tty). ``Mango, Ripe 2; a-b/c\d 'e' [f] = `g`.`` arrived
+  exactly in Claude 2.1.318's composer at 60x40, which stayed 60x40. The call
+  answers once its keys are in (20 keys in about 620 ms), so an `enter`
+  pressed after it lands after the text. Other text, and an image's
+  bracketed paste, go through `HcClient.input`, which refuses, attaching
+  nothing, a terminal not at 200x120 unless one of this plugin's own
+  attaches that is not an observer is open on it (`holdsViewer` in
+  `src/hc/streams.ts`, by core id and terminal address; each terminal tab
+  dials its own connection). A viewer outside the plugin keeps the size too,
+  but cannot be seen, so a terminal only it holds is refused; and a core
+  whose headless size is configured otherwise than 200x120 is not known
+  either. Measured live with the built code: on 60x40 and 90x30 with nothing
+  attached, a keyable answer typed and `Ripe — ✔` and an image with text
+  were refused, the size unchanged; at 90x30 with a control attach held both
+  went through, the paste and the text arriving, the size unchanged; at
+  200x120 both went through.
 - **Narrow screens (#163).** Measured 2026-11-06 at 60 and 90 columns
   (herdr 0.9.5 pane held at size by a `terminal session control` client, hc
   0.1.18 terminals started with `terminal.run {size}`; fixtures `*-60-*`,

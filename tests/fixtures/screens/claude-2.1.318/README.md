@@ -94,6 +94,6 @@ folder; `-- --dry-run` checks both and runs nothing. The scenario is
 `scripts/record-screens/scenario.ts`. Two differences from the recordings
 here: the wide trust screens come from `/var/tmp/oh-test-trust-wide-*`,
 because Claude trusts the folders above for good; and every text on hc is
-typed through the plugin's own attach, except on the 60- and 90-column
-terminals, which are typed key by key as before (the attach puts such a
-terminal back to 200x120).
+typed through the plugin's own screen access, which goes key by key over
+`terminal.keys` whenever the text allows (all the scenario's texts do), so
+the 60- and 90-column terminals keep their size (#172).

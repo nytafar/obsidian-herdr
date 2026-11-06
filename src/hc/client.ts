@@ -26,7 +26,14 @@ import {
 	type HcSpawn,
 } from './connection';
 import { clearTimer, setTimer } from '../timers';
-import { attachTerminal, subscribeEvents, type EventSubscription, type HcEvent } from './streams';
+import {
+	attachTerminal,
+	HC_HEADLESS_SIZE,
+	holdsViewer,
+	subscribeEvents,
+	type EventSubscription,
+	type HcEvent,
+} from './streams';
 
 /** First redial delay, doubled per failure up to {@link RECONNECT_MAX_MS}. */
 export const RECONNECT_INITIAL_MS = 1000;
@@ -164,21 +171,38 @@ export class HcClient {
 	 * anything sent after this resolves (measured 2026-11-06, hc 0.1.18,
 	 * `docs/architecture.md`, "Images in prompts"). Rejects, sending nothing,
 	 * when `terminal.get` gives no size, so typing never changes the grid.
-	 * Also how a dialog answer types (#164, `hcScreenAccess`).
+	 * Also how a dialog answer types (#164, `hcScreenAccess`) when its text
+	 * cannot go key by key.
+	 *
+	 * The CLOSE is what can resize (#172, measured 2026-11-06, hc 0.1.18): it
+	 * puts a terminal back to hc's headless size, 200x120, when no other
+	 * viewer that is not an observer stays attached, whatever this attach
+	 * sent. So this also rejects, attaching nothing, a terminal at another
+	 * size unless one of this plugin's own terminal tabs holds it; viewers
+	 * outside the plugin cannot be seen, so a terminal only they hold is
+	 * refused too.
 	 */
 	async input(terminal: string, text: string): Promise<void> {
 		const connection = this.connection;
 		if (this.disposed || !connection || connection.isEnded || !connection.hello) {
 			throw new Error('not connected to herdr-core');
 		}
-		const record = await connection.request<{ cols?: unknown; rows?: unknown } | null>('terminal.get', {
-			terminal,
-		});
+		const record = await connection.request<{ address?: unknown; cols?: unknown; rows?: unknown } | null>(
+			'terminal.get',
+			{ terminal },
+		);
 		// Never a guessed grid: on a core without AUTOMATIC_INPUT the bytes go
 		// as DATA, which makes this attach the size leader at its cols/rows.
 		const cols = typeof record?.cols === 'number' && record.cols > 0 ? record.cols : null;
 		const rows = typeof record?.rows === 'number' && record.rows > 0 ? record.rows : null;
 		if (cols === null || rows === null) throw new Error('herdr-core did not say the terminal’s size');
+		const address = typeof record?.address === 'string' && record.address ? record.address : terminal;
+		const headless = cols === HC_HEADLESS_SIZE.cols && rows === HC_HEADLESS_SIZE.rows;
+		if (!headless && !holdsViewer(connection, address)) {
+			throw new Error(
+				`typing here would resize the terminal from ${cols}x${rows} to ${HC_HEADLESS_SIZE.cols}x${HC_HEADLESS_SIZE.rows} (herdr-core does that when the typing ends and nothing else is attached); open its terminal tab first`,
+			);
+		}
 		const stream = await attachTerminal(
 			connection,
 			{ terminal, cols, rows, history: 0, resumed: true },
