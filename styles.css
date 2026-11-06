@@ -720,6 +720,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	font-weight: var(--font-semibold);
 }
 
+/*
+ * The title bar, with the fold button at its end (#142). Folded, the card is
+ * this bar alone, one line, so a long plan stops covering a narrow pane.
+ */
+.herdr-native-waiting-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-head .herdr-native-waiting-title {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-waiting.is-folded .herdr-native-waiting-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-waiting-fold {
+	flex: 0 0 auto;
+}
+
+.herdr-native-waiting-content.herdr-is-hidden {
+	display: none;
+}
+
+/* "Sending your answer…", and why an answer did not get through (#142). */
+.herdr-native-waiting-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+/*
+ * A live region with nothing to say: clipped out of sight, never
+ * `display: none`, so a screen reader still has it when its words come (#142).
+ * Scoped to the view so it outranks the readable-width sizer it also carries.
+ */
+.herdr-native-view .herdr-native-visually-hidden {
+	block-size: 1px;
+	clip-path: inset(50%);
+	inline-size: 1px;
+	margin: 0;
+	overflow: hidden;
+	padding: 0;
+	position: absolute;
+	white-space: nowrap;
+}
+
 /* The question, the plan or the tool's detail line, as it was written. */
 .herdr-native-waiting-body {
 	color: var(--text-muted);
@@ -732,6 +790,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 /* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
 .herdr-native-waiting-option {
 	color: var(--text-muted);
+	display: flex;
+	flex-direction: column;
 	font-size: var(--font-ui-small);
 	margin-top: var(--size-4-1);
 	padding-left: var(--size-4-3);
@@ -784,6 +844,72 @@ svg.svg-icon[class*='herdr-kind-'] text {
 .herdr-native-waiting-choice.is-selected {
 	background-color: var(--interactive-accent);
 	color: var(--text-on-accent);
+}
+
+/*
+ * A question's options (#141): one per row, as wide as the card, the label on
+ * its first line and Claude's description under it, so neither depends on a
+ * tooltip. A button's own fixed height and centring would cut the second line.
+ */
+.herdr-native-waiting-choices {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice {
+	align-items: flex-start;
+	display: flex;
+	flex-direction: column;
+	height: auto;
+	padding-block: var(--size-4-1);
+	text-align: start;
+	white-space: normal;
+}
+
+.herdr-native-waiting-choice-line {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice-description {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.herdr-native-waiting-choice.is-selected .herdr-native-waiting-choice-description {
+	color: inherit;
+}
+
+/* Claude's own pick, which it marks "(Recommended)" in the label. */
+.herdr-native-waiting-tag {
+	border: 1px solid currentcolor;
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-smaller);
+	padding-inline: var(--size-4-1);
+}
+
+/* The dialog's "Other": the user's own answer, and Send beside it for a single question. */
+.herdr-native-waiting-other {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-other-input {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* Where a question the view cannot answer is answered. */
+.herdr-native-waiting-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
 }
 
 .herdr-native-waiting-grant {

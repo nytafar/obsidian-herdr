@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
+import { QUESTION_IN_TERMINAL } from '../src/native/waitingCardView';
 import {
 	emptyTranscript,
 	type ToolEntry,
@@ -261,12 +262,50 @@ describe('waiting card: which kind (#99)', () => {
 		expect(el.find('herdr-native-waiting-body').textContent).toBe(
 			'Do you prefer tea or coffee?',
 		);
-		expect(el.findAll('herdr-native-waiting-option').map((o) => o.textContent)).toEqual([
+		expect(el.findAll('herdr-native-waiting-choice-label').map((o) => o.textContent)).toEqual([
 			'Tea',
 			'Coffee',
 		]);
-		// Answering a question is the user's, in the terminal.
+		// Each description on the line under its option, not a tooltip (#141).
+		expect(el.findAll('herdr-native-waiting-choice-description').map((o) => o.textContent)).toEqual([
+			'You prefer tea.',
+			'You prefer coffee.',
+		]);
+		// Answering a question is the user's, in the terminal, and the card says
+		// that is where a typed answer goes too: herdr takes none from the view.
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+		expect(el.findAll('herdr-native-waiting-other-input')).toEqual([]);
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(QUESTION_IN_TERMINAL);
+	});
+
+	it('draws Claude’s "(Recommended)" suffix as a tag', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([
+			turn('u1', 'Ask', [
+				tool('toolu_01Gx', 'AskUserQuestion', {
+					questions: [
+						{
+							question: 'Which store?',
+							options: [{ label: 'Redis (Recommended)' }, { label: 'Postgres' }],
+						},
+					],
+				}),
+			]),
+		]);
+		model.setStatus('blocked');
+		expect(el.findAll('herdr-native-waiting-choice-label').map((o) => o.textContent)).toEqual(['Redis', 'Postgres']);
+		const tags = el.findAll('herdr-native-waiting-tag');
+		expect(tags.map((tag) => tag.textContent)).toEqual(['Recommended']);
+		expect(tags[0]?.closest('.herdr-native-waiting-option')?.textContent).toBe('RedisRecommended');
+	});
+
+	it('says a reported question with nothing to show is answered in the terminal', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([turn('u1', 'Ask me', [tool('toolu_01Rd', 'Read', {}, 'ok')])]);
+		model.setStatus('blocked', 'question');
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(QUESTION_IN_TERMINAL);
 	});
 
 	it('shows the plan for ExitPlanMode, with no button', async () => {

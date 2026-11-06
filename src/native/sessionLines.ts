@@ -1,8 +1,9 @@
 /**
  * The two lines the native view shows around its turns: the empty line, which
  * also says why a transcript cannot be read, and what the agent is doing
- * (#94). One instance per attached view, appended to the view's root as each
- * line first appears, which is the order the surface asks for them in.
+ * (#94). One instance per attached view. The status line is appended to the
+ * view's root at once, as the live region it is (#142); the empty line when it
+ * first appears. Where each sits is the stylesheet's `order`, not the DOM's.
  */
 
 import type { AgentStatus } from '../herdr/types.gen';
@@ -36,10 +37,20 @@ export interface EmptyFacts {
 /** The empty line and the status line of one attached view. */
 export class SessionLines {
 	private emptyEl: HTMLElement | null = null;
-	/** What the agent is doing, shown between blocks; null when it is nothing. */
-	private statusEl: HTMLElement | null = null;
+	/**
+	 * What the agent is doing, shown between blocks. A live region, there from
+	 * the first draw and clipped while it says nothing (#142): one that
+	 * appears together with its words is not read, one that is there and gets
+	 * them is.
+	 */
+	private readonly statusEl: HTMLElement;
 
-	constructor(private readonly root: HTMLElement) {}
+	constructor(private readonly root: HTMLElement) {
+		this.statusEl = root.createDiv({
+			cls: ['herdr-native-status', 'herdr-native-sizer', 'herdr-native-visually-hidden'],
+			attr: { role: 'status', 'aria-live': 'polite' },
+		});
+	}
 
 	/**
 	 * The line shown when there is nothing to show, and nothing when there is;
@@ -67,14 +78,9 @@ export class SessionLines {
 	 */
 	updateStatus(status: AgentStatus): void {
 		const text = workingLine(status);
-		if (!text) {
-			this.statusEl?.remove();
-			this.statusEl = null;
-			return;
-		}
-		if (!this.statusEl) {
-			this.statusEl = this.root.createDiv({ cls: ['herdr-native-status', 'herdr-native-sizer'] });
-		}
+		// Same words, nothing to write: a live region re-reads what it is given.
+		if (this.statusEl.textContent === text) return;
 		this.statusEl.setText(text);
+		this.statusEl.toggleClass('herdr-native-visually-hidden', text === '');
 	}
 }

@@ -930,7 +930,31 @@ describe('NativePaneSurface: detach', () => {
 	});
 });
 
+/**
+ * The status line saying nothing: still there, as the live region it is
+ * (#142), with no words and clipped out of sight.
+ */
+function expectSilentStatus(el: FakeElement): void {
+	const status = el.find('herdr-native-status');
+	expect(status.textContent).toBe('');
+	expect(status.hasClass('herdr-native-visually-hidden')).toBe(true);
+}
+
 describe('NativePaneSurface: what the agent is doing (#94)', () => {
+	it('is a live region from the first draw, shown once it has words (#142)', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const status = el.find('herdr-native-status');
+		expect(status.attrs.role).toBe('status');
+		expect(status.attrs['aria-live']).toBe('polite');
+		expectSilentStatus(el);
+		model.agentStatus = 'working';
+		model.push([], { changedTurnIds: [], reset: false });
+		expect(el.find('herdr-native-status')).toBe(status);
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(false);
+	});
+
 	it('says the agent is working, between blocks and while nothing arrives', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
@@ -950,12 +974,12 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		await surface.attach(host);
 		model.agentStatus = 'working';
 		model.push([], { changedTurnIds: [], reset: false });
-		expect(el.findAll('herdr-native-status')).toHaveLength(1);
+		expect(el.find('herdr-native-status').textContent).toBe('Working…');
 
 		model.agentStatus = 'done';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 	});
 
 	it('says the agent is waiting when it is blocked', async () => {
@@ -987,7 +1011,7 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		model.agentStatus = 'idle';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
 		expect(el.find('herdr-native-prompt-send').disabled).toBe(false);
 
@@ -999,7 +1023,7 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		model.agentStatus = 'idle';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
 	});
 
