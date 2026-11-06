@@ -1762,7 +1762,18 @@ prompt; these are the facts a build may rely on.
   moves go one key per call, then reads every 100 ms until the screen shows
   the intended state (3 s, never repeated); a commit key goes alone after a
   read that showed it; the final key is followed by reads for 1.5 s and the
-  transcript's result (`receiptAgrees`). No digit is pressed. Run live
+  transcript's result (`receiptAgrees`). No digit is pressed, and no lone
+  digit is typed. A plan is matched by its slug and by the plan lines the
+  card's read showed, a Write or Edit by its file and the lines between the
+  dotted rules (`withShown` completes the card's request from
+  `ScreenAnswerer.inspect`). A key that has not shown keeps the pane locked
+  and the transcript watched until the screen has been unchanged for 4.5 s
+  since the key and its last change (hc's 3 s hold plus the time a key takes
+  to show), at most 15 s, and the outcome says whether it may still land; a
+  request gone after a move or typed words is judged by the transcript too.
+  Any commit key, a toggle or a tab's answer included, ends cancelling. These
+  bounds are design (ADR-0009 §4), not measured: hc's hold was not provoked
+  live. Run live
   2026-11-06 through the built code on herdr 0.9.5 and hc 0.1.18
   (`oh-test-ans*` in `/tmp`, Claude Code 2.1.318, haiku), each answered
   and judged against the transcript in 0.3-1.7 s: a single choice (`down`
@@ -1772,6 +1783,22 @@ prompt; these are the facts a build may rely on.
   `down`, the words, `enter`; Claude replanned under the same slug), plan
   approve with manual edits (herdr and hc); a Bash request matched against
   another command was refused with nothing sent, on both.
+- **Re-checked after the review fixes (#165), 2026-11-06**, through the
+  built driver on herdr 0.9.5 and hc 0.1.18 (`oh-test-fix165*` in `/tmp`,
+  Claude Code 2.1.318, plan mode, haiku), each outcome against the
+  transcript: feedback `2` refused before any read, nothing sent; an answer
+  without the plan's lines refused; reject with feedback typed and sent; on
+  the replanned dialog (same slug, `c.txt` became `d.txt`) the card that
+  showed the first plan was refused, "the plan shown is not the plan the card
+  showed", nothing pressed, and a card from a fresh `inspect` approved it;
+  the Write that followed, under its titled rule, was refused for other
+  content and allowed as read, and `d.txt` held `plan`. Two transcript facts
+  from it: on herdr the rejected `ExitPlanMode` and its result were written
+  only when the replanned dialog was answered, about 15 s later, so the
+  driver reported `moved-on` (on hc they were written at once and it reported
+  `answered`); and in one of three runs the Write call was not in the
+  transcript while its dialog was up, for over a minute, so a Write card may
+  have no call to take its id and input from, as a question's often has not.
 - **The arrows on a question's own-answer row move within the words.** With
   the cursor on the multi-select's text row (typed or not), `right` did not
   change tab on either runtime; `up` to an option row and then `right`
@@ -1795,9 +1822,11 @@ prompt; these are the facts a build may rely on.
   `User has approved your plan`.
 - **After a plan is approved, a titled rule sits under the next dialog.** The
   Write permission that followed showed, below its hint line, a rule ending
-  in the plan's name (`──── create-d-txt-file ─`), on herdr and on hc. The
-  parser reads such a screen as `unknown`, so the driver refuses there; the
-  parser does not know this line yet.
+  in a name (`──── create-d-txt-file ─` on herdr, `──── create-d-txt-plan ─`
+  on hc, the same run's two sessions), as the screen's last line. The parser
+  drops a rule of that shape, a lowercase hyphenated title, only as the last
+  line; anywhere else, or with another title, the screen stays `unknown`
+  (fixtures `*-write-after-plan`).
 
 ## Model, effort, permission mode and context
 

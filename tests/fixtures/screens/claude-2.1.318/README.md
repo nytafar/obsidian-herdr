@@ -67,3 +67,14 @@ lines without re-wrapping them.
 | `herdr-plan-feedback` | `ExitPlanMode` | feedback typed on row 3 |
 | `hc-plan-after-approve-feedback` | after `shift+tab` with feedback | plan approved, session now in auto mode |
 | `*-trust` | workspace trust at startup | as opened, cursor on "No, exit" |
+
+## After an approved plan (issue #165)
+
+Recorded 2026-11-06 during the answer driver's live run, from `oh-test-ans*`
+panes in `/tmp` (herdr 0.9.5 `pane.read`, 233 columns; hc 0.1.18
+`terminal.read`, 200x120), after the driver approved a plan with manual edits.
+Scrubbed as above.
+
+| File | Dialog | State when read |
+| --- | --- | --- |
+| `*-write-after-plan` | Write `d.txt`, the plan's step | as opened; under its hint a titled rule, `──── create-d-txt-file ─` (herdr) and `──── create-d-txt-plan ─` (hc), is the screen's last line |

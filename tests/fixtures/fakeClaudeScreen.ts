@@ -4,12 +4,24 @@
  * screens in `screens/claude-2.1.318/` show it, so the driver reads it
  * through the real parser, and it takes keys the way the spike measured
  * them (finding `answering-on-screen` §3). It records every call, throws on a
- * digit, and writes what Claude would have received.
+ * digit key, and writes what Claude would have received, keyed by the call
+ * it answers, the way the transcript is.
+ *
+ * What it models of the real thing, beyond the keys: text typed off a text
+ * row is ignored, except a lone digit, which is the digit's key there (§4);
+ * a lone digit typed on a text row is taken as the key too, the worst case,
+ * unmeasured; hc holds a key until no one has typed for 3 s, so a key can
+ * land long after the call returned (`hold`); every call has its own
+ * `tool_use_id` and the receipt answers only for its own
+ * ({@link FakeClaudeScreen.receiptFor}), or, for a card that had no id (the
+ * dangling `AskUserQuestion` is usually missing live), for the first
+ * question answered with the card's questions.
  *
  * Scripting: `staleReads` returns the screen from before the last key for
- * that many reads; `drop` loses keys; `onKey` changes the dialog under the
- * driver; `next` is what follows an answer; `received` rewrites what Claude
- * gets (a misfire).
+ * that many reads; `drop` loses keys; `hold` delays them; `onKey` changes the
+ * dialog under the driver; `onRead` before each read (a person at the
+ * terminal); `next` is what follows an answer; `received` rewrites what
+ * Claude gets (a misfire).
  *
  * Also a fake clock: virtual time, advanced only when every promise has
  * settled, so the driver's polling runs in no real time at all.
@@ -40,6 +52,8 @@ interface TabState {
 export type SimDialog =
 	| {
 			kind: 'question';
+			/** The call's `tool_use_id`, written with its result. */
+			id: string;
 			questions: SimQuestion[];
 			/** The tab shown; `questions.length` is the review. */
 			tab: number;
@@ -48,22 +62,26 @@ export type SimDialog =
 	  }
 	| {
 			kind: 'permission';
+			id: string;
 			tool: 'Bash' | 'Write';
 			/** Bash's command, or Write's file as shown. */
 			subject: string;
+			/** Write: the content lines between the dotted rules, as the parser gives them back. */
+			content: string[];
 			/** The rows above "No". */
 			options: string[];
 			cursor: number;
 			amending: boolean;
 			feedback: string;
 	  }
-	| { kind: 'plan'; slug: string; cursor: number; feedback: string }
+	| { kind: 'plan'; id: string; slug: string; plan: string[]; cursor: number; feedback: string }
 	| { kind: 'trust'; folder: string; cursor: 'no' | 'yes' }
 	| { kind: 'composer' };
 
-export function questionDialog(questions: SimQuestion[]): SimDialog {
+export function questionDialog(questions: SimQuestion[], id = 'toolu_q'): SimDialog {
 	return {
 		kind: 'question',
+		id,
 		questions,
 		tab: 0,
 		tabs: questions.map(() => ({ cursor: 1, ticks: new Set<number>(), text: '', answer: null })),
@@ -71,11 +89,13 @@ export function questionDialog(questions: SimQuestion[]): SimDialog {
 	};
 }
 
-export function bashDialog(command: string, folder = '/tmp/oh-test-sim'): SimDialog {
+export function bashDialog(command: string, id = 'toolu_b', folder = '/tmp/oh-test-sim'): SimDialog {
 	return {
 		kind: 'permission',
+		id,
 		tool: 'Bash',
 		subject: command,
+		content: [],
 		options: [
 			'Yes',
 			`Yes, and always allow access to ${folder} from this project`,
@@ -87,11 +107,16 @@ export function bashDialog(command: string, folder = '/tmp/oh-test-sim'): SimDia
 	};
 }
 
-export function writeDialog(file: string): SimDialog {
+/** The content lines the fake's Write shows by default. */
+export const SIM_WRITE = [' 1 hi'];
+
+export function writeDialog(file: string, content: string[] = SIM_WRITE, id = 'toolu_w'): SimDialog {
 	return {
 		kind: 'permission',
+		id,
 		tool: 'Write',
 		subject: file,
+		content: [...content],
 		options: [
 			'Yes',
 			'Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)',
@@ -102,8 +127,11 @@ export function writeDialog(file: string): SimDialog {
 	};
 }
 
-export function planDialog(slug: string): SimDialog {
-	return { kind: 'plan', slug, cursor: 1, feedback: '' };
+/** The plan lines the fake draws by default. */
+export const SIM_PLAN = ['Step: write c.txt.'];
+
+export function planDialog(slug: string, plan: string[] = SIM_PLAN, id = 'toolu_plan'): SimDialog {
+	return { kind: 'plan', id, slug, plan: [...plan], cursor: 1, feedback: '' };
 }
 
 export function trustDialog(folder: string): SimDialog {
@@ -202,7 +230,7 @@ function drawPermission(d: Extract<SimDialog, { kind: 'permission' }>): string[]
 	const lines =
 		d.tool === 'Bash'
 			? [' Bash command', '', ' Run the command', DOTS, ` ${d.subject}`, DOTS, ' Do you want to proceed?']
-			: [' Create file', ` ${d.subject}`, DOTS, '  1 hi', DOTS, ` Do you want to create ${d.subject}?`];
+			: [' Create file', ` ${d.subject}`, DOTS, ...d.content.map((line) => ` ${line}`), DOTS, ` Do you want to create ${d.subject}?`];
 	const rows = [...d.options, d.amending ? `No, ${d.feedback || 'and tell Claude what to do differently'}` : 'No'];
 	rows.forEach((label, i) => lines.push(` ${d.cursor === i + 1 ? '❯' : ' '} ${i + 1}. ${label}`));
 	lines.push('', d.amending ? ' Esc to cancel' : ' Esc to cancel · Tab to amend');
@@ -217,7 +245,7 @@ function drawPlan(d: Extract<SimDialog, { kind: 'plan' }>): string[] {
 		'',
 		"   Here is Claude's plan:",
 		`  ${DOTS}`,
-		'   Step: write c.txt.',
+		...d.plan.map((line) => `   ${line}`),
 		`  ${DOTS}`,
 		`  ${RULE}`,
 		'',
@@ -248,8 +276,15 @@ export interface SimOptions {
 	staleReads?: number;
 	/** Keys that are lost: the call succeeds and nothing happens. */
 	drop?: (key: ScreenKey, sim: FakeClaudeScreen) => boolean;
+	/**
+	 * Milliseconds a key or text is held before it lands (hc holds keys until
+	 * no one has typed for 3 s); the call itself returns at once. Needs the clock.
+	 */
+	hold?: (call: SimCall, sim: FakeClaudeScreen) => number;
 	/** Runs after each key or text took effect; may replace the dialog. */
 	onKey?: (call: SimCall, sim: FakeClaudeScreen) => void;
+	/** Runs before each read: a person at the terminal. */
+	onRead?: (sim: FakeClaudeScreen) => void;
 	/** What follows an answer; the composer by default. */
 	next?: (received: AnswerReceipt) => SimDialog;
 	/** Rewrites what Claude receives: a misfire. */
@@ -258,18 +293,39 @@ export interface SimOptions {
 	failReads?: boolean;
 }
 
+/** One result written to the fake transcript, with the call it answers. */
+export interface SimResult {
+	/** The call's `tool_use_id`; `trust` for the trust prompt. */
+	id: string;
+	kind: SimDialog['kind'];
+	/** A question's texts, in order; empty for anything else. */
+	questions: string[];
+	/** A plan's slug, or null. */
+	slug: string | null;
+	receipt: AnswerReceipt;
+}
+
+export type SimReceipt = (signal: AbortSignal) => Promise<AnswerReceipt>;
+
 export class FakeClaudeScreen implements ScreenAccess {
 	readonly calls: SimCall[] = [];
-	readonly received: AnswerReceipt[] = [];
+	/** Everything written to the transcript, in order. */
+	readonly results: SimResult[] = [];
 	reads = 0;
 	private stale: string | null = null;
 	private staleLeft = 0;
-	private waiters: ((receipt: AnswerReceipt) => void)[] = [];
+	private waiters: (() => void)[] = [];
 
 	constructor(
 		public dialog: SimDialog,
 		private readonly options: SimOptions = {},
+		private readonly clock: FakeClock | null = null,
 	) {}
+
+	/** What Claude received, in order. */
+	get received(): AnswerReceipt[] {
+		return this.results.map((result) => result.receipt);
+	}
 
 	/** The keys pressed, in order; text as `text:<words>`. */
 	get keys(): string[] {
@@ -278,6 +334,7 @@ export class FakeClaudeScreen implements ScreenAccess {
 
 	read(): Promise<string> {
 		this.reads++;
+		this.options.onRead?.(this);
 		if (this.options.failReads) return Promise.reject(new Error('read failed'));
 		if (this.stale !== null && this.staleLeft > 0) {
 			this.staleLeft--;
@@ -288,29 +345,80 @@ export class FakeClaudeScreen implements ScreenAccess {
 
 	press(_paneId: string, key: ScreenKey): Promise<void> {
 		if (/^\d$/.test(key)) throw new Error(`digit ${key} pressed`);
-		this.calls.push({ key });
-		this.beforeChange();
-		if (!this.options.drop?.(key, this)) this.key(key);
-		this.options.onKey?.({ key }, this);
+		const call = { key };
+		this.calls.push(call);
+		this.land(call, () => {
+			if (!this.options.drop?.(key, this)) this.key(key);
+		});
 		return Promise.resolve();
 	}
 
 	type(_paneId: string, text: string): Promise<void> {
-		this.calls.push({ text });
-		this.beforeChange();
-		this.text(text);
-		this.options.onKey?.({ text }, this);
+		const call = { text };
+		this.calls.push(call);
+		this.land(call, () => this.text(text));
 		return Promise.resolve();
 	}
 
-	/** Resolves with what Claude received for the answer; at once when it already has. */
-	receipt = (signal: AbortSignal): Promise<AnswerReceipt> =>
-		new Promise((resolve) => {
-			const now = this.received[0];
-			if (now) return resolve(now);
-			this.waiters.push(resolve);
-			signal.addEventListener('abort', () => (this.waiters = this.waiters.filter((w) => w !== resolve)));
-		});
+	/** A person answers at the terminal: Claude receives `receipt` for the dialog shown, and the next one follows. */
+	personAnswers(receipt: AnswerReceipt): void {
+		this.send(receipt);
+	}
+
+	/** The receipt for the call `id`: what the transcript writes for that call, and nothing else. */
+	receiptFor(id: string): SimReceipt {
+		return this.receiptWhere((result) => result.id === id);
+	}
+
+	/**
+	 * The receipt for a question card that had no `tool_use_id` (the call is
+	 * written with its result): the first question answered with these texts.
+	 */
+	receiptForQuestions(texts: readonly string[]): SimReceipt {
+		return this.receiptWhere(
+			(result) => result.kind === 'question' && result.questions.join('\n') === texts.join('\n'),
+		);
+	}
+
+	/** The receipt for a plan: the first `ExitPlanMode` result for this slug. */
+	receiptForPlan(slug: string): SimReceipt {
+		return this.receiptWhere((result) => result.kind === 'plan' && result.slug === slug);
+	}
+
+	/** The trust prompt's outcome. */
+	receiptForTrust(): SimReceipt {
+		return this.receiptWhere((result) => result.kind === 'trust');
+	}
+
+	private receiptWhere(match: (result: SimResult) => boolean): SimReceipt {
+		return (signal) =>
+			new Promise((resolve) => {
+				const check = (): boolean => {
+					const found = this.results.find(match);
+					if (found) resolve(found.receipt);
+					return Boolean(found);
+				};
+				if (check()) return;
+				const waiter = (): void => {
+					if (check()) this.waiters = this.waiters.filter((w) => w !== waiter);
+				};
+				this.waiters.push(waiter);
+				signal.addEventListener('abort', () => (this.waiters = this.waiters.filter((w) => w !== waiter)));
+			});
+	}
+
+	/** Applies a key or text now, or after its hold. */
+	private land(call: SimCall, effect: () => void): void {
+		const apply = (): void => {
+			this.beforeChange();
+			effect();
+			this.options.onKey?.(call, this);
+		};
+		const ms = this.options.hold?.(call, this) ?? 0;
+		if (ms <= 0) return apply();
+		if (!this.clock) throw new Error('a held key needs the clock');
+		void this.clock.sleep(ms).then(apply);
+	}
 
 	private beforeChange(): void {
 		if (this.options.staleReads) {
@@ -319,14 +427,25 @@ export class FakeClaudeScreen implements ScreenAccess {
 		}
 	}
 
+	/** Writes the answer to the current dialog's call; the next dialog follows. */
 	private send(receipt: AnswerReceipt): void {
+		const d = this.dialog;
 		const got = this.options.received ? this.options.received(receipt) : receipt;
-		this.received.push(got);
+		this.results.push({
+			id: d.kind === 'trust' || d.kind === 'composer' ? d.kind : d.id,
+			kind: d.kind,
+			questions: d.kind === 'question' ? d.questions.map((q) => q.question) : [],
+			slug: d.kind === 'plan' ? d.slug : null,
+			receipt: got,
+		});
 		this.dialog = this.options.next ? this.options.next(got) : { kind: 'composer' };
-		for (const waiter of this.waiters.splice(0)) waiter(got);
+		for (const waiter of [...this.waiters]) waiter();
 	}
 
 	private text(text: string): void {
+		// A lone digit is that digit's key: measured off a text row, and taken
+		// so on a text row too, which is unmeasured and the worst case.
+		if (/^\d$/.test(text)) return this.digit(Number(text));
 		const d = this.dialog;
 		if (d.kind === 'question' && d.tab < d.questions.length) {
 			const q = d.questions[d.tab] as SimQuestion;
@@ -339,6 +458,39 @@ export class FakeClaudeScreen implements ScreenAccess {
 			d.feedback += text;
 		} else if (d.kind === 'plan' && d.cursor === 3) {
 			d.feedback += text;
+		}
+	}
+
+	/** A digit, where Claude reads one: it picks its row at once (finding §3). */
+	private digit(n: number): void {
+		const d = this.dialog;
+		if (d.kind === 'question') {
+			const count = d.questions.length;
+			if (d.tab === count) {
+				if (n === 1) this.submit(d);
+				if (n === 2) d.tab = 0;
+				return;
+			}
+			const q = d.questions[d.tab] as SimQuestion;
+			const tab = d.tabs[d.tab] as TabState;
+			if (n < 1 || n > q.options.length) return;
+			if (q.multiSelect) {
+				if (tab.ticks.has(n)) tab.ticks.delete(n);
+				else tab.ticks.add(n);
+				return;
+			}
+			tab.answer = q.options[n - 1]?.label ?? '';
+			if (lone(d)) return this.submit(d);
+			d.tab++;
+		} else if (d.kind === 'permission') {
+			if (n < 1 || n > d.options.length + 1) return;
+			d.cursor = n;
+			d.amending = false;
+			this.permissionKey(d, 'enter');
+		} else if (d.kind === 'plan') {
+			if (n < 1 || n > 3) return;
+			d.cursor = n;
+			if (n < 3) this.planKey(d, 'enter');
 		}
 	}
 

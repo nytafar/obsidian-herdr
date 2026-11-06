@@ -16,6 +16,12 @@
  *   numbered out of turn makes the region no dialog. A screen whose dialog
  *   is taller than the pane has lost its rule and reads as `unknown`.
  * - Empty rows are dropped first; nothing here depends on them.
+ * - A titled rule as the screen's last line (`──── create-d-txt-file ─`),
+ *   which Claude draws under the dialog once the session has a name (seen
+ *   under the Write permission after a plan was approved), is the frame's
+ *   bottom, not a line of the dialog, and is dropped. Only there, only with
+ *   a lowercase hyphenated name for its title: anywhere else, or with any
+ *   other title, it is a line out of place.
  * - Rows are recognised by their shape (cursor column, number, indent), and
  *   their text is kept per screen line (`../screenDialog.ts`). Nothing here
  *   picks a row by position or a label by guess.
@@ -44,6 +50,8 @@ const CURSOR = '❯';
 const RULE = /^ *─{10,}$/;
 /** A dotted rule around a permission's command or a plan. */
 const DOTTED = /^ *╌{10,}$/;
+/** The titled rule under a dialog once the session has a name: `──── create-d-txt-file ─`. */
+const TITLED_RULE = /^─{10,} [a-z0-9]+(?:-[a-z0-9]+)* ─$/;
 
 /** Reads the dialog on a visible screen, or `unknown` when it is not wholly one. */
 export function parseClaudeScreen(screen: string): ScreenDialog {
@@ -51,6 +59,7 @@ export function parseClaudeScreen(screen: string): ScreenDialog {
 		.split('\n')
 		.map((line) => line.replace(/\s+$/, ''))
 		.filter((line) => line !== '');
+	if (TITLED_RULE.test(lines[lines.length - 1] ?? '')) lines.pop();
 	for (let i = lines.length - 1; i >= 0; i--) {
 		if (!RULE.test(lines[i] ?? '')) continue;
 		const dialog = parseRegion(lines.slice(i + 1));

@@ -8,10 +8,14 @@
  * this is about when *not* to press:
  *
  * - **The request is the expectation.** The card's request (the dangling
- *   call, the plan's slug, the pane's folder) is a {@link ScreenExpectation};
- *   every read is parsed by the agent format's reader and must match it
- *   exactly ({@link matchScreen}), and so must the runtime's own status
- *   message when it has one ({@link statusAgrees}), before any key.
+ *   call, the plan's slug and the plan the card showed, the pane's folder) is
+ *   a {@link ScreenExpectation}; every read is parsed by the agent format's
+ *   reader and must match it exactly ({@link matchScreen}), and so must the
+ *   runtime's own status message when it has one ({@link statusAgrees}),
+ *   before any key. What the card showed of a plan or a file's content comes
+ *   from the screen at card time ({@link ScreenAnswerer.inspect},
+ *   {@link withShown}): Claude replans under the same slug, and writes the
+ *   same file again with other content.
  * - **Moves, then a fresh read, then one commit.** Keys are derived from the
  *   parsed screen (where the cursor is, what is ticked), never a fixed
  *   layout. Moves change nothing Claude acts on; after them the driver reads
@@ -20,15 +24,24 @@
  *   one commit key, alone in its call. Every `enter`, a multi-select toggle
  *   included, follows a read with the expected row under the cursor. No
  *   digit is ever pressed. A move that does not show is not repeated: held
- *   keys land late, and a repeat would overshoot.
+ *   keys land late, and a repeat would overshoot. Typed words are
+ *   never a lone digit, which Claude reads as that digit's key.
  * - **Confirm by content, never resend.** After the final key the screen is
- *   re-read every 100 ms for up to 1.5 s; it has moved on when the dialog no
- *   longer matches the request (a new permission with the same command has
- *   not). Then the transcript's word ({@link AnswerReceipt}) decides between
- *   answered and a misfire. Nothing is ever pressed a second time.
+ *   re-read every 100 ms; it has moved on when the dialog no longer matches
+ *   the request (a new permission with the same command has not). Then the
+ *   transcript's word ({@link AnswerReceipt}) decides between answered and a
+ *   misfire. Nothing is ever pressed a second time. A move, the words or a
+ *   toggle after which the request is gone is judged the same way: something
+ *   answered the dialog, and the card says what Claude received.
+ * - **A key may land late.** hc holds keys until no one has typed for 3 s, so
+ *   a key that has not shown is not given up on until the screen has stayed
+ *   the same for {@link AnswerTiming.quietMs} since the key and since its last
+ *   change; until then the pane stays locked and the receipt watched. If the
+ *   screen never settles the run ends at {@link AnswerTiming.lateMs} and says
+ *   the key may still land.
  * - **One answer per pane.** A second answer while one is in flight is
- *   `busy`. {@link AnswerRun.cancel} stops a run between steps, before the
- *   final key, never after.
+ *   `busy`. {@link AnswerRun.cancel} stops a run between moves, before any
+ *   commit key (a toggle, a tab's answer, the final key), never after.
  *
  * Agent-neutral: the format's parser and the runtime's {@link ScreenAccess}
  * are injected, and so is the clock, so the whole of it runs against a fake
@@ -58,8 +71,13 @@ import { setTimer } from '../timers';
 export type ScreenExpectation =
 	| {
 			kind: 'question';
-			/** The dangling `AskUserQuestion` call's id: what the transcript answers. */
-			toolUseId: string;
+			/**
+			 * The dangling `AskUserQuestion` call's id: what the transcript
+			 * answers. Null when the card has none: on 2.1.318 the call is
+			 * usually written only with its result, and the receipt then looks
+			 * for the first answer to these questions.
+			 */
+			toolUseId: string | null;
 			/** The call's questions, in order. */
 			questions: readonly PendingQuestion[];
 	  }
@@ -73,11 +91,28 @@ export type ScreenExpectation =
 			input: Readonly<Record<string, unknown>>;
 			/** The session's folder: Write and Edit show a file inside it relative to it. */
 			cwd: string;
+			/**
+			 * Write and Edit: what the dialog showed between its dotted rules when
+			 * the card was built (`PermissionDialog.content` from
+			 * {@link ScreenAnswerer.inspect}), which must still be what it shows:
+			 * the same file may be asked for again with other content. Null before
+			 * the card has read it, which {@link ScreenAnswerer.inspect} accepts
+			 * and an answer refuses. Not used for Bash, whose command is the content.
+			 */
+			content?: readonly string[] | null;
 	  }
 	| {
 			kind: 'plan';
 			/** The plan file's slug (`~/.claude/plans/<slug>.md`), as the card read it. */
 			slug: string;
+			/**
+			 * The plan as the card showed it: the dialog's plan lines when the card
+			 * was built (`PlanDialog.plan` from {@link ScreenAnswerer.inspect}).
+			 * Claude replans under the same slug, so the slug alone does not say
+			 * the screen shows the plan the user read. Null before the card has
+			 * read it, which an answer refuses.
+			 */
+			plan: readonly string[] | null;
 	  }
 	| {
 			kind: 'trust';
@@ -175,8 +210,13 @@ export type RefusalReason =
 export type AnswerOutcome =
 	/** The screen moved on and the transcript shows what was pressed. */
 	| { kind: 'answered'; receipt: AnswerReceipt }
-	/** The screen moved on; the transcript said nothing in time (or nobody asked it). */
-	| { kind: 'moved-on' }
+	/**
+	 * The screen moved on; the transcript said nothing in time (or nobody
+	 * asked it). `final`: after the key that sends the answer; otherwise the
+	 * request went away after a toggle or a tab's answer, and what Claude
+	 * received, if anything, is unknown.
+	 */
+	| { kind: 'moved-on'; final: boolean }
 	/**
 	 * The agent received something else than was pressed. It cannot be
 	 * undone; the card says what Claude actually received.
@@ -186,14 +226,18 @@ export type AnswerOutcome =
 	 * A commit key was pressed and the screen did not show it taking. It is
 	 * never pressed again. `final`: it was the key that sends the answer;
 	 * otherwise a toggle or a tab's answer, which Claude has not received.
+	 * `mayLand`: the screen never stayed still long enough to rule out a key
+	 * hc still holds, so it may yet arrive; otherwise it stayed unchanged for
+	 * {@link AnswerTiming.quietMs} and the key is taken as lost.
 	 */
-	| { kind: 'not-taken'; final: boolean; detail: string }
+	| { kind: 'not-taken'; final: boolean; detail: string; mayLand: boolean }
 	/**
-	 * Nothing Claude acts on was sent. `pressed` counts the moves, toggles
-	 * and typing already sent (the terminal's cursor may have moved).
+	 * Nothing was sent to Claude, as far as the screen and the transcript
+	 * show. `pressed` counts the moves, toggles, tab answers and typing already
+	 * sent to the terminal (its cursor and ticks may have changed).
 	 */
 	| { kind: 'refused'; reason: RefusalReason; detail: string; pressed: number }
-	/** Cancelled before the final key. */
+	/** Cancelled before any commit key. */
 	| { kind: 'cancelled'; reason: string; pressed: number }
 	/** Another answer is in flight on this pane; nothing was read or sent. */
 	| { kind: 'busy' };
@@ -205,7 +249,9 @@ export interface AnswerRun {
 	/**
 	 * Stops the run before its next key: a runtime status that left `blocked`,
 	 * a `/clear` rotation, a newer dangling call. True when it took; false once
-	 * the final key is out (or the run has ended), which nothing can take back.
+	 * any commit key is out (a toggle, a tab's answer, the final key), once the
+	 * request went away under the run, or once the run has ended: from there
+	 * the outcome says what was sent.
 	 */
 	readonly cancel: (reason: string) => boolean;
 }
@@ -235,13 +281,29 @@ export interface AnswerTiming {
 	pollMs: number;
 	/** How long a move, a toggle or typing has to show. hc may hold keys while a person types. */
 	stepMs: number;
-	/** How long the final key has to clear the dialog (ADR-0009 §4: 1.5 s). */
+	/** The least the final key is given to clear the dialog (ADR-0009 §4: 1.5 s). */
 	confirmMs: number;
+	/**
+	 * How long the screen must stay unchanged, counted from a key that has not
+	 * shown and from the screen's last change, before the run takes the key as
+	 * lost and lets the pane go: hc holds a key until no one has typed for 3 s,
+	 * and a key that lands takes up to 1.5 s to show.
+	 */
+	quietMs: number;
+	/** The most a run waits, after such a key, for that quiet; past it the key may still land. */
+	lateMs: number;
 	/** How long the transcript has, once the screen moved on. */
 	receiptMs: number;
 }
 
-export const ANSWER_TIMING: AnswerTiming = { pollMs: 100, stepMs: 3000, confirmMs: 1500, receiptMs: 15000 };
+export const ANSWER_TIMING: AnswerTiming = {
+	pollMs: 100,
+	stepMs: 3000,
+	confirmMs: 1500,
+	quietMs: 4500,
+	lateMs: 15000,
+	receiptMs: 15000,
+};
 
 /** More steps than any measured dialog needs; past it the run refuses. */
 const MAX_STEPS = 80;
@@ -255,8 +317,9 @@ export type ScreenMatch = { ok: true; place: ScreenPlace } | { ok: false; detail
 
 /**
  * Whether `dialog` is the request, exactly (ADR-0009 §1): the question's
- * text, options and headers; the permission's tool and command or file; the
- * plan's slug; the trust prompt's folder. Pure.
+ * text, options and headers; the permission's tool and command, or file and
+ * content; the plan's slug and lines; the trust prompt's folder. A plan or
+ * content of null (a card still reading the screen) is not checked. Pure.
  */
 export function matchScreen(dialog: ScreenDialog, expectation: ScreenExpectation): ScreenMatch {
 	switch (expectation.kind) {
@@ -267,6 +330,9 @@ export function matchScreen(dialog: ScreenDialog, expectation: ScreenExpectation
 		case 'plan':
 			if (dialog.kind !== 'plan') return miss(dialog, 'a plan approval');
 			if (dialog.slug !== expectation.slug) return { ok: false, detail: 'the plan shown is another plan' };
+			if (expectation.plan !== null && !wrappedEquals(dialog.plan, expectation.plan.join('\n'))) {
+				return { ok: false, detail: 'the plan shown is not the plan the card showed' };
+			}
 			if (dialog.feedback === null && !wrappedEquals(dialog.options[2]?.lines ?? [], PLAN_ROW_3)) {
 				return { ok: false, detail: 'plan row 3 is not "Tell Claude what to change"' };
 			}
@@ -341,7 +407,34 @@ function matchPermission(dialog: ScreenDialog, expectation: Extract<ScreenExpect
 	if (!wrappedEquals(shown, file) && !(relative !== null && wrappedEquals(shown, relative))) {
 		return { ok: false, detail: 'the permission names another file' };
 	}
+	// Exactly as read at card time: indentation is content, and the same render shows the same lines.
+	const content = expectation.content ?? null;
+	if (content !== null && !sameLines(dialog.content, content)) {
+		return { ok: false, detail: 'the permission shows other content than the card showed' };
+	}
 	return { ok: true, place: 'dialog' };
+}
+
+function sameLines(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((line, i) => line === b[i]);
+}
+
+/**
+ * The request completed with what the card's read of the screen showed: a
+ * plan's lines, a Write's or Edit's content. The card builds its expectation
+ * without them, reads the screen with {@link ScreenAnswerer.inspect}, shows
+ * what it read, and answers with this. Pure.
+ */
+export function withShown(expectation: ScreenExpectation, dialog: ScreenDialog): ScreenExpectation {
+	if (expectation.kind === 'plan' && dialog.kind === 'plan') return { ...expectation, plan: [...dialog.plan] };
+	if (expectation.kind === 'permission' && dialog.kind === 'permission' && needsContent(expectation.tool)) {
+		return { ...expectation, content: [...dialog.content] };
+	}
+	return expectation;
+}
+
+function needsContent(tool: string): boolean {
+	return tool === 'Write' || tool === 'Edit';
 }
 
 /** `file` relative to `folder` when it lies inside it, else null. Write and Edit show it so. */
@@ -402,6 +495,10 @@ export function answerIssue(expectation: ScreenExpectation, answer: ScreenAnswer
 		trust: 'trust',
 	};
 	if (fits[answer.kind] !== expectation.kind) return `a ${answer.kind} answer does not fit a ${expectation.kind}`;
+	if (expectation.kind === 'plan' && expectation.plan === null) return 'the answer needs the plan the card showed';
+	if (expectation.kind === 'permission' && needsContent(expectation.tool) && (expectation.content ?? null) === null) {
+		return 'the answer needs the content the card showed';
+	}
 	switch (answer.kind) {
 		case 'questions': {
 			if (expectation.kind !== 'question') return 'not a question';
@@ -425,7 +522,18 @@ export function answerIssue(expectation: ScreenExpectation, answer: ScreenAnswer
 
 function wordsIssue(text: string): string | null {
 	if (!text.trim()) return 'the words are empty';
-	return screenTextIssue(text.trim());
+	return typedIssue(text.trim());
+}
+
+/**
+ * Why words cannot be typed into a dialog. A lone digit is the same bytes as
+ * the digit's key, which picks that row and answers wherever the cursor is
+ * not on a text row (finding `answering-on-screen` §4), and how Claude reads
+ * one on a text row is unmeasured: refused until it is.
+ */
+function typedIssue(text: string): string | null {
+	if (/^\d$/.test(text)) return 'a single digit would be read as that option; add a word';
+	return screenTextIssue(text);
 }
 
 function pickIssue(question: PendingQuestion, pick: QuestionPick): string | null {
@@ -435,7 +543,7 @@ function pickIssue(question: PendingQuestion, pick: QuestionPick): string | null
 	if (pick.options.some((label) => !labels.includes(label))) return `"${question.question}" offers no such option`;
 	const text = pick.text.trim();
 	if (text) {
-		const issue = screenTextIssue(text);
+		const issue = typedIssue(text);
 		if (issue) return issue;
 	}
 	const count = pick.options.length + (text ? 1 : 0);
@@ -909,7 +1017,7 @@ export class ScreenAnswerer {
 				// Every call inside is guarded; this is the last net.
 				const detail = messageOf(error);
 				return run.committed
-					? { kind: 'not-taken', final: true, detail }
+					? { kind: 'not-taken', final: run.finalSent, detail, mayLand: true }
 					: { kind: 'refused', reason: 'key-failed', detail, pressed: run.pressed };
 			})
 			.finally(() => this.running.delete(request.paneId));
@@ -941,16 +1049,43 @@ type Missed = Exclude<Read, { kind: 'seen' }>;
 
 type Waited = { ok: true; seen: Seen } | { ok: false; last: Missed | null };
 
+/**
+ * After a key that has not shown: what the reads say while the run holds on
+ * (see {@link Run.watch}).
+ */
+type Watched =
+	/** The intended state showed after all: the key landed late. */
+	| { kind: 'shown'; seen: Seen }
+	/** The request is gone, from two reads in a row. */
+	| { kind: 'gone'; detail: string }
+	/** The transcript answered. */
+	| { kind: 'receipt'; receipt: AnswerReceipt }
+	/**
+	 * The screen stayed the same for `quietMs` (`mayLand` false), or never did
+	 * by `lateMs` (`mayLand` true); `failed` when the last read failed.
+	 */
+	| { kind: 'still'; mayLand: boolean; failed: boolean };
+
 /** One answer, start to end. */
 class Run {
 	pressed = 0;
+	/**
+	 * A commit key is out (a toggle, a tab's answer, the final key), or the
+	 * request went away under the run: no cancel from here, the outcome says
+	 * what was sent.
+	 */
 	committed = false;
+	/** The final key is out. */
+	finalSent = false;
 	private cancelled: string | null = null;
 	private finished = false;
 	private readonly progress: Progress = { done: new Set() };
 	private readonly abort = new AbortController();
 	private receiptAsked: Promise<AnswerReceipt | null> | null = null;
 	private receipt: AnswerReceipt | null = null;
+	/** The last read, by its parsed content, and when a read last differed from the one before. */
+	private lastShot: string | null = null;
+	private changedAt = 0;
 
 	constructor(
 		private readonly deps: Resolved,
@@ -990,6 +1125,7 @@ class Run {
 	/** One read, parsed and matched against the request and, before keys, the runtime's word. */
 	private async look(withStatus: boolean): Promise<Read> {
 		const read = await readDialog(this.deps, this.request.paneId);
+		this.note(read.ok ? JSON.stringify(read.dialog) : null);
 		if (!read.ok) return { kind: 'failed', detail: read.detail };
 		const match = matchScreen(read.dialog, this.request.expectation);
 		if (!match.ok) return { kind: 'gone', detail: match.detail, definite: read.dialog.kind !== 'unknown' };
@@ -997,6 +1133,12 @@ class Run {
 			return { kind: 'status' };
 		}
 		return { kind: 'seen', seen: { dialog: read.dialog, place: match.place } };
+	}
+
+	/** Keeps when the screen last changed; a failed read counts as a change, since it shows nothing. */
+	private note(shot: string | null): void {
+		if (shot === null || shot !== this.lastShot) this.changedAt = this.deps.clock.now();
+		this.lastShot = shot;
 	}
 
 	/**
@@ -1023,10 +1165,50 @@ class Run {
 		return { ok: false, last };
 	}
 
+	/**
+	 * After a key that has not shown (`pressedAt`, when its call returned):
+	 * reads on, holding the pane and the receipt, until the key shows
+	 * (`until`), the request is gone from two reads in a row, the transcript
+	 * answers, or the screen has stayed the same for `quietMs` counted from
+	 * the key and from its last change, and at least `minMs` from the key.
+	 * hc holds a key until no one has typed for 3 s; a person typing changes
+	 * the screen, so a screen that stays still that long is past the hold and
+	 * the key is lost. One that never stays still ends at `lateMs`, with the
+	 * key possibly still to land.
+	 */
+	private async watch(pressedAt: number, until: Until | null, minMs: number): Promise<Watched> {
+		const { clock, timing } = this.deps;
+		let gone = 0;
+		let failed = false;
+		for (;;) {
+			if (this.receipt) return { kind: 'receipt', receipt: this.receipt };
+			const now = clock.now();
+			const still = now - Math.max(pressedAt, this.changedAt);
+			if (now - pressedAt >= minMs && still >= timing.quietMs) return { kind: 'still', mayLand: false, failed };
+			if (now - pressedAt >= timing.lateMs) return { kind: 'still', mayLand: true, failed };
+			await clock.sleep(timing.pollMs);
+			const read = await this.look(false);
+			failed = read.kind === 'failed';
+			if (read.kind === 'gone') {
+				if (++gone >= 2) return { kind: 'gone', detail: read.detail };
+				continue;
+			}
+			gone = 0;
+			if (read.kind === 'seen' && until?.(read.seen)) return { kind: 'shown', seen: read.seen };
+		}
+	}
+
 	private async press(key: ScreenKey): Promise<void> {
 		// A digit answers without the row being checked; the driver never sends one.
 		if (/^\d$/.test(key)) throw new Error('the answer driver presses no digits');
 		await this.deps.screen.press(this.request.paneId, key);
+	}
+
+	private async type(text: string): Promise<void> {
+		// A lone digit is the digit's key (answerIssue refuses it first).
+		const issue = typedIssue(text.trim());
+		if (issue) throw new Error(issue);
+		await this.deps.screen.type(this.request.paneId, text);
 	}
 
 	/** Sends one move, toggle or the words, unless cancelled; the outcome when it did not go. */
@@ -1043,10 +1225,10 @@ class Run {
 	}
 
 	private async steps(): Promise<AnswerOutcome> {
-		const { expectation, answer, paneId } = this.request;
+		const { expectation, answer } = this.request;
 		const issue = answerIssue(expectation, answer);
 		if (issue) return this.refused('invalid', issue);
-		const { screen, timing } = this.deps;
+		const { clock, timing } = this.deps;
 
 		const first = await this.look(true);
 		if (first.kind !== 'seen') return this.fromRead(first);
@@ -1065,26 +1247,49 @@ class Run {
 					if (failed) return failed;
 				}
 			} else if (step.type === 'type') {
-				const failed = await this.send(() => screen.type(paneId, step.text));
+				const failed = await this.send(() => this.type(step.text));
 				if (failed) return failed;
 			} else {
-				const failed = await this.send(() => this.press(step.key));
+				// Set in the same synchronous stretch as the cancel check in send().
+				const failed = await this.send(() => {
+					this.committed = true;
+					return this.press(step.key);
+				});
 				if (failed) return failed;
 			}
+			const pressedAt = clock.now();
 
 			const next = await this.waitFor(step.until, timing.stepMs);
-			if (!next.ok) {
-				if (step.type !== 'commit') return this.fromRead(next.last);
-				// A toggle or a tab's answer that did not show. If the request is
-				// gone, the key may have sent the answer after all: the transcript says.
-				if (next.last?.kind === 'gone' || next.last?.kind === 'status') {
-					this.committed = true;
-					return this.judgeGone();
+			if (next.ok) {
+				seen = next.seen;
+			} else {
+				// A move or the words change nothing Claude acts on: if the transcript
+				// stays silent, nothing was sent. A toggle or a tab's answer may have.
+				const silent = (read: Missed | null): AnswerOutcome | null =>
+					step.type === 'commit' ? null : this.fromRead(read);
+				const last = next.last;
+				if (last?.kind === 'status' || (last?.kind === 'gone' && last.definite)) {
+					return this.judgeGone(false, silent(last));
 				}
-				return { kind: 'not-taken', final: false, detail: `${step.key} did not show on the screen` };
+				// Still the request, or a screen not read: the key may land yet.
+				const late = await this.watch(pressedAt, step.until, 0);
+				if (late.kind === 'gone') {
+					return this.judgeGone(false, silent({ kind: 'gone', detail: late.detail, definite: false }));
+				}
+				if (late.kind !== 'shown') {
+					const halt = this.stopped();
+					if (halt) return halt;
+					if (step.type === 'commit') {
+						const mayLand = late.kind === 'still' && late.mayLand;
+						return { kind: 'not-taken', final: false, detail: `${step.key} did not show on the screen`, mayLand };
+					}
+					return late.kind === 'still' && late.failed
+						? this.refused('read-failed', 'the screen could not be read after the keys')
+						: this.fromRead(null);
+				}
+				seen = late.seen;
 			}
 			if (step.tabDone !== undefined) this.progress.done.add(step.tabDone);
-			seen = next.seen;
 		}
 		return this.refused('stuck', 'the answer took more steps than any dialog needs');
 	}
@@ -1114,21 +1319,34 @@ class Run {
 		};
 	}
 
-	/** The screen moved on: the transcript decides, for up to `receiptMs`. */
-	private async judgeGone(): Promise<AnswerOutcome> {
+	/**
+	 * The request is gone from the screen: the transcript decides, for up to
+	 * `receiptMs`. Silent, the outcome is `silent` when given (after a move or
+	 * the words, which send nothing), else `moved-on`.
+	 */
+	private async judgeGone(final: boolean, silent: AnswerOutcome | null): Promise<AnswerOutcome> {
+		this.committed = true;
+		const fallback: AnswerOutcome = silent ?? { kind: 'moved-on', final };
 		const waiting = this.askReceipt();
-		if (!waiting) return { kind: 'moved-on' };
+		if (!waiting) return fallback;
 		const { clock, timing } = this.deps;
 		const value = await Promise.race([waiting, clock.sleep(timing.receiptMs).then(() => null)]);
-		return value ? this.judge(value) : { kind: 'moved-on' };
+		return value ? this.judge(value) : fallback;
 	}
 
-	/** Presses the final key, once, and confirms by content (ADR-0009 §4). */
+	/**
+	 * Presses the final key, once, and confirms by content (ADR-0009 §4): the
+	 * request gone from two reads in a row (one torn repaint is not taken for
+	 * it), or the transcript's word, whichever comes first. A key that does not
+	 * show is held on to past hc's hold ({@link Run.watch}) before it is called
+	 * not taken.
+	 */
 	private async final(key: CommitKey): Promise<AnswerOutcome> {
 		// Checked and set in one synchronous stretch: a cancel after this is refused.
 		const stop = this.stopped();
 		if (stop) return stop;
 		this.committed = true;
+		this.finalSent = true;
 		const { clock, timing } = this.deps;
 
 		void this.askReceipt();
@@ -1140,20 +1358,11 @@ class Run {
 			pressError = messageOf(error);
 		}
 
-		// Moved on: the request is gone from two reads in a row, so that one
-		// torn repaint is not taken for it. The transcript may say first.
-		const deadline = clock.now() + timing.confirmMs;
-		let gone = 0;
-		while (gone < 2 && clock.now() < deadline) {
-			if (this.receipt) return this.judge(this.receipt);
-			await clock.sleep(timing.pollMs);
-			const read = await this.look(false);
-			if (read.kind === 'seen') gone = 0;
-			else if (read.kind === 'gone') gone++;
-		}
-		if (this.receipt) return this.judge(this.receipt);
-		if (gone < 2) return { kind: 'not-taken', final: true, detail: pressError ?? `${key} did not clear the dialog` };
-		return this.judgeGone();
+		const watched = await this.watch(clock.now(), null, timing.confirmMs);
+		if (watched.kind === 'receipt') return this.judge(watched.receipt);
+		if (watched.kind === 'gone') return this.judgeGone(true, null);
+		const mayLand = watched.kind === 'still' && watched.mayLand;
+		return { kind: 'not-taken', final: true, detail: pressError ?? `${key} did not clear the dialog`, mayLand };
 	}
 }
 

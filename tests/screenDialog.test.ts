@@ -529,6 +529,22 @@ for (const run of RUNS) {
 	});
 }
 
+describe('screen dialogs: the dialog after an approved plan (#165’s live run)', () => {
+	// A titled rule (`──── <name> ─`) sits under the hint, as the screen's last line.
+	const write: PermissionWant = {
+		tool: 'Write',
+		file: 'd.txt',
+		prompt: 'Do you want to create d.txt?',
+		options: ['Yes', EDITS_OPTION_2, 'No'],
+		cursor: 1,
+	};
+	fixture('herdr-write-after-plan.txt', (d) => {
+		expectPermission(d, write);
+		expect((d as PermissionDialog).content).toEqual([' 1 plan']);
+	});
+	fixture('hc-write-after-plan.txt', (d) => expectPermission(d, write));
+});
+
 describe('screen dialogs: every fixture is checked', () => {
 	it('has a check for each recorded screen', () => {
 		const files = readdirSync(DIR).filter((file) => file.endsWith('.txt'));
@@ -573,6 +589,25 @@ describe('screen dialogs: anything not wholly one dialog is unknown', () => {
 		unknown(altered('hc-60-bash-permission.txt', (lines) => withoutRule(lines, 1)));
 		unknown(altered('herdr-60-trust.txt', (lines) => withoutRule(lines, 1)));
 		unknown(altered('herdr-60-plan.txt', (lines) => withoutRule(lines, 2)));
+	});
+
+	it('drops a titled rule only as the last line, with a name for its title', () => {
+		const titled = screen('herdr-write-after-plan.txt');
+		const rule = /^─+ create-d-txt-file ─$/m;
+		expect(parseClaudeScreen(titled).kind).toBe('permission');
+		// Anything after it, the title not a name, no title, or a rule that does not end in `─`.
+		unknown(`${titled.trimEnd()}\n❯ something typed below`);
+		unknown(`${titled.trimEnd()}\n${'─'.repeat(20)} another-name ─`);
+		unknown(titled.replace(rule, `${'─'.repeat(40)} Create D txt file ─`));
+		unknown(titled.replace(rule, `${'─'.repeat(40)} create-d-txt-file`));
+		unknown(titled.replace(rule, `${'─'.repeat(40)} create-d-txt-file ─ x`));
+		unknown(titled.replace(rule, `─── create-d-txt-file ─`));
+		// Above the hint, it is a line inside the dialog.
+		unknown(
+			altered('herdr-write-permission.txt', (lines) =>
+				replaceLine(lines, /^ Esc to cancel · Tab to amend$/, `${'─'.repeat(40)} b-txt ─\n Esc to cancel · Tab to amend`),
+			),
+		);
 	});
 
 	it('refuses a screen with a line after the dialog', () => {
