@@ -360,11 +360,20 @@ function resultText(content: unknown): string {
  * and what it should say is the command as typed.
  */
 function commandPrompt(content: string): string | null {
-	const name = /^<command-name>([^<]*)<\/command-name>/.exec(content);
+	// A skill run as a command writes its `<command-message>` first (2.1.286).
+	const name = /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>([^<]*)<\/command-name>/.exec(content);
 	if (!name) return null;
 	const args = /<command-args>([^<]*)<\/command-args>/.exec(content);
 	return `${name[1] ?? ''} ${args?.[1] ?? ''}`.trim();
 }
+
+/**
+ * A `/clear` run at the keyboard, as its whole envelope (#134): the name, and
+ * at most its own message and empty arguments. Prose that quotes `/clear`,
+ * or a command with arguments, is not one.
+ */
+const CONTEXT_CLEAR =
+	/^\s*(?:<command-message>clear<\/command-message>\s*)?<command-name>\s*\/clear\s*<\/command-name>(?:\s*<command-message>clear<\/command-message>)?(?:\s*<command-args>\s*<\/command-args>)?\s*$/;
 
 /** The text of one `<tag>` in a task notification, empty when it has none. */
 function notificationField(content: string, tag: string): string {
@@ -754,6 +763,16 @@ class Branch {
 	}
 
 	/** A prompt opened `turnId`; it is the newest now, and nothing answered it yet. */
+	/**
+	 * The conversation started over in the same file (#134): what was read
+	 * before is no branch to go back to, and a prompt that hangs from nothing
+	 * reaches back only to here.
+	 */
+	cleared(): void {
+		this.floor = this.answers;
+		this.lastPrompt = null;
+	}
+
 	prompted(turnId: string, line: Json): void {
 		const parent = parentOf(line);
 		this.lastPrompt = { turnId, parent: typeof parent === 'string' ? parent : '', answered: false };
@@ -928,6 +947,15 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				if (isLocalCommandOutput(content)) {
+					countRaw(type);
+					continue;
+				}
+				if (CONTEXT_CLEAR.test(content)) {
+					// `/clear` inside the file (#134): the turns go, and with them
+					// every call a late result could still find. Usually Claude moves
+					// to a new file instead, and there this clears nothing.
+					draft.dropAfter('');
+					branch.cleared();
 					countRaw(type);
 					continue;
 				}

@@ -348,3 +348,67 @@ describe('the runtime’s notices and bash mode (#133)', () => {
 		expect(state.turns[0]?.entries).toEqual([]);
 	});
 });
+
+describe('a /clear inside the same file (#134)', () => {
+	// The three `/clear` lines are recorded (2.1.286, from the start of a file
+	// Claude rotated to); the turn before them and the late result after them
+	// are written around them in the same shapes.
+	const lines = fixtureLines('in-file-clear');
+
+	it('drops the turns before it and opens no turn of its own', () => {
+		const state = cold(lines);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['Start afresh']);
+		expect(live(lines).turns).toEqual(state.turns);
+	});
+
+	it('attaches a tool result for a call from before the clear to nothing', () => {
+		const state = cold(lines);
+
+		expect(state.turns.flatMap((turn) => turn.entries.map((entry) => entry.kind))).toEqual(['text']);
+		expect(state.raw.user).toBeGreaterThanOrEqual(3);
+	});
+
+	it('says which turns it dropped', () => {
+		const at = lines.findIndex((line) => line.includes('<command-name>/clear'));
+		const before = reduce(emptyTranscript(), lines.slice(0, at));
+		const after = reduce(before.state, lines.slice(at, at + 1));
+
+		expect(after.removedTurnIds).toEqual(['u1']);
+		expect(after.state.turns).toEqual([]);
+	});
+
+	it('does not reset for "/clear" quoted in a prompt, a command with arguments, or a compaction', () => {
+		const prompt = (uuid: string, content: string, extra: Record<string, unknown> = {}): string =>
+			JSON.stringify({ type: 'user', uuid, message: { role: 'user', content }, ...extra });
+		const state = cold([
+			prompt('u1', 'First'),
+			prompt('u2', 'should I run /clear now?'),
+			prompt('u3', '<command-name>/clear</command-name>\n<command-args>everything</command-args>'),
+			prompt('c1', '<command-name>/clear</command-name>', { isCompactSummary: true }),
+		]);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual([
+			'First',
+			'should I run /clear now?',
+			'/clear everything',
+		]);
+	});
+
+	it('shows a skill command whose message comes before its name as the command', () => {
+		// 2.1.286 writes a skill run as a command message first.
+		const state = cold([
+			JSON.stringify({
+				type: 'user',
+				uuid: 'u1',
+				message: {
+					role: 'user',
+					content:
+						'<command-message>github-explore</command-message>\n<command-name>/github-explore</command-name>\n<command-args>find a way</command-args>',
+				},
+			}),
+		]);
+
+		expect(state.turns.map((turn) => turn.prompt)).toEqual(['/github-explore find a way']);
+	});
+});

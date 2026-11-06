@@ -828,7 +828,8 @@ plugin's own modules driven from a script outside the repo, a throwaway
   while working was queued (two `queue-operation` lines) and rendered inline.
 - `/clear` rotated the label and the model followed with a reset. The new
   session's file starts with Claude's own `/clear` local-command lines, which
-  the view shows as a turn, as it does on herdr. `/exit` cleared the session
+  the view shows as a turn, as it does on herdr (since #134 the `/clear` echo
+  is read as a reset and opens no turn, in a new file or the same one). `/exit` cleared the session
   and the gate said no Claude; `claude --resume <first id>` in the same
   terminal brought the first session back with its turns.
 - Blocks on the wire: a Bash permission prompt reported `{"state":"blocked",

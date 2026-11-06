@@ -431,6 +431,9 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 - `unknown-command.jsonl` — an unknown slash command's two notices, 2.1.286.
 - `usage-limit.jsonl` — a usage limit reached and later reset, 2.1.286.
 - `bash-mode.jsonl` — a `!` command, its output and the agent's answer, 2.1.318.
+- `in-file-clear.jsonl` — the three `/clear` lines recorded at the start of a
+  rotated 2.1.286 file, with a turn and a late tool result written around them
+  in the same shapes (no transcript here clears inside its own file).
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:
