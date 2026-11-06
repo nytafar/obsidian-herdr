@@ -58,6 +58,7 @@ function settings(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 		terminalTitleSource: 'agent',
 		agentListRowClick: 'terminal',
 		pinnedPanes: {},
+		claudeSessions: {},
 		...overrides,
 	};
 }
@@ -828,5 +829,28 @@ describe('renameAgent (issue #35)', () => {
 		expect(await f.actions.renameAgent('w4:p3', '   ')).toBeNull();
 		expect(f.calls).toEqual([]);
 		expect(f.notices).toEqual(['Herdr: the name cannot be empty.']);
+	});
+});
+
+describe('startAgentHere with a kind and arguments (graduation, ADR-0007)', () => {
+	it('passes the kind and the arguments to agent.start', async () => {
+		const f = fake({
+			settings: settings({ defaultAgentKind: 'codex' }),
+			responses: {
+				'tab.create': { tab: { tab_id: 'w4:t9' }, root_pane: pane({ pane_id: 'w4:p9' }) },
+				'pane.list': { panes: [pane({ pane_id: 'w4:p9', tab_id: 'w4:t9' })] },
+				'agent.start': {},
+			},
+		});
+		await f.actions.startAgentHere(`${VAULT}/notes`, {
+			kind: 'claude',
+			args: ['--resume', '3b3ad50c-0000-4000-8000-000000000001'],
+		});
+		expect(f.calls.find((c) => c.method === 'agent.start')?.params).toEqual({
+			name: 'notes',
+			kind: 'claude',
+			pane_id: 'w4:p9',
+			args: ['--resume', '3b3ad50c-0000-4000-8000-000000000001'],
+		});
 	});
 });

@@ -51,6 +51,7 @@ import type { AgentStatus } from '../herdr/types.gen';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import { waitingCard, type WaitingCardModel } from './waitingCard';
+import type { PendingQuestion, PendingRequest, WaitingAnswer, WaitingResponder } from './pendingRequest';
 import { HOVER_LINK_SOURCE, fillUriLink, linkVaultUris, openLinkBeside } from './noteLinks';
 import { findObsidianUris, resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
@@ -120,6 +121,12 @@ export interface PaneWhere {
 	 * pane's own (an hc terminal with no Claude session label, ADR-0006).
 	 */
 	kindReason?: string | null;
+	/**
+	 * Why the terminal view cannot be offered for the pane's kind, or
+	 * null/absent when it can: the `claude` kind has no terminal in this
+	 * version (ADR-0007's D2), so its tabs show the native view.
+	 */
+	terminalReason?: string | null;
 }
 
 /**
@@ -130,6 +137,9 @@ export interface PaneWhere {
  * ADR-0003). The kind's reason comes first, since it holds on any target.
  */
 export function paneViewAvailability(view: PaneView, where: PaneWhere): PaneViewAvailability {
+	if (view === 'terminal' && where.terminalReason) {
+		return { available: false, reason: where.terminalReason };
+	}
 	if (view === 'native' && where.kindReason) {
 		return { available: false, reason: where.kindReason };
 	}
@@ -152,9 +162,12 @@ export function effectivePaneView(input: {
 	fallback: PaneView;
 	remote: boolean;
 	kindReason?: string | null;
+	terminalReason?: string | null;
 }): PaneView {
 	const view = input.stored ?? input.fallback;
 	if (paneViewAvailability(view, input).available) return view;
+	// A kind with no terminal shows the native view whenever it can.
+	if (view === 'terminal' && paneViewAvailability('native', input).available) return 'native';
 	return 'terminal';
 }
 
@@ -254,6 +267,12 @@ export interface NativePaneSurfaceOptions {
 	sender: PromptSender;
 	/** How the waiting card's "Trust this folder" reaches the agent (#99). */
 	keySender: KeySender;
+	/**
+	 * How the waiting card answers a request the runtime itself is waiting on
+	 * (ADR-0007): only a kind that owns its agents' dialogs has one. Without it
+	 * such a card is described like any other block.
+	 */
+	responder?: WaitingResponder;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -499,6 +518,13 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private waitingComponent: Component | null = null;
 	/** Whether this surface has already answered the block it is in (#99). */
 	private trustSent = false;
+	/**
+	 * The runtime request the card on screen answers, so a redraw for anything
+	 * else keeps the card — and what was chosen or typed on it — as it is.
+	 */
+	private waitingRequest: PendingRequest | null = null;
+	/** The request an answer has been sent for, so a second press sends nothing. */
+	private answeredRequest = '';
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -1168,7 +1194,14 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.promptBox?.setHidden(false);
 			return;
 		}
+		const request = this.options.responder ? (this.model?.request ?? null) : null;
+		// The same request still waiting: the card on screen is already it.
+		if (request && request === this.waitingRequest && this.waitingEl) {
+			this.promptBox?.setHidden(true);
+			return;
+		}
 		const card = waitingCard({
+			request,
 			// The runtime's own word on the block when it has one (ADR-0006);
 			// else no transcript at all reads as the workspace trust prompt, as a
 			// freshly started Claude writes no file until its first turn
@@ -1185,6 +1218,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	/** Drops the card and its listeners. Safe to call when there is none. */
 	private clearWaiting(): void {
+		this.waitingRequest = null;
 		this.waitingComponent?.unload();
 		this.waitingComponent = null;
 		this.waitingEl?.remove();
@@ -1213,6 +1247,11 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		const el = root.createDiv({ cls: ['herdr-native-waiting', 'herdr-native-sizer'] });
 		this.waitingEl = el;
 		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
+		if (card.request && this.options.responder) {
+			this.waitingRequest = card.request;
+			this.renderRequest(el, card, card.request, component);
+			return;
+		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
 		for (const option of card.options) {
 			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
@@ -1281,6 +1320,147 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			await this.options.keySender.sendKeys(this.identity.paneId, ['Down', 'Enter']);
 		} catch (error) {
 			this.notify(trustFailureMessage(error));
+		}
+	}
+
+	/**
+	 * The card for a request the runtime is waiting on (ADR-0007), with the
+	 * answers it can take. Nothing here is pressed for the user: every answer
+	 * is a click, and none times out (the agent stays blocked until one comes).
+	 *
+	 * - **Permission:** Allow, Deny, and — only when Claude suggested them —
+	 *   "Allow for this session" and "Always allow in this project", each with
+	 *   what it grants on the line under it, the project one naming the
+	 *   settings file it writes.
+	 * - **Question:** the options as buttons; one single-choice question is
+	 *   answered by its button, several (or a multiple choice) by "Send
+	 *   answers" once each has one. "Dismiss" declines.
+	 * - **Plan:** the plan as Markdown, "Approve plan", and "Reject" with the
+	 *   feedback typed above it.
+	 */
+	private renderRequest(
+		el: HTMLElement,
+		card: WaitingCardModel,
+		request: PendingRequest,
+		component: Component,
+	): void {
+		const buttons: HTMLButtonElement[] = [];
+		const send = (answer: WaitingAnswer): void => {
+			void this.answer(request, answer, buttons);
+		};
+		const button = (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => {
+			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
+			buttons.push(buttonEl);
+			component.registerDomEvent(buttonEl, 'click', () => {
+				const chosen = answer();
+				if (chosen) send(chosen);
+			});
+			return buttonEl;
+		};
+		if (request.kind === 'plan') {
+			const planEl = el.createDiv({ cls: 'herdr-native-waiting-plan' });
+			void this.renderMarkdown(request.plan || 'Claude did not include a plan.', planEl, component);
+			const feedbackEl = el.createEl('textarea', {
+				cls: 'herdr-native-waiting-feedback',
+				attr: { rows: '2', placeholder: 'What should change, if you reject it', 'aria-label': 'Plan feedback' },
+			});
+			const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+			button(actions, 'Approve plan', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'approve-plan' }));
+			button(actions, 'Reject', ['herdr-native-waiting-deny'], () => ({
+				type: 'reject-plan',
+				feedback: feedbackEl.value,
+			}));
+			return;
+		}
+		if (request.kind === 'question') {
+			this.renderQuestions(el, request.questions, button);
+			return;
+		}
+		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
+		if (request.reason) el.createDiv({ cls: 'herdr-native-waiting-reason', text: request.reason });
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		button(actions, 'Allow', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'allow' }));
+		button(actions, 'Deny', ['herdr-native-waiting-deny'], () => ({ type: 'deny' }));
+		if (request.session) {
+			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
+			button(grant, 'Allow for this session', ['herdr-native-waiting-session'], () => ({ type: 'allow-session' }));
+			grant.createSpan({ cls: 'herdr-native-waiting-grant-text', text: request.session.lines.join('; ') });
+		}
+		if (request.project) {
+			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
+			button(grant, 'Always allow in this project', ['herdr-native-waiting-project'], () => ({
+				type: 'allow-project',
+			}));
+			grant.createSpan({
+				cls: 'herdr-native-waiting-grant-text',
+				text: `Writes ${request.project.file}: ${request.project.lines.join('; ')}`,
+			});
+		}
+	}
+
+	/** The questions of an `AskUserQuestion`, and how they are answered. */
+	private renderQuestions(
+		el: HTMLElement,
+		questions: readonly PendingQuestion[],
+		button: (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => HTMLButtonElement,
+	): void {
+		const single = questions.length === 1 && questions[0]?.multiSelect !== true;
+		const chosen = new Map<string, Set<string>>();
+		let submit: HTMLButtonElement | null = null;
+		const complete = (): boolean => questions.every((question) => (chosen.get(question.question)?.size ?? 0) > 0);
+		for (const question of questions) {
+			const block = el.createDiv({ cls: 'herdr-native-waiting-question' });
+			if (question.header) block.createDiv({ cls: 'herdr-native-waiting-header', text: question.header });
+			block.createDiv({ cls: 'herdr-native-waiting-body', text: question.question });
+			const options = block.createDiv({ cls: 'herdr-native-waiting-actions' });
+			for (const option of question.options) {
+				const optionEl = button(options, option.label, ['herdr-native-waiting-choice'], () => {
+					if (single) return { type: 'answer', answers: { [question.question]: option.label } };
+					const picked = chosen.get(question.question) ?? new Set<string>();
+					if (!question.multiSelect) picked.clear();
+					if (picked.has(option.label)) picked.delete(option.label);
+					else picked.add(option.label);
+					chosen.set(question.question, picked);
+					for (const sibling of Array.from(options.children)) {
+						sibling.toggleClass('is-selected', picked.has(sibling.textContent ?? ''));
+					}
+					if (submit) submit.disabled = !complete();
+					return null;
+				});
+				if (option.description) optionEl.setAttr('title', option.description);
+			}
+		}
+		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
+		if (!single) {
+			submit = button(actions, 'Send answers', ['mod-cta', 'herdr-native-waiting-allow'], () => {
+				if (!complete()) return null;
+				const answers: Record<string, string> = {};
+				for (const question of questions) {
+					answers[question.question] = [...(chosen.get(question.question) ?? [])].join(', ');
+				}
+				return { type: 'answer', answers };
+			});
+			submit.disabled = !complete();
+		}
+		button(actions, 'Dismiss', ['herdr-native-waiting-deny'], () => ({ type: 'dismiss' }));
+	}
+
+	/**
+	 * Sends one answer to the request on the card, once: the buttons go
+	 * disabled until the runtime has it, and come back only if it failed.
+	 */
+	private async answer(request: PendingRequest, answer: WaitingAnswer, buttons: HTMLButtonElement[]): Promise<void> {
+		const responder = this.options.responder;
+		if (!responder || this.answeredRequest === request.id) return;
+		this.answeredRequest = request.id;
+		for (const buttonEl of buttons) buttonEl.disabled = true;
+		try {
+			await responder.respond(this.identity.paneId, request.id, answer);
+		} catch (error) {
+			this.answeredRequest = '';
+			for (const buttonEl of buttons) buttonEl.disabled = false;
+			const reason = error instanceof Error ? error.message : String(error);
+			this.notify(`Herdr: could not answer Claude (${reason})`);
 		}
 	}
 

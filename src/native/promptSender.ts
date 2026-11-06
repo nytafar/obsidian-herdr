@@ -23,6 +23,12 @@ import type { AgentPromptParams, AgentSendKeysParams } from '../herdr/types.gen'
 export interface PromptSender {
 	/** Delivers `text` to the pane's agent. Rejects with a readable message. */
 	send(paneId: string, text: string): Promise<void>;
+	/**
+	 * Ends the running turn, keeping the agent for the next prompt. Only a kind
+	 * with a real interrupt has it (the `claude` kind's `interrupt` control
+	 * request, ADR-0007); the prompt box shows its Stop button only then.
+	 */
+	interrupt?(paneId: string): Promise<void>;
 }
 
 /**

@@ -588,3 +588,72 @@ describe('an answer that arrives after the herdr underneath changed', () => {
 		expect(world.notices).toEqual([]);
 	});
 });
+
+/* ------------------------------------------- resumable rows (ADR-0007) */
+
+describe('a row of agents the plugin runs itself (ADR-0007)', () => {
+	const resumable: RowCapabilities = {
+		rename: false,
+		close: true,
+		focus: false,
+		resumable: true,
+		graduation: [{ id: 'local', label: 'herdr' }],
+	};
+
+	function withExtras(world: Fake): void {
+		world.host.forgetAgent = async (ref) => {
+			world.calls.push({ effect: 'forgetAgent', ref });
+			return true;
+		};
+		world.host.continueIn = async (ref, runtimeId) => {
+			world.calls.push({ effect: 'continueIn', ref, extra: runtimeId });
+		};
+	}
+
+	it('stops a running row after asking, and keeps its pin', async () => {
+		const world = fake({ capabilities: resumable, pins: [`${LOCAL}|w4:p3`] });
+		withExtras(world);
+		world.setClose(() => Promise.resolve(true));
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		expect(world.menus[0]?.items.map((item) => item.label)).toEqual([
+			'Unpin from top of group',
+			'Continue in herdr',
+			'Stop agent',
+		]);
+		world.closeResult = false;
+		await choose(world, 'close');
+		const asked = world.calls.find((call) => call.effect === 'confirmClose')?.extra as { confirm: string };
+		expect(asked.confirm).toBe('Stop agent');
+		expect(effects(world)).toContain('closePane');
+		expect(effects(world)).not.toContain('setPinned');
+	});
+
+	it('forgets a stopped row after asking, and drops its pin', async () => {
+		const world = fake({ capabilities: resumable, panes: [pane({ stopped: true })], pins: [`${LOCAL}|w4:p3`] });
+		withExtras(world);
+		world.setClose(() => Promise.resolve(true));
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		expect(world.menus[0]?.items.map((item) => item.action)).toEqual(['unpin', 'continue', 'forget']);
+		await choose(world, 'forget');
+		expect(effects(world).filter((effect) => effect !== 'showRowMenu')).toEqual(['confirmClose', 'forgetAgent', 'setPinned']);
+	});
+
+	it('continues a row on the runtime its entry names', async () => {
+		const world = fake({ capabilities: resumable });
+		withExtras(world);
+		world.setClose(() => Promise.resolve(true));
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		await choose(world, 'continue');
+		expect(world.calls.find((call) => call.effect === 'continueIn')).toEqual({
+			effect: 'continueIn',
+			ref: { endpointId: LOCAL, paneId: 'w4:p3' },
+			extra: 'local',
+		});
+	});
+
+	it('offers no graduation entry when no runtime takes one', () => {
+		const world = fake({ capabilities: { ...resumable, graduation: [] } });
+		world.dispatch.contextMenu(event(row('w4:p3').text));
+		expect(world.menus[0]?.items.map((item) => item.action)).toEqual(['pin', 'close']);
+	});
+});

@@ -17,6 +17,7 @@
  */
 
 import type { AgentStatus } from '../herdr/types.gen';
+import type { PendingRequest } from './pendingRequest';
 
 export type Unsubscribe = () => void;
 
@@ -60,6 +61,12 @@ export interface PaneSnapshot {
 	agentStatus: AgentStatus;
 	/** The kind of block, while `blocked` and only when the runtime knows it. */
 	blockKind?: BlockKind;
+	/**
+	 * The dialog the runtime itself is waiting on, while `blocked`, for a kind
+	 * that owns its agents' dialogs (the `claude` kind, ADR-0007): the waiting
+	 * card shows it and answers it. Absent everywhere else.
+	 */
+	request?: PendingRequest;
 }
 
 /**
@@ -82,7 +89,11 @@ export interface SessionWatcher {
 	onSession(
 		handler: (paneId: string, agentSession: string, transcriptPath?: string) => void,
 	): Unsubscribe;
-	/** Agent status transitions, one call per actual change of status or block kind. */
+	/**
+	 * Agent status transitions, one call per actual change of status or block
+	 * kind — or of the pending {@link PaneSnapshot.request}, for a kind that
+	 * reports one, which the model reads back from the snapshot.
+	 */
 	onStatus(
 		handler: (paneId: string, status: AgentStatus, blockKind?: BlockKind) => void,
 	): Unsubscribe;

@@ -16,7 +16,9 @@
  *
  * The herdr kind is `herdrKind.ts`, today's code behind this interface. The
  * herdr-core kind is `herdrCoreKind.ts`: its agent list, actions, senders and
- * terminal tabs run over `hc connect`. {@link unavailableKind} remains for a
+ * terminal tabs run over `hc connect`. The `claude` kind is `claudeKind.ts`:
+ * Claude Code processes the plugin starts itself, over pipes, with no
+ * multiplexer at all (ADR-0007). {@link unavailableKind} remains for a
  * kind a build lists but cannot run at all.
  *
  * Features one kind lacks are capabilities, not errors (ADR-0004): the UI
@@ -34,6 +36,7 @@ import type {
 	Endpoint,
 } from '../connection';
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
+import type { WaitingResponder } from '../native/pendingRequest';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
@@ -65,6 +68,13 @@ export interface RuntimeCapabilities {
 	 */
 	sharedPins: boolean;
 	/**
+	 * Agents are the plugin's own processes, and a row outlives its process
+	 * as a stopped, resumable session (the `claude` kind, ADR-0007): the row
+	 * menu offers "Stop agent" for a running row, "Forget agent" for a
+	 * stopped one, and graduation to a multiplexer runtime.
+	 */
+	resumable: boolean;
+	/**
 	 * The native view, which follows the agent session the kind reports. A
 	 * kind that has it supplies {@link RuntimeKindAdapter.native}, which also
 	 * says on which targets its transcripts can be read (ADR-0002, ADR-0006).
@@ -80,6 +90,7 @@ export const HERDR_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	focus: true,
 	close: true,
 	sharedPins: false,
+	resumable: false,
 	nativeView: true,
 });
 
@@ -95,6 +106,24 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 	focus: false,
 	close: true,
 	sharedPins: true,
+	resumable: false,
+	nativeView: true,
+});
+
+/**
+ * ADR-0007's `claude` kind: agents are started and stopped, nothing else. No
+ * tabs, splits or focus exist without a multiplexer, and a rename would only
+ * rename a stored row, so it is left out with the rest.
+ */
+export const CLAUDE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
+	tabs: false,
+	splits: false,
+	startAgent: true,
+	rename: false,
+	focus: false,
+	close: true,
+	sharedPins: false,
+	resumable: true,
 	nativeView: true,
 });
 
@@ -174,7 +203,13 @@ export interface StatusLine {
 export interface RuntimeActions {
 	newTabHere(folderAbsPath: string): Promise<unknown>;
 	splitHere(folderAbsPath: string): Promise<unknown>;
-	startAgentHere(folderAbsPath: string): Promise<unknown>;
+	/**
+	 * Starts an agent in the folder. `options` is how graduation (ADR-0007)
+	 * starts `claude --resume <id>` there: the kind to start instead of the
+	 * default one, and arguments after its program. Without it, the default
+	 * agent kind with no arguments, as from the menus.
+	 */
+	startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<unknown>;
 	/** True when the pane is gone, so the caller drops its row and tabs. */
 	closePane(paneId: string, endpointId: string): Promise<boolean>;
 	renameAgent(paneId: string, name: string): Promise<unknown>;
@@ -185,6 +220,27 @@ export interface RuntimeActions {
 	 * {@link RuntimeCapabilities.sharedPins}. True when the runtime took it.
 	 */
 	setPinned?(paneId: string, pinned: boolean): Promise<boolean>;
+	/**
+	 * Gets a row's agent ready to be opened, for a kind whose rows can be
+	 * stopped (`claude`: spawns a stopped one with `--resume`). Absent where a
+	 * row is always a live pane.
+	 */
+	resumeAgent?(paneId: string): Promise<void>;
+	/** Removes a stopped row for good; only a kind whose rows can be stopped. */
+	forgetAgent?(paneId: string, endpointId: string): Promise<boolean>;
+	/**
+	 * What graduating a row needs (ADR-0007): its cwd and session, after its
+	 * process has stopped. Null when the row has none.
+	 */
+	releaseForGraduation?(paneId: string): Promise<{ cwd: string; sessionId: string } | null>;
+}
+
+/** The agent `startAgentHere` starts, when it is not the default one. */
+export interface StartAgentOptions {
+	/** The agent kind (`claude`), instead of the settings' default. */
+	kind?: string;
+	/** Arguments after the agent's program, e.g. `['--resume', '<id>']`. */
+	args?: readonly string[];
 }
 
 /**
@@ -235,6 +291,12 @@ export interface RuntimeKindAdapter<
 	promptSender(client: () => PromptClient | null): PromptSender;
 	/** The waiting card's key presses, over the same client. */
 	keySender(client: () => PromptClient | null): KeySender;
+	/**
+	 * The waiting card's answers to a request the runtime itself is waiting
+	 * on, over the same client; only a kind that reports such requests
+	 * (`PaneSnapshot.request`, ADR-0007) has one.
+	 */
+	responder?(client: () => PromptClient | null): WaitingResponder;
 	/**
 	 * The tab labels views on this connection read, built once per connection.
 	 * `alive()` is true while that connection is the published one.

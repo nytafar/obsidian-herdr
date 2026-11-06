@@ -375,7 +375,11 @@ export class AgentListView extends ItemView {
 		}
 		const panes = scope.list();
 		if (panes.length === 0) {
-			list.createDiv({ cls: 'herdr-empty', text: 'No agents in this workspace.' });
+			// A kind with no workspace of its own lists what the plugin started.
+			const text = this.plugin.capabilities().resumable
+				? 'No agents yet. Start one with the plus button below or from a folder menu.'
+				: 'No agents in this workspace.';
+			list.createDiv({ cls: 'herdr-empty', text });
 			return;
 		}
 
@@ -414,6 +418,8 @@ export class AgentListView extends ItemView {
 		const rowClasses = ['herdr-agent-row'];
 		if (model.focused) rowClasses.push('is-focused');
 		if (model.pinned) rowClasses.push('is-pinned');
+		// A stored session with no process (ADR-0007): drawn quieter, opened alike.
+		if (model.status === 'stopped') rowClasses.push('is-stopped');
 		const row = parent.createDiv({ cls: rowClasses });
 		row.dataset.paneId = model.paneId;
 		row.tabIndex = 0;
@@ -502,14 +508,21 @@ export class AgentListView extends ItemView {
 			target: () => ({ endpointId: plugin.endpoint.id, connection: this.session() }),
 			pane: (paneId) => this.session()?.scope.get(paneId) ?? null,
 			rowClick: () => plugin.settings.agentListRowClick,
-			capabilities: () => plugin.capabilities(),
+			capabilities: () => {
+				const can = plugin.capabilities();
+				// Graduation targets only matter where rows are resumable sessions.
+				return can.resumable ? { ...can, graduation: plugin.graduationTargets() } : can;
+			},
 			pinned: (ref) => plugin.isPanePinned(ref.endpointId, ref.paneId),
 			setPinned: (ref, pinned) => plugin.setPanePinned(ref.endpointId, ref.paneId, pinned),
 			// The plugin acts on the published connection, so a ref captured on
 			// another endpoint must not be handed to it (issue #54). The dispatcher
 			// already notices on a stale target; these just refuse to act.
 			openTerminal: (ref) => {
-				if (onCurrentEndpoint(ref)) void plugin.openTerminal(ref.paneId);
+				if (!onCurrentEndpoint(ref)) return;
+				// A stopped row resumes when it is opened (ADR-0007), before its tab is.
+				void plugin.actions.resumeAgent?.(ref.paneId);
+				void plugin.openTerminal(ref.paneId);
 			},
 			focusPane: (ref) => {
 				if (onCurrentEndpoint(ref)) void plugin.actions.focusPane(ref.paneId);
@@ -524,6 +537,14 @@ export class AgentListView extends ItemView {
 				// herdrs while `pane.close` is in flight, and the terminal leaves
 				// that go with the pane are the ones on this herdr (PR #89).
 				return await plugin.actions.closePane(ref.paneId, ref.endpointId);
+			},
+			forgetAgent: async (ref) => {
+				if (!onCurrentEndpoint(ref)) return false;
+				return (await plugin.actions.forgetAgent?.(ref.paneId, ref.endpointId)) ?? false;
+			},
+			continueIn: async (ref, runtimeId) => {
+				if (!onCurrentEndpoint(ref)) return;
+				await plugin.continueIn(ref.paneId, ref.endpointId, runtimeId);
 			},
 			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
 			promptRename: (text) => new PromptModal(this.app, text).ask(),

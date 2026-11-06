@@ -20,6 +20,13 @@
  * set: no transcript at all → startup; the last `tool_use` with no result →
  * that tool; anything else → a permission with no tool named.
  *
+ * **A dialog the runtime owns is answered here.** The `claude` kind runs its
+ * agents itself and its permission prompts arrive as requests it holds
+ * (ADR-0007): the card is then built from that {@link PendingRequest} — a
+ * tool permission, an `AskUserQuestion` or an `ExitPlanMode` plan — and the
+ * surface answers it through the kind's responder. That is a different thing
+ * from pressing keys in a terminal: the runtime asked, and it says what for.
+ *
  * **A guess is never answered unasked.** The card says whether its kind was
  * {@link WaitingCardModel.reported} by the runtime. A startup guessed from "no
  * transcript yet" is also what an auth prompt, or any other dialog before the
@@ -27,6 +34,7 @@
  * answered automatically; a guessed one still gets the button.
  */
 
+import type { PendingRequest } from './pendingRequest';
 import type { ToolEntry, Turn } from './reducer';
 import type { BlockKind } from './sessionWatcher';
 import { toolDetail } from './toolCalls';
@@ -60,6 +68,11 @@ export interface WaitingCardModel {
 	 * user pressing anything.
 	 */
 	reported: boolean;
+	/**
+	 * The runtime's own request this card is about, which the card can answer;
+	 * null for every card built from a block kind or the transcript.
+	 */
+	request: PendingRequest | null;
 }
 
 /**
@@ -99,6 +112,56 @@ function startupCard(reported: boolean): WaitingCardModel {
 		options: [],
 		toolUseId: '',
 		reported,
+		request: null,
+	};
+}
+
+/**
+ * The card for a request the runtime is waiting on (ADR-0007). Never the
+ * startup kind, so nothing here is ever answered without a press.
+ */
+export function requestCard(request: PendingRequest, vaultPath: string): WaitingCardModel {
+	if (request.kind === 'question') {
+		const first = request.questions[0];
+		return {
+			kind: 'question',
+			title: 'Claude asked a question',
+			body: first?.question ?? '',
+			options: first?.options.map((option) => option.label) ?? [],
+			toolUseId: request.toolUseId,
+			reported: true,
+			request,
+		};
+	}
+	if (request.kind === 'plan') {
+		return {
+			kind: 'plan',
+			title: 'Claude is ready to code',
+			body: request.plan,
+			options: [],
+			toolUseId: request.toolUseId,
+			reported: true,
+			request,
+		};
+	}
+	const entry: ToolEntry = {
+		kind: 'tool',
+		id: request.toolUseId,
+		name: request.toolName,
+		input: { ...request.input },
+		result: null,
+		status: 'running',
+		notification: null,
+		report: null,
+	};
+	return {
+		kind: 'permission',
+		title: `Claude wants to use ${request.toolName}`,
+		body: toolDetail(entry, vaultPath),
+		options: [],
+		toolUseId: request.toolUseId,
+		reported: true,
+		request,
 	};
 }
 
@@ -117,7 +180,10 @@ export function waitingCard(input: {
 	turns: readonly Turn[];
 	/** For the tool detail line, which is the tool group's own formatting. */
 	vaultPath: string;
+	/** The runtime's own pending request, which wins over everything else. */
+	request?: PendingRequest | null;
 }): WaitingCardModel {
+	if (input.request) return requestCard(input.request, input.vaultPath);
 	const kind = input.blockKind ?? null;
 	if (kind === 'trust') return startupCard(true);
 	if (kind === 'auth') {
@@ -128,6 +194,7 @@ export function waitingCard(input: {
 			options: [],
 			toolUseId: '',
 			reported: true,
+			request: null,
 		};
 	}
 	if (kind === null && !input.hasTranscript) return startupCard(false);
@@ -142,6 +209,7 @@ export function waitingCard(input: {
 			options,
 			toolUseId: tool.id,
 			reported,
+			request: null,
 		};
 	}
 	if (kind === 'question') {
@@ -154,6 +222,7 @@ export function waitingCard(input: {
 			options: [],
 			toolUseId: tool?.id ?? '',
 			reported,
+			request: null,
 		};
 	}
 	if (tool?.name === EXIT_PLAN_MODE) {
@@ -164,6 +233,7 @@ export function waitingCard(input: {
 			options: [],
 			toolUseId: tool.id,
 			reported,
+			request: null,
 		};
 	}
 	if (tool) {
@@ -176,6 +246,7 @@ export function waitingCard(input: {
 			options: [],
 			toolUseId: tool.id,
 			reported,
+			request: null,
 		};
 	}
 	return {
@@ -185,6 +256,7 @@ export function waitingCard(input: {
 		options: [],
 		toolUseId: '',
 		reported,
+		request: null,
 	};
 }
 

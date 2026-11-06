@@ -22,6 +22,7 @@ import { clampPanesPerTab, type HerdrSettings } from './settings';
 import { remoteVaultPathIssue, type RuntimeConfig } from './runtimes';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
+import type { StartAgentOptions } from './runtime/kind';
 
 /** herdr's own rule from `src/app/agents.rs`: `[a-z][a-z0-9_-]{0,31}`. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -418,8 +419,12 @@ export class HerdrActions {
 	 * reply is confirmed against `pane.list` first. That still does not mean the
 	 * pane sits at a prompt, so the start itself is retried on the two "not ready
 	 * yet" codes for {@link AGENT_START_RETRY_MS} — see the retry loop.
+	 *
+	 * `options` names another agent kind and the arguments after its program,
+	 * which `agent.start` takes as `args`: graduation from Claude run by
+	 * Obsidian starts `claude --resume <id>` this way (ADR-0007).
 	 */
-	async startAgentHere(folderAbsPath: string): Promise<StartedAgent | null> {
+	async startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<StartedAgent | null> {
 		const workspaceId = this.host.workspaceId();
 		if (!this.guard(workspaceId)) return null;
 		const settings = this.host.settings();
@@ -460,7 +465,8 @@ export class HerdrActions {
 			return null;
 		}
 
-		const kind = settings.defaultAgentKind;
+		const kind = options?.kind ?? settings.defaultAgentKind;
+		const args = options?.args && options.args.length > 0 ? { args: [...options.args] } : {};
 		const taken = this.host.takenAgentNames();
 		let name = buildAgentName(settings.agentNamePattern || '{folder}', {
 			folder: label,
@@ -471,7 +477,7 @@ export class HerdrActions {
 		let renamed = false;
 		for (;;) {
 			try {
-				await this.host.request('agent.start', { name, kind, pane_id: paneId });
+				await this.host.request('agent.start', { name, kind, pane_id: paneId, ...args });
 				this.host.notice(`Herdr: started ${kind} agent "${name}" in ${label}`);
 				// The folder is this pane's cwd, and the scope cannot know that yet:
 				// it admits a pane on `pane.agent_detected` plus a `pane.list`, both

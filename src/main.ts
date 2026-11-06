@@ -57,6 +57,9 @@ import {
 } from './runtime/kind';
 import { createHerdrKind } from './runtime/herdrKind';
 import { createHerdrCoreKind } from './runtime/herdrCoreKind';
+import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
+import { normalizeClaudeSessions } from './claude/agents';
+import type { GraduationTarget } from './views/rowMenu';
 import { RuntimeSuggestModal } from './views/modals';
 import { TransitionNotifier, sendOsNotification, unsupportedMethodMessage } from './notify';
 import { AGENT_LIST_VIEW_TYPE, AgentListView } from './views/agentListView';
@@ -144,6 +147,27 @@ export default class HerdrPlugin extends Plugin {
 		},
 	);
 	/**
+	 * The `claude` kind (ADR-0007), held apart as well because its agents are
+	 * this plugin's own processes: unload stops them, and a runtime that is
+	 * removed takes its agents with it.
+	 */
+	private readonly claudeKind: ClaudeKind = createClaudeKind({
+		extraPath: () => this.settings.extraPath,
+		spawnEnv: () => spawnEnv(process.env, this.settings.extraPath),
+		vaultPath: () => this.vaultPath(),
+		loadSessions: (runtimeId) => this.settings.claudeSessions[runtimeId] ?? [],
+		saveSessions: (runtimeId, sessions) => {
+			const next = { ...this.settings.claudeSessions };
+			if (sessions.length > 0) next[runtimeId] = sessions;
+			else delete next[runtimeId];
+			this.settings.claudeSessions = next;
+			void this.saveSettings();
+		},
+		notice: (message) => {
+			new Notice(message);
+		},
+	});
+	/**
 	 * One adapter per runtime kind (ADR-0004): everything that differs by kind
 	 * is asked of the adapter of the runtime in question, never decided here.
 	 * herdr-core runs over `hc connect` (ADR-0005).
@@ -176,6 +200,7 @@ export default class HerdrPlugin extends Plugin {
 			},
 			currentScope: () => this.connection.current?.scope ?? null,
 		}),
+		claude: this.claudeKind,
 	};
 	/** Actions per kind, built on first use over the one action host. */
 	private readonly kindActions = new Map<RuntimeKind, RuntimeActions>();
@@ -490,6 +515,9 @@ export default class HerdrPlugin extends Plugin {
 		// The tunnel's async stop (SIGTERM, SIGKILL, socket file) runs on from
 		// here on its own; `onunload` is synchronous.
 		this.connection.dispose();
+		// The `claude` kind's agents are children of this plugin (ADR-0007):
+		// each one stops in the ADR's order, which runs on from here.
+		void this.claudeKind.dispose();
 		this.sessions.dispose();
 		this.sessionModels.dispose();
 		this.scopeListeners.clear();
@@ -537,6 +565,8 @@ export default class HerdrPlugin extends Plugin {
 			// A hand-edited or older `data.json` must not put a non-list in a row's
 			// sort (issue #35).
 			pinnedPanes: normalizePinnedPanes(stored?.pinnedPanes),
+			// A file from before ADR-0007 has none, which is an empty map.
+			claudeSessions: normalizeClaudeSessions(stored?.claudeSessions),
 		};
 		if (renderMode.migrated || runtimes.migrated) await this.saveSettings();
 	}
@@ -597,8 +627,74 @@ export default class HerdrPlugin extends Plugin {
 
 	/** The registry changed (a name, the list, the active one): redraw what names it. */
 	refreshRuntimes(): void {
+		// A removed `claude` runtime's agents stop with it.
+		this.claudeKind.agents.prune(
+			new Set(this.settings.runtimes.filter((runtime) => runtime.kind === 'claude').map((runtime) => runtime.id)),
+		);
 		this.refreshAgentList();
 		this.updateStatusBar();
+	}
+
+	/**
+	 * The runtimes a row of a resumable kind can continue on (ADR-0007): the
+	 * herdr and herdr-core runtimes on this machine — the transcript is this
+	 * machine's, so an SSH one could not resume it — that this build can run.
+	 * Labelled by kind, with the runtime's name when the kind has several.
+	 */
+	graduationTargets(): GraduationTarget[] {
+		const candidates = this.settings.runtimes.filter(
+			(runtime) =>
+				(runtime.kind === 'herdr' || runtime.kind === 'herdr-core') &&
+				runtime.target === 'local' &&
+				this.kindUnavailable(runtime.kind) === null,
+		);
+		return candidates.map((runtime) => {
+			const kind = runtime.kind === 'herdr' ? 'herdr' : 'herdr-core';
+			const several = candidates.filter((other) => other.kind === runtime.kind).length > 1;
+			return { id: runtime.id, label: several ? `${kind} (${runtimeDisplayName(runtime)})` : kind };
+		});
+	}
+
+	/**
+	 * Graduation (ADR-0007): stops a `claude` row's process, switches to the
+	 * target runtime, and starts `claude --resume <session>` in the same cwd
+	 * through that runtime's own start-agent path. The row is forgotten once
+	 * the agent runs there, so the conversation is never resumed in two places.
+	 * Anything that fails on the way leaves the row stopped, where it can be
+	 * resumed as before.
+	 */
+	async continueIn(paneId: string, endpointId: string, runtimeId: string): Promise<void> {
+		const target = runtimeById(this.settings, runtimeId);
+		if (!target || this.endpoint.id !== endpointId) return;
+		const released = await this.actions.releaseForGraduation?.(paneId);
+		if (!released) {
+			new Notice('Herdr: that agent has no session to continue.');
+			return;
+		}
+		const name = runtimeDisplayName(target);
+		await this.switchRuntime(runtimeId);
+		if (!(await this.scopeReady(runtimeId))) {
+			new Notice(`Herdr: ${name} did not connect, so the agent was left stopped here. Switch back to resume it.`);
+			return;
+		}
+		const started = await this.actions.startAgentHere(released.cwd, {
+			kind: 'claude',
+			args: ['--resume', released.sessionId],
+		});
+		if (!started) return;
+		await this.claudeKind.agents.forget(endpointId, paneId);
+		this.detachTerminalLeaves(paneId, endpointId);
+	}
+
+	/** Waits until `runtimeId` is published with a resolved scope; false after the timeout. */
+	private async scopeReady(runtimeId: string, timeoutMs = 15000): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			const current = this.connection.current;
+			if (current?.endpoint.id === runtimeId && current.scope.workspaceId) return true;
+			if (Date.now() >= deadline) return false;
+			await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+		}
 	}
 
 	/** Opens the runtime picker over every runtime, the active one marked. */

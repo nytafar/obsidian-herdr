@@ -3,8 +3,9 @@
  * one it is connected to now.
  *
  * A runtime is a **kind** on a **target**. The kind is `herdr`, the herdr TUI
- * multiplexer with its JSON API and `herdr terminal session` bridge, or
- * `herdr-core`, the headless `hc` runtime (ADR-0005). The target is `local`,
+ * multiplexer with its JSON API and `herdr terminal session` bridge,
+ * `herdr-core`, the headless `hc` runtime (ADR-0005), or `claude`, Claude Code
+ * processes the plugin starts itself (ADR-0007, local only). The target is `local`,
  * this machine, or `ssh`, a host reached over SSH. The settings hold a list of
  * runtimes and the id of the active one; one is active at a time (ADR-0001),
  * and switching tears the connection down and opens the next.
@@ -23,19 +24,56 @@
  */
 
 /** What runs on the target. */
-export type RuntimeKind = 'herdr' | 'herdr-core';
+export type RuntimeKind = 'herdr' | 'herdr-core' | 'claude';
 
 /** Where it runs. */
 export type RuntimeTarget = 'local' | 'ssh';
 
-export const RUNTIME_KINDS: readonly RuntimeKind[] = ['herdr', 'herdr-core'];
+export const RUNTIME_KINDS: readonly RuntimeKind[] = ['herdr', 'herdr-core', 'claude'];
 export const RUNTIME_TARGETS: readonly RuntimeTarget[] = ['local', 'ssh'];
 
 /** What the settings tab shows for a kind. Product names keep their case. */
 export const RUNTIME_KIND_LABELS: Record<RuntimeKind, string> = {
 	herdr: 'herdr',
 	'herdr-core': 'herdr-core (hc)',
+	claude: 'Claude, run by Obsidian',
 };
+
+/**
+ * Whether a kind runs on an SSH host at all. The `claude` kind is the simple
+ * mode for getting started, and its agents are this plugin's own child
+ * processes, so it is `local` only (ADR-0007).
+ */
+export function kindTargets(kind: RuntimeKind): readonly RuntimeTarget[] {
+	return kind === 'claude' ? ['local'] : RUNTIME_TARGETS;
+}
+
+/**
+ * The permission modes a `claude` runtime can start its agents in (`claude
+ * --permission-mode`). `default` asks for every tool that needs a permission,
+ * which the native view's waiting card then answers. `bypassPermissions` is
+ * left out on purpose: it needs its own flag and would answer every prompt
+ * for the user.
+ */
+export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'] as const;
+export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
+export const DEFAULT_CLAUDE_PERMISSION_MODE: ClaudePermissionMode = 'default';
+
+/** What the settings tab shows for each permission mode. */
+export const CLAUDE_PERMISSION_MODE_LABELS: Record<ClaudePermissionMode, string> = {
+	default: 'Ask (default)',
+	acceptEdits: 'Accept edits',
+	plan: 'Plan',
+	auto: 'Auto',
+	dontAsk: "Don't ask (deny what is not allowed)",
+};
+
+/** A stored permission mode, or the default for anything this build does not know. */
+export function normalizePermissionMode(value: unknown): ClaudePermissionMode {
+	return (CLAUDE_PERMISSION_MODES as readonly unknown[]).includes(value)
+		? (value as ClaudePermissionMode)
+		: DEFAULT_CLAUDE_PERMISSION_MODE;
+}
 
 /** What the settings tab shows for a target. */
 export const RUNTIME_TARGET_LABELS: Record<RuntimeTarget, string> = {
@@ -81,6 +119,11 @@ export interface RuntimeConfig {
 	 * kind's own resolution: by vault name, then by cwd under the vault.
 	 */
 	workspace: string;
+	/**
+	 * The `--permission-mode` a `claude` runtime starts its agents in; absent
+	 * for every other kind, and read through {@link normalizePermissionMode}.
+	 */
+	permissionMode?: ClaudePermissionMode;
 }
 
 /** The two keys of the settings this module owns. */
@@ -144,17 +187,19 @@ export function newRuntime(
 	taken: Iterable<string>,
 	random?: () => number,
 ): RuntimeConfig {
-	return {
+	const runtime: RuntimeConfig = {
 		id: newRuntimeId(taken, random),
 		name: '',
 		kind,
-		target,
+		target: kindTargets(kind).includes(target) ? target : 'local',
 		host: '',
 		binary: defaultBinary(kind, target),
 		socketPath: kind === 'herdr' ? DEFAULT_HERDR_SOCKET : '',
 		remoteVaultPath: '',
 		workspace: '',
 	};
+	if (kind === 'claude') runtime.permissionMode = DEFAULT_CLAUDE_PERMISSION_MODE;
+	return runtime;
 }
 
 /** What the binary field starts at for a kind on a target. */
@@ -189,8 +234,10 @@ export function normalizeRuntime(value: unknown): RuntimeConfig | null {
 	if (id.length === 0) return null;
 	if (!isKind(record.kind) || !isTarget(record.target)) return null;
 	const kind = record.kind;
-	const target = record.target;
-	return {
+	// A `claude` runtime only runs here (ADR-0007); a hand-edited `ssh` one is
+	// read as the local runtime it can only be.
+	const target = kindTargets(kind).includes(record.target) ? record.target : 'local';
+	const runtime: RuntimeConfig = {
 		id,
 		name: stringOr(record.name, ''),
 		kind,
@@ -201,6 +248,8 @@ export function normalizeRuntime(value: unknown): RuntimeConfig | null {
 		remoteVaultPath: stringOr(record.remoteVaultPath, ''),
 		workspace: stringOr(record.workspace, ''),
 	};
+	if (kind === 'claude') runtime.permissionMode = normalizePermissionMode(record.permissionMode);
+	return runtime;
 }
 
 /** What {@link migrateRuntimes} makes of a stored `data.json`. */
@@ -400,6 +449,7 @@ export function withLiveName(
 export function runtimeDisplayName(runtime: RuntimeConfig): string {
 	const own = runtime.name.trim();
 	if (own.length > 0) return own;
+	if (runtime.kind === 'claude') return RUNTIME_KIND_LABELS.claude;
 	const kind = runtime.kind === 'herdr' ? 'herdr' : 'herdr-core';
 	if (runtime.target === 'local') return `Local ${kind}`;
 	const host = runtime.host.trim();
@@ -532,7 +582,10 @@ export function runtimeSwitcher(settings: RuntimeSettings): RuntimeSwitcher {
  * runtime changed, so the caller knows to reconnect.
  */
 export function removeRuntime(
-	settings: RuntimeSettings & { pinnedPanes: Record<string, string[]> },
+	settings: RuntimeSettings & {
+		pinnedPanes: Record<string, string[]>;
+		claudeSessions?: Record<string, unknown>;
+	},
 	id: string,
 ): { removed: boolean; activeChanged: boolean } {
 	if (settings.runtimes.length <= 1) return { removed: false, activeChanged: false };
@@ -544,6 +597,12 @@ export function removeRuntime(
 	if (id in settings.pinnedPanes) {
 		settings.pinnedPanes = { ...settings.pinnedPanes };
 		delete settings.pinnedPanes[id];
+	}
+	// The same for a `claude` runtime's stored sessions (ADR-0007): their rows
+	// belong to the runtime, and the transcripts stay where Claude keeps them.
+	if (settings.claudeSessions && id in settings.claudeSessions) {
+		settings.claudeSessions = { ...settings.claudeSessions };
+		delete settings.claudeSessions[id];
 	}
 	if (settings.activeRuntime !== id) return { removed: true, activeChanged: false };
 	const [first] = settings.runtimes as [RuntimeConfig, ...RuntimeConfig[]];

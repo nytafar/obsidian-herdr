@@ -34,6 +34,8 @@ import { asElement } from './dom';
 import { agentDisplayName, isRowClickAction, rowActions, type RowClickAction } from './rowModel';
 import {
 	closeConfirmation,
+	continueConfirmation,
+	forgetConfirmation,
 	renamePrompt,
 	rowMenuItems,
 	type CloseConfirmText,
@@ -64,7 +66,7 @@ export interface RowTarget {
 }
 
 /** What the dispatcher needs of a pane: enough to name it and to rename it. */
-export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'>;
+export type RowPane = Pick<PaneState, 'paneId' | 'name' | 'title'> & Pick<Partial<PaneState>, 'stopped'>;
 
 /** The bit of a mouse event read here. Structural, so a test needs no DOM. */
 export interface RowPointerEvent {
@@ -118,6 +120,13 @@ export interface RowDispatchHost<E extends RowPointerEvent = MouseEvent> {
 	 * toolbar can switch herdrs while the close is in flight (PR #89).
 	 */
 	closePane(ref: PaneRef): Promise<boolean>;
+	/**
+	 * Removes a stopped row for good (ADR-0007); true when it went. Only a
+	 * host whose runtime has resumable rows implements it.
+	 */
+	forgetAgent?(ref: PaneRef): Promise<boolean>;
+	/** Moves the row's conversation to another runtime (ADR-0007), reporting its own failures. */
+	continueIn?(ref: PaneRef, runtimeId: string): Promise<void>;
 	/** Draws the row menu at the event and calls `choose` for the entry picked. */
 	showRowMenu(event: E, items: RowMenuItem[], choose: (item: RowMenuItem) => void): void;
 	/** The rename prompt. Resolves null when it was cancelled or dismissed. */
@@ -189,6 +198,7 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 			displayName: agentDisplayName(pane),
 			pinned: this.host.pinned(ref),
 			name: pane.name,
+			stopped: pane.stopped === true,
 		};
 		this.host.showRowMenu(event, rowMenuItems(row, this.can()), (item) => {
 			void this.runMenuItem(item, row, target);
@@ -218,8 +228,26 @@ export class RowDispatcher<E extends RowPointerEvent = MouseEvent> {
 				await this.host.renameAgent(ref, name);
 				return;
 			}
+			case 'forget': {
+				const confirmed = await this.host.confirmClose(forgetConfirmation(row));
+				if (!confirmed) return;
+				if (!this.stillCurrent(target)) return;
+				if (!(await this.host.forgetAgent?.(ref))) return;
+				if (row.pinned) await this.host.setPinned(ref, false);
+				return;
+			}
+			case 'continue': {
+				const runtimeId = item.runtimeId ?? '';
+				const graduation = this.can().graduation?.find((entry) => entry.id === runtimeId);
+				if (!graduation) return;
+				const confirmed = await this.host.confirmClose(continueConfirmation(row, graduation));
+				if (!confirmed) return;
+				if (!this.stillCurrent(target)) return;
+				await this.host.continueIn?.(ref, runtimeId);
+				return;
+			}
 			case 'close': {
-				const confirmed = await this.host.confirmClose(closeConfirmation(row));
+				const confirmed = await this.host.confirmClose(closeConfirmation(row, this.can().resumable === true));
 				if (!confirmed) return;
 				if (!this.stillCurrent(target)) return;
 				if (!(await this.host.closePane(ref))) return;

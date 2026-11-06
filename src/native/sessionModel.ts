@@ -44,6 +44,7 @@ import {
 	type TranscriptStream,
 } from './transcriptSource';
 import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
+import type { PendingRequest } from './pendingRequest';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
@@ -86,6 +87,11 @@ export interface SessionModelView {
 	 * not blocked or the runtime does not say (herdr never does).
 	 */
 	readonly blockKind: BlockKind | null;
+	/**
+	 * The dialog the runtime is waiting on, while `blocked`, for a kind that
+	 * reports one (ADR-0007); null otherwise. Optional so a fake need not say it.
+	 */
+	readonly request?: PendingRequest | null;
 	/**
 	 * Whether the model's own runtime is the connected one. False while another
 	 * runtime is active or none is: the content stays as it was, the status is
@@ -153,6 +159,7 @@ export class SessionModel implements SessionModelView {
 	private reportedPath = '';
 	private status: AgentStatus = 'unknown';
 	private block: BlockKind | null = null;
+	private pending: PendingRequest | null = null;
 	/** The runtime's watcher while it is connected, else null. */
 	private watcher: SessionWatcher | null = null;
 	/** The runtime's transcript source as of the last bind. */
@@ -248,6 +255,10 @@ export class SessionModel implements SessionModelView {
 		return this.block;
 	}
 
+	get request(): PendingRequest | null {
+		return this.pending;
+	}
+
 	get connected(): boolean {
 		return this.watcher !== null;
 	}
@@ -318,6 +329,7 @@ export class SessionModel implements SessionModelView {
 		if (this.stream && this.streamSource !== this.source) this.closeStream();
 		this.status = 'unknown';
 		this.block = null;
+		this.pending = null;
 		this.blockClaim = null;
 		// Said every time, cheaply: the view's status line reads `connected`.
 		this.emit({ changedTurnIds: [], reset: false });
@@ -350,9 +362,11 @@ export class SessionModel implements SessionModelView {
 	private onStatusChanged(paneId: string, status: AgentStatus, kind?: BlockKind): void {
 		if (paneId !== this.paneId) return;
 		const block = status === 'blocked' ? (kind ?? null) : null;
-		if (status === this.status && block === this.block) return;
+		const request = status === 'blocked' ? (this.watcher?.snapshot(paneId)?.request ?? null) : null;
+		if (status === this.status && block === this.block && request === this.pending) return;
 		this.status = status;
 		this.block = block;
+		this.pending = request;
 		// The block is over, so the next one is a block of its own to answer.
 		if (status !== 'blocked') this.blockClaim = null;
 		// No turn changed; the view redraws what it shows between blocks.
@@ -371,7 +385,9 @@ export class SessionModel implements SessionModelView {
 		const pane = watcher.snapshot(this.paneId);
 		const status = pane?.agentStatus ?? 'unknown';
 		const block = status === 'blocked' ? (pane?.blockKind ?? null) : null;
-		const statusMoved = status !== this.status || block !== this.block;
+		const request = status === 'blocked' ? (pane?.request ?? null) : null;
+		const statusMoved = status !== this.status || block !== this.block || request !== this.pending;
+		this.pending = request;
 		this.session = pane?.agentSession ?? '';
 		this.reportedPath = pane?.transcriptPath ?? '';
 		this.status = status;

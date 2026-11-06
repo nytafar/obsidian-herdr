@@ -312,6 +312,16 @@
 	color: var(--text-faint);
 }
 
+/* A stored session with no process (ADR-0007): the mark and the name go quiet. */
+.herdr-agent-kind.herdr-status-stopped {
+	color: var(--text-faint);
+	opacity: 0.6;
+}
+
+.herdr-agent-row.is-stopped .herdr-agent-name {
+	color: var(--text-muted);
+}
+
 /* Status bar item ---------------------------------------------------------- */
 
 .herdr-status-bar {
@@ -672,6 +682,62 @@
 	display: flex;
 	gap: var(--size-4-2);
 	margin-top: var(--size-4-2);
+}
+
+/*
+ * The parts of a card that answers the runtime's own request (ADR-0007): the
+ * reason Claude gave, the plan as Markdown, the feedback box, the answer
+ * choices, and the line under a "remember" button saying what it grants.
+ */
+.herdr-native-waiting-actions {
+	flex-wrap: wrap;
+}
+
+.herdr-native-waiting-reason,
+.herdr-native-waiting-header {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+}
+
+.herdr-native-waiting-question + .herdr-native-waiting-question {
+	margin-top: var(--size-4-3);
+}
+
+.herdr-native-waiting-plan {
+	margin-top: var(--size-4-2);
+	max-height: 40vh;
+	overflow-y: auto;
+}
+
+.herdr-native-waiting-feedback {
+	margin-top: var(--size-4-2);
+	resize: vertical;
+	width: 100%;
+}
+
+.herdr-native-waiting-choice.is-selected {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.herdr-native-waiting-grant {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-grant-text {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	overflow-wrap: anywhere;
+}
+
+/* Stop, beside Send, only while a turn runs on a kind that can interrupt. */
+.herdr-native-prompt-stop.herdr-is-hidden {
+	display: none;
 }
 
 /* Why the box is disabled, when the view does not say it already. */

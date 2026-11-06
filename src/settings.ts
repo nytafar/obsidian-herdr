@@ -1,3 +1,4 @@
+import type { StoredClaudeSession } from './claude/agents';
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HerdrPlugin from './main';
 import { ConfirmModal } from './views/modals';
@@ -20,8 +21,12 @@ import {
 	runtimeSummary,
 	RUNTIME_KINDS,
 	RUNTIME_KIND_LABELS,
-	RUNTIME_TARGETS,
 	RUNTIME_TARGET_LABELS,
+	CLAUDE_PERMISSION_MODES,
+	CLAUDE_PERMISSION_MODE_LABELS,
+	DEFAULT_CLAUDE_PERMISSION_MODE,
+	kindTargets,
+	normalizePermissionMode,
 	type RuntimeConfig,
 	type RuntimeKind,
 	type RuntimeSettings,
@@ -283,6 +288,12 @@ export interface HerdrSettings extends RuntimeSettings {
 	 * touches a row on another. Client-side only: herdr knows nothing of it.
 	 */
 	pinnedPanes: Record<string, string[]>;
+	/**
+	 * The sessions each `claude` runtime started (ADR-0007), keyed by runtime
+	 * id: row id, session id, cwd and name. What the agent list shows as
+	 * stopped rows after a restart, and what `--resume` reopens.
+	 */
+	claudeSessions: Record<string, StoredClaudeSession[]>;
 }
 
 /**
@@ -431,6 +442,7 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalTitleSource: DEFAULT_TERMINAL_TITLE_SOURCE,
 	agentListRowClick: 'terminal',
 	pinnedPanes: {},
+	claudeSessions: {},
 };
 
 /**
@@ -792,7 +804,7 @@ export function buildRuntimesSection(
 	new Setting(containerEl)
 		.setName('Add runtime')
 		.setDesc(
-			'Another herdr or herdr-core to switch to, on this machine or over SSH. One runtime is connected at a time.',
+			'Another herdr or herdr-core to switch to, on this machine or over SSH, or Claude run by Obsidian, which needs no multiplexer. One runtime is connected at a time.',
 		)
 		.addButton((button) =>
 			button.setButtonText('Add runtime').onClick(async () => {
@@ -873,7 +885,7 @@ function buildRuntimeForm(
 	new Setting(containerEl)
 		.setName('Kind')
 		.setDesc(
-			'Herdr is the terminal multiplexer with tabs and splits. Herdr-core is the headless hc runtime, which has neither.',
+			'Herdr is the terminal multiplexer with tabs and splits. Herdr-core is the headless hc runtime, which has neither. Claude run by Obsidian starts Claude itself, on this machine, with no multiplexer: its agents stop when Obsidian closes and resume when opened.',
 		)
 		.addDropdown((dropdown) => {
 			for (const kind of RUNTIME_KINDS) dropdown.addOption(kind, RUNTIME_KIND_LABELS[kind]);
@@ -889,7 +901,8 @@ function buildRuntimeForm(
 		.setName('Target')
 		.setDesc('Where it runs: this machine, or a host reached over SSH.')
 		.addDropdown((dropdown) => {
-			for (const target of RUNTIME_TARGETS) {
+			// Claude run by Obsidian runs here only (ADR-0007).
+			for (const target of kindTargets(runtime.kind)) {
 				dropdown.addOption(target, RUNTIME_TARGET_LABELS[target]);
 			}
 			dropdown.setValue(runtime.target).onChange(async (value) => {
@@ -900,6 +913,18 @@ function buildRuntimeForm(
 			});
 		});
 
+	if (runtime.kind === 'claude') {
+		buildClaudeFields(containerEl, runtime, text, changed);
+		problems = new Setting(containerEl).setName('Problems').setClass('herdr-runtime-problems');
+		check();
+		new Setting(containerEl).addButton((button) =>
+			button
+				.setButtonText('Done')
+				.setCta()
+				.onClick(() => callbacks.editRuntime(null)),
+		);
+		return;
+	}
 	const herdr = runtime.kind === 'herdr';
 	if (runtime.target === 'ssh') {
 		text(
@@ -992,6 +1017,43 @@ function buildRuntimeForm(
 }
 
 /**
+ * The fields of a `claude` runtime (ADR-0007): the binary, and the
+ * permission mode its agents start in. Nothing else applies: no socket, no
+ * workspace, no host.
+ */
+function buildClaudeFields(
+	containerEl: HTMLElement,
+	runtime: RuntimeConfig,
+	text: (name: string, desc: string, placeholder: string, read: () => string, write: (value: string) => void) => void,
+	changed: () => Promise<void>,
+): void {
+	text(
+		'Claude binary',
+		'Absolute path to the claude executable. Leave empty to search Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH.',
+		'Auto-discover',
+		() => runtime.binary,
+		(value) => {
+			runtime.binary = value;
+		},
+	);
+	new Setting(containerEl)
+		.setName('Permission mode')
+		.setDesc(
+			'What new and resumed agents may do without asking. In the default mode every tool that needs permission waits for you in the native view.',
+		)
+		.addDropdown((dropdown) => {
+			for (const mode of CLAUDE_PERMISSION_MODES) dropdown.addOption(mode, CLAUDE_PERMISSION_MODE_LABELS[mode]);
+			dropdown.setValue(normalizePermissionMode(runtime.permissionMode)).onChange(async (value) => {
+				runtime.permissionMode = normalizePermissionMode(value);
+				await changed();
+			});
+		});
+	new Setting(containerEl)
+		.setName('Terminal view')
+		.setDesc('Not available yet: agents of this runtime open in the native view.');
+}
+
+/**
  * The Claude session hook on a herdr-core runtime's machine (ADR-0006): a
  * status line and the button to the review modal, for the active runtime
  * only, since it acts over the runtime's connection.
@@ -1026,8 +1088,12 @@ function retarget(runtime: RuntimeConfig, kind: RuntimeKind, target: RuntimeTarg
 	}
 	if (kind !== 'herdr') runtime.socketPath = '';
 	else if (runtime.socketPath.trim() === '') runtime.socketPath = DEFAULT_HERDR_SOCKET;
+	// Claude run by Obsidian runs here only, and has a permission mode (ADR-0007).
+	const placed = kindTargets(kind).includes(target) ? target : 'local';
+	if (kind === 'claude') runtime.permissionMode = normalizePermissionMode(runtime.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE);
+	else delete runtime.permissionMode;
 	runtime.kind = kind;
-	runtime.target = target;
+	runtime.target = placed;
 }
 
 /** The notice and system-notification pair for one transition. */

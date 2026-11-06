@@ -62,6 +62,7 @@ export function endpointOf(runtime: RuntimeConfig): Endpoint {
 		socketPath: runtime.socketPath.trim(),
 		remoteVaultPath: runtime.remoteVaultPath.trim(),
 		workspace: runtime.workspace.trim(),
+		...(runtime.permissionMode !== undefined ? { permissionMode: runtime.permissionMode } : {}),
 	});
 	return { id: snapshot.id, runtime: snapshot };
 }

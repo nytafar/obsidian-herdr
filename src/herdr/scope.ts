@@ -109,6 +109,13 @@ export interface PaneState {
 	 * in the plugin's settings (issue #35).
 	 */
 	pinned?: boolean;
+	/**
+	 * The agent has no process, and its row is a stored session that opening
+	 * or prompting resumes (the `claude` kind, ADR-0007). Its `agentStatus` is
+	 * `idle` then, which is what lets the native view's prompt box send. herdr
+	 * and herdr-core never set it: their panes exist or are gone.
+	 */
+	stopped?: boolean;
 }
 
 export interface ScopeEventMap {

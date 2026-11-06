@@ -142,6 +142,8 @@ export class PromptBox {
 	private rootEl: HTMLElement | null = null;
 	private inputEl: HTMLTextAreaElement | null = null;
 	private buttonEl: HTMLButtonElement | null = null;
+	/** Stop, for a sender that can interrupt (ADR-0007); null otherwise. */
+	private stopEl: HTMLButtonElement | null = null;
 	private hintEl: HTMLElement | null = null;
 	/** What `onInput` hung on the text area; null when nothing did. */
 	private attachment: PromptInputHandle | null = null;
@@ -174,6 +176,14 @@ export class PromptBox {
 			cls: 'herdr-native-prompt-send',
 			text: 'Send',
 		});
+		if (this.options.sender.interrupt) {
+			const stopEl = controls.createEl('button', { cls: 'herdr-native-prompt-stop', text: 'Stop' });
+			stopEl.setAttr('aria-label', 'Stop the running turn');
+			this.stopEl = stopEl;
+			this.component.registerDomEvent(stopEl, 'click', () => {
+				void this.interrupt();
+			});
+		}
 		this.rootEl = root;
 		this.inputEl = inputEl;
 		this.buttonEl = buttonEl;
@@ -204,7 +214,20 @@ export class PromptBox {
 		this.rootEl = null;
 		this.inputEl = null;
 		this.buttonEl = null;
+		this.stopEl = null;
 		this.hintEl = null;
+	}
+
+	/** Ends the running turn through the sender; a failure is a notice. */
+	async interrupt(): Promise<void> {
+		const sender = this.options.sender;
+		if (!sender.interrupt || this.status !== 'working') return;
+		try {
+			await sender.interrupt(this.options.paneId());
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			this.notify(`Herdr: could not stop the turn (${reason})`);
+		}
 	}
 
 	/**
@@ -291,6 +314,8 @@ export class PromptBox {
 		const root = this.rootEl;
 		if (!root) return;
 		const state = promptBoxState(this.status);
+		// Only a running turn has anything to stop.
+		this.stopEl?.toggleClass('herdr-is-hidden', this.status !== 'working');
 		if (this.buttonEl) {
 			this.buttonEl.setText(state.label);
 			this.buttonEl.disabled = !state.enabled || this.sending;

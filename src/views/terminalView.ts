@@ -90,6 +90,7 @@ import {
 } from '../connection';
 import type { TerminalSessionMode } from '../bridge/terminalSession';
 import { nativeViewBlock, type RuntimeKindAdapter } from '../runtime/kind';
+import type { WaitingAnswer } from '../native/pendingRequest';
 import { createRenderer } from './renderer/create';
 import {
 	isTerminalEngine,
@@ -749,9 +750,16 @@ export class TerminalView extends ItemView {
 		const { endpointId, paneId } = this.terminal.identity;
 		const endpoint = this.plugin.endpointFor(endpointId);
 		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
-		const block = nativeViewBlock(this.plugin.kindOf(endpoint.runtime.kind), endpoint);
-		if (block.remote || block.kindReason || !paneId) return block;
-		return withPaneReason(block, this.plugin.nativeWatcher(endpointId)?.unavailable?.(paneId) ?? null);
+		const kind = this.plugin.kindOf(endpoint.runtime.kind);
+		// A kind that runs but has no terminal of its own (ADR-0007) says so; a
+		// kind this build cannot run at all keeps its terminal, which says why.
+		const terminalReason = kind.unavailable === null ? kind.terminalUnavailable : null;
+		const block = nativeViewBlock(kind, endpoint);
+		if (block.remote || block.kindReason || !paneId) return { ...block, terminalReason };
+		return {
+			...withPaneReason(block, this.plugin.nativeWatcher(endpointId)?.unavailable?.(paneId) ?? null),
+			terminalReason,
+		};
 	}
 
 	/**
@@ -802,7 +810,28 @@ export class TerminalView extends ItemView {
 			// asked for (#97, ADR-0003).
 			sender: {
 				send: (paneId, text) => this.kind().promptSender(nativeClient).send(paneId, text),
+				// Stop, for a kind with a real interrupt (ADR-0007).
+				...(this.kind().promptSender(nativeClient).interrupt
+					? {
+							interrupt: (paneId: string) =>
+								this.kind().promptSender(nativeClient).interrupt?.(paneId) ?? Promise.resolve(),
+						}
+					: {}),
 			},
+			// The waiting card's answers, for a kind whose agents' dialogs are its
+			// own requests (ADR-0007), over the same client.
+			...(this.kind().responder
+				? {
+						responder: {
+							respond: (paneId: string, requestId: string, answer: WaitingAnswer) => {
+								const responder = this.kind().responder?.(nativeClient);
+								return responder
+									? responder.respond(paneId, requestId, answer)
+									: Promise.reject(new Error('this runtime does not answer requests'));
+							},
+						},
+					}
+				: {}),
 			// The waiting card's "Trust this folder" (#99), over the same client and
 			// only ever `Down Enter` on the workspace trust prompt.
 			keySender: {

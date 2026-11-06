@@ -18,7 +18,7 @@
 
 import { buildAgentName, folderName, type ActionHost, type Requester } from '../actions';
 import { remoteVaultPathIssue } from '../runtimes';
-import type { RuntimeActions } from '../runtime/kind';
+import type { RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import {
 	NO_CONNECTION_MESSAGE,
 	type KeySender,
@@ -43,11 +43,19 @@ const RM_POLL_MS = 100;
  * nvm or `~/.local/bin`), and a shell again when the agent exits, as in a
  * herdr pane. The line itself is run by `sh -c` (`terminal.run` `line`); the
  * inner command is plain enough for bash, zsh and fish alike.
+ *
+ * `args` follow the program (graduation's `--resume <id>`, ADR-0007). They
+ * are written into a single-quoted shell line, so only plain words are taken:
+ * letters, digits and `._=/:-`, nothing a shell would read twice.
  */
-export function agentLaunchLine(kind: string): string {
+export function agentLaunchLine(kind: string, args: readonly string[] = []): string {
 	const program = AGENT_COMMANDS[kind] ?? kind;
 	if (!/^[a-z0-9][a-z0-9._-]*$/.test(program)) throw new Error(`not an agent program: ${program}`);
-	return `SHELL="\${SHELL:-/bin/sh}"; export SHELL; exec "$SHELL" -ic '${program}; exec "$SHELL" -i'`;
+	for (const arg of args) {
+		if (!/^[A-Za-z0-9._=/:-]+$/.test(arg)) throw new Error(`not a plain argument: ${arg}`);
+	}
+	const command = [program, ...args].join(' ');
+	return `SHELL="\${SHELL:-/bin/sh}"; export SHELL; exec "$SHELL" -ic '${command}; exec "$SHELL" -i'`;
 }
 
 /**
@@ -113,7 +121,7 @@ export class HcActions implements RuntimeActions {
 		return Promise.resolve(false);
 	}
 
-	async startAgentHere(folderAbsPath: string): Promise<StartedHcAgent | null> {
+	async startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<StartedHcAgent | null> {
 		const send = this.host.connection();
 		if (!send) {
 			this.host.notice('Herdr: not connected to herdr-core.');
@@ -126,7 +134,7 @@ export class HcActions implements RuntimeActions {
 		}
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
-		const kind = settings.defaultAgentKind;
+		const kind = options?.kind ?? settings.defaultAgentKind;
 		const labels: Record<string, string> = { [LABEL_SEEN]: '0' };
 		const space = this.scope()?.space;
 		if (space) labels[LABEL_SPACE] = space.id;
@@ -142,7 +150,7 @@ export class HcActions implements RuntimeActions {
 		let name = nameFor();
 		let line: string;
 		try {
-			line = agentLaunchLine(kind);
+			line = agentLaunchLine(kind, options?.args);
 		} catch (error) {
 			this.host.notice(`Herdr: could not start an agent. ${describe(error)}`);
 			return null;
