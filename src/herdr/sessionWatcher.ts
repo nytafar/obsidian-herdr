@@ -33,7 +33,7 @@
 import type { HerdrEvent } from './client';
 import type { PaneState } from './scope';
 import type { PaneInfo } from './types.gen';
-import type { PaneSnapshot, SessionWatcher, Unsubscribe } from '../native/sessionWatcher';
+import type { PaneGlance, PaneSnapshot, SessionWatcher, Unsubscribe } from '../native/sessionWatcher';
 import { claudeTranscriptFile } from '../agents/claude/paths';
 import type { PaneClaudeResolver } from './paneClaude';
 import { nativeAgentReason } from '../native/agentSupport';
@@ -172,6 +172,19 @@ export function herdrSessionWatcher(
 				agent: pane.agent,
 				agentSession,
 				...(path ? { transcriptPath: path } : {}),
+				agentStatus: pane.agentStatus,
+			};
+		},
+		glance(paneId: string): PaneGlance | null {
+			// No `refresh`: nothing here reads a process.
+			const pane = scope.get(paneId);
+			if (!pane) return null;
+			return {
+				paneId,
+				cwd: pane.cwd,
+				// The scope holds agent panes only, so there is always one.
+				agent: agentId(pane.agent) || DEFAULT_AGENT_KIND,
+				agentSession: sessionOf(paneId),
 				agentStatus: pane.agentStatus,
 			};
 		},

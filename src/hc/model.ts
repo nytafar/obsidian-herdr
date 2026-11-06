@@ -292,6 +292,16 @@ export function agentKindOf(terminal: HcTerminal): string | null {
 	return foregroundKind(terminal.foreground) ?? startedKind(terminal.labels);
 }
 
+/**
+ * The agent kind the terminal's foreground program is, null when it is no
+ * agent (a shell), or undefined when hc reports no foreground: what runs now,
+ * where {@link agentKindOf} also keeps a kind the terminal reported or was
+ * started as.
+ */
+export function foregroundAgent(terminal: HcTerminal): string | null | undefined {
+	return terminal.foreground ? foregroundKind(terminal.foreground) : undefined;
+}
+
 function foregroundKind(foreground: HcForeground | null): string | null {
 	if (!foreground) return null;
 	const direct = agentProgram(foreground.name);

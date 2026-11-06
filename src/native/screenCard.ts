@@ -27,6 +27,7 @@ import type { PendingCall } from '../agents/format';
 import { questionsFromInput, type PendingQuestion, type PendingQuestionOption } from './pendingRequest';
 import type { ToolEntry, Turn } from './conversation';
 import { REFUSAL_TEXT, type AnswerOutcome, type AnswerReceipt, type ScreenExpectation } from './screenAnswer';
+import { cellsAtMost } from './cellWidth';
 
 /** What a dangling call is, by the agent's format (`AgentFormat.pendingCall`); null for a plain tool. */
 export type CallKind = (call: ToolEntry) => PendingCall['kind'] | null;
@@ -131,40 +132,22 @@ export function screenWidth(screen: string): number {
 }
 
 /**
- * Terminal cells a text takes, counted high: a character from the wide East
- * Asian blocks or an emoji as two. Too high only makes a label read as
- * unsure, which the card then does not offer.
- */
-function cellWidth(text: string): number {
-	let cells = 0;
-	for (const char of text) {
-		const code = char.codePointAt(0) ?? 0;
-		const wide =
-			(code >= 0x1100 && code <= 0x115f) ||
-			(code >= 0x2e80 && code <= 0xa4cf) ||
-			(code >= 0xac00 && code <= 0xd7a3) ||
-			(code >= 0xf900 && code <= 0xfaff) ||
-			(code >= 0xfe30 && code <= 0xfe4f) ||
-			(code >= 0xff00 && code <= 0xff60) ||
-			(code >= 0xffe0 && code <= 0xffe6) ||
-			code >= 0x1f000;
-		cells += wide ? 2 : 1;
-	}
-	return cells;
-}
-
-/**
  * One option's label and description from its screen row, or null when the
  * label may have wrapped onto the line the description starts on: a wrapped
  * label and the description under it share one indent, and only where the
- * first line ends can say it did not wrap.
+ * first line ends can say it did not wrap. Cells are counted high
+ * (`./cellWidth.ts`), and a label whose width depends on the terminal (an
+ * emoji sequence) is not read at all: the card sends it to the terminal.
  */
 export function optionFromRow(row: ScreenRow, width: number): PendingQuestionOption | null {
 	const [first, ...rest] = row.lines.map((line) => line.trim());
 	if (first === undefined || first === '') return null;
+	// A width the terminal decides (an emoji sequence) cannot say where the label ended.
+	const label = cellsAtMost(first);
+	if (label === null) return null;
 	if (rest.length === 0) return { label: first, description: '' };
-	const nextWord = rest[0]?.split(/\s+/)[0] ?? '';
-	if (OPTION_INDENT + cellWidth(first) + 1 + cellWidth(nextWord) > width) return null;
+	const nextWord = cellsAtMost(rest[0]?.split(/\s+/)[0] ?? '');
+	if (nextWord === null || OPTION_INDENT + label + 1 + nextWord > width) return null;
 	return { label: first, description: joinWrapped(rest) };
 }
 
@@ -253,24 +236,58 @@ export interface FoundReceipt {
 }
 
 /**
+ * Where the transcript stood when an answer was pressed (ADR-0009 §4): its
+ * newest turn, how many entries that turn held, and the calls then still
+ * waiting for a result. Nothing Claude wrote before the press can be its
+ * answer, except the result of a call that was open then (a Bash or Write
+ * call lands about half a second after its dialog). A position, not a set of
+ * ids: the session model holds a page of turns (#152), so a call outside the
+ * page at the press may enter it later ("Load earlier turns", a reset
+ * re-read), and it is still from before the press.
+ */
+export interface TranscriptMark {
+	/** The newest turn at the press, or null when there was none. */
+	turnId: string | null;
+	/** How many entries that turn held. */
+	entries: number;
+	/** The calls with no result yet at the press. */
+	open: ReadonlySet<string>;
+}
+
+/** Where `turns` stand now, for the receipt of an answer pressed now. */
+export function transcriptMark(turns: readonly Turn[]): TranscriptMark {
+	const last = turns[turns.length - 1];
+	const open = new Set<string>();
+	for (const turn of turns) {
+		for (const entry of turn.entries) if (entry.kind === 'tool' && entry.result === null) open.add(entry.id);
+	}
+	return { turnId: last?.id ?? null, entries: last?.entries.length ?? 0, open };
+}
+
+/**
  * The transcript's answer to the card's request (ADR-0009 §4): the result of
  * the card's call by its id; for a request read off the screen, the first
- * call the transcript did not hold when the card was built (`known`) that is
- * the same request, with its result. A question's call is written together
- * with its result on 2.1.318; a plan's `ExitPlanMode` always is. Null until
- * there is one. Pure.
+ * call written after the press (`mark`), or open at it, that is the same
+ * request, with its result. A question's call is written together with its
+ * result on 2.1.318; a plan's `ExitPlanMode` always is. Null until there is
+ * one, and null while the turn the press was made in is not held (a rewind),
+ * since nothing then says what came after it. Pure.
  */
 export function findReceipt(
 	turns: readonly Turn[],
 	expectation: ScreenExpectation,
-	known: ReadonlySet<string>,
+	mark: TranscriptMark,
 	callKind: CallKind,
 ): FoundReceipt | null {
 	if (expectation.kind === 'trust') return null;
-	for (const turn of turns) {
-		for (const entry of turn.entries) {
+	const markAt = mark.turnId === null ? -1 : turns.findIndex((turn) => turn.id === mark.turnId);
+	if (mark.turnId !== null && markAt < 0) return null;
+	for (const [t, turn] of turns.entries()) {
+		if (t < markAt) continue;
+		for (const [e, entry] of turn.entries.entries()) {
 			if (entry.kind !== 'tool' || entry.result === null) continue;
-			const text = receiptText(entry, expectation, known, callKind);
+			const after = t > markAt || e >= mark.entries || mark.open.has(entry.id);
+			const text = receiptText(entry, expectation, after, callKind);
 			if (text === null) continue;
 			return { receipt: { kind: 'result', text, isError: entry.status === 'error' }, turnId: turn.id };
 		}
@@ -278,17 +295,21 @@ export function findReceipt(
 	return null;
 }
 
-/** The result's text when `entry` answers the request, with a question's texts as the card has them; else null. */
+/**
+ * The result's text when `entry` answers the request, with a question's texts
+ * as the card has them; else null. `after`: written after the press, or open
+ * at it, which a request read off the screen must be.
+ */
 function receiptText(
 	entry: ToolEntry,
 	expectation: Exclude<ScreenExpectation, { kind: 'trust' }>,
-	known: ReadonlySet<string>,
+	after: boolean,
 	callKind: CallKind,
 ): string | null {
 	const result = entry.result ?? '';
 	const id = expectation.kind === 'plan' ? null : expectation.toolUseId;
 	if (id !== null) return entry.id === id ? result : null;
-	if (known.has(entry.id)) return null;
+	if (!after) return null;
 	switch (expectation.kind) {
 		case 'question': {
 			if (callKind(entry) !== 'question') return null;
@@ -349,13 +370,6 @@ export function ownCall(call: ToolEntry, expectation: ScreenExpectation, callKin
 		case 'trust':
 			return false;
 	}
-}
-
-/** Every call id the transcript holds: what a request read off the screen is not answered by. */
-export function knownCalls(turns: readonly Turn[]): Set<string> {
-	const ids = new Set<string>();
-	for (const turn of turns) for (const entry of turn.entries) if (entry.kind === 'tool') ids.add(entry.id);
-	return ids;
 }
 
 // ---------------------------------------------------------------- outcomes

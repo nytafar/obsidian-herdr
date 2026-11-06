@@ -110,7 +110,7 @@ import {
 	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState } from '../herdr/scope';
-import type { PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
+import type { PaneGlance, PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
 import { agentFormat } from '../agents/format';
 import { defaultAgentFormat } from '../agents/catalog';
 import { ScreenAnswerer } from '../native/screenAnswer';
@@ -593,11 +593,14 @@ export class TerminalView extends ItemView {
 	 * "Trust new folders automatically" for this tab's pane (#167): looks at
 	 * the screen while the pane's agent has no session yet, whichever surface
 	 * the tab shows, since an hc terminal at the prompt has no native view.
+	 * It reads the pane by `glance`, never `snapshot`, which on herdr may read
+	 * the Claude process of a pane this tab does not follow.
 	 */
 	private readonly trustWatch = new TrustWatch({
 		enabled: () => this.plugin.settings.nativeAutoTrustFolders === true,
-		pane: () => this.paneSnapshot(),
-		answering: () => this.screenAnswering(),
+		claimed: () => this.plugin.screenAnswerers.trustClaimed(this.trustKey()),
+		pane: () => this.paneGlance(),
+		answering: (agent) => this.screenAnswering(agent),
 		claim: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
 		release: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
 		notify: (message) => new Notice(message),
@@ -773,6 +776,16 @@ export class TerminalView extends ItemView {
 	}
 
 	/**
+	 * This tab's pane as its runtime last reported it, read with no side
+	 * effects (`SessionWatcher.glance`), or null for a kind that offers none.
+	 */
+	private paneGlance(): PaneGlance | null {
+		const { paneId, endpointId } = this.terminal.identity;
+		if (!paneId) return null;
+		return this.plugin.nativeWatcher(endpointId)?.glance?.(paneId) ?? null;
+	}
+
+	/**
 	 * Where this tab's pane lives, for the native view's availability (issue
 	 * #54, ADR-0002, ADR-0004): on another machine, and whether its runtime's
 	 * kind rules the view out by itself. A runtime that is no longer in the
@@ -828,14 +841,16 @@ export class TerminalView extends ItemView {
 	 * null for a kind with no screen (the `claude` kind) or an agent whose
 	 * format reads none. The driver is the plugin's one for this runtime and
 	 * agent, so every tab on the pane shares its one-answer guard, and it
-	 * reads the runtime's client per call.
+	 * reads the runtime's client per call. `agent` is the one the trust watch
+	 * saw running; the card's is its session's. Nothing here reads the pane
+	 * by `snapshot`, so the trust watch's use costs no process read.
 	 */
-	private screenAnswering(): ScreenAnswering | null {
+	private screenAnswering(agent?: string): ScreenAnswering | null {
 		const endpointId = this.terminal.identity.endpointId;
 		const kind = this.kind();
 		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
-		const agent = this.paneSnapshot()?.agent;
-		const format = agent ? agentFormat(agent) : defaultAgentFormat();
+		const running = agent ?? this.paneGlance()?.agent ?? undefined;
+		const format = running ? agentFormat(running) : defaultAgentFormat();
 		const parse = format?.screenDialog;
 		if (!screen || !format || !parse) return null;
 		const answerer = this.plugin.screenAnswerers.answerer(
@@ -846,8 +861,10 @@ export class TerminalView extends ItemView {
 			answerer,
 			screen,
 			parse,
-			statusMessage: () => this.paneSnapshot()?.blockMessage ?? null,
-			cwd: () => this.paneCwd(),
+			statusMessage: () => this.paneGlance()?.blockMessage ?? null,
+			cwd: () => this.paneGlance()?.cwd ?? '',
+			claimTrust: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
+			releaseTrust: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
 		};
 	}
 

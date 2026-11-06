@@ -99,6 +99,30 @@ export interface PaneSnapshot {
 }
 
 /**
+ * A pane as its runtime last reported it, and nothing more: what a tab may
+ * look at on a timer without following the pane (the trust watch, #167). A
+ * glance has no side effects, where {@link SessionWatcher.snapshot} may have
+ * (herdr's reads the Claude process of a pane with a session for its
+ * transcript, which only a pane a native view follows may cost).
+ */
+export interface PaneGlance {
+	paneId: string;
+	/** The pane's working directory, as the runtime reports it. */
+	cwd: string;
+	/**
+	 * The agent the runtime sees running in the pane now, by the agent
+	 * catalog's ids, or null when it sees none (a shell). Unlike
+	 * {@link PaneSnapshot.agent}, which names the agent whose session the view
+	 * follows, this says what runs before any session exists.
+	 */
+	agent: string | null;
+	agentSession: string;
+	agentStatus: AgentStatus;
+	/** As {@link PaneSnapshot.blockMessage}. */
+	blockMessage?: string;
+}
+
+/**
  * One runtime's view of its panes, for the session models. Built by the kind
  * over one live connection; a model re-asks for its runtime's watcher whenever
  * the published connection changes, and holds none while its runtime is not
@@ -107,6 +131,12 @@ export interface PaneSnapshot {
 export interface SessionWatcher {
 	/** The pane as the runtime last reported it, or null when it is not in scope. */
 	snapshot(paneId: string): PaneSnapshot | null;
+	/**
+	 * The pane as the runtime last reported it, read with no side effects, or
+	 * null when it is not in scope (see {@link PaneGlance}). Present on the
+	 * kinds whose screen the plugin reads (herdr, herdr-core).
+	 */
+	glance?(paneId: string): PaneGlance | null;
 	/**
 	 * The session a pane reports, pushed whenever the runtime says anything
 	 * about it: rotation (`/clear`, `--resume`) has no event of its own on
