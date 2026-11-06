@@ -194,8 +194,10 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 			const runtime = connection.endpoint.runtime;
 			const probe =
 				runtime.target === 'ssh'
-					? await probeOverSsh(runtime.host, programs, host.sshRun ?? sshDefaultDeps().run)
-					: await probeLocal(programs, { extraPath: host.extraPath() }, deps());
+					? await probeOverSsh(runtime.host, programs, host.sshRun ?? sshDefaultDeps().run, {
+							vaultRoot: runtime.remoteVaultPath,
+						})
+					: await probeLocal(programs, { extraPath: host.extraPath(), vaultRoot: host.vaultPath() }, deps());
 			return { ...probe, herdrVersion: connection.client.serverVersion };
 		},
 		promptSender: (client) => clientPromptSender(client),

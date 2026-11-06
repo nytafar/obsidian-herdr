@@ -297,10 +297,16 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 		probeAgents: async (connection, programs) => {
 			const client = connection.client;
 			const requester = { request: <T,>(method: string, params: unknown) => client.request<T>(method, params) };
+			// Shims are resolved from where agents start: the vault root.
+			const runtime = connection.endpoint.runtime;
 			const [probe, templates] = await Promise.all([
-				connection.endpoint.runtime.target === 'ssh'
-					? probeOverHc(requester, programs)
-					: probeLocal(programs, { extraPath: host.extraPath() }, host.discoveryDeps ?? defaultDeps()),
+				runtime.target === 'ssh'
+					? probeOverHc(requester, programs, runtime.remoteVaultPath)
+					: probeLocal(
+							programs,
+							{ extraPath: host.extraPath(), vaultRoot: host.vaultPath() },
+							host.discoveryDeps ?? defaultDeps(),
+						),
 				readHcTemplates(requester),
 			]);
 			return { ...probe, templates };

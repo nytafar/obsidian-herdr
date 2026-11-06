@@ -101,6 +101,23 @@ describe('what counts as an agent', () => {
 		expect(agentKindOf(gemini)).toBe('gemini');
 	});
 
+	it('or a known agent as the process title: node retitled to pi (Mac hc, 2026-11-06)', () => {
+		const pi = terminal({ status: null, foreground: { name: 'node', argv: ['pi', ''], cwd: '/', pid: 1 } });
+		expect(agentKindOf(pi)).toBe('pi');
+		const path = terminal({ status: null, foreground: { name: 'node', argv: ['/opt/homebrew/bin/codex'], cwd: '/', pid: 1 } });
+		expect(agentKindOf(path)).toBe('codex');
+	});
+
+	it('or the kind the plugin started it as, when the foreground says nothing known', () => {
+		const started = { 'obsidian-herdr.agent': 'pi' };
+		expect(agentKindOf(terminal({ status: null, labels: started, foreground: { name: 'node', argv: ['node', ''], cwd: '/', pid: 1 } }))).toBe('pi');
+		expect(agentKindOf(terminal({ status: null, labels: started, foreground: null }))).toBe('pi');
+		// What the terminal reports or runs still wins over the label.
+		expect(agentKindOf(terminal({ status: { app: 'codex', state: 'idle' }, labels: started }))).toBe('codex');
+		expect(agentKindOf(terminal({ status: null, labels: started, foreground: { name: 'claude', argv: ['claude'], cwd: '/', pid: 1 } }))).toBe('claude');
+		expect(agentKindOf(terminal({ status: null, labels: { 'obsidian-herdr.agent': ' ' }, foreground: null }))).toBeNull();
+	});
+
 	it('and not a shell or an ordinary program', () => {
 		expect(agentKindOf(terminal({ status: null, foreground: { name: 'bash', argv: ['bash'], cwd: '/', pid: 1 } }))).toBeNull();
 		expect(agentKindOf(terminal({ status: null, foreground: { name: 'node', argv: ['node', 'server.js'], cwd: '/', pid: 1 } }))).toBeNull();

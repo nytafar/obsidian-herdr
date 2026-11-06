@@ -399,7 +399,7 @@ describe('herdr-core actions', () => {
 					line: agentLaunchLine('claude'),
 					cwd: '/home/lasse/hvelv/notes',
 					name: 'notes-2',
-					labels: { 'herdr.seen': '0', 'herdr.space': 'sp1' },
+					labels: { 'herdr.seen': '0', 'obsidian-herdr.agent': 'claude', 'herdr.space': 'sp1' },
 				},
 			},
 		]);
@@ -421,7 +421,7 @@ describe('herdr-core actions', () => {
 		const actions = new HcActions(host, () => ({ space: null }));
 		await actions.startAgentHere('/home/lasse/hvelv/inbox');
 		expect(calls.map((call) => call.params.name)).toEqual(['inbox', 'inbox-2']);
-		expect(calls[0]?.params.labels).toEqual({ 'herdr.seen': '0' });
+		expect(calls[0]?.params.labels).toEqual({ 'herdr.seen': '0', 'obsidian-herdr.agent': 'claude' });
 	});
 
 	it('closes with terminal.kill then terminal.rm, and drops the row', async () => {

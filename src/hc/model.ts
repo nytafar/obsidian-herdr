@@ -24,6 +24,12 @@ export const LABEL_SPACE = 'herdr.space';
 export const LABEL_TAB = 'herdr.tab';
 export const LABEL_SEEN = 'herdr.seen';
 export const LABEL_PINNED = 'herdr.pinned';
+/**
+ * This plugin's own label: the agent kind a terminal was started as, set by
+ * `terminal.run` and read only as {@link agentKindOf}'s last resort, so a
+ * foreground it does not recognise never drops a row it started.
+ */
+export const LABEL_AGENT = 'obsidian-herdr.agent';
 
 export interface HcForeground {
 	pid: number | null;
@@ -265,16 +271,25 @@ export function agentProgram(name: string): string | null {
 /**
  * The agent kind of a terminal, or null when it is not an agent. A reported
  * `status.app` wins, known or not (an unknown app keeps its own name); then
- * the foreground program, looking through a known launcher (`node
- * …/gemini.js`).
+ * the foreground program: its name, its `argv[0]` (the process title, which
+ * node sets: pi runs as `{name: 'node', argv: ['pi', '']}`, measured on hc
+ * 2026-11-06), then through a known launcher (`node …/gemini.js`); last, the
+ * kind this plugin started the terminal as ({@link LABEL_AGENT}). herdr's own
+ * detection (`src/detect/mod.rs`) looks at argv0 the same way.
  */
 export function agentKindOf(terminal: HcTerminal): string | null {
 	const app = terminal.status?.app.trim() ?? '';
 	if (app) return agentProgram(app) ?? app.toLowerCase();
-	const foreground = terminal.foreground;
+	return foregroundKind(terminal.foreground) ?? startedKind(terminal.labels);
+}
+
+function foregroundKind(foreground: HcForeground | null): string | null {
 	if (!foreground) return null;
 	const direct = agentProgram(foreground.name);
 	if (direct) return direct;
+	const title = foreground.argv[0];
+	const titled = title ? agentProgram(title) : null;
+	if (titled) return titled;
 	if (INTERPRETERS.has(baseName(foreground.name))) {
 		for (const arg of foreground.argv.slice(1)) {
 			if (arg.startsWith('-')) continue;
@@ -283,6 +298,13 @@ export function agentKindOf(terminal: HcTerminal): string | null {
 		}
 	}
 	return null;
+}
+
+/** The kind this plugin started the terminal as, or null. */
+function startedKind(labels: Record<string, string>): string | null {
+	const started = labels[LABEL_AGENT]?.trim() ?? '';
+	if (!started) return null;
+	return agentProgram(started) ?? started.toLowerCase();
 }
 
 /** `herdr.seen` as a turn, or null when missing or unreadable. A missing label is not 0. */

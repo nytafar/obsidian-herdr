@@ -8,6 +8,10 @@
  * requester is a fake that records what it was asked.
  */
 
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
 	buildCatalog,
@@ -30,6 +34,7 @@ import {
 	probeLocal,
 	probeOverHc,
 	probeOverSsh,
+	shimManagerOf,
 	sshProbeArgs,
 } from '../src/agents/probe';
 import { AgentCatalogs, PROBE_WAIT_NOTICE_MS } from '../src/agents/catalogs';
@@ -358,7 +363,7 @@ describe('the probe commands', () => {
 		expect(asked[0]?.file).toBe('ssh');
 		expect(asked[0]?.args).toEqual(sshProbeArgs('lasse@xl', ['claude', '~/bin/x']));
 		expect(asked[0]?.args.slice(0, 6)).toEqual(['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'lasse@xl']);
-		expect(asked[0]?.args[6]).toBe(`sh -c '${PROBE_SCRIPT}' sh claude '~/bin/x'`);
+		expect(asked[0]?.args[6]).toBe(`sh -c '${PROBE_SCRIPT}' sh '' claude '~/bin/x'`);
 	});
 
 	it('reports an ssh that did not answer, and asks nothing without programs or a host', async () => {
@@ -404,7 +409,7 @@ describe('the probe commands', () => {
 		};
 		expect(await probeOverHc(requester, ['claude', 'codex'])).toEqual({ found: new Set(['claude']) });
 		expect(asked).toEqual([
-			{ method: 'machine.exec', params: { argv: ['sh', '-c', PROBE_SCRIPT, 'sh', 'claude', 'codex'], timeout: 15 } },
+			{ method: 'machine.exec', params: { argv: ['sh', '-c', PROBE_SCRIPT, 'sh', '', 'claude', 'codex'], timeout: 15 } },
 		]);
 		const failing = { request: <T,>(): Promise<T> => Promise.reject(new Error('machine_unknown')) };
 		expect(await probeOverHc(failing, ['claude'])).toEqual({ found: null, error: 'machine_unknown' });
@@ -412,6 +417,117 @@ describe('the probe commands', () => {
 			parseTemplates({ templates: [{ name: 'rev', description: 'Review', command: 'claude' }, { name: '' }, { name: 'b', error: 'bad' }] }),
 		).toEqual([{ name: 'rev', description: 'Review' }, { name: 'b', error: 'bad' }]);
 		expect(parseTemplates(null)).toEqual([]);
+	});
+
+	it('passes the vault root to the remote script as $1, over ssh and machine.exec', async () => {
+		const asked: string[][] = [];
+		const run: RunCommand = (file, args) => {
+			asked.push(args);
+			return Promise.resolve('ok');
+		};
+		await probeOverSsh('xl', ['kimi'], run, { vaultRoot: '~/hvelv' });
+		expect(asked[0]?.[6]).toBe(`sh -c '${PROBE_SCRIPT}' sh '~/hvelv' kimi`);
+		const params: unknown[] = [];
+		const requester = {
+			request: <T,>(_method: string, value: unknown): Promise<T> => {
+				params.push(value);
+				return Promise.resolve({ stdout: Buffer.from('ok').toString('base64') } as T);
+			},
+		};
+		await probeOverHc(requester, ['kimi'], ' /Users/lasse/Vaults/hvelv ');
+		expect(params).toEqual([{ argv: ['sh', '-c', PROBE_SCRIPT, 'sh', '/Users/lasse/Vaults/hvelv', 'kimi'], timeout: 15 }]);
+	});
+
+	it('recognises mise and asdf shims by where they live and what they point at', () => {
+		expect(shimManagerOf(`${HOME}/.local/share/mise/shims/kimi`, '/usr/bin/mise')).toBe('mise');
+		expect(shimManagerOf('/opt/m/shims/kimi', '/opt/homebrew/Cellar/mise/2026.10.25/bin/mise')).toBe('mise');
+		expect(shimManagerOf('/usr/bin/mise', '/usr/bin/mise')).toBeNull();
+		expect(shimManagerOf(`${HOME}/.asdf/shims/qwen`, null)).toBe('asdf');
+		expect(shimManagerOf('/data/asdf/shims/qwen', null, { ASDF_DATA_DIR: '/data/asdf' })).toBe('asdf');
+		expect(shimManagerOf('/usr/local/bin/claude', '/usr/local/lib/claude/cli.js')).toBeNull();
+	});
+
+	it('counts a local shim only when its manager resolves it from the vault root, without a shell', async () => {
+		const shims = `${HOME}/.local/share/mise/shims`;
+		const executable = new Set([
+			`${shims}/kimi`,
+			`${shims}/codex`,
+			`${shims}/amp`,
+			`${HOME}/.asdf/shims/qwen`,
+			`${HOME}/.asdf/shims/muse`,
+			`${HOME}/.asdf/bin/asdf`,
+			'/usr/local/bin/claude',
+		]);
+		const calls: { file: string; args: string[]; cwd?: string }[] = [];
+		const deps: DiscoveryDeps = {
+			isExecutable: (path) => executable.has(path),
+			realPath: (path) => (path.startsWith(shims) ? '/usr/bin/mise' : path),
+			run: (file, args, options) => {
+				if (args[0] !== 'which') return Promise.resolve({ stdout: `${shims}:${HOME}/.asdf/shims`, stderr: '', code: 0 });
+				calls.push({ file, args, cwd: options.cwd });
+				const name = args[1];
+				if (name === 'codex' || name === 'qwen') return Promise.resolve({ stdout: '/x\n', stderr: '', code: 0 });
+				// mise answered nothing in time: unverified, so the file counts.
+				if (name === 'amp') return Promise.resolve({ stdout: '', stderr: '', code: 1, failed: true });
+				return Promise.resolve({ stdout: '', stderr: 'mise ERROR kimi is a mise bin however it is not currently active', code: 1 });
+			},
+			env: { SHELL: '/bin/zsh' },
+			home: HOME,
+		};
+		const result = await probeLocal(['claude', 'kimi', 'codex', 'amp', 'qwen', 'muse'], { vaultRoot: '/vault' }, deps);
+		expect(result.found).toEqual(new Set(['claude', 'codex', 'amp', 'qwen']));
+		expect(calls.sort((a, b) => (a.args[1] ?? '').localeCompare(b.args[1] ?? ''))).toEqual([
+			{ file: '/usr/bin/mise', args: ['which', 'amp'], cwd: '/vault' },
+			{ file: '/usr/bin/mise', args: ['which', 'codex'], cwd: '/vault' },
+			{ file: '/usr/bin/mise', args: ['which', 'kimi'], cwd: '/vault' },
+			{ file: `${HOME}/.asdf/bin/asdf`, args: ['which', 'muse'], cwd: '/vault' },
+			{ file: `${HOME}/.asdf/bin/asdf`, args: ['which', 'qwen'], cwd: '/vault' },
+		]);
+	});
+
+	it('counts a local shim as before when its manager cannot be found', async () => {
+		const deps: DiscoveryDeps = {
+			isExecutable: (path) => path === `${HOME}/.asdf/shims/qwen`,
+			run: () => Promise.resolve({ stdout: `${HOME}/.asdf/shims`, stderr: '', code: 0 }),
+			env: { SHELL: '/bin/sh' },
+			home: HOME,
+		};
+		expect((await probeLocal(['qwen'], {}, deps)).found).toEqual(new Set(['qwen']));
+	});
+
+	it('runs the remote script under sh: shims resolved from the vault root, fallbacks counted', () => {
+		const home = mkdtempSync(join(tmpdir(), 'oh-probe-'));
+		try {
+			const bin = join(home, 'bin');
+			const shims = join(home, '.local/share/mise/shims');
+			const asdfShims = join(home, '.asdf/shims');
+			for (const dir of [bin, shims, asdfShims, join(home, 'vault')]) mkdirSync(dir, { recursive: true });
+			const script = (path: string, body: string): void => {
+				writeFileSync(path, `#!/bin/sh\n${body}\n`);
+				chmodSync(path, 0o755);
+			};
+			// A fake mise: records where it was asked, answers by name.
+			script(
+				join(bin, 'mise'),
+				'pwd >> "$HOME/asked"\ncase "$2" in on|on2) exit 0 ;; stuck) exit 124 ;; *) exit 1 ;; esac',
+			);
+			for (const name of ['on', 'off', 'stuck', 'off2', 'on2']) symlinkSync(join(bin, 'mise'), join(shims, name));
+			// asdf is found but cannot run: the shim counts.
+			script(join(bin, 'asdf'), 'exit 126');
+			script(join(asdfShims, 'aq'), 'exit 0');
+			script(join(bin, 'plain'), 'exit 0');
+			const programs = ['plain', 'off', 'on', 'aq', 'nothere', 'stuck', 'off2'];
+			const stdout = execFileSync('/bin/sh', ['-c', PROBE_SCRIPT, 'sh', '~/vault', ...programs], {
+				env: { HOME: home, PATH: `${bin}:${shims}:${asdfShims}:/usr/bin:/bin` },
+				encoding: 'utf8',
+			});
+			// After mise timed out once, off2 is no longer asked, and counts.
+			expect(parseProbeOutput(stdout, programs)).toEqual(new Set(['plain', 'on', 'aq', 'stuck', 'off2']));
+			const asked = readFileSync(join(home, 'asked'), 'utf8').trim().split('\n');
+			expect(asked).toEqual([join(home, 'vault'), join(home, 'vault'), join(home, 'vault')]);
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -787,10 +903,15 @@ describe('the kinds’ own probes', () => {
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});
-		const remote = await kind.probeAgents?.(connectionOf(SSH_HERDR, { serverVersion: '0.9.0' }) as never, ['codex', 'claude']);
+		const remote = await kind.probeAgents?.(
+			connectionOf({ ...SSH_HERDR, remoteVaultPath: '~/hvelv' }, { serverVersion: '0.9.0' }) as never,
+			['codex', 'claude'],
+		);
 		expect(remote).toEqual({ found: new Set(['codex']), herdrVersion: '0.9.0' });
 		expect(asked).toHaveLength(1);
 		expect(asked[0]?.slice(0, 7)).toEqual(['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'lasse@xl']);
+		// Shims are resolved from the remote vault root.
+		expect(asked[0]?.[7]?.endsWith(` sh '~/hvelv' codex claude`)).toBe(true);
 
 		const local = await kind.probeAgents?.(connectionOf(LOCAL_HERDR, { serverVersion: '0.9.5' }) as never, ['codex', 'claude']);
 		expect(local?.found).toEqual(new Set(['claude']));
@@ -799,9 +920,11 @@ describe('the kinds’ own probes', () => {
 
 	it('herdr-core: machine.exec over the connection on SSH, the binary search here, templates on both', async () => {
 		const methods: string[] = [];
+		const execs: unknown[] = [];
 		const client = {
-			request: (method: string) => {
+			request: (method: string, params: unknown) => {
 				methods.push(method);
+				if (method === 'machine.exec') execs.push(params);
 				if (method === 'templates.list') return Promise.resolve({ templates: [{ name: 'rev' }] });
 				return Promise.resolve({ code: 0, stdout: Buffer.from('2\nok').toString('base64') });
 			},
@@ -815,9 +938,13 @@ describe('the kinds’ own probes', () => {
 			currentScope: () => null,
 			discoveryDeps: machine([`${HOME}/.local/bin/codex`]),
 		});
-		const remote = await kind.probeAgents?.(connectionOf(SSH_HC, client) as never, ['claude', 'codex']);
+		const remote = await kind.probeAgents?.(
+			connectionOf({ ...SSH_HC, remoteVaultPath: '/Users/lasse/Vaults/hvelv' }, client) as never,
+			['claude', 'codex'],
+		);
 		expect(remote).toEqual({ found: new Set(['codex']), templates: [{ name: 'rev' }] });
 		expect(methods.sort()).toEqual(['machine.exec', 'templates.list']);
+		expect((execs[0] as { argv: string[] }).argv.slice(3)).toEqual(['sh', '/Users/lasse/Vaults/hvelv', 'claude', 'codex']);
 
 		methods.length = 0;
 		const local = await kind.probeAgents?.(connectionOf(LOCAL_HC, client) as never, ['claude', 'codex']);
@@ -886,11 +1013,15 @@ describe('starting a catalog entry', () => {
 		await actions.startAgentHere('/vault', { kind: 'claude', command: '~/bin/my-claude', args: ['--model', 'opus'] });
 		expect(requests[0]?.params).toMatchObject({ line: agentLaunchLine('claude', ['--model', 'opus'], '~/bin/my-claude') });
 		expect(agentLaunchLine('claude', ['--model', 'opus'], '~/bin/my-claude')).toContain(`-ic '~/bin/my-claude --model opus;`);
+		// A wrapper's terminal keeps the kind it was started as.
+		expect(requests[0]?.params).toMatchObject({ labels: { 'obsidian-herdr.agent': 'claude' } });
 
 		requests.length = 0;
 		await actions.startAgentHere('/vault', { kind: 'rev', template: 'rev', label: 'rev' });
 		expect(requests[0]?.params).toMatchObject({ argv: ['rev'] });
 		expect(requests[0]?.params).not.toHaveProperty('line');
+		// A template names no agent kind, so it gets no fallback.
+		expect((requests[0]?.params as { labels: Record<string, string> }).labels).not.toHaveProperty('obsidian-herdr.agent');
 		expect(() => agentLaunchLine('claude', [], 'rm -rf')).toThrow('not a plain command');
 	});
 });

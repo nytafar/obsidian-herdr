@@ -7,7 +7,7 @@
  *   settings' extra PATH entries, then the login shell's PATH, which is asked
  *   once for the whole list and only when the fixed directories missed one.
  *   Filesystem checks otherwise; nothing else is spawned.
- * - **An SSH host:** one `ssh -T <host> sh -c '<script>' sh <program>…`, in
+ * - **An SSH host:** one `ssh -T <host> sh -c '<script>' sh <vault> <program>…`, in
  *   the shape of `remoteHerdrCommand`. The script first asks the user's own
  *   shell there (`$SHELL -l -i -c 'printenv PATH'`) for its PATH, because
  *   that is where agents start: herdr runs them in an interactive pane
@@ -31,9 +31,19 @@
  * line starting with `/` used. It runs under `timeout` where the machine has
  * one; where it has none, a shell that hangs runs into the probe's own
  * timeout, which is a failed, unverified probe rather than a wrong answer.
+ *
+ * Version-manager shims (mise's `~/.local/share/mise/shims/`, asdf's
+ * `~/.asdf/shims/`) are executable for every tool the manager ever
+ * installed, active or not, and whether one runs depends on the working
+ * directory. Agents start in the vault (or a folder in it), so a shim counts
+ * only when `mise which <name>` (or `asdf which`) answers from the runtime's
+ * vault root: the local vault path, or `remoteVaultPath` on a remote. Measured
+ * 2026-11-06: 11 of 16 programs found on one Linux machine were mise shims
+ * for tools not active there. If the manager cannot answer (missing, cannot
+ * run, timed out), the shim counts, as before.
  */
 
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { shellQuote } from '../hc/client';
 import { BINARY_DIRECTORIES, expandHome, loginShellPath, type DiscoveryDeps } from '../herdr/binary';
 import type { RunCommand } from '../herdr/ssh';
@@ -44,11 +54,27 @@ export const SSH_PROBE_TIMEOUT_MS = 15_000;
 /** `machine.exec`'s own timeout for the probe, in seconds. */
 export const HC_PROBE_TIMEOUT_S = 15;
 
-/** The probe, as `sh -c` runs it with the programs as `$1…`. */
+/** How long one local `mise which` or `asdf which` may take. */
+export const SHIM_TIMEOUT_MS = 3_000;
+
+/**
+ * The probe, as `sh -c` runs it with the vault root as `$1` (empty for none,
+ * which is the home directory) and the programs as `$2…`.
+ *
+ * A program found as a mise or asdf shim is asked of its manager from the
+ * vault root (`mise which <name>`): a shim for a tool that is not active
+ * there would not run where agents start, so it is not found. When the
+ * manager is missing, times out (124, or killed) or cannot run (126 and up),
+ * the file counts as found, as before; after one timeout no further shim is
+ * asked, so the shims together add at most one `timeout 3` to the budget.
+ */
 export const PROBE_SCRIPT =
-	'x=; if [ -n "${SHELL:-}" ]; then t=; command -v timeout >/dev/null 2>&1 && t="timeout 10"; ' +
+	't=; u=; if command -v timeout >/dev/null 2>&1; then t="timeout 10"; u="timeout 3"; fi; ' +
+	'x=; if [ -n "${SHELL:-}" ]; then ' +
 	'x=$($t "$SHELL" -l -i -c "printenv PATH" </dev/null 2>/dev/null | tail -n 1); fi; ' +
 	'case $x in /*) PATH=$x:$PATH ;; esac; ' +
+	'v=${1:-}; shift; case $v in "~/"*) v=$HOME/${v#??} ;; esac; [ -n "$v" ] || v=$HOME; ' +
+	'cd "$v" 2>/dev/null || cd "$HOME" 2>/dev/null; s=1; ' +
 	'i=0; for p in "$@"; do i=$((i+1)); f=; ' +
 	'case $p in ' +
 	'"~/"*) f=$HOME/${p#??} ;; ' +
@@ -57,7 +83,15 @@ export const PROBE_SCRIPT =
 	'[ -n "$f" ] || for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do ' +
 	'[ -x "$d/$p" ] && { f=$d/$p; break; }; done ;; ' +
 	'esac; ' +
-	'[ -n "$f" ] && [ -x "$f" ] && echo $i; ' +
+	'[ -n "$f" ] && [ -x "$f" ] || continue; ' +
+	'w=; case $f in */mise/shims/*) w=mise ;; */.asdf/shims/*) w=asdf ;; esac; ' +
+	'if [ -n "$w" ] && [ -n "$s" ]; then b=$(command -v $w 2>/dev/null) || b=; ' +
+	'[ -n "$b" ] || for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/.asdf/bin"; do ' +
+	'[ -x "$d/$w" ] && { b=$d/$w; break; }; done; ' +
+	'if [ -n "$b" ]; then $u "$b" which "${f##*/}" </dev/null >/dev/null 2>&1; r=$?; ' +
+	'if [ $r -eq 124 ] || [ $r -gt 128 ]; then s=; fi; ' +
+	'if [ $r -ne 0 ] && [ $r -lt 124 ]; then continue; fi; fi; fi; ' +
+	'echo $i; ' +
 	'done; echo ok';
 
 /**
@@ -80,14 +114,19 @@ export function parseProbeOutput(stdout: string, programs: readonly string[]): S
 	return found;
 }
 
-/** The remote command of the SSH probe: the script and the programs, quoted. */
-export function sshProbeCommand(programs: readonly string[]): string {
-	return ['sh', '-c', shellQuote(PROBE_SCRIPT), 'sh', ...programs.map(shellQuote)].join(' ');
+/** What follows `sh -c <script>`: `$0`, the vault root (`$1`), the programs. */
+export function probeScriptArgs(programs: readonly string[], vaultRoot = ''): string[] {
+	return ['sh', vaultRoot.trim(), ...programs];
+}
+
+/** The remote command of the SSH probe: the script, the vault root and the programs, quoted. */
+export function sshProbeCommand(programs: readonly string[], vaultRoot = ''): string {
+	return ['sh', '-c', PROBE_SCRIPT, ...probeScriptArgs(programs, vaultRoot)].map(shellQuote).join(' ');
 }
 
 /** The SSH probe's argv for `ssh`, non-interactive like every other ssh here. */
-export function sshProbeArgs(host: string, programs: readonly string[]): string[] {
-	return ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, sshProbeCommand(programs)];
+export function sshProbeArgs(host: string, programs: readonly string[], vaultRoot = ''): string[] {
+	return ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, sshProbeCommand(programs, vaultRoot)];
 }
 
 /**
@@ -98,13 +137,13 @@ export async function probeOverSsh(
 	host: string,
 	programs: readonly string[],
 	run: RunCommand,
-	options: { sshBinary?: string; timeoutMs?: number } = {},
+	options: { sshBinary?: string; timeoutMs?: number; vaultRoot?: string } = {},
 ): Promise<AgentProbe> {
 	if (programs.length === 0) return { found: new Set() };
 	const trimmed = host.trim();
 	if (!trimmed) return { found: null, error: 'the runtime has no SSH host' };
 	const controller = new AbortController();
-	const stdout = await run(options.sshBinary ?? 'ssh', sshProbeArgs(trimmed, programs), {
+	const stdout = await run(options.sshBinary ?? 'ssh', sshProbeArgs(trimmed, programs, options.vaultRoot), {
 		signal: controller.signal,
 		timeoutMs: options.timeoutMs ?? SSH_PROBE_TIMEOUT_MS,
 	});
@@ -119,36 +158,102 @@ function splitPath(value: string): string[] {
 		.filter((part) => part.length > 0);
 }
 
+/** A version manager whose shims resolve per working directory. */
+export type ShimManager = 'mise' | 'asdf';
+
+/**
+ * The manager behind a shim, or null for an ordinary program. mise's shims
+ * are symlinks to `mise` itself, in `…/mise/shims/`; asdf's are scripts in
+ * `~/.asdf/shims/`, or `$ASDF_DATA_DIR/shims/`.
+ */
+export function shimManagerOf(
+	path: string,
+	realPath: string | null,
+	env: NodeJS.ProcessEnv = {},
+): ShimManager | null {
+	if (path.includes('/mise/shims/')) return 'mise';
+	if (realPath && basename(realPath) === 'mise' && basename(path) !== 'mise') return 'mise';
+	if (path.includes('/.asdf/shims/')) return 'asdf';
+	const asdfData = env.ASDF_DATA_DIR?.trim();
+	if (asdfData && dirname(path) === join(asdfData, 'shims')) return 'asdf';
+	return null;
+}
+
 /**
  * Which programs exist on this machine. A path (absolute or `~/`) is checked
  * as it is; a name in the fixed directories and the extras, then on the
  * login shell's PATH, asked once and only when needed.
+ *
+ * A program found as a mise or asdf shim is asked of its manager, `mise which
+ * <name>` with the vault root as working directory and no shell: a tool that
+ * is not active there would not run where agents start, so it is not found.
+ * When the manager cannot be found, cannot be spawned or times out, the file
+ * counts as found, as it did before.
  */
 export async function probeLocal(
 	programs: readonly string[],
-	options: { extraPath?: string; skipLoginShell?: boolean; loginShellTimeoutMs?: number },
+	options: { extraPath?: string; vaultRoot?: string; skipLoginShell?: boolean; loginShellTimeoutMs?: number },
 	deps: DiscoveryDeps,
 ): Promise<AgentProbe> {
-	const found = new Set<string>();
+	const hits = new Map<string, string>();
 	const missing: string[] = [];
 	const directories = [...BINARY_DIRECTORIES, ...splitPath(options.extraPath ?? '')].map((dir) =>
 		expandHome(dir, deps.home),
 	);
-	const inAny = (program: string, dirs: readonly string[]): boolean =>
-		dirs.some((dir) => deps.isExecutable(join(dir, program)));
+	const inAny = (program: string, dirs: readonly string[]): string | null => {
+		for (const dir of dirs) {
+			const path = join(dir, program);
+			if (deps.isExecutable(path)) return path;
+		}
+		return null;
+	};
 	for (const program of programs) {
 		if (program.includes('/')) {
-			if (deps.isExecutable(expandHome(program, deps.home))) found.add(program);
+			const path = expandHome(program, deps.home);
+			if (deps.isExecutable(path)) hits.set(program, path);
 			continue;
 		}
-		if (inAny(program, directories)) found.add(program);
+		const path = inAny(program, directories);
+		if (path) hits.set(program, path);
 		else missing.push(program);
 	}
+	let shellDirs: string[] = [];
 	if (missing.length > 0 && !options.skipLoginShell) {
 		const shellPath = await loginShellPath(deps, options.loginShellTimeoutMs);
-		const dirs = splitPath(shellPath ?? '').map((dir) => expandHome(dir, deps.home));
-		for (const program of missing) if (inAny(program, dirs)) found.add(program);
+		shellDirs = splitPath(shellPath ?? '').map((dir) => expandHome(dir, deps.home));
+		for (const program of missing) {
+			const path = inAny(program, shellDirs);
+			if (path) hits.set(program, path);
+		}
 	}
+	// Where a manager is looked for when the shim does not name it.
+	const managerDirs = (manager: ShimManager): string[] => [
+		...(manager === 'asdf' ? [join(expandHome(deps.env.ASDF_DIR?.trim() || '~/.asdf', deps.home), 'bin')] : []),
+		...directories,
+		...splitPath(deps.env.PATH ?? ''),
+		...shellDirs,
+	];
+	const cwd = options.vaultRoot?.trim() || deps.home;
+	const active = async (path: string): Promise<boolean> => {
+		const real = deps.realPath?.(path) ?? null;
+		const manager = shimManagerOf(path, real, deps.env);
+		if (!manager) return true;
+		const binary =
+			manager === 'mise' && real && basename(real) === 'mise' ? real : inAny(manager, managerDirs(manager));
+		if (!binary) return true;
+		const result = await deps.run(binary, ['which', basename(path)], {
+			timeoutMs: SHIM_TIMEOUT_MS,
+			env: deps.env,
+			cwd,
+		});
+		return result.failed === true || result.code === 0;
+	};
+	const entries = [...hits];
+	const answers = await Promise.all(entries.map(([, path]) => active(path)));
+	const found = new Set<string>();
+	entries.forEach(([program], index) => {
+		if (answers[index]) found.add(program);
+	});
 	return { found };
 }
 
@@ -185,12 +290,16 @@ export async function readHcTemplates(requester: HcProbeRequester): Promise<HcTe
 }
 
 /** Which programs exist on the core's machine, in one `machine.exec`. */
-export async function probeOverHc(requester: HcProbeRequester, programs: readonly string[]): Promise<AgentProbe> {
+export async function probeOverHc(
+	requester: HcProbeRequester,
+	programs: readonly string[],
+	vaultRoot = '',
+): Promise<AgentProbe> {
 	if (programs.length === 0) return { found: new Set() };
 	try {
 		const result = await requester.request<{ stdout?: unknown; truncated?: boolean; timed_out?: boolean } | null>(
 			'machine.exec',
-			{ argv: ['sh', '-c', PROBE_SCRIPT, 'sh', ...programs], timeout: HC_PROBE_TIMEOUT_S },
+			{ argv: ['sh', '-c', PROBE_SCRIPT, ...probeScriptArgs(programs, vaultRoot)], timeout: HC_PROBE_TIMEOUT_S },
 		);
 		if (!result || result.truncated || result.timed_out || typeof result.stdout !== 'string') {
 			return { found: null, error: 'herdr-core did not finish the check' };

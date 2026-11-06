@@ -5,7 +5,8 @@
  * - Start agent: `terminal.run {line, cwd, name, labels}`, labelled
  *   `herdr.seen=0` and, when the scope resolved a space, `herdr.space`, so the
  *   agent shows in herdr-app too ([[herdr-core-api]] §5; herdr-app
- *   `docs/labels.md`).
+ *   `docs/labels.md`); and, except for a template, the plugin's own
+ *   `obsidian-herdr.agent=<kind>`, the list's fallback kind (`LABEL_AGENT`).
  * - Close: `terminal.kill`, then `terminal.rm`.
  * - Pin: the shared `herdr.pinned` label.
  * - Prompt: `terminal.send`; keys: `terminal.keys`.
@@ -35,7 +36,7 @@ import {
 	type PromptSender,
 } from '../native/promptSender';
 import { HcError } from './connection';
-import { LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
+import { LABEL_AGENT, LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
 
 /** How long `terminal.rm` is retried while a killed terminal is still `live`. */
 export const RM_RETRY_MS = 2000;
@@ -147,6 +148,9 @@ export class HcActions implements RuntimeActions {
 		const label = folderName(folderAbsPath);
 		const kind = agent.kind ?? FALLBACK_AGENT_KIND;
 		const labels: Record<string, string> = { [LABEL_SEEN]: '0' };
+		// The kind it was started as, the list's fallback when the foreground
+		// is not one it knows. A template names no agent kind, so it gets none.
+		if (!agent.template) labels[LABEL_AGENT] = kind;
 		const space = this.scope()?.space;
 		if (space) labels[LABEL_SPACE] = space.id;
 		const taken = this.host.takenAgentNames();

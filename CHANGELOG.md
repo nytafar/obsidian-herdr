@@ -173,6 +173,15 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   the start instead of being appended to the old session's turns, and a file
   renamed over the transcript is followed at once rather than after the next
   2 s poll. A long transcript's first read is taken 1 MB at a time.
+- The agent catalog no longer lists a CLI whose only trace is a mise or asdf
+  shim for a tool that is not active in the vault. The check asks `mise
+  which` (or `asdf which`) from the vault root, on this machine and on SSH
+  and herdr-core hosts (from the remote vault path); if the manager cannot
+  answer, the shim counts as before.
+- pi started on herdr-core no longer drops out of the agent list once hc sees
+  its foreground (`node`, titled `pi`): the process title is read too. Agents
+  the plugin starts on herdr-core also carry an `obsidian-herdr.agent` label
+  with their kind, so an unrecognised foreground never drops their row.
 
 ## 0.4.0 — 2026-09-15
 

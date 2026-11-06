@@ -147,6 +147,21 @@ refuses every request until its `hello`. herdr calls the kind its "canonical exe
 that program in the pane and passes `args` after it, so herdr cannot start a
 user's own wrapper; herdr-core's `terminal.run` can.
 
+The catalog's probe (`src/agents/probe.ts`) does not count a version-manager
+shim for a tool that is not active where agents start. Measured on this Linux
+machine 2026-11-06: the file-only probe found 16 of 24 programs, most of them
+in `~/.local/share/mise/shims/` (106 executable stubs, each a symlink to
+`/usr/bin/mise`), and `mise which kimi` (likewise qwen, muse, devin, agy, omp,
+kilo, cursor-agent, amp, opencode) answered `mise ERROR kimi is a mise bin
+however it is not currently active` with exit 1. Activeness depends on the
+working directory, so a shim (a path in `…/mise/shims/` or resolving to
+`mise`, or in `~/.asdf/shims/`) is asked `mise which <name>` / `asdf which
+<name>` from the runtime's vault root (local vault path, `remoteVaultPath` on
+SSH and herdr-core `machine.exec`, where the script takes it as `$1`). Exit 0
+counts; any other answer does not; a manager that is missing, cannot run or
+times out leaves the file counted. With that, the same machine reports claude,
+codex and pi from `~/hvelv`, locally and through the remote script.
+
 The 0.9.5 pong, verbatim from the running server:
 `{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"live_handoff":true,"detached_server_daemon":true,"endpoint_protocol_generation":1,"surface_interest":true,"health_check":true,"ssh_agent_registration":true}}`.
 
@@ -379,7 +394,17 @@ machine and 0.1.17 on `asher` on 2026-11-05:
   (`claude-code` is shown as `claude`) or its foreground program is a known
   agent, looking through `node`/`bun`/`python`/`env`. Measured on asher: `t7`
   and `t8` never reported (`status: null`), have `env …` in `argv` and
-  `claude` in the foreground, and show as claude with status unknown. Status
+  `claude` in the foreground, and show as claude with status unknown. The
+  foreground's `argv[0]` is the process title and is read too: measured on the
+  Mac's hc 2026-11-06, pi reports `foreground: {name: "node", argv: ["pi",
+  ""]}` (node retitles itself), which the interpreter scan of `argv[1…]`
+  missed, so the row vanished. herdr's own detection (`src/detect/mod.rs`,
+  `normalized_process_name`) reads argv0 first, so herdr panes have no such
+  gap, and the plugin does not classify herdr panes itself. Last resort: the
+  label `obsidian-herdr.agent=<kind>`, which the plugin's own `terminal.run`
+  sets (not for an hc template, which names no kind); the terminal ends with
+  the agent (the launch line leaves the shell when the agent exits), so the
+  label never outlives what it describes. Status
   is ADR-0005's mapping: `working`; `blocked`/`error` as blocked; `done`/`idle`
   as done when `turn > herdr.seen`, else idle, and as reported without the
   label; never reported as unknown. Measured: asher `t1` reports `done` at turn
