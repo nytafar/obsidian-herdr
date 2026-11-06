@@ -15,6 +15,9 @@ import {
 	type WatchableScope,
 } from '../src/herdr/sessionWatcher';
 import type { Unsubscribe } from '../src/native/sessionWatcher';
+import { nativeAgentReason } from '../src/native/agentSupport';
+import { paneViewAvailability } from '../src/native/paneSurface';
+import { withPaneReason } from '../src/views/terminalView';
 import type { HerdrEvent } from '../src/herdr/client';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus, PaneInfo } from '../src/herdr/types.gen';
@@ -226,5 +229,66 @@ describe('herdrSessionWatcher: the pane as herdr reports it', () => {
 		changed[0]?.('w4:p1', blocked, blocked);
 
 		expect(seen).toEqual([['w4:p1', 'blocked', undefined]]);
+	});
+});
+
+describe('herdrSessionWatcher: only a Claude pane has a native view (#155)', () => {
+	const { client } = recordingClient();
+	const CODEX = 'this pane runs Codex, and the native view reads only Claude';
+
+	/** A scope holding these agent panes, with a Codex thread id on each session. */
+	function scopeOf(panes: Record<string, string>): WatchableScope {
+		return {
+			get: (paneId: string) =>
+				panes[paneId] ? ({ paneId, cwd: '/tmp/oh-codex-live', agent: panes[paneId], agentStatus: 'idle' } as PaneState) : undefined,
+			paneInfo: (paneId: string) =>
+				panes[paneId]
+					? ({
+							pane_id: paneId,
+							agent: panes[paneId],
+							agent_session: { agent: panes[paneId], kind: 'id', source: `herdr:${panes[paneId]}`, value: '019a-thread' },
+						} as PaneInfo)
+					: undefined,
+			on: () => () => {},
+		};
+	}
+
+	it('refuses a Codex pane with its reason, and keeps it a terminal', () => {
+		const watcher = herdrSessionWatcher({ scope: scopeOf({ 'w14:p8': 'codex' }), client });
+		expect(watcher?.unavailable?.('w14:p8')).toBe(CODEX);
+		const where = withPaneReason({ remote: false, kindReason: null }, watcher?.unavailable?.('w14:p8') ?? null);
+		expect(paneViewAvailability('native', where)).toEqual({ available: false, reason: CODEX });
+	});
+
+	it('names any other agent the same way, by its menu name or its kind', () => {
+		const watcher = herdrSessionWatcher({ scope: scopeOf({ a: 'gemini', b: 'cursor', c: 'someday' }), client });
+		expect(watcher?.unavailable?.('a')).toBe('this pane runs Gemini, and the native view reads only Claude');
+		expect(watcher?.unavailable?.('b')).toBe('this pane runs Cursor, and the native view reads only Claude');
+		expect(watcher?.unavailable?.('c')).toBe('this pane runs someday, and the native view reads only Claude');
+	});
+
+	it('leaves a Claude pane and a pane with no agent yet as they were', () => {
+		const watcher = herdrSessionWatcher({ scope: scopeOf({ 'w4:p1': 'claude' }), client });
+		expect(watcher?.unavailable?.('w4:p1')).toBeNull();
+		// Not an agent pane, so not in the scope: nothing to refuse.
+		expect(watcher?.unavailable?.('w4:p2')).toBeNull();
+		expect(nativeAgentReason(null)).toBeNull();
+		expect(nativeAgentReason('')).toBeNull();
+	});
+
+	it('says when a pane’s answer may have moved: a Codex pane joining, or its agent changing', () => {
+		const { scope, added, changed } = recordingScope();
+		const seen: string[] = [];
+		herdrSessionWatcher({ scope, client })?.onAvailability?.((paneId) => seen.push(paneId));
+
+		added[0]?.({ paneId: 'w4:p1', agent: 'claude' } as PaneState);
+		added[0]?.({ paneId: 'w4:p2', agent: 'codex' } as PaneState);
+		const claude = { agent: 'claude', agentStatus: 'idle' } as PaneState;
+		const codex = { agent: 'codex', agentStatus: 'idle' } as PaneState;
+		changed[0]?.('w4:p1', claude, { ...claude, agentStatus: 'working' });
+		changed[0]?.('w4:p1', claude, codex);
+		changed[0]?.('w4:p1', codex, claude);
+
+		expect(seen).toEqual(['w4:p2', 'w4:p1', 'w4:p1']);
 	});
 });

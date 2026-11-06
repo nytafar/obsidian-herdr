@@ -232,6 +232,15 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.scope.get(paneId)).toMatchObject({ agentStatus: 'idle', stopped: false, cwd: h.dir });
 	});
 
+	it('never refuses its own agent the native view: it runs only Claude (#155)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const watcher = h.kind.native?.watcher(h.connection);
+		expect(watcher?.snapshot(paneId)).not.toBeNull();
+		expect(watcher?.unavailable?.(paneId) ?? null).toBeNull();
+		expect(h.kind.paneNativeReason?.(paneId)).toBeNull();
+	});
+
 	it('maps a turn to working, then done, and a look to idle', async () => {
 		const h = harness();
 		const paneId = await started(h);

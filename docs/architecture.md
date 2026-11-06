@@ -1339,10 +1339,12 @@ and `tests/codexFixtures.test.ts` pins the facts below that rest on them.
   field for it: the plugin's `agentKindOf` (`src/hc/model.ts`) reads
   `status.app`, then the foreground program (a Codex TUI runs as a native
   process named `codex`), then the `obsidian-herdr.agent` label. The `claude`
-  kind runs only Claude. No code path reads the pane's agent before it offers
-  the native view: the kind and the target decide that, so a Codex pane on
-  herdr is offered a view that derives a Claude transcript path from Codex's
-  thread id.
+  kind runs only Claude. Until #155 no code path read the pane's agent before
+  it offered the native view, so a Codex pane on herdr was offered a view that
+  derived a Claude transcript path from Codex's thread id. Now herdr's and
+  herdr-core's session watchers refuse a pane whose agent is not Claude
+  (`src/native/agentSupport.ts`), through the pane-reason path, and the pane
+  stays a terminal that names its agent.
 - **The session is a thread id, and the transcript is a rollout file.**
   `~/.codex/sessions/YYYY/MM/DD/rollout-<local start time>-<thread id>.jsonl`
   (`$CODEX_HOME` moves `~/.codex`). It is created at the first prompt, not at
