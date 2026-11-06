@@ -1793,9 +1793,11 @@ prompt; these are the facts a build may rely on.
   `User has approved your plan`.
 - **After a plan is approved, a titled rule sits under the next dialog.** The
   Write permission that followed showed, below its hint line, a rule ending
-  in the plan's name (`──── create-d-txt-file ─`), on herdr and on hc. The
-  parser reads such a screen as `unknown`, so the driver refuses there; the
-  parser does not know this line yet.
+  in a name (`──── create-d-txt-file ─` on herdr, `──── create-d-txt-plan ─`
+  on hc, the same run's two sessions), as the screen's last line. The parser
+  drops a rule of that shape, a lowercase hyphenated title, only as the last
+  line; anywhere else, or with another title, the screen stays `unknown`
+  (fixtures `*-write-after-plan`).
 
 ## Model, effort, permission mode and context
 
