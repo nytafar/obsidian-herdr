@@ -13,9 +13,10 @@
  * has no {@link Turn.outcome}, a call whose outcome no record flags is
  * `unknown` (finding `agent-codex`, §7).
  *
- * Pure: no Obsidian, no I/O. {@link TurnDraft} is the copy-on-write working
- * set every parser folds a batch into, so a state the view already drew keeps
- * saying what it said.
+ * No Obsidian, no I/O. {@link TurnDraft} is how every parser folds a batch
+ * into the turns: in place, saying which turns changed and which went (#138);
+ * a preview folds into a fork instead ({@link previewTail}), so the session's
+ * own state only ever holds lines that ended.
  */
 
 import type { ContextBreakdown } from './contextBreakdown';
@@ -342,6 +343,7 @@ export interface ConversationState {
 
 /** What folding a batch did. */
 export interface ReduceResult<S extends ConversationState = ConversationState> {
+	/** The state folded into: the one the batch was given, changed in place. */
 	state: S;
 	/** Turn ids created or changed by this batch, in order, each once. */
 	changedTurnIds: string[];
@@ -353,20 +355,82 @@ export interface ReduceResult<S extends ConversationState = ConversationState> {
 }
 
 /**
- * One agent's transcript reader. Pure: `reduce` never mutates the state it is
- * given, and the state carries whatever the parser must remember across
- * batches (records an agent writes twice, a queue that pairs with a later
- * line), so a tail's batches and a whole file read at once fold the same.
+ * One agent's transcript reader (#137, #138). `reduce` folds a batch into the
+ * state it is given, in place, and says which turns it changed; the state
+ * carries whatever the parser must remember across batches (records an agent
+ * writes twice, a queue that pairs with a later line), so a tail's batches
+ * and a whole file read at once fold the same, whatever the split.
+ *
+ * Nothing copies the conversation per batch: a batch costs the lines in it,
+ * not the session behind it. What must not be changed — the session's state
+ * while a line not yet finished is previewed over it ({@link previewTail}) —
+ * is {@link ConversationParser.fork}ed first, and the fork is folded instead.
  */
 export interface ConversationParser<S extends ConversationState = ConversationState> {
 	/** The state a session starts from, and what a rotation goes back to. */
 	empty(): S;
 	/**
 	 * Folds a batch of whole lines — a whole file on open, a tail's worth
-	 * afterwards — into `state`. A line it cannot read is counted raw, never
-	 * an error: a newer agent writes records this build has never seen.
+	 * afterwards — into `state`, changing it in place, and returns it. A line it
+	 * cannot read is counted raw, never an error: a newer agent writes records
+	 * this build has never seen.
 	 */
 	reduce(state: S, lines: string[]): ReduceResult<S>;
+	/**
+	 * A state to fold into in `state`'s stead: whatever `reduce` does to the
+	 * fork leaves `state`, and everything reachable from it, as it was. Cheap:
+	 * the turns are shared until the fork's fold writes into one
+	 * ({@link forkConversation}), and the parser copies only what it keeps of
+	 * its own. For a preview, which is thrown away; never folded into twice.
+	 */
+	fork(state: S): S;
+}
+
+/**
+ * The part of a fork every parser shares (#138): the turns, borrowed, and the
+ * raw counts, copied. A parser's own {@link ConversationParser.fork} adds what
+ * it keeps besides.
+ *
+ * The turns are not copied here. {@link TurnDraft} copies a borrowed turn,
+ * entry by entry, the first time a fold writes into it, so a preview of one
+ * line copies the one or two turns that line touches and shares the rest.
+ */
+export function forkConversation<S extends ConversationState>(state: S): S {
+	const turns = [...state.turns];
+	BORROWED.set(turns, new WeakSet(state.turns));
+	return { ...state, turns, raw: { ...state.raw } };
+}
+
+/**
+ * What the conversation would show if `tail` — the last line of the
+ * transcript, written but not yet ended with its newline — were folded in
+ * (#138), or null when it would show nothing new.
+ *
+ * An agent may write its newest record a moment before the newline that
+ * ends it, and the view need not wait for that: a tail that is a whole JSON
+ * record is folded into a {@link ConversationParser.fork} of `state`, which is
+ * left as it was, so the line is folded for real, once, when it ends. A tail
+ * that is not a whole record yet (the agent is still writing it), one that
+ * changes no turn, and one whose fold would remove a turn (a rewind, a
+ * re-sent prompt) show nothing until the line ends: a preview adds to what is
+ * shown, it never takes a turn away. Every agent this view reads writes JSON
+ * Lines, so "whole" is "parses as a JSON object".
+ */
+export function previewTail<S extends ConversationState>(
+	parser: ConversationParser<S>,
+	state: S,
+	tail: string,
+): ReduceResult<S> | null {
+	const line = tail.trim();
+	if (!line.startsWith('{') || !line.endsWith('}')) return null;
+	try {
+		JSON.parse(line);
+	} catch {
+		return null;
+	}
+	const result = parser.reduce(parser.fork(state), [line]);
+	if (result.removedTurnIds.length || !result.changedTurnIds.length) return null;
+	return result;
 }
 
 /**
@@ -468,22 +532,40 @@ export function turnHeadings(entries: readonly TurnEntry[]): TurnHeading[] {
 	return headings;
 }
 
-/** A working copy of the turns, so a parser never mutates the state it was given. */
-export class TurnDraft {
-	private readonly turns: Turn[];
-	/** The turns as the batch found them, for what it removed. */
-	private readonly initial: readonly Turn[];
-	/** Turns this batch removed, by id. */
-	private readonly removed = new Set<string>();
-	private readonly changed: string[] = [];
-	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
-	private readonly changedIds = new Set<string>();
-	/** Turns already copied in this batch, by id: copy once, then mutate freely. */
-	private readonly mine = new Set<string>();
+/**
+ * The turns of a fork that still belong to the state it was forked from, by
+ * the fork's turn list: a fold copies one of these before writing into it.
+ */
+const BORROWED = new WeakMap<readonly Turn[], WeakSet<Turn>>();
 
-	constructor(turns: readonly Turn[]) {
-		this.initial = turns;
-		this.turns = [...turns];
+/**
+ * How a parser folds a batch into the turns (#138): in place, keeping count of
+ * which turns the batch changed and which it removed.
+ *
+ * The turns are written into where they are, except in a fork
+ * ({@link forkConversation}), where a turn the fork still shares with the
+ * state it came from is copied, entry by entry, before the first write.
+ * Nothing here walks every turn per batch: a change is almost always to the
+ * newest turn or one just before it, and every lookup starts from the end.
+ */
+export class TurnDraft {
+	/** Turns this batch opened: never anyone's to remove. */
+	private readonly opened = new WeakSet<Turn>();
+	/** Turn ids this batch changed, in order; a set, so marking is not a scan (#101). */
+	private readonly changed = new Set<string>();
+	/** Ids of turns that left the list in this batch, whether or not one came back. */
+	private readonly left = new Set<string>();
+	/**
+	 * The ids of the turns the batch found, in order, taken at its first
+	 * removal: what is reported removed, in the order it was found.
+	 */
+	private found: string[] | null = null;
+	/** The turns still shared with the state this fork came from; null for a state's own turns. */
+	private readonly borrowed: WeakSet<Turn> | null;
+
+	/** `turns` is the state's own list, which this changes in place. */
+	constructor(private readonly turns: Turn[]) {
+		this.borrowed = BORROWED.get(turns) ?? null;
 	}
 
 	/** The id of the turn open for new content, '' before the first. */
@@ -493,10 +575,11 @@ export class TurnDraft {
 
 	/** Drops one turn, if it is still here (#131). */
 	remove(turnId: string): void {
-		const index = this.turns.findIndex((turn) => turn.id === turnId);
+		const index = this.indexOf(turnId);
 		if (index === -1) return;
-		this.removed.add(turnId);
+		this.noteFound();
 		this.turns.splice(index, 1);
+		this.left.add(turnId);
 	}
 
 	/**
@@ -504,65 +587,51 @@ export class TurnDraft {
 	 * that is no longer here drops nothing: what it named is already gone.
 	 */
 	dropAfter(turnId: string): void {
-		const index = turnId ? this.turns.findIndex((turn) => turn.id === turnId) : -1;
+		const index = turnId ? this.indexOf(turnId) : -1;
 		if (turnId && index === -1) return;
-		for (const turn of this.turns.splice(index + 1)) this.removed.add(turn.id);
+		if (index === this.turns.length - 1) return;
+		this.noteFound();
+		for (const turn of this.turns.splice(index + 1)) this.left.add(turn.id);
 	}
 
 	/** The turn open for new content, or null before the first prompt. */
 	current(): Turn | null {
-		const last = this.turns[this.turns.length - 1];
-		return last ? this.own(last) : null;
+		const index = this.turns.length - 1;
+		return index >= 0 ? this.own(index) : null;
 	}
 
-	/** The turn `id`, owned by this batch, or null when the draft holds none. */
+	/** The turn `id`, ready to write into, or null when the draft holds none. */
 	turn(id: string): Turn | null {
-		for (let i = this.turns.length - 1; i >= 0; i--) {
-			const turn = this.turns[i];
-			if (turn?.id === id) return this.own(turn);
-		}
-		return null;
+		const index = this.indexOf(id);
+		return index === -1 ? null : this.own(index);
 	}
 
 	/** Opens a turn; `ts` is when, where the record that opened it says (#139). */
 	open(id: string, prompt: string, ts = ''): Turn {
 		const turn: Turn = { id, prompt, entries: [], headings: [], ...(ts ? { ts } : {}) };
 		this.turns.push(turn);
-		this.mine.add(id);
+		this.opened.add(turn);
 		this.touch(id);
 		return turn;
 	}
 
-	/**
-	 * Marks a turn as changed by this batch. Asked once per line, so the
-	 * "already marked?" question is a set rather than a scan of the list: a
-	 * first batch is the whole file, and a scan each would be quadratic in the
-	 * number of turns (#101).
-	 */
+	/** Marks a turn as changed by this batch. */
 	touch(id: string): void {
-		if (this.changedIds.has(id)) return;
-		this.changedIds.add(id);
-		this.changed.push(id);
+		this.changed.add(id);
 	}
 
 	/**
-	 * The tool call `toolUseId`, owned by this batch, searched from the newest
+	 * The tool call `toolUseId`, ready to write into, searched from the newest
 	 * turn back: an answer always answers a call that is already in the state.
 	 */
 	toolEntry(toolUseId: string): ToolEntry | null {
 		for (let i = this.turns.length - 1; i >= 0; i--) {
 			const turn = this.turns[i];
 			if (!turn) continue;
-			const found = turn.entries.find(
-				(entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === toolUseId,
-			);
-			if (!found) continue;
-			const owned = this.own(turn);
-			return (
-				owned.entries.find(
-					(entry): entry is ToolEntry => entry.kind === 'tool' && entry.id === toolUseId,
-				) ?? null
-			);
+			const at = turn.entries.findIndex((entry) => entry.kind === 'tool' && entry.id === toolUseId);
+			if (at === -1) continue;
+			const entry = this.own(i).entries[at];
+			return entry?.kind === 'tool' ? entry : null;
 		}
 		return null;
 	}
@@ -583,11 +652,7 @@ export class TurnDraft {
 	turnOf(toolUseId: string): Turn | null {
 		for (let i = this.turns.length - 1; i >= 0; i--) {
 			const turn = this.turns[i];
-			if (!turn) continue;
-			const found = turn.entries.some(
-				(entry) => entry.kind === 'tool' && entry.id === toolUseId,
-			);
-			if (found) return turn;
+			if (turn?.entries.some((entry) => entry.kind === 'tool' && entry.id === toolUseId)) return turn;
 		}
 		return null;
 	}
@@ -598,52 +663,61 @@ export class TurnDraft {
 	}
 
 	/**
-	 * The turns as they now stand; the caller assembles the state around them.
+	 * What the batch did: the turns it changed that are still here, and the
+	 * turns it found and removed, in the order it found them. A turn opened and
+	 * dropped within the batch was never anyone's to draw, and is neither.
 	 *
-	 * The headings of every turn this batch touched are recomputed here, in one
+	 * The headings of every turn the batch changed are recomputed here, in one
 	 * place: prose arrives a block at a time, and a turn the batch did not touch
-	 * still says what it said (#100).
+	 * still says what it said (#100). The changed turns are looked for from the
+	 * newest back, which is where a batch changes them, so a tail's batch does
+	 * not walk the session.
 	 */
 	finish(): { turns: Turn[]; changedTurnIds: string[]; removedTurnIds: string[] } {
-		const removedTurnIds = this.removedIds();
-		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed, removedTurnIds };
-		// Indexed once rather than searched per id: the first batch of a tail is
-		// the whole file, so every turn in a long session can be in `changed`, and
-		// a `find` each would be quadratic in exactly the case the native view's
-		// open time is measured on (#101).
-		const byId = new Map(this.turns.map((turn) => [turn.id, turn]));
-		for (const id of this.changed) {
-			const turn = byId.get(id);
-			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
+		// Only a batch that removed something asks what is still here.
+		const present = this.left.size ? new Set(this.turns.map((turn) => turn.id)) : null;
+		const here = (id: string): boolean => !present || !this.left.has(id) || present.has(id);
+		const changedTurnIds = [...this.changed].filter(here);
+		const wanted = new Set(changedTurnIds);
+		for (let i = this.turns.length - 1; i >= 0 && wanted.size > 0; i--) {
+			const turn = this.turns[i];
+			if (!turn || !wanted.delete(turn.id)) continue;
+			this.own(i).headings = turnHeadings(turn.entries);
 		}
-		// A turn opened and dropped within the batch was never anyone's to draw.
-		const changedTurnIds = this.removed.size
-			? this.changed.filter((id) => byId.has(id))
-			: this.changed;
+		const removedTurnIds = present
+			? [...new Set(this.found ?? [])].filter((id) => this.left.has(id) && !present.has(id))
+			: [];
 		return { turns: this.turns, changedTurnIds, removedTurnIds };
 	}
 
-	/** The turns the batch found and no longer holds, in their old order. */
-	private removedIds(): string[] {
-		if (this.removed.size === 0) return [];
-		const kept = new Set(this.turns.map((turn) => turn.id));
-		return this.initial.map((turn) => turn.id).filter((id) => this.removed.has(id) && !kept.has(id));
+	/** Where turn `id` is, the newest first, or -1. */
+	private indexOf(id: string): number {
+		for (let i = this.turns.length - 1; i >= 0; i--) {
+			if (this.turns[i]?.id === id) return i;
+		}
+		return -1;
+	}
+
+	/** Remembers the turns the batch found, in order, before the first removal. */
+	private noteFound(): void {
+		if (this.found) return;
+		this.found = this.turns.filter((turn) => !this.opened.has(turn)).map((turn) => turn.id);
 	}
 
 	/**
-	 * A copy of `turn` that this batch owns, swapped into the list on first ask.
+	 * The turn at `index`, ready to write into: itself, or in a fork, a copy
+	 * swapped in for one still shared with the state the fork came from.
 	 *
 	 * The entries are copied too, one object each: a text merge, a tool result,
-	 * a notification and a report all write into an entry, and a snapshot the
-	 * view already drew must keep saying what it said. The `input` record and
-	 * the notification inside an entry are replaced rather than written into, so
-	 * sharing those costs nothing.
+	 * a notification and a report all write into an entry. The `input` record
+	 * and the notification inside an entry are replaced rather than written
+	 * into, so sharing those costs nothing.
 	 */
-	private own(turn: Turn): Turn {
-		if (this.mine.has(turn.id)) return turn;
+	private own(index: number): Turn {
+		const turn = this.turns[index] as Turn;
+		if (!this.borrowed?.has(turn)) return turn;
 		const copy: Turn = { ...turn, entries: turn.entries.map((entry) => ({ ...entry })) };
-		this.turns[this.turns.indexOf(turn)] = copy;
-		this.mine.add(turn.id);
+		this.turns[index] = copy;
 		return copy;
 	}
 }
@@ -651,10 +725,11 @@ export class TurnDraft {
 /**
  * A background subagent's report, attached to the call that launched it (#96).
  *
- * The read itself is the session model's: this is the pure half, so a report
- * that arrives long after its lines did still goes through one place and comes
- * back as a changed turn id like everything else. An id no turn holds changes
- * nothing, which is what a rotation between the read and its answer looks like.
+ * The read itself is the session model's: this is the part without I/O, so a
+ * report that arrives long after its lines did still goes through one place
+ * and comes back as a changed turn id like everything else. An id no turn
+ * holds changes nothing, which is what a rotation between the read and its
+ * answer looks like. In place, like a parser's fold.
  */
 export function attachSubagentReport<S extends ConversationState>(
 	state: S,
@@ -668,13 +743,13 @@ export function attachSubagentReport<S extends ConversationState>(
 		entry.report = report;
 		draft.touch(turn.id);
 	}
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+	const { changedTurnIds, removedTurnIds } = draft.finish();
+	return { state, changedTurnIds, removedTurnIds };
 }
 
 /**
  * A subagent's progress put on the call it hangs under, or taken off it
- * (`undefined`) once nothing follows it (#147). Pure, like
+ * (`undefined`) once nothing follows it (#147). In place, like
  * {@link attachSubagentReport}; the session model reads the subagent's file.
  */
 export function attachSubagentProgress<S extends ConversationState>(
@@ -690,28 +765,28 @@ export function attachSubagentProgress<S extends ConversationState>(
 		else delete entry.subagent;
 		draft.touch(turn.id);
 	}
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+	const { changedTurnIds, removedTurnIds } = draft.finish();
+	return { state, changedTurnIds, removedTurnIds };
 }
 
 /**
  * Every call still running marked lost (#135): the agent that ran it is gone,
- * and nothing will report it. Pure, like {@link attachSubagentReport}; the
- * session model decides when the agent is gone.
+ * and nothing will report it. In place, like {@link attachSubagentReport};
+ * the session model decides when the agent is gone.
  */
 export function markLost<S extends ConversationState>(state: S): ReduceResult<S> {
 	const draft = new TurnDraft(state.turns);
 	for (const turn of state.turns) {
 		for (const entry of turn.entries) {
 			if (entry.kind !== 'tool' || entry.status !== 'running') continue;
-			const owned = draft.toolEntry(entry.id);
-			if (owned) owned.status = 'lost';
+			entry.status = 'lost';
 			draft.touch(turn.id);
 		}
 	}
-	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
+	const { changedTurnIds, removedTurnIds } = draft.finish();
+	return { state, changedTurnIds, removedTurnIds };
 }
+
 
 /** An empty conversation, for a view with nothing to show and for a fake. */
 export function emptyConversation(): ConversationState {

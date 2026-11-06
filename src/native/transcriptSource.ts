@@ -42,12 +42,19 @@ export interface TranscriptSource {
 	 * `restart` is true when the file was replaced or truncated under the tail:
 	 * every line delivered before is void, and the batch it comes with (which
 	 * may be empty) is the file again from its start.
+	 *
+	 * `tail` is that held partial line as it stands at the end of the file
+	 * (#138), for a preview and never as a line: it is delivered again, as a
+	 * line, once its newline arrives. A source says it only when it changed, so
+	 * a batch with no lines may come for the tail alone; '' or left out is the
+	 * file ending in a newline. A source that cannot see the partial line (one
+	 * that reads whole lines only) never says it.
 	 */
 	open(path: string, onLines: TranscriptLines, options?: TailOptions): TranscriptStream;
 }
 
 /** What a tail delivers to; see {@link TranscriptSource.open}. */
-export type TranscriptLines = (lines: string[], restart?: boolean) => void;
+export type TranscriptLines = (lines: string[], restart?: boolean, tail?: string) => void;
 
 /** A tail in progress. Closing is idempotent and delivers nothing afterwards. */
 export interface TranscriptStream {
@@ -154,6 +161,8 @@ class LocalTranscriptTail implements TranscriptStream {
 	private identity: string | null = null;
 	/** The next delivery is the file from its start again; see `TranscriptLines`. */
 	private restartPending = false;
+	/** The unended last line as last delivered, '' for none (#138). */
+	private shownTail = '';
 	private watcher: FSWatcher | null = null;
 	private debounce: ReturnType<typeof setTimer> | null = null;
 	private poll: ReturnType<typeof setTimer> | null = null;
@@ -283,7 +292,7 @@ class LocalTranscriptTail implements TranscriptStream {
 				}
 				this.offset += bytesRead;
 				this.pending = this.pending.length ? Buffer.concat([this.pending, read]) : read;
-				this.deliver();
+				this.deliver(this.offset >= stats.size);
 			}
 			// A replacement with no whole line in it yet is still news: what the
 			// old file said is gone either way.
@@ -325,18 +334,33 @@ class LocalTranscriptTail implements TranscriptStream {
 		this.pending = Buffer.alloc(0);
 		this.head = Buffer.alloc(0);
 		this.restartPending = true;
+		this.shownTail = '';
 	}
 
-	/** Splits off every complete line, keeping the unfinished tail for next time. */
-	private deliver(): void {
+	/**
+	 * Splits off every complete line, keeping the unfinished tail for next time.
+	 * `atEnd` is the read having reached the end of the file, where that tail
+	 * is the file's last line and is said too, when it changed (#138). Short of
+	 * the end it is the middle of the file, and nothing is previewed: a line
+	 * delivered here may be the very one a preview showed.
+	 */
+	private deliver(atEnd: boolean): void {
 		const lastNewline = this.pending.lastIndexOf(0x0a);
-		if (lastNewline === -1) return;
-		const complete = this.pending.subarray(0, lastNewline).toString('utf8');
-		this.pending = this.pending.subarray(lastNewline + 1);
-		const lines = complete.split('\n').filter((line) => line !== '');
-		if ((!lines.length && !this.restartPending) || this.closed) return;
+		let lines: string[] = [];
+		if (lastNewline !== -1) {
+			const complete = this.pending.subarray(0, lastNewline).toString('utf8');
+			this.pending = this.pending.subarray(lastNewline + 1);
+			lines = complete.split('\n').filter((line) => line !== '');
+		}
+		// A partial character at the end decodes to a replacement, which no JSON
+		// record ends in; the preview waits for the rest.
+		const tail = atEnd ? this.pending.toString('utf8') : '';
+		const tailMoved = tail !== this.shownTail;
+		if ((!lines.length && !this.restartPending && !tailMoved) || this.closed) return;
 		const restart = this.restartPending;
 		this.restartPending = false;
-		this.onLines(lines, restart);
+		this.shownTail = tail;
+		if (tail || tailMoved) this.onLines(lines, restart, tail);
+		else this.onLines(lines, restart);
 	}
 }

@@ -217,11 +217,12 @@ describe('a rewind and a cancelled re-send (#131)', () => {
 		it('says which turns it dropped, and live and cold reads agree', () => {
 			const before = reduce(emptyTranscript(), lines.slice(0, fork));
 			expect(prompts(before.state)).toEqual(['apple', 'banana']);
+			const dropped = before.state.turns.map((turn) => turn.id);
 
 			const after = reduce(before.state, lines.slice(fork));
 
 			expect(prompts(after.state)).toEqual(['cherry']);
-			expect(after.removedTurnIds).toEqual(before.state.turns.map((turn) => turn.id));
+			expect(after.removedTurnIds).toEqual(dropped);
 			expect(after.changedTurnIds).toEqual([after.state.turns[0]?.id]);
 			expect(live(lines).turns).toEqual(cold(lines).turns);
 		});
@@ -570,12 +571,12 @@ describe('background notifications (#135)', () => {
 		const lines = fixtureLines('background-command');
 		const enqueue = lines.findIndex((line) => line.includes('"operation":"enqueue"'));
 		const running = reduce(emptyTranscript(), lines.slice(0, enqueue)).state;
+		expect(call(running, 'toolu_01A33MC8USCwTrLZnPZCMkZR')?.status).toBe('running');
 
 		const { state, changedTurnIds } = markLost(running);
 
 		expect(call(state, 'toolu_01A33MC8USCwTrLZnPZCMkZR')?.status).toBe('lost');
-		expect(changedTurnIds).toEqual([running.turns[0]?.id]);
-		expect(call(running, 'toolu_01A33MC8USCwTrLZnPZCMkZR')?.status).toBe('running');
+		expect(changedTurnIds).toEqual([state.turns[0]?.id]);
 		expect(markLost(state).changedTurnIds).toEqual([]);
 	});
 });

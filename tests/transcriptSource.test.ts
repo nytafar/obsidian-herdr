@@ -167,6 +167,50 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 		expect(lines[1]).toBe('{"type":"assistant"}');
 	});
 
+	it('says the unended last line as a tail, each time it changes, and as a line once it ends (#138)', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\n{"type":"assis');
+		const source = new LocalTranscriptSource();
+		const seen: { lines: string[]; tail: string | undefined }[] = [];
+		streams.push(
+			source.open(path, (lines, _restart, tail) => seen.push({ lines, tail }), { debounceMs: 5, pollMs: 20 }),
+		);
+		await eventually(() => seen.length === 1);
+		expect(seen[0]).toEqual({ lines: ['one'], tail: '{"type":"assis' });
+
+		// The tail grew and no line ended: a batch for the tail alone.
+		appendFileSync(path, 'tant"}');
+		await eventually(() => seen.length === 2);
+		expect(seen[1]).toEqual({ lines: [], tail: '{"type":"assistant"}' });
+		// A look that finds nothing new says nothing.
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(seen).toHaveLength(2);
+
+		appendFileSync(path, '\n');
+		await eventually(() => seen.length === 3);
+		expect(seen[2]).toEqual({ lines: ['{"type":"assistant"}'], tail: '' });
+	});
+
+	it('says no tail short of the end of the file, where a held line is its middle (#138)', async () => {
+		const path = join(dir, 'session.jsonl');
+		const written = Array.from({ length: 20 }, (_, i) => `{"n":${i}}`);
+		writeFileSync(path, `${written.join('\n')}\n{"n":"last"}`);
+		const source = new LocalTranscriptSource();
+		const seen: { lines: string[]; tail: string | undefined }[] = [];
+		streams.push(
+			source.open(path, (lines, _restart, tail) => seen.push({ lines, tail }), {
+				debounceMs: 5,
+				pollMs: 20,
+				chunkBytes: 13,
+			}),
+		);
+
+		await eventually(() => seen.flatMap((batch) => batch.lines).length === written.length);
+		expect(seen.flatMap((batch) => batch.lines)).toEqual(written);
+		expect(seen.slice(0, -1).every((batch) => !batch.tail)).toBe(true);
+		expect(seen.at(-1)?.tail).toBe('{"n":"last"}');
+	});
+
 	it('follows a file that does not exist yet', async () => {
 		// The transcript is created when the first prompt lands (ADR-0003), which
 		// can be after the view opened.
