@@ -257,6 +257,26 @@ describe('the claude kind over a fake claude', () => {
 		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' }, uuid: A_UUID });
 	});
 
+	it('puts what the process says of the session in the snapshot, and tells the model apart from a status (#160)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const watcher = h.kind.native?.watcher(h.connection);
+		const told: string[] = [];
+		watcher?.onSessionInfo?.((pane) => told.push(pane));
+		expect(watcher?.snapshot(paneId)?.sessionInfo).toBeUndefined();
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		expect(watcher?.snapshot(paneId)?.sessionInfo).toEqual({
+			model: { id: 'claude-haiku-5-5', label: 'claude-haiku-5-5' },
+			permissionMode: 'manual',
+			contextWindow: { tokens: 1000000, source: 'runtime' },
+		});
+		// When init named the model and mode, and when the result named the
+		// window: through their own call, not as a status.
+		expect(told.length).toBeGreaterThanOrEqual(2);
+		expect(new Set(told)).toEqual(new Set([paneId]));
+	});
+
 	it('ends a turn that absorbed a steer as done: one result answers both prompts (#158)', async () => {
 		const h = harness();
 		const paneId = await started(h);

@@ -461,6 +461,20 @@ export class SessionModel implements SessionModelView {
 			watcher.onStatus((paneId, status, kind) => this.onStatusChanged(paneId, status, kind)),
 			watcher.onMembership((paneId) => this.onPaneMembership(paneId)),
 		);
+		const offInfo = watcher.onSessionInfo?.((paneId) => this.onSessionInfo(paneId));
+		if (offInfo) this.bound.push(offInfo);
+	}
+
+	/**
+	 * The runtime's own word on the session moved with nothing else (#160):
+	 * the views read {@link sessionInfo} again on the emit.
+	 */
+	private onSessionInfo(paneId: string): void {
+		if (paneId !== this.paneId) return;
+		const overlay = this.watcher?.snapshot(paneId)?.sessionInfo;
+		if (overlay === this.infoOverlay) return;
+		this.infoOverlay = overlay;
+		this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	private unbind(): void {

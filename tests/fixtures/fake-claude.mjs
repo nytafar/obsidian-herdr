@@ -112,6 +112,7 @@ function result(fields = {}) {
 		result: 'ok',
 		num_turns: 1,
 		credential_expires_at: '2026-12-02T18:07:48.095Z',
+		modelUsage: { 'claude-haiku-5-5': { inputTokens: 3, contextWindow: 1000000 } },
 		...answered,
 		...fields,
 	};
@@ -131,7 +132,7 @@ function finishTurn() {
 }
 
 function init() {
-	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, slash_commands: ['clear', 'compact'] });
+	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, model: 'claude-haiku-5-5', slash_commands: ['clear', 'compact'] });
 }
 
 function ask(tool, input, extra = {}) {

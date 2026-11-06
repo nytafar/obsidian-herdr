@@ -202,9 +202,11 @@ export interface ToolPermissionRequest {
 export type StreamEvent =
 	/**
 	 * `system:init`: sent at the start of every turn, with the session id and
-	 * the cwd Claude runs in, which is the real path (a symlink resolved).
+	 * the cwd Claude runs in, which is the real path (a symlink resolved),
+	 * and the model and permission mode the turn runs with (#160; the model's
+	 * id, `claude-haiku-5-5`, measured on 2.1.318).
 	 */
-	| { type: 'init'; sessionId: string; cwd: string; permissionMode: string }
+	| { type: 'init'; sessionId: string; cwd: string; permissionMode: string; model: string }
 	/** `system:status`: a permission mode change, or compacting. */
 	| { type: 'status'; permissionMode: string | null }
 	/** The end of a turn. */
@@ -223,6 +225,11 @@ export type StreamEvent =
 			 * as an empty list.
 			 */
 			answered: string[] | null;
+			/**
+			 * Each model's context window, from `modelUsage[<model>]
+			 * .contextWindow` (#160): `{"claude-haiku-5-5": 1000000}`.
+			 */
+			windows: Record<string, number>;
 	  }
 	/**
 	 * `command_lifecycle`: the fate of a user message sent with a uuid. Only
@@ -235,8 +242,12 @@ export type StreamEvent =
 	| { type: 'control'; requestId: string; subtype: string }
 	/** Claude withdrew a request (an interrupt landed while it was pending). */
 	| { type: 'cancel'; requestId: string }
-	/** The answer to one of the plugin's own requests. */
-	| { type: 'response'; requestId: string; ok: boolean }
+	/**
+	 * The answer to one of the plugin's own requests, with the model or the
+	 * permission mode it says is now set (`set_model` answers `{model}`,
+	 * `set_permission_mode` `{mode}`); '' where it says neither.
+	 */
+	| { type: 'response'; requestId: string; ok: boolean; model: string; mode: string }
 	/** Anything else: assistant and user messages, hooks, partials, rate limits. */
 	| { type: 'other' };
 
@@ -273,6 +284,7 @@ export function parseStreamLine(line: string): StreamEvent | null {
 					sessionId: text(message.session_id),
 					cwd: text(message.cwd),
 					permissionMode: text(message.permissionMode),
+					model: text(message.model),
 				};
 			}
 			if (message.subtype === 'status') {
@@ -293,6 +305,7 @@ export function parseStreamLine(line: string): StreamEvent | null {
 				message: text(message.result) || first || '',
 				sessionId: text(message.session_id),
 				answered: answeredUuids(message),
+				windows: contextWindows(message),
 			};
 		}
 		case 'command_lifecycle': {
@@ -316,7 +329,10 @@ export function parseStreamLine(line: string): StreamEvent | null {
 		case 'control_response': {
 			const response = record(message.response);
 			const requestId = text(response?.request_id);
-			return requestId ? { type: 'response', requestId, ok: response?.subtype === 'success' } : { type: 'other' };
+			if (!requestId) return { type: 'other' };
+			const ok = response?.subtype === 'success';
+			const payload = ok ? record(response?.response) : null;
+			return { type: 'response', requestId, ok, model: text(payload?.model), mode: text(payload?.mode) };
 		}
 		default:
 			return { type: 'other' };
@@ -325,6 +341,18 @@ export function parseStreamLine(line: string): StreamEvent | null {
 
 /** The terminal states of `command_lifecycle`: after one, the message is no longer Claude's to answer. */
 const LIFECYCLE_ENDS = new Set(['completed', 'cancelled', 'discarded', 'refused']);
+
+/** Each model's context window in a `result`'s `modelUsage`; models that state none are left out. */
+function contextWindows(message: Record<string, unknown>): Record<string, number> {
+	const windows: Record<string, number> = {};
+	const usage = record(message.modelUsage);
+	if (!usage) return windows;
+	for (const [model, entry] of Object.entries(usage)) {
+		const window = record(entry)?.contextWindow;
+		if (typeof window === 'number' && Number.isFinite(window) && window > 0) windows[model] = window;
+	}
+	return windows;
+}
 
 /** The uuids a `result` answers; null when it names none at all. */
 function answeredUuids(message: Record<string, unknown>): string[] | null {

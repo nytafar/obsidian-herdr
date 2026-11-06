@@ -156,7 +156,38 @@ describe('parseStreamLine', () => {
 			parseStreamLine(
 				JSON.stringify({ type: 'system', subtype: 'init', session_id: '392262aa', cwd: '/tmp/x', permissionMode: 'default' }),
 			),
-		).toEqual({ type: 'init', sessionId: '392262aa', cwd: '/tmp/x', permissionMode: 'default' });
+		).toEqual({ type: 'init', sessionId: '392262aa', cwd: '/tmp/x', permissionMode: 'default', model: '' });
+	});
+
+	it('reads the model init names, and each model’s window in a result (#160)', () => {
+		// Measured on 2.1.318 with `--model haiku`.
+		expect(
+			parseStreamLine(
+				JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', cwd: '/tmp/x', permissionMode: 'default', model: 'claude-haiku-5-5' }),
+			),
+		).toMatchObject({ type: 'init', model: 'claude-haiku-5-5' });
+		const result = parseStreamLine(
+			JSON.stringify({
+				type: 'result',
+				subtype: 'success',
+				is_error: false,
+				modelUsage: {
+					'claude-haiku-5-5': { inputTokens: 3, contextWindow: 1000000, maxOutputTokens: 128000 },
+					'claude-sonnet-5-5': { inputTokens: 3 },
+				},
+			}),
+		);
+		expect(result).toMatchObject({ type: 'result', windows: { 'claude-haiku-5-5': 1000000 } });
+		expect(parseStreamLine(JSON.stringify({ type: 'result', subtype: 'success' }))).toMatchObject({ windows: {} });
+	});
+
+	it('reads what a control response says it set (#160)', () => {
+		const response = (subtype: string, payload?: object) =>
+			parseStreamLine(JSON.stringify({ type: 'control_response', response: { subtype, request_id: 'r1', response: payload } }));
+		expect(response('success', { model: 'claude-sonnet-5-5' })).toEqual({ type: 'response', requestId: 'r1', ok: true, model: 'claude-sonnet-5-5', mode: '' });
+		expect(response('success', { mode: 'plan' })).toMatchObject({ model: '', mode: 'plan' });
+		expect(response('success')).toMatchObject({ ok: true, model: '', mode: '' });
+		expect(response('error', { mode: 'plan' })).toMatchObject({ ok: false, mode: '' });
 	});
 
 	it('keys errors on is_error, not on subtype', () => {

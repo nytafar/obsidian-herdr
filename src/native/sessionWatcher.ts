@@ -127,6 +127,13 @@ export interface SessionWatcher {
 	 */
 	onMembership(handler: (paneId: string) => void): Unsubscribe;
 	/**
+	 * Fires with a pane whose {@link PaneSnapshot.sessionInfo} changed while
+	 * nothing {@link onStatus} reports did (#160), for a kind that hears the
+	 * session's settings from its process (the `claude` kind's `system:init`).
+	 * The model reads the snapshot back. Absent where the runtime knows none.
+	 */
+	onSessionInfo?(handler: (paneId: string) => void): Unsubscribe;
+	/**
 	 * Why this pane cannot be shown in the native view although its runtime
 	 * can, or null when it can or the runtime does not know the pane. A pane
 	 * running an agent with no format, or one whose session the runtime

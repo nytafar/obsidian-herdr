@@ -75,6 +75,8 @@
  */
 
 import type { BlockKind } from '../native/sessionWatcher';
+import type { SessionInfo } from '../native/conversation';
+import { foldRuntimeInfo } from './sessionInfo';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -215,6 +217,12 @@ export interface ClaudeAgentView {
 	mode: ClaudeProcessMode;
 	/** Its cards offer only Allow once and Deny ({@link StoredClaudeSession.allowOnceOnly}). */
 	allowOnceOnly?: boolean;
+	/**
+	 * What the headless process said of the session (#160): model, permission
+	 * mode, context window (`./sessionInfo.ts`). Empty while none runs. The
+	 * same object until a field changes.
+	 */
+	sessionInfo: SessionInfo;
 }
 
 /** What changed about an agent, for the scope and the watcher. */
@@ -384,6 +392,8 @@ interface AgentRecord {
 	stopping: Promise<void> | null;
 	/** Why nothing may start this agent's process now; null when anything may. */
 	hold: Hold | null;
+	/** What the current headless process said of the session (#160); empty without one. */
+	info: SessionInfo;
 }
 
 /** A native prompt that waits for its switch: delivered then, or rejected. */
@@ -477,6 +487,7 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		epoch: 0,
 		stopping: null,
 		hold: null,
+		info: {},
 	};
 }
 
@@ -950,6 +961,8 @@ export class ClaudeAgents {
 		record.spawnedWith = resume ? 'resume' : 'session-id';
 		record.initSeen = false;
 		record.unclaimed = [];
+		// A new process says the session's settings afresh.
+		record.info = {};
 		record.retried = how !== undefined;
 		record.open.clear();
 		record.finished = false;
@@ -998,6 +1011,17 @@ export class ClaudeAgents {
 
 	private onEvent(runtimeId: string, record: AgentRecord, process: ClaudeProcess, event: StreamEvent): void {
 		if (record.process !== process) return;
+		const info = foldRuntimeInfo(record.info, event);
+		const moved = info !== record.info;
+		record.info = info;
+		this.onStreamEvent(runtimeId, record, process, event);
+		// The views hear of it as of a status: a result has told them already.
+		if (moved && event.type !== 'result' && record.process === process) {
+			this.emit(runtimeId, record.stored.id, 'status');
+		}
+	}
+
+	private onStreamEvent(runtimeId: string, record: AgentRecord, process: ClaudeProcess, event: StreamEvent): void {
 		switch (event.type) {
 			case 'init': {
 				record.initSeen = true;
@@ -1093,6 +1117,7 @@ export class ClaudeAgents {
 		record.open.clear();
 		record.finished = false;
 		record.pending.clear();
+		record.info = {};
 		// Claude refused how it was started: the session id is taken (the row
 		// had started after all), or there is no conversation under it. Started
 		// once more the other way, with what the refused process never read.
@@ -1476,6 +1501,7 @@ export class ClaudeAgents {
 			statusSeq: record.statusSeq,
 			started: record.stored.started === true,
 			transcriptPath: this.transcriptFile(runtimeId, record),
+			sessionInfo: record.info,
 			mode: this.modeOf(record),
 		};
 	}
@@ -1497,6 +1523,7 @@ export class ClaudeAgents {
 			statusSeq: record.statusSeq,
 			started: record.stored.started === true,
 			transcriptPath: this.transcriptFile(runtimeId, record),
+			sessionInfo: record.info,
 			mode: this.modeOf(record),
 		};
 	}
