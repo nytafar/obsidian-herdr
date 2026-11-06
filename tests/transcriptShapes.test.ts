@@ -1,11 +1,10 @@
 /**
- * Transcript shapes the reducer once misread (the Ovis prior-art batch,
- * `findings/prior-art-ovis.md` §1 in the vault docs root): a prompt of content
+ * Transcript shapes the reducer once misread (issues #129–#135): a prompt of content
  * blocks, a compaction, a rewind and a cancelled re-send, the runtime's own
  * notices and bash mode, an in-file `/clear`, and background notifications.
  *
  * Every fixture under `tests/fixtures/transcripts/` named here is cut from a
- * real transcript on this machine and scrubbed, or copied from Ovis where
+ * real transcript on this machine and scrubbed, or copied where
  * `tests/README.md` says so; a case written inline says what real shape it
  * follows.
  */
@@ -164,5 +163,95 @@ describe('a compaction (#130)', () => {
 
 	it('reads the same live as cold', () => {
 		expect(live(lines)).toEqual(cold(lines));
+	});
+});
+
+describe('a rewind and a cancelled re-send (#131)', () => {
+	const prompts = (state: TranscriptState): string[] => state.turns.map((turn) => turn.prompt);
+
+	describe('a rewind', () => {
+		// A recording of Claude Code 2.1.304 (MIT, see tests/README.md): apple
+		// and banana answered, Restore to before apple, then "cherry", which hangs
+		// from apple's parent (null) while the old turns stay in the file.
+		const lines = fixtureLines('rewind-fork');
+		const fork = lines.findIndex((line) => line.includes('"content":"cherry"'));
+
+		it('drops the abandoned turns once the forking prompt arrives', () => {
+			expect(prompts(cold(lines))).toEqual(['cherry']);
+		});
+
+		it('says which turns it dropped, and live and cold reads agree', () => {
+			const before = reduce(emptyTranscript(), lines.slice(0, fork));
+			expect(prompts(before.state)).toEqual(['apple', 'banana']);
+
+			const after = reduce(before.state, lines.slice(fork));
+
+			expect(prompts(after.state)).toEqual(['cherry']);
+			expect(after.removedTurnIds).toEqual(before.state.turns.map((turn) => turn.id));
+			expect(after.changedTurnIds).toEqual([after.state.turns[0]?.id]);
+			expect(live(lines).turns).toEqual(cold(lines).turns);
+		});
+	});
+
+	describe('a prompt cancelled before any reply and sent again', () => {
+		// Recorded on Claude Code 2.1.318: the cancelled prompt and its re-send are
+		// siblings under the same parent, only an attachment between them.
+		const lines = fixtureLines('resend');
+		const cancelled = '57ad87a6-8036-4e8a-a145-99d1ac523a15';
+		const resent = '609f3e46-3c2b-4895-9501-79ec254e0a2c';
+		const answered = '3203531b-51ee-400e-b1d8-e4dc66840907';
+
+		it('shows the re-send once, and keeps the earlier prompt that got a reply', () => {
+			const ids = cold(lines).turns.map((turn) => turn.id);
+
+			expect(ids).not.toContain(cancelled);
+			expect(ids.filter((id) => id === resent)).toHaveLength(1);
+			expect(ids).toContain(answered);
+			expect(cold(lines).turns.at(-1)?.entries.some((entry) => entry.kind === 'tool')).toBe(true);
+		});
+
+		it('drops the cancelled turn when the re-send arrives, live as cold', () => {
+			const at = lines.findIndex((line) => line.includes(`"uuid":"${resent}"`));
+			const before = reduce(emptyTranscript(), lines.slice(0, at));
+			expect(before.state.turns.at(-1)?.id).toBe(cancelled);
+
+			const after = reduce(before.state, lines.slice(at));
+
+			expect(after.removedTurnIds).toEqual([cancelled]);
+			expect(live(lines).turns).toEqual(cold(lines).turns);
+		});
+	});
+
+	// The edges of the rule, written inline.
+	const user = (uuid: string, parentUuid: string, content: unknown): string =>
+		JSON.stringify({ type: 'user', uuid, parentUuid, message: { role: 'user', content } });
+	const answer = (uuid: string, parentUuid: string, text: string): string =>
+		JSON.stringify({ type: 'assistant', uuid, parentUuid, message: { id: `m-${uuid}`, content: [{ type: 'text', text }] } });
+
+	it('keeps a prompt re-sent from the same parent when the first one was answered', () => {
+		const state = cold([user('u1', 'p', 'first'), answer('a1', 'u1', 'one'), user('u2', 'p', 'second')]);
+		expect(prompts(state)).toEqual(['first', 'second']);
+	});
+
+	it('keeps an unanswered prompt when the next one hangs from another parent', () => {
+		const state = cold([user('u1', 'p', 'first'), user('u2', 'q', 'second')]);
+		expect(prompts(state)).toEqual(['first', 'second']);
+	});
+
+	it('sees the cancelled prompt whether it was written as a string or as blocks', () => {
+		const state = cold([
+			user('u1', 'p', 'string draft'),
+			user('u2', 'p', [{ type: 'text', text: 'block resend' }]),
+			answer('a2', 'u2', 'answer'),
+			user('u3', 'a2', [{ type: 'text', text: 'block draft' }]),
+			user('u4', 'a2', 'string resend'),
+			answer('a4', 'u4', 'another'),
+		]);
+		expect(prompts(state)).toEqual(['block resend', 'string resend']);
+	});
+
+	it('hides nothing for a parent it never saw', () => {
+		const state = cold([user('u1', 'p', 'first'), answer('a1', 'u1', 'one'), user('u2', 'elsewhere', 'second')]);
+		expect(prompts(state)).toEqual(['first', 'second']);
 	});
 });

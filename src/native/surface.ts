@@ -352,6 +352,9 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
+			// What a rewind left behind goes first (#131): a turn the new branch
+			// opens is drawn after the ones that stay.
+			for (const id of change.removedTurnIds ?? []) this.turns?.remove(id);
 			for (const id of change.changedTurnIds) {
 				const turn = turns.find((candidate) => candidate.id === id);
 				if (turn) this.turns?.render(turn);

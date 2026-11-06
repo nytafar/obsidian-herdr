@@ -290,6 +290,21 @@ describe('SessionModel: the pane’s current transcript', () => {
 		expect(handle.model.agentStatus).toBe('idle');
 	});
 
+	it('names the turns a rewind dropped in the change it emits (#131)', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// A prompt hanging from before the first one, with an answer since.
+		source.tails[0]?.emit([
+			'{"type":"user","message":{"role":"user","content":"Instead"},"uuid":"u9","parentUuid":null}',
+		]);
+
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['Instead']);
+		expect(changes).toEqual([{ changedTurnIds: ['u9'], removedTurnIds: ['u1'], reset: false }]);
+	});
+
 	it('has no session yet when the pane has no agent session', () => {
 		// A freshly started Claude sits idle with no `agent_session` until its
 		// first prompt (docs/architecture.md); the view shows "no session yet".

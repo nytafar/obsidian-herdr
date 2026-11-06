@@ -236,17 +236,63 @@ export interface TranscriptState {
 	 * This is what tells a subagent notification from a human prompt.
 	 */
 	pendingQueue: string[];
+	/** Which records the conversation stands on, for a rewind (#131). */
+	branch: BranchState;
+}
+
+/** Where one record landed, for a prompt that later hangs from it (#131). */
+export interface RecordMark {
+	/** The turn that was last when the record was folded, '' before any. */
+	turn: string;
+	/** How many answers had been written by then, this record included. */
+	answers: number;
+}
+
+/**
+ * The branch of the conversation the session is on (#131).
+ *
+ * Claude Code links every record to the one before it (`parentUuid`) and never
+ * rewrites the file. A rewind (Esc Esc, Restore) leaves the turns it went back
+ * over in place, and the next prompt hangs from the record it went back to;
+ * a prompt cancelled before any reply and sent again is written as a sibling
+ * of the cancelled one, under the same parent. This is what reading a prompt
+ * needs to know to drop what the conversation left behind.
+ */
+export interface BranchState {
+	/** The record folded last, null before any. */
+	last: string | null;
+	/** Every record folded so far, by uuid. Replaced, never written into. */
+	records: ReadonlyMap<string, RecordMark>;
+	/** Answers (assistant records) written so far. */
+	answers: number;
+	/**
+	 * Answers written before the conversation last started over (an in-file
+	 * `/clear`, #134): a prompt that hangs from nothing reaches back to here.
+	 */
+	floor: number;
+	/** The newest prompt, what it hangs from and whether anything answered it. */
+	lastPrompt: { turnId: string; parent: string; answered: boolean } | null;
 }
 
 export interface ReduceResult {
 	state: TranscriptState;
 	/** Turn ids created or changed by this batch, in order, each once. */
 	changedTurnIds: string[];
+	/**
+	 * Turn ids the state held before this batch and holds no more: a rewind's
+	 * abandoned turns and a cancelled prompt's (#131). A view drops them.
+	 */
+	removedTurnIds: string[];
 }
 
 /** The state a session starts from, and what a rotation goes back to. */
 export function emptyTranscript(): TranscriptState {
-	return { turns: [], raw: {}, pendingQueue: [] };
+	return {
+		turns: [],
+		raw: {},
+		pendingQueue: [],
+		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null },
+	};
 }
 
 /** Raw counter key for a line that was not JSON. */
@@ -400,6 +446,10 @@ function isLocalCommandOutput(content: string): boolean {
 /** A working copy of one turn, so the reducer never mutates the state it was given. */
 class Draft {
 	private readonly turns: Turn[];
+	/** The turns as the batch found them, for what it removed. */
+	private readonly initial: readonly Turn[];
+	/** Turns this batch removed, by id. */
+	private readonly removed = new Set<string>();
 	private readonly changed: string[] = [];
 	/** The same ids as a set: `changed` keeps the order, this answers `touch`. */
 	private readonly changedIds = new Set<string>();
@@ -407,7 +457,31 @@ class Draft {
 	private readonly mine = new Set<string>();
 
 	constructor(turns: Turn[]) {
+		this.initial = turns;
 		this.turns = [...turns];
+	}
+
+	/** The id of the turn open for new content, '' before the first. */
+	lastId(): string {
+		return this.turns[this.turns.length - 1]?.id ?? '';
+	}
+
+	/** Drops one turn, if it is still here (#131). */
+	remove(turnId: string): void {
+		const index = this.turns.findIndex((turn) => turn.id === turnId);
+		if (index === -1) return;
+		this.removed.add(turnId);
+		this.turns.splice(index, 1);
+	}
+
+	/**
+	 * Drops every turn after `turnId`, or every turn for '' (#131). A turn
+	 * that is no longer here drops nothing: what it named is already gone.
+	 */
+	dropAfter(turnId: string): void {
+		const index = turnId ? this.turns.findIndex((turn) => turn.id === turnId) : -1;
+		if (turnId && index === -1) return;
+		for (const turn of this.turns.splice(index + 1)) this.removed.add(turn.id);
 	}
 
 	/** The turn open for new content, or null before the first prompt. */
@@ -483,8 +557,9 @@ class Draft {
 	 * place: prose arrives a block at a time, and a turn the batch did not touch
 	 * still says what it said (#100).
 	 */
-	finish(): { turns: Turn[]; changedTurnIds: string[] } {
-		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed };
+	finish(): { turns: Turn[]; changedTurnIds: string[]; removedTurnIds: string[] } {
+		const removedTurnIds = this.removedIds();
+		if (this.changed.length === 0) return { turns: this.turns, changedTurnIds: this.changed, removedTurnIds };
 		// Indexed once rather than searched per id: the first batch of a tail is
 		// the whole file, so every turn in a long session can be in `changed`, and
 		// a `find` each would be quadratic in exactly the case the native view's
@@ -494,7 +569,18 @@ class Draft {
 			const turn = byId.get(id);
 			if (turn) this.own(turn).headings = turnHeadings(turn.entries);
 		}
-		return { turns: this.turns, changedTurnIds: this.changed };
+		// A turn opened and dropped within the batch was never anyone's to draw.
+		const changedTurnIds = this.removed.size
+			? this.changed.filter((id) => byId.has(id))
+			: this.changed;
+		return { turns: this.turns, changedTurnIds, removedTurnIds };
+	}
+
+	/** The turns the batch found and no longer holds, in their old order. */
+	private removedIds(): string[] {
+		if (this.removed.size === 0) return [];
+		const kept = new Set(this.turns.map((turn) => turn.id));
+		return this.initial.map((turn) => turn.id).filter((id) => this.removed.has(id) && !kept.has(id));
 	}
 
 	/**
@@ -516,6 +602,101 @@ class Draft {
 }
 
 /**
+ * What a record hangs from: its `parentUuid`, or for a compaction's boundary,
+ * which starts a chain of its own (`parentUuid: null`), the record it
+ * continues (`logicalParentUuid`). Null for a record that hangs from nothing,
+ * undefined for one that does not say.
+ */
+function parentOf(line: Json): string | null | undefined {
+	const parent = line.parentUuid;
+	if (parent === null) return typeof line.logicalParentUuid === 'string' ? line.logicalParentUuid : null;
+	return typeof parent === 'string' ? parent : undefined;
+}
+
+/**
+ * A working copy of the {@link BranchState}, for one batch (#131).
+ *
+ * A record is marked once it has been folded, so the mark names the turn it
+ * landed in — a prompt's own record names the turn it opened. Records on a
+ * side chain (a subagent's, inlined by older builds) are not the session's
+ * conversation and are not marked.
+ */
+class Branch {
+	private last: string | null;
+	private readonly records: Map<string, RecordMark>;
+	private answers: number;
+	private floor: number;
+	private lastPrompt: BranchState['lastPrompt'];
+	/** The record being folded, marked by {@link settle}. */
+	private pending: { uuid: string; answer: boolean } | null = null;
+
+	constructor(state: BranchState) {
+		this.last = state.last;
+		this.records = new Map(state.records);
+		this.answers = state.answers;
+		this.floor = state.floor;
+		this.lastPrompt = state.lastPrompt;
+	}
+
+	/** The line about to be folded; marked when the next one arrives. */
+	saw(line: Json): void {
+		const uuid = line.uuid;
+		if (typeof uuid !== 'string' || !uuid || line.isSidechain === true) return;
+		this.pending = { uuid, answer: line.type === 'assistant' };
+	}
+
+	/** Marks the line folded last where it landed. */
+	settle(draft: Draft): void {
+		const pending = this.pending;
+		if (!pending) return;
+		this.pending = null;
+		if (pending.answer) {
+			this.answers++;
+			if (this.lastPrompt) this.lastPrompt = { ...this.lastPrompt, answered: true };
+		}
+		this.records.set(pending.uuid, { turn: draft.lastId(), answers: this.answers });
+		this.last = pending.uuid;
+	}
+
+	/**
+	 * A prompt is about to open a turn: drops what the conversation left
+	 * behind to get here. A prompt that hangs from the newest prompt's own
+	 * parent while nothing answered that one is its re-send, and the cancelled
+	 * one goes. A prompt that hangs from an earlier record than the last, with
+	 * an answer written since that record, forks: every turn after the one that
+	 * record landed in goes. A parent this read never saw hides nothing.
+	 */
+	fork(line: Json, draft: Draft): void {
+		const parent = parentOf(line);
+		if (parent === undefined) return;
+		const previous = this.lastPrompt;
+		if (previous && !previous.answered && parent !== null && parent === previous.parent) {
+			draft.remove(previous.turnId);
+			return;
+		}
+		if (this.last === null || parent === this.last) return;
+		const mark = parent === null ? { turn: '', answers: this.floor } : this.records.get(parent);
+		if (mark && this.answers > mark.answers) draft.dropAfter(mark.turn);
+	}
+
+	/** A prompt opened `turnId`; it is the newest now, and nothing answered it yet. */
+	prompted(turnId: string, line: Json): void {
+		const parent = parentOf(line);
+		this.lastPrompt = { turnId, parent: typeof parent === 'string' ? parent : '', answered: false };
+	}
+
+	finish(): BranchState {
+		return {
+			last: this.last,
+			records: this.records,
+			answers: this.answers,
+			floor: this.floor,
+			lastPrompt: this.lastPrompt,
+		};
+	}
+}
+
+/**
  * Folds `lines` into `state`. Neither `state` nor anything reachable from it is
  * mutated: turns this batch touched are replaced by copies, the rest are shared.
  */
@@ -523,12 +704,25 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const draft = new Draft(state.turns);
 	const raw = { ...state.raw };
 	const pendingQueue = [...state.pendingQueue];
+	const branch = new Branch(state.branch);
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
 	};
+	/**
+	 * Opens the turn a human prompt starts, after dropping what a rewind or a
+	 * re-send left behind (#131).
+	 */
+	const openPrompt = (line: Json, prompt: string): Turn => {
+		branch.fork(line, draft);
+		const turn = draft.open(stringField(line, 'uuid') || `turn-${draft.length}`, prompt);
+		branch.prompted(turn.id, line);
+		return turn;
+	};
 
 	for (const line of lines) {
+		// The line before this one has landed; where is what a rewind reads.
+		branch.settle(draft);
 		if (!line.trim()) continue;
 		let parsed: unknown;
 		try {
@@ -546,6 +740,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			countRaw(UNTYPED);
 			continue;
 		}
+		branch.saw(parsed);
 
 		switch (type) {
 			case 'queue-operation': {
@@ -625,7 +820,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// carries no text of the human's and opens nothing.
 					const sent = blockPrompt(parsed, content);
 					if (sent) {
-						const turn = draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, sent.text);
+						const turn = openPrompt(parsed, sent.text);
 						turn.entries.push(...sent.images);
 						continue;
 					}
@@ -662,8 +857,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
-				const prompt = commandPrompt(content) ?? content;
-				draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, prompt);
+				openPrompt(parsed, commandPrompt(content) ?? content);
 				continue;
 			}
 			case 'assistant': {
@@ -724,8 +918,9 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 		}
 	}
 
-	const { turns, changedTurnIds } = draft.finish();
-	return { state: { turns, raw, pendingQueue }, changedTurnIds };
+	branch.settle(draft);
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { turns, raw, pendingQueue, branch: branch.finish() }, changedTurnIds, removedTurnIds };
 }
 
 /**
@@ -748,8 +943,8 @@ export function attachSubagentReport(
 		entry.report = report;
 		draft.touch(turn.id);
 	}
-	const { turns, changedTurnIds } = draft.finish();
-	return { state: { ...state, turns }, changedTurnIds };
+	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
+	return { state: { ...state, turns }, changedTurnIds, removedTurnIds };
 }
 
 /**

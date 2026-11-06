@@ -1,6 +1,6 @@
 /**
  * What the native surface and the table of contents draw for the transcript
- * shapes of the Ovis prior-art batch (`findings/prior-art-ovis.md` §1): a
+ * shapes the native view once misread (issues #129–#135): a
  * picture sent with a prompt, a compaction, turns a rewind dropped, the
  * runtime's notices, a bash-mode exchange and background work that was lost.
  *
@@ -188,5 +188,34 @@ describe('a compaction (#130)', () => {
 		);
 
 		expect(toc.rows()).toEqual(['Refactor it']);
+	});
+});
+
+describe('turns a rewind dropped (#131)', () => {
+	it('takes them off the surface and draws the new branch after what stays', async () => {
+		const model = new FakeModel();
+		const el = await surfaceOn(model);
+		model.push([turn('u1', 'apple'), turn('u2', 'banana')], { changedTurnIds: ['u1', 'u2'], reset: false });
+		const kept = el.findAll('herdr-native-turn')[0];
+
+		model.push([turn('u1', 'apple'), turn('u3', 'cherry')], {
+			changedTurnIds: ['u3'],
+			removedTurnIds: ['u2'],
+			reset: false,
+		});
+
+		const turns = el.findAll('herdr-native-turn');
+		expect(turns.map((turnEl) => turnEl.find('herdr-native-prompt').textContent)).toEqual(['apple', 'cherry']);
+		expect(turns[0]).toBe(kept);
+	});
+
+	it('takes them out of the TOC', () => {
+		const model = new FakeModel();
+		const toc = tocOn(model);
+		model.push([turn('u1', 'apple'), turn('u2', 'banana')], { changedTurnIds: ['u1', 'u2'], reset: false });
+
+		model.push([turn('u3', 'cherry')], { changedTurnIds: ['u3'], removedTurnIds: ['u1', 'u2'], reset: false });
+
+		expect(toc.rows()).toEqual(['cherry']);
 	});
 });

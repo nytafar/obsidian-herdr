@@ -204,6 +204,16 @@ export class TurnRenderer {
 		return els.length === headingCount ? els[index] : undefined;
 	}
 
+	/** Drops one turn's element and component (#131); a turn not drawn is nothing to drop. */
+	remove(turnId: string): void {
+		this.turnComponents.get(turnId)?.unload();
+		this.turnComponents.delete(turnId);
+		this.turnEls.get(turnId)?.remove();
+		this.turnEls.delete(turnId);
+		this.turnHeadingEls.delete(turnId);
+		this.headingDraws.delete(turnId);
+	}
+
 	/** Drops every turn element and the components that went with them. */
 	clear(): void {
 		for (const component of this.turnComponents.values()) component.unload();

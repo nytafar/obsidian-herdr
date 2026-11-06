@@ -53,6 +53,11 @@ export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './ses
 export interface SessionChange {
 	/** Turns created or changed, in order. Empty when only the status moved. */
 	changedTurnIds: string[];
+	/**
+	 * Turns that are gone without a reset: what a rewind or a re-sent prompt
+	 * left behind (#131). Absent when none are.
+	 */
+	removedTurnIds?: string[];
 	/** The whole view is stale: reloaded, replaced, or the session rotated. */
 	reset: boolean;
 }
@@ -451,9 +456,11 @@ export class SessionModel implements SessionModelView {
 	private onLines(lines: string[], restart: boolean): void {
 		if (restart) this.restart();
 		this.delivered = true;
-		const { state, changedTurnIds } = reduce(this.transcript, lines);
+		const { state, changedTurnIds, removedTurnIds } = reduce(this.transcript, lines);
 		this.transcript = state;
-		this.emit({ changedTurnIds: restart ? [] : changedTurnIds, reset: restart });
+		if (restart) this.emit({ changedTurnIds: [], reset: true });
+		else if (removedTurnIds.length) this.emit({ changedTurnIds, removedTurnIds, reset: false });
+		else this.emit({ changedTurnIds, reset: false });
 		this.readReports(changedTurnIds);
 	}
 

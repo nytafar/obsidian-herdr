@@ -427,6 +427,12 @@ timestamps, types and the tags the reducer reads are kept as recorded.
   (no 2.1.318 transcript on this machine has one).
 - `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
   2.1.318 lines have the same shape.
+- `resend.jsonl` — a prompt cancelled before any reply and sent again, 2.1.318.
+- `rewind-fork.jsonl` — copied unchanged from
+  https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
+  commit c43dffdd), MIT License, Copyright (c) 2026 devswha:
+  two answered prompts, a Restore to before the first, and the prompt that
+  forks the session.
 
 ## Smoking live updates and session following (#94)
 
