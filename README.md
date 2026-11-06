@@ -1,8 +1,12 @@
 # Herdr for Obsidian
 
-Your coding agents run persistently in [herdr](https://github.com/ogulcancelik/herdr),
-a terminal workspace that keeps them alive across sessions. This plugin brings the
-ones that belong to your vault into Obsidian:
+Your coding agents run persistently in
+[herdr-core](https://github.com/herdrdev/herdr-core) (`hc`), the headless
+runtime behind the [Herdr desktop app](https://github.com/herdrdev/herdr-app),
+or in [herdr](https://github.com/herdrdev/herdr), the terminal workspace. Both
+keep agents alive across sessions, on this machine or another one. No
+runtime yet? Herdr can also run Claude Code itself. This plugin brings the
+agents that belong to your vault into Obsidian:
 
 ![The agent list in the left sidebar, a live Claude Code terminal as the centre tab, and the note the agent is writing open beside it.](images/screenshot.webp)
 
@@ -51,7 +55,8 @@ neutral one. Anything herdr can attach to also shows up, whatever started it.
 - macOS or Linux.
 - One runtime: **herdr 0.8.0 or newer, already running** (the plugin never
   starts, stops or updates a herdr server; it attaches to the one you have),
-  **herdr-core** (`hc`), or **Claude Code** for the simple mode. See
+  **[herdr-core](https://github.com/herdrdev/herdr-core)** (`hc`), or
+  **Claude Code** for the simple mode. See
   [Getting started](#getting-started).
 - For a runtime over SSH: `ssh` on this machine, key-based login that does not
   prompt, and a copy of the vault on the remote host kept in sync by whatever you
