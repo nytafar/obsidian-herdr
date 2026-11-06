@@ -264,8 +264,9 @@ this machine and cannot be changed. Two fields:
 - **Permission mode**: what new and resumed agents may do without asking:
   **Ask (default)**, **Accept edits**, **Plan**, **Auto** or **Don't ask**.
   It is passed to every process with `--permission-mode`, so your own Claude
-  default never decides it. In the default mode every tool that needs a
-  permission waits for you on the native view's waiting card.
+  default never decides it. **Ask** is passed as `manual`, the name
+  `claude --help` lists for Claude's asking mode; in it every tool that needs
+  a permission waits for you on the native view's waiting card.
 
 Make it active with the plug, or with the switcher, like any other runtime.
 The settings status names the binary, the permission mode and how many agents

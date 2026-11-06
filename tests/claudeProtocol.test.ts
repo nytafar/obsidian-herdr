@@ -86,7 +86,7 @@ const PLAN_REQUEST = {
 
 describe('claudeArgv', () => {
 	it('starts a new session with the plugin-generated id and every stream flag', () => {
-		expect(claudeArgv({ binary: '/usr/bin/claude', sessionId: SESSION, resume: false, permissionMode: 'default' })).toEqual([
+		expect(claudeArgv({ binary: '/usr/bin/claude', sessionId: SESSION, resume: false, permissionMode: 'manual' })).toEqual([
 			'/usr/bin/claude',
 			'-p',
 			'--input-format',
@@ -98,7 +98,7 @@ describe('claudeArgv', () => {
 			'--permission-prompt-tool',
 			'stdio',
 			'--permission-mode',
-			'default',
+			'manual',
 			'--session-id',
 			SESSION,
 		]);
@@ -117,7 +117,7 @@ describe('claudeArgv', () => {
 	});
 
 	it('refuses an id that is not a UUID', () => {
-		expect(() => claudeArgv({ binary: 'claude', sessionId: 'x; rm -rf', resume: false, permissionMode: 'default' })).toThrow();
+		expect(() => claudeArgv({ binary: 'claude', sessionId: 'x; rm -rf', resume: false, permissionMode: 'manual' })).toThrow();
 	});
 });
 

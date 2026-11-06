@@ -220,7 +220,7 @@ describe('the claude kind over a fake claude', () => {
 			'--permission-prompt-tool',
 			'stdio',
 			'--permission-mode',
-			'default',
+			'manual',
 			'--session-id',
 			session?.sessionId,
 		]);

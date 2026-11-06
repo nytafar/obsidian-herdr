@@ -70,7 +70,7 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   in herdr** or **Continue in herdr-core** once the session has had a turn,
   which hands the conversation to such a runtime with `claude --resume`, in
   the same permission mode. The permission mode is a runtime
-  setting (default: ask). Agents end when Obsidian closes or the plugin
+  setting (default: ask, passed as Claude's documented `manual`). Agents end when Obsidian closes or the plugin
   unloads. There is no terminal view for this kind yet. See
   [docs/runtimes.md](docs/runtimes.md).
 - **herdr 0.9.5**: the types are regenerated from it. The client records the

@@ -28,7 +28,8 @@ const SESSION = '3b3ad50c-0000-4000-8000-000000000001';
 describe('a claude runtime', () => {
 	it('is created local, with the default permission mode, no socket and an empty binary', () => {
 		const runtime = newRuntime('claude', 'ssh', [], () => 0.5);
-		expect(runtime).toMatchObject({ kind: 'claude', target: 'local', socketPath: '', binary: '', permissionMode: 'default' });
+		// `manual` is the documented name of Claude's asking mode (`claude --help`).
+		expect(runtime).toMatchObject({ kind: 'claude', target: 'local', socketPath: '', binary: '', permissionMode: 'manual' });
 		expect(runtimeDisplayName(runtime)).toBe('Claude, run by Obsidian');
 		expect(runtimeSummary(runtime)).toBe('Claude, run by Obsidian on this machine');
 		expect(runtimeIssues(runtime)).toEqual([]);
@@ -39,17 +40,22 @@ describe('a claude runtime', () => {
 		expect(normalizeRuntime({ id: 'rt-c', kind: 'claude', target: 'ssh', permissionMode: 'bypassPermissions' })).toMatchObject({
 			kind: 'claude',
 			target: 'local',
-			permissionMode: 'default',
+			permissionMode: 'manual',
 		});
 		expect(normalizeRuntime({ id: 'rt-c', kind: 'claude', target: 'local', permissionMode: 'acceptEdits' })?.permissionMode).toBe(
 			'acceptEdits',
 		);
 		expect(normalizePermissionMode('plan')).toBe('plan');
-		expect(normalizePermissionMode(7)).toBe('default');
+		expect(normalizePermissionMode(7)).toBe('manual');
+		// What this build stored before reads as the same choice: Claude takes `manual` as `default`.
+		expect(normalizePermissionMode('default')).toBe('manual');
+		expect(normalizeRuntime({ id: 'rt-c', kind: 'claude', target: 'local', permissionMode: 'default' })?.permissionMode).toBe(
+			'manual',
+		);
 	});
 
 	it('carries its permission mode into the endpoint snapshot, and other kinds carry none', () => {
-		expect(endpointOf(newRuntime('claude', 'local', [])).runtime.permissionMode).toBe('default');
+		expect(endpointOf(newRuntime('claude', 'local', [])).runtime.permissionMode).toBe('manual');
 		expect(endpointOf(defaultLocalRuntime()).runtime).not.toHaveProperty('permissionMode');
 	});
 });
@@ -69,7 +75,7 @@ describe('data.json across the new kind', () => {
 	});
 
 	it('reads a claude runtime as a known one, not as foreign', () => {
-		const claude = { id: 'rt-c', name: '', kind: 'claude', target: 'local', host: '', binary: '', socketPath: '', remoteVaultPath: '', workspace: '', permissionMode: 'default' };
+		const claude = { id: 'rt-c', name: '', kind: 'claude', target: 'local', host: '', binary: '', socketPath: '', remoteVaultPath: '', workspace: '', permissionMode: 'manual' };
 		const migration = migrateRuntimes({ runtimes: [claude, { id: 'rt-x', kind: 'future', target: 'local' }], activeRuntime: 'rt-c' });
 		expect(migration.runtimes).toEqual([claude]);
 		expect(migration.activeRuntime).toBe('rt-c');

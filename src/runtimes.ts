@@ -50,26 +50,34 @@ export function kindTargets(kind: RuntimeKind): readonly RuntimeTarget[] {
 
 /**
  * The permission modes a `claude` runtime can start its agents in (`claude
- * --permission-mode`). `default` asks for every tool that needs a permission,
- * which the native view's waiting card then answers. `bypassPermissions` is
- * left out on purpose: it needs its own flag and would answer every prompt
- * for the user.
+ * --permission-mode`, the choices its `--help` lists). `manual` asks for every
+ * tool that needs a permission, which the native view's waiting card then
+ * answers; it is the documented name of what Claude calls `default`
+ * internally (2.1.318 maps one to the other, reports `default` in its
+ * `init`, and blocks Write and Bash on `can_use_tool` the same way, measured
+ * 2026-11-06; every installed build back to 2.1.270 lists it).
+ * `bypassPermissions` is left out on purpose: it needs its own flag and
+ * would answer every prompt for the user.
  */
-export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'] as const;
+export const CLAUDE_PERMISSION_MODES = ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'] as const;
 export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
-export const DEFAULT_CLAUDE_PERMISSION_MODE: ClaudePermissionMode = 'default';
+export const DEFAULT_CLAUDE_PERMISSION_MODE: ClaudePermissionMode = 'manual';
 
 /** What the settings tab shows for each permission mode. */
 export const CLAUDE_PERMISSION_MODE_LABELS: Record<ClaudePermissionMode, string> = {
-	default: 'Ask (default)',
+	manual: 'Ask (default)',
 	acceptEdits: 'Accept edits',
 	plan: 'Plan',
 	auto: 'Auto',
 	dontAsk: "Don't ask (deny what is not allowed)",
 };
 
-/** A stored permission mode, or the default for anything this build does not know. */
+/**
+ * A stored permission mode, or the default for anything this build does not
+ * know. `default`, which earlier builds stored, is the same choice as `manual`.
+ */
 export function normalizePermissionMode(value: unknown): ClaudePermissionMode {
+	if (value === 'default') return 'manual';
 	return (CLAUDE_PERMISSION_MODES as readonly unknown[]).includes(value)
 		? (value as ClaudePermissionMode)
 		: DEFAULT_CLAUDE_PERMISSION_MODE;
