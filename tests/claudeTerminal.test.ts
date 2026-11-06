@@ -39,7 +39,15 @@ import { FRAME_BYTES } from '../src/claude/terminalSession';
 import { planViewSwitch, TUI_BUSY, WAIT_FOR_ANSWER, WAIT_FOR_STOP, WAIT_FOR_TURN } from '../src/claude/viewSwitch';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
-import { CLAUDE_TERMINAL_UNAVAILABLE, createClaudeKind, SHELL_NO_NATIVE, type ClaudeKind, type ClaudeKindHost } from '../src/runtime/claudeKind';
+import {
+	CLAUDE_TERMINAL_UNAVAILABLE,
+	CLAUDE_TERMINAL_UNVERIFIED,
+	claudeStatusLines,
+	createClaudeKind,
+	SHELL_NO_NATIVE,
+	type ClaudeKind,
+	type ClaudeKindHost,
+} from '../src/runtime/claudeKind';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { newRuntime, type ClaudePermissionMode } from '../src/runtimes';
 import type { PaneSession } from '../src/views/paneTerminal';
@@ -868,6 +876,30 @@ describe('shell tabs', () => {
 		openTab(h, paneId);
 		expect(h.pty.children).toHaveLength(2);
 		expect(inner(h.pty.last.argv)).not.toContain('echo once');
+	});
+});
+
+describe('on macOS, until it is verified there', () => {
+	it('offers no terminal view and no shell, and says it is not verified yet', () => {
+		const h = harness({ host: { ptyPlatform: undefined, platform: 'darwin' } });
+		expect(h.kind.terminalUnavailable).toBe(CLAUDE_TERMINAL_UNVERIFIED);
+		expect(CLAUDE_TERMINAL_UNVERIFIED).toMatch(/macOS.*not .*verified/);
+		expect(h.kind.capabilities.shells).toBe(false);
+		expect(h.kind.shells).toBeNull();
+		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow(CLAUDE_TERMINAL_UNVERIFIED);
+		const lines = claudeStatusLines(
+			{ client: { setup: { binary: 'claude', permissionMode: 'manual' } }, scope: { size: 0, running: 0 } },
+			CLAUDE_TERMINAL_UNVERIFIED,
+		);
+		expect(lines.at(-1)?.text).toContain(CLAUDE_TERMINAL_UNVERIFIED);
+	});
+
+	it('still runs the macOS script path where a host asks for it explicitly', async () => {
+		const h = harness({ row: 'fresh', host: { ptyPlatform: 'darwin', platform: 'darwin' } });
+		expect(h.kind.terminalUnavailable).toBeNull();
+		openTab(h, AGENT);
+		await waitFor(() => h.pty.children.length === 1, 'the TUI');
+		expect(h.pty.last.argv.slice(3, 7)).toEqual(['oh-pty', 'script', '-q', '/dev/null']);
 	});
 });
 

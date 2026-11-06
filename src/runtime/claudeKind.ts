@@ -20,7 +20,8 @@
  *   fd-3 watchdog (`../claude/pty.ts`), one process per agent, headless or
  *   TUI, switched between turns (`../claude/viewSwitch.ts`). A tab is a
  *   {@link ClaudeTerminalSession} attached to the agent's TUI, which outlives
- *   the tab. Linux; macOS written but not verified; none on Windows.
+ *   the tab. Linux only: off on macOS until its written path is verified
+ *   there ({@link CLAUDE_TERMINAL_UNVERIFIED}), none on Windows.
  * - **Shell tabs** (ADR-0008): a plain shell in a folder on the same pty, a
  *   tab and not a row (`../claude/shells.ts`), with an optional command run
  *   first.
@@ -61,6 +62,15 @@ import { CLAUDE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from '.
 
 /** Why a `claude` tab has no terminal view on Windows: no `script(1)`, and ConPTY needs native code. */
 export const CLAUDE_TERMINAL_UNAVAILABLE = 'not available on Windows, which has no script(1)';
+
+/** Why it has none on macOS yet (ADR-0007: "on macOS once verified"). */
+export const CLAUDE_TERMINAL_UNVERIFIED =
+	'not available on macOS yet: its script(1) path is written but not verified there';
+
+/** Why a machine without a pty has no terminal view. */
+export function claudeTerminalUnavailable(platform: NodeJS.Platform): string {
+	return platform === 'darwin' ? CLAUDE_TERMINAL_UNVERIFIED : CLAUDE_TERMINAL_UNAVAILABLE;
+}
 
 /** Why a shell tab has no native view. */
 export const SHELL_NO_NATIVE = 'a shell has no agent session';
@@ -149,7 +159,12 @@ export interface ClaudeKindHost {
 	localSettings?: (cwd: string) => LocalSettingsTarget | null;
 	/** Skips the login shell in discovery (tests). */
 	skipLoginShell?: boolean;
-	/** The pty's platform (null: none, Windows), spawn and tools; the real ones otherwise. */
+	/** This machine's platform; `process.platform` otherwise. */
+	platform?: NodeJS.Platform;
+	/**
+	 * The pty's platform (null: none), spawn and tools; the real ones
+	 * otherwise, which is none on Windows and, until verified, on macOS.
+	 */
 	ptyPlatform?: PtyPlatform | null;
 	ptySpawn?: PtySpawn;
 	ptyTools?: PtyTools;
@@ -186,7 +201,9 @@ export function newClaudeAgentId(taken: ReadonlySet<string>, random: () => numbe
 }
 
 export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
-	const platform = host.ptyPlatform === undefined ? ptyPlatformOf(process.platform) : host.ptyPlatform;
+	const os = host.platform ?? process.platform;
+	const platform = host.ptyPlatform === undefined ? ptyPlatformOf(os) : host.ptyPlatform;
+	const terminalUnavailable = platform ? null : claudeTerminalUnavailable(os);
 	const timers = host.timers ?? DEFAULT_TIMERS;
 	const pty = platform
 		? {
@@ -225,7 +242,7 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 	const shells = pty ? new ClaudeShells({ ...pty, timers, env: () => claudeEnv(host.spawnEnv(), '') }) : null;
 	const localTranscripts = new LocalTranscriptSource();
 	const watchers = new WeakMap<ClaudeScope, SessionWatcher>();
-	const refuse = (): Error => new Error(`The terminal view is ${CLAUDE_TERMINAL_UNAVAILABLE}.`);
+	const refuse = (): Error => new Error(`The terminal view is ${terminalUnavailable ?? CLAUDE_TERMINAL_UNAVAILABLE}.`);
 	return {
 		kind: 'claude',
 		agents,
@@ -234,7 +251,7 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			await Promise.all([agents.stopAll(), shells?.stopAll()]);
 		},
 		unavailable: null,
-		terminalUnavailable: pty ? null : CLAUDE_TERMINAL_UNAVAILABLE,
+		terminalUnavailable,
 		capabilities: pty ? CLAUDE_CAPABILITIES : { ...CLAUDE_CAPABILITIES, shells: false },
 		nativeUnavailable: null,
 		native: {
@@ -336,7 +353,7 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			},
 		}),
 		createTabLabels: () => new NoTabLabels(),
-		statusLines: (connection) => (connection ? claudeStatusLines(connection, pty !== null) : null),
+		statusLines: (connection) => (connection ? claudeStatusLines(connection, terminalUnavailable) : null),
 	};
 }
 
@@ -346,7 +363,8 @@ export function claudeStatusLines(
 		client: Pick<ClaudeClient, 'setup'>;
 		scope: Pick<ClaudeScope, 'size' | 'running'>;
 	},
-	terminal = true,
+	/** Why there is no terminal view here; null where there is one. */
+	terminalUnavailable: string | null = null,
 ): StatusLine[] {
 	const { setup } = connection.client;
 	const { size, running } = connection.scope;
@@ -355,9 +373,10 @@ export function claudeStatusLines(
 		{ text: `Permission mode: ${CLAUDE_PERMISSION_MODE_LABELS[setup.permissionMode]}` },
 		{ text: `Agents: ${running} running, ${size - running} stopped` },
 		{
-			text: terminal
-				? "Terminal view: Claude's own TUI on a pty from script(1)."
-				: `Terminal view: ${CLAUDE_TERMINAL_UNAVAILABLE}; agents open in the native view.`,
+			text:
+				terminalUnavailable === null
+					? "Terminal view: Claude's own TUI on a pty from script(1)."
+					: `Terminal view: ${terminalUnavailable}; agents open in the native view.`,
 		},
 	];
 }

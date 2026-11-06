@@ -1015,9 +1015,12 @@ renderer:
   shell's command line. Live queries are answered as before, by one tab.
 - **Not seen in TUI mode:** a `/clear` typed there (no stream, no `init`):
   the row keeps the session from before it.
-- **macOS**: written, not verified: BSD `script -q /dev/null /bin/sh -c
-  <line>`, the slave from `ps -A -o pid=,ppid=,tty=,comm=` (`ttys004` →
-  `/dev/ttys004`), `stty -f`. **Windows**: no terminal view, no shells.
+- **macOS**: written, not verified, so **off** (`ptyPlatformOf('darwin')`
+  is null and the kind says `CLAUDE_TERMINAL_UNVERIFIED`) until it is: BSD
+  `script -q /dev/null /bin/sh -c <line>`, the slave from
+  `ps -A -o pid=,ppid=,tty=,comm=` (`ttys004` → `/dev/ttys004`), `stty -f`.
+  A host can pass `ptyPlatform: 'darwin'` to `createClaudeKind` to run it
+  for that verification. **Windows**: no terminal view, no shells.
 
 **Shell tabs** (`src/claude/shells.ts`, ADR-0008). A pane id `sh-…` that no
 scope lists: a plain `$SHELL` (else `/bin/sh`) on the same pty, started when

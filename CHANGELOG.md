@@ -72,8 +72,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   the same permission mode. The permission mode is a runtime
   setting (default: ask, passed as Claude's documented `manual`). Agents end when Obsidian closes or the plugin
   unloads. See [docs/runtimes.md](docs/runtimes.md).
-- **Terminal view for Claude, run by Obsidian** (Linux; macOS written but not
-  yet verified; not on Windows): the tab's view switch shows Claude's own
+- **Terminal view for Claude, run by Obsidian** (Linux only for now: off on
+  macOS until its written path is verified there, which the settings status
+  and the view switch say; not on Windows): the tab's view switch shows Claude's own
   terminal interface, on a real terminal from `script(1)`, in the runtime's
   permission mode. An agent runs one Claude at a time, so switching the view
   moves it between the headless process and the terminal with
@@ -92,7 +93,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   session shows the same screen, replayed without the terminal queries in
   it, so the reopened tab types no answers into the program. Resizing reaches Claude. A watchdog beside
   each terminal ends it within a second if Obsidian is killed.
-- **Open shell here** for Claude, run by Obsidian: a plain shell in a
+- **Open shell here** for Claude, run by Obsidian (Linux only, as the
+  terminal view): a plain shell in a
   folder, in a terminal tab of its own, from the folder menu or the command.
   It lives while a tab shows it. Ctrl-C interrupts what runs in it, the
   command it was opened with included (Get started's installer).

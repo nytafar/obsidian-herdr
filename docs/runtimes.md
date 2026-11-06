@@ -331,7 +331,7 @@ run and how many are stopped.
   ([native-view.md](native-view.md)). `/clear` is followed, and the row keeps
   the new session, so a later resume reopens the conversation after the
   clear.
-- **The terminal view** (Linux; macOS written but not yet checked): the tab's
+- **The terminal view** (Linux only for now): the tab's
   view switch shows Claude's own terminal interface, running as
   `claude --resume <session> --permission-mode <mode>` in the agent's folder
   on a real terminal that `script(1)` provides. You type in it as in any
@@ -379,9 +379,10 @@ run and how many are stopped.
 
 ### Limits
 
-- **No terminal view or shell on Windows**, which has no `script(1)`: the
-  view switch shows the terminal disabled with that reason, and agents stay
-  in the native view.
+- **No terminal view or shell on Windows**, which has no `script(1)`, and
+  **none on macOS yet**: the code for macOS's `script` is written but has not
+  been checked on a Mac, so it stays off until it is. The view switch shows
+  the terminal disabled with the reason, and agents stay in the native view.
 - **Agents end with Obsidian.** Closing Obsidian, unloading or reloading the
   plugin, or removing the runtime stops every agent in order: what is waiting
   for an answer is denied, a running turn is interrupted, then the process

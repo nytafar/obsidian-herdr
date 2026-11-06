@@ -73,7 +73,8 @@ three ways in:
    `curl -fsSL https://releases.herdr.dev/core/install.sh | sh` (on Windows,
    `irm https://releases.herdr.dev/core/install.ps1 | iex` in PowerShell), and
    offers to **Copy** it, **Run in a terminal tab** you watch and can stop
-   (not on Windows), or **Ask Claude** to run it. Claude always runs that
+   with Ctrl-C (Linux for now: not on Windows, and not on macOS until it is
+   verified there), or **Ask Claude** to run it. Claude always runs that
    session in the asking permission mode, whatever your runtime is set to, so
    the command waits on a permission card until you allow it. When the
    install is done, **Check again** finds `hc`, and **Add herdr-core on this

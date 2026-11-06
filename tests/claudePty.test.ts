@@ -43,9 +43,9 @@ describe('the argv around script(1)', () => {
 		expect(WATCHDOG.startsWith('trap : TERM; ')).toBe(true);
 	});
 
-	it('has no pty on Windows', () => {
+	it('has no pty on Windows, nor on macOS until its path is verified', () => {
 		expect(ptyPlatformOf('win32')).toBeNull();
-		expect(ptyPlatformOf('darwin')).toBe('darwin');
+		expect(ptyPlatformOf('darwin')).toBeNull();
 		expect(ptyPlatformOf('linux')).toBe('linux');
 		expect(ptyPlatformOf('freebsd')).toBe('linux');
 	});

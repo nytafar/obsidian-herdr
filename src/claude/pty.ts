@@ -24,8 +24,10 @@
  * - **Platforms.** Linux: util-linux `script -qfec <cmd> /dev/null`, the
  *   slave found as `/proc/<script's child>/fd/0`, resized with `stty -F`.
  *   macOS: BSD `script -q /dev/null /bin/sh -c <cmd>`, the slave from
- *   `ps -o tty=`, resized with `stty -f` — written, **not verified**. No pty
- *   on Windows at all.
+ *   `ps -o tty=`, resized with `stty -f` — written, **not verified**, so it
+ *   is off ({@link ptyPlatformOf}) until it is (ADR-0007: "on macOS once
+ *   verified"); a host can still ask for it by name to verify it. No pty on
+ *   Windows at all.
  * - **Resize** from outside: `stty` on the slave, which makes the kernel send
  *   the program SIGWINCH. Held back until the program has written its first
  *   byte, so the command line's own `stty` cannot undo it, and coalesced so
@@ -47,10 +49,13 @@ import type { ClaudeTimers } from './process';
 /** The two platforms with a `script(1)` the plugin can drive. */
 export type PtyPlatform = 'linux' | 'darwin';
 
-/** The pty platform of this machine, or null where there is none (Windows). */
+/**
+ * The pty platform of this machine, or null where there is none: Windows,
+ * and macOS until its path is verified (the `'darwin'` code stays, for that).
+ */
 export function ptyPlatformOf(platform: NodeJS.Platform): PtyPlatform | null {
-	if (platform === 'win32') return null;
-	return platform === 'darwin' ? 'darwin' : 'linux';
+	if (platform === 'win32' || platform === 'darwin') return null;
+	return 'linux';
 }
 
 /**
