@@ -12,10 +12,11 @@
 import { Component } from 'obsidian';
 import type { AgentStatus } from '../herdr/types.gen';
 import type { KeySender } from './promptSender';
-import { waitingCard, type WaitingCardModel } from './waitingCard';
+import { isTypedAnswerKey, optionName, questionAnswer, waitingCard, type WaitingCardModel } from './waitingCard';
 import {
 	projectGrantText,
 	type PendingQuestion,
+	type PendingQuestionOption,
 	type PendingRequest,
 	type WaitingAnswer,
 	type WaitingResponder,
@@ -27,6 +28,33 @@ export function trustFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
 	return `Herdr: could not trust this folder (${reason})`;
 }
+
+/**
+ * What a question card says when the view cannot answer it: the runtime only
+ * reports that a question is waiting (herdr, herdr-core), so the answer — a
+ * typed one included — is given in the terminal.
+ */
+export const QUESTION_IN_TERMINAL =
+	'Answer it in the terminal, where you can also type an answer of your own: this runtime does not take answers from the view.';
+
+/**
+ * One option as the card draws it, inside `parent` (a button or a line): the
+ * label with Claude's "(Recommended)" suffix drawn as a tag, and the
+ * description on the line under it — never a tooltip alone, which neither a
+ * touch screen nor a screen reader shows (after Ovis's `PromptCard.tsx`, MIT).
+ */
+export function drawOption(parent: HTMLElement, option: PendingQuestionOption): void {
+	const { text, recommended } = optionName(option.label);
+	const line = parent.createSpan({ cls: 'herdr-native-waiting-choice-line' });
+	line.createSpan({ cls: 'herdr-native-waiting-choice-label', text });
+	if (recommended) line.createSpan({ cls: 'herdr-native-waiting-tag', text: 'Recommended' });
+	if (option.description) {
+		parent.createSpan({ cls: 'herdr-native-waiting-choice-description', text: option.description });
+	}
+}
+
+/** What the card disables while an answer is on its way: its buttons and its text fields. */
+type Control = HTMLButtonElement | HTMLInputElement;
 
 /** Draws one action button of a request card; the answer is null for "not yet". */
 type ButtonMaker = (
@@ -157,8 +185,10 @@ export class WaitingCardView {
 		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
 		for (const option of card.options) {
-			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
+			drawOption(el.createDiv({ cls: 'herdr-native-waiting-option' }), option);
 		}
+		// Shown, not answered: say where it is answered, typed answers included.
+		if (card.kind === 'question') el.createDiv({ cls: 'herdr-native-waiting-hint', text: QUESTION_IN_TERMINAL });
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
 		// The startup kind is the trust prompt the runtime reported, or, where
 		// the runtime says nothing of kinds, "no transcript at all", which is
@@ -235,9 +265,13 @@ export class WaitingCardView {
 	 *   "Allow for this session" and "Always allow in this project", each with
 	 *   what it grants on the line under it, the project one naming the
 	 *   settings file it writes.
-	 * - **Question:** the options as buttons; one single-choice question is
-	 *   answered by its button, several (or a multiple choice) by "Send
-	 *   answers" once each has one. "Dismiss" declines.
+	 * - **Question:** the options as buttons, each with its description under
+	 *   it, and a field for an answer of the user's own (the dialog's "Other",
+	 *   delivered as the answer's text: measured on Claude Code 2.1.318, the
+	 *   `tool_result` quotes it verbatim). One single-choice question is
+	 *   answered by its button, or by the typed answer and Send or Enter;
+	 *   several, or a multiple choice, by "Send answers" once each has an
+	 *   option or a typed answer. "Dismiss" declines.
 	 * - **Plan:** the plan as Markdown, "Approve plan", and "Reject" with the
 	 *   feedback typed above it.
 	 */
@@ -247,19 +281,22 @@ export class WaitingCardView {
 		request: PendingRequest,
 		component: Component,
 	): void {
-		const buttons: HTMLButtonElement[] = [];
+		const controls: Control[] = [];
 		// A stopping agent has denied the request already: shown, not answerable.
 		const stopping = request.stopping === true;
 		if (stopping) {
 			el.createDiv({ cls: 'herdr-native-waiting-stopping', text: 'The agent is stopping, so this request is being denied.' });
 		}
+		// Which controls are usable given what is typed and chosen; the question
+		// card sets it, and it runs again whenever a failed answer frees them.
+		let refresh = (): void => {};
 		const send = (answer: WaitingAnswer): void => {
-			void this.answer(request, answer, buttons);
+			void this.answer(request, answer, controls, () => refresh());
 		};
 		const button: ButtonMaker = (parent, text, cls, answer) => {
 			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
 			buttonEl.disabled = stopping;
-			buttons.push(buttonEl);
+			controls.push(buttonEl);
 			component.registerDomEvent(buttonEl, 'click', () => {
 				const chosen = answer();
 				if (chosen) send(chosen);
@@ -282,7 +319,7 @@ export class WaitingCardView {
 			return;
 		}
 		if (request.kind === 'question') {
-			this.renderQuestions(el, request.questions, button);
+			refresh = this.renderQuestions(el, request.questions, { button, send, stopping, controls, component });
 			return;
 		}
 		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
@@ -307,67 +344,138 @@ export class WaitingCardView {
 		}
 	}
 
-	/** The questions of an `AskUserQuestion`, and how they are answered. */
+	/**
+	 * The questions of an `AskUserQuestion`, and how they are answered. Returns
+	 * what sets the Send buttons from what is chosen and typed, which the card
+	 * runs again when a failed answer gives the controls back.
+	 */
 	private renderQuestions(
 		el: HTMLElement,
 		questions: readonly PendingQuestion[],
-		button: ButtonMaker,
-	): void {
+		parts: {
+			button: ButtonMaker;
+			send: (answer: WaitingAnswer) => void;
+			stopping: boolean;
+			controls: Control[];
+			component: Component;
+		},
+	): () => void {
+		const { button, send, stopping, controls, component } = parts;
 		const single = questions.length === 1 && questions[0]?.multiSelect !== true;
-		const chosen = new Map<string, Set<string>>();
+		const picked = new Map<PendingQuestion, Set<string>>();
+		const typed = new Map<PendingQuestion, HTMLInputElement>();
+		const answerTo = (question: PendingQuestion): string =>
+			questionAnswer(question.options, picked.get(question) ?? new Set(), typed.get(question)?.value ?? '');
+		const all = (): WaitingAnswer | null => {
+			if (!questions.every((question) => answerTo(question) !== '')) return null;
+			const answers: Record<string, string> = {};
+			for (const question of questions) answers[question.question] = answerTo(question);
+			return { type: 'answer', answers };
+		};
+		const own = (question: PendingQuestion): WaitingAnswer | null => {
+			const text = typed.get(question)?.value.trim() ?? '';
+			return text ? { type: 'answer', answers: { [question.question]: text } } : null;
+		};
 		let submit: HTMLButtonElement | null = null;
-		const complete = (): boolean => questions.every((question) => (chosen.get(question.question)?.size ?? 0) > 0);
+		const sendOwn = new Map<PendingQuestion, HTMLButtonElement>();
+		const refresh = (): void => {
+			if (stopping) return;
+			if (submit) submit.disabled = all() === null;
+			for (const [question, sendEl] of sendOwn) sendEl.disabled = own(question) === null;
+		};
 		for (const question of questions) {
 			const block = el.createDiv({ cls: 'herdr-native-waiting-question' });
 			if (question.header) block.createDiv({ cls: 'herdr-native-waiting-header', text: question.header });
 			block.createDiv({ cls: 'herdr-native-waiting-body', text: question.question });
-			const options = block.createDiv({ cls: 'herdr-native-waiting-actions' });
+			const choices = block.createDiv({ cls: 'herdr-native-waiting-choices' });
+			const optionEls = new Map<string, HTMLButtonElement>();
+			const mark = (): void => {
+				const chosen = picked.get(question);
+				for (const [label, optionEl] of optionEls) optionEl.toggleClass('is-selected', chosen?.has(label) === true);
+			};
 			for (const option of question.options) {
-				const optionEl = button(options, option.label, ['herdr-native-waiting-choice'], () => {
+				const optionEl = button(choices, '', ['herdr-native-waiting-choice'], () => {
 					if (single) return { type: 'answer', answers: { [question.question]: option.label } };
-					const picked = chosen.get(question.question) ?? new Set<string>();
-					if (!question.multiSelect) picked.clear();
-					if (picked.has(option.label)) picked.delete(option.label);
-					else picked.add(option.label);
-					chosen.set(question.question, picked);
-					for (const sibling of Array.from(options.children)) {
-						sibling.toggleClass('is-selected', picked.has(sibling.textContent ?? ''));
+					const chosen = picked.get(question) ?? new Set<string>();
+					if (question.multiSelect) {
+						if (chosen.has(option.label)) chosen.delete(option.label);
+						else chosen.add(option.label);
+					} else {
+						// One choice: an option replaces the typed answer, and the other way round.
+						const had = chosen.has(option.label);
+						chosen.clear();
+						if (!had) chosen.add(option.label);
+						const field = typed.get(question);
+						if (field) field.value = '';
 					}
-					if (submit) submit.disabled = !complete();
+					picked.set(question, chosen);
+					mark();
+					refresh();
 					return null;
 				});
-				if (option.description) optionEl.setAttr('title', option.description);
+				drawOption(optionEl, option);
+				optionEls.set(option.label, optionEl);
+			}
+			// The dialog's "Other": the user's own words, sent as the answer's text.
+			const other = block.createDiv({ cls: 'herdr-native-waiting-other' });
+			const field = other.createEl('input', {
+				cls: 'herdr-native-waiting-other-input',
+				type: 'text',
+				attr: {
+					placeholder: question.options.length > 0 ? 'Or type your own answer' : 'Type your answer',
+					'aria-label': `Your own answer: ${question.question}`,
+				},
+			});
+			field.disabled = stopping;
+			controls.push(field);
+			typed.set(question, field);
+			component.registerDomEvent(field, 'input', () => {
+				if (!question.multiSelect && field.value.trim()) {
+					picked.get(question)?.clear();
+					mark();
+				}
+				refresh();
+			});
+			component.registerDomEvent(field, 'keydown', (event: KeyboardEvent) => {
+				if (!isTypedAnswerKey(event)) return;
+				event.preventDefault();
+				const answer = single ? own(question) : all();
+				if (answer) send(answer);
+			});
+			if (single) {
+				sendOwn.set(question, button(other, 'Send', ['herdr-native-waiting-other-send'], () => own(question)));
 			}
 		}
 		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
 		if (!single) {
-			submit = button(actions, 'Send answers', ['mod-cta', 'herdr-native-waiting-allow'], () => {
-				if (!complete()) return null;
-				const answers: Record<string, string> = {};
-				for (const question of questions) {
-					answers[question.question] = [...(chosen.get(question.question) ?? [])].join(', ');
-				}
-				return { type: 'answer', answers };
-			});
-			submit.disabled = submit.disabled || !complete();
+			submit = button(actions, 'Send answers', ['mod-cta', 'herdr-native-waiting-allow'], all);
 		}
 		button(actions, 'Dismiss', ['herdr-native-waiting-deny'], () => ({ type: 'dismiss' }));
+		refresh();
+		return refresh;
 	}
 
 	/**
-	 * Sends one answer to the request on the card, once: the buttons go
-	 * disabled until the runtime has it, and come back only if it failed.
+	 * Sends one answer to the request on the card, once: the controls go
+	 * disabled until the runtime has it, and come back only if it failed, with
+	 * what was chosen and typed still on them.
 	 */
-	private async answer(request: PendingRequest, answer: WaitingAnswer, buttons: HTMLButtonElement[]): Promise<void> {
+	private async answer(
+		request: PendingRequest,
+		answer: WaitingAnswer,
+		controls: Control[],
+		refresh: () => void,
+	): Promise<void> {
 		const responder = this.options.responder;
 		if (!responder || request.stopping || this.answeredRequest === request.id) return;
 		this.answeredRequest = request.id;
-		for (const buttonEl of buttons) buttonEl.disabled = true;
+		for (const control of controls) control.disabled = true;
 		try {
 			await responder.respond(this.options.paneId(), request.id, answer);
 		} catch (error) {
 			this.answeredRequest = '';
-			for (const buttonEl of buttons) buttonEl.disabled = false;
+			for (const control of controls) control.disabled = false;
+			refresh();
 			const reason = error instanceof Error ? error.message : String(error);
 			this.options.notify(`Herdr: could not answer Claude (${reason})`);
 		}

@@ -19,7 +19,7 @@ import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
 import type { BlockKind, SessionChange, SessionHandleOf, SessionModels, SessionModelView } from '../src/native/sessionModel';
 import { NativePaneSurface } from '../src/native/surface';
 import { effectivePaneView, paneViewAvailability } from '../src/native/paneSurface';
-import { requestCard, waitingCard } from '../src/native/waitingCard';
+import { isTypedAnswerKey, optionName, questionAnswer, requestCard, waitingCard } from '../src/native/waitingCard';
 import { buildRows, toRow } from '../src/views/rowModel';
 
 const VAULT = '/home/lasse/hvelv';
@@ -141,7 +141,11 @@ const PLAN: PendingRequest = { ...WRITE, id: 'req-3', kind: 'plan', toolName: 'E
 describe('requestCard', () => {
 	it('is never the startup card, so nothing is answered unasked', () => {
 		expect(requestCard(WRITE, VAULT)).toMatchObject({ kind: 'permission', title: 'Claude wants to use Write', body: 'notes/hello.txt', reported: true });
-		expect(requestCard(QUESTION, VAULT)).toMatchObject({ kind: 'question', body: 'Which colour do you prefer?', options: ['Red', 'Blue'] });
+		expect(requestCard(QUESTION, VAULT)).toMatchObject({ kind: 'question', body: 'Which colour do you prefer?', options: [
+				{ label: 'Red', description: '' },
+				{ label: 'Blue', description: '' },
+			],
+		});
 		expect(requestCard(PLAN, VAULT)).toMatchObject({ kind: 'plan', body: '1. Do it.' });
 		// The request wins over a guess from the transcript.
 		expect(waitingCard({ request: WRITE, hasTranscript: false, turns: [], vaultPath: VAULT }).kind).toBe('permission');
@@ -215,8 +219,13 @@ function buttons(el: FakeElement): FakeElement[] {
 	return el.find('herdr-native-waiting').findAll('herdr-native-waiting-action');
 }
 
+/** A button's name: an option's label without its tag and description, else its text. */
+function nameOf(button: FakeElement): string {
+	return button.findAll('herdr-native-waiting-choice-label')[0]?.textContent ?? button.textContent;
+}
+
 function press(el: FakeElement, label: string): void {
-	const button = buttons(el).find((entry) => entry.textContent === label);
+	const button = buttons(el).find((entry) => nameOf(entry) === label);
 	if (!button) throw new Error(`no button ${label}: ${buttons(el).map((entry) => entry.textContent).join(', ')}`);
 	button.dispatch('click');
 }
@@ -284,7 +293,7 @@ describe('the waiting card answers the runtime’s request', () => {
 		const model = new FakeModel();
 		const { el, answers } = await surfaceOn(model);
 		model.block(QUESTION);
-		expect(buttons(el).map((entry) => entry.textContent)).toEqual(['Red', 'Blue', 'Dismiss']);
+		expect(buttons(el).map(nameOf)).toEqual(['Red', 'Blue', 'Send', 'Dismiss']);
 		press(el, 'Blue');
 		model.block(null);
 		model.block(PLAN);
@@ -317,6 +326,163 @@ describe('the waiting card answers the runtime’s request', () => {
 		expect(answers.map((entry) => entry.answer)).toEqual([
 			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Red, Blue', 'Size?': 'L' } },
 		]);
+	});
+});
+
+/** A question card with descriptions and Claude's own recommendation (#141). */
+const DESCRIBED: PendingRequest = {
+	...QUESTION,
+	id: 'req-4',
+	questions: [
+		{
+			question: 'Which store?',
+			header: 'Store',
+			options: [
+				{ label: 'Redis (Recommended)', description: 'In memory, fast.' },
+				{ label: 'Postgres', description: '' },
+			],
+			multiSelect: false,
+		},
+	],
+};
+
+function typedField(el: FakeElement, index = 0): FakeElement {
+	const field = el.findAll('herdr-native-waiting-other-input')[index];
+	if (!field) throw new Error('no typed answer field');
+	return field;
+}
+
+function type(field: FakeElement, text: string): void {
+	field.value = text;
+	field.dispatch('input');
+}
+
+describe('a question answered in the user’s own words (#141)', () => {
+	beforeEach(() => MarkdownRenderer.reset());
+
+	it('shows each description under its option and the recommendation as a tag, and sends the label as written', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const [redis, postgres] = el.findAll('herdr-native-waiting-choice');
+		expect(redis?.find('herdr-native-waiting-choice-label').textContent).toBe('Redis');
+		expect(redis?.find('herdr-native-waiting-tag').textContent).toBe('Recommended');
+		expect(redis?.find('herdr-native-waiting-choice-description').textContent).toBe('In memory, fast.');
+		expect(redis?.attrs.title).toBeUndefined();
+		expect(postgres?.findAll('herdr-native-waiting-tag')).toEqual([]);
+		expect(postgres?.findAll('herdr-native-waiting-choice-description')).toEqual([]);
+		press(el, 'Redis');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'Redis (Recommended)' } },
+		]);
+	});
+
+	it('sends a typed answer to one question by Send, which waits for text', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const send = buttons(el).find((entry) => entry.textContent === 'Send');
+		expect(send?.disabled).toBe(true);
+		type(typedField(el), '  SQLite, on disk  ');
+		expect(send?.disabled).toBe(false);
+		press(el, 'Send');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'SQLite, on disk' } },
+		]);
+	});
+
+	it('sends a typed answer by Enter, but not an Enter an input method is composing with', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const field = typedField(el);
+		field.dispatch('keydown', { key: 'Enter' });
+		type(field, '日本');
+		field.dispatch('keydown', { key: 'Enter', isComposing: true });
+		field.dispatch('keydown', { key: 'Enter', keyCode: 229 });
+		await settle();
+		expect(answers).toEqual([]);
+		const enter = field.dispatch('keydown', { key: 'Enter' });
+		await settle();
+		expect(enter.defaultPrevented).toBe(true);
+		expect(answers.map((entry) => entry.answer)).toEqual([{ type: 'answer', answers: { 'Which store?': '日本' } }]);
+	});
+
+	it('adds a typed answer to a multiple choice, and lets it replace a single one in a form', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block({
+			...QUESTION,
+			questions: [
+				{ ...QUESTION.questions[0]!, multiSelect: true },
+				{ question: 'Size?', header: '', options: [{ label: 'S', description: '' }, { label: 'L', description: '' }], multiSelect: false },
+			],
+		});
+		const submit = (): FakeElement | undefined => buttons(el).find((entry) => entry.textContent === 'Send answers');
+		press(el, 'Blue');
+		type(typedField(el, 0), 'Green');
+		expect(submit()?.disabled).toBe(true);
+		press(el, 'S');
+		expect(submit()?.disabled).toBe(false);
+		// A typed answer to a single choice takes the option's place …
+		type(typedField(el, 1), 'Medium');
+		expect(el.findAll('herdr-native-waiting-choice').filter((entry) => entry.hasClass('is-selected')).map(nameOf)).toEqual(['Blue']);
+		// … and Enter in a form sends the whole form once it is complete.
+		typedField(el, 1).dispatch('keydown', { key: 'Enter' });
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Blue, Green', 'Size?': 'Medium' } },
+		]);
+	});
+
+	it('clears a single choice’s typed answer when an option is picked instead', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block({
+			...QUESTION,
+			questions: [
+				QUESTION.questions[0]!,
+				{ question: 'Size?', header: '', options: [{ label: 'S', description: '' }], multiSelect: false },
+			],
+		});
+		type(typedField(el, 0), 'Green');
+		press(el, 'Red');
+		expect(typedField(el, 0).value).toBe('');
+		press(el, 'S');
+		press(el, 'Send answers');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Red', 'Size?': 'S' } },
+		]);
+	});
+});
+
+describe('the question card’s pure parts (#141)', () => {
+	it('reads Claude’s recommendation off the label, and never draws one blank', () => {
+		expect(optionName('Redis (Recommended)')).toEqual({ text: 'Redis', recommended: true });
+		expect(optionName('Redis (recommended) ')).toEqual({ text: 'Redis', recommended: true });
+		expect(optionName('Redis')).toEqual({ text: 'Redis', recommended: false });
+		expect(optionName('(Recommended)')).toEqual({ text: '(Recommended)', recommended: false });
+		expect(optionName('Recommended')).toEqual({ text: 'Recommended', recommended: false });
+	});
+
+	it('joins the picks in Claude’s order, then the typed answer', () => {
+		const offered = [
+			{ label: 'Red', description: '' },
+			{ label: 'Blue', description: '' },
+		];
+		expect(questionAnswer(offered, new Set(['Blue', 'Red']), ' Green ')).toBe('Red, Blue, Green');
+		expect(questionAnswer(offered, new Set(), '   ')).toBe('');
+		expect(questionAnswer(offered, new Set(['Gone']), '')).toBe('');
+	});
+
+	it('takes Enter as a send unless an input method holds it', () => {
+		expect(isTypedAnswerKey({ key: 'Enter' })).toBe(true);
+		expect(isTypedAnswerKey({ key: 'Enter', isComposing: true })).toBe(false);
+		expect(isTypedAnswerKey({ key: 'Enter', keyCode: 229 })).toBe(false);
+		expect(isTypedAnswerKey({ key: 'a' })).toBe(false);
 	});
 });
 
