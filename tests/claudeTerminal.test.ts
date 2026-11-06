@@ -771,6 +771,24 @@ describe('a TUI that never reports its status', () => {
 		expect(agent(h, AGENT)?.mode).toBe('tui');
 	});
 
+	it('does not keep the prompt when a tab takes the agent back while the user is asked', async () => {
+		let answer: (yes: boolean) => void = () => undefined;
+		const h = harness({
+			row: 'started',
+			silentTui: true,
+			host: { confirm: () => new Promise<boolean>((done) => (answer = done)) },
+		});
+		await typedTui(h);
+		const sending = h.kind.promptSender(() => h.client).send(AGENT, 'late');
+		await pause(20);
+		openTab(h, AGENT);
+		answer(true);
+		await expect(sending).rejects.toThrow(PROMPT_NOT_SENT_KEPT);
+		await pause(50);
+		expect(h.pty.last.exited).toBe(false);
+		expect(streamStarts(h)).toEqual([]);
+	});
+
 	it('refuses a native prompt where nobody can be asked', async () => {
 		const { h } = asking(null);
 		await typedTui(h);

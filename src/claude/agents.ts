@@ -1169,13 +1169,14 @@ export class ClaudeAgents {
 					void this.switchProcess(runtimeId, record, 'stream');
 					return;
 				}
-				if (!yes) {
-					this.dropQueued(record, PROMPT_NOT_SENT_KEPT);
-					if (record.tui === tui) record.want = 'tui';
-				} else if (record.tui === tui && busy) {
-					// It reported a turn meanwhile: as for any busy TUI.
-					this.dropQueued(record, TUI_BUSY);
+				if (record.tui === tui) {
+					// It stays in its terminal view (told so, a tab took it back, or
+					// it reported a turn meanwhile): what waited for the switch is
+					// not sent, now or later.
+					this.dropQueued(record, yes && busy ? TUI_BUSY : PROMPT_NOT_SENT_KEPT);
+					if (!yes) record.want = 'tui';
 				}
+				// Gone meanwhile: the settle below starts the headless process for what waits.
 				this.update(runtimeId, record);
 			});
 	}
