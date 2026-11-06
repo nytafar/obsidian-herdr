@@ -579,3 +579,103 @@ describe('background notifications (#135)', () => {
 		expect(markLost(state).changedTurnIds).toEqual([]);
 	});
 });
+
+describe('queued prompts (#157)', () => {
+	// Recorded with Claude Code 2.1.318 in a herdr tab (`queued-own-turn`,
+	// `queue-pull-back`) and with `claude -p` in stream-json (`queue-cancel`),
+	// spike #150; facts in docs/architecture.md, "Queued prompts".
+	const prompts = (state: TranscriptState): string[] => state.turns.map((turn) => turn.prompt);
+	const steers = (state: TranscriptState): string[] =>
+		state.turns.flatMap((turn) => turn.entries.flatMap((entry) => (entry.kind === 'steer' ? [entry.text] : [])));
+	const replies = (state: TranscriptState): string[] =>
+		state.turns.map((turn) => turn.entries.flatMap((entry) => (entry.kind === 'text' ? [entry.text] : [])).join(' '));
+	const queue = (operation: string, content?: string): string =>
+		JSON.stringify({ type: 'queue-operation', operation, ...(content ? { content } : {}) });
+	const user = (uuid: string, content: string, extra: Record<string, unknown> = {}): string =>
+		JSON.stringify({ type: 'user', uuid, message: { role: 'user', content }, ...extra });
+
+	it('shows a queued prompt that runs as a turn of its own, after an interrupt and after a tool-less answer', () => {
+		// JULIET was queued behind a long command and Esc interrupted it; MIKE
+		// was queued behind an answer with no tool call. Each is `enqueue`,
+		// `dequeue`, then a string `user` line with `promptSource: "queued"`.
+		// KILO and LIMA were pulled back with Up (`popAll`) and never sent.
+		const lines = fixtureLines('queued-own-turn');
+		for (const state of [cold(lines), live(lines)]) {
+			expect(prompts(state)).toEqual([
+				'Run the long command in the foreground.',
+				'Reply with just the word JULIET.',
+				'Run the long command in the foreground.',
+				'scrubbed',
+				'Reply with just the word MIKE.',
+			]);
+			expect(replies(state)[1]).toBe('JULIET');
+			expect(replies(state)[4]).toBe('MIKE');
+			expect(steers(state)).toEqual([]);
+			expect(state.pendingQueue).toEqual([]);
+		}
+	});
+
+	it('spends what Up pulled back, so the same words typed later are a prompt', () => {
+		// QUEBEC queued, pulled back with Up, edited, queued again and taken in
+		// as a steer; then "Reply with just the word QUEBEC." typed at idle.
+		const lines = fixtureLines('queue-pull-back');
+		for (const state of [cold(lines), live(lines)]) {
+			expect(prompts(state)).toEqual(['Run the long command in the foreground.', 'Reply with just the word QUEBEC.']);
+			expect(steers(state)).toEqual(['Reply with just the word QUEBEC. Then also ROMEO.']);
+			expect(replies(state)[1]).toBe('QUEBEC');
+			expect(state.pendingQueue).toEqual([]);
+		}
+	});
+
+	it('spends a cancelled message, which never shows, so the same words sent later are a prompt', () => {
+		// BRAVO and CHARLIE written while a command ran; CHARLIE cancelled
+		// (`cancel_async_message`, a bare `dequeue`), BRAVO taken in mid-turn.
+		const lines = fixtureLines('queue-cancel');
+		for (const state of [cold(lines), live(lines)]) {
+			expect(prompts(state)).toEqual(['Run the long command in the foreground.']);
+			expect(steers(state)).toEqual(['Reply with just the word BRAVO.']);
+			expect(JSON.stringify(state.turns)).not.toContain('CHARLIE');
+			expect(state.pendingQueue).toEqual([]);
+		}
+		// The same words typed later, in the shape of a TUI prompt at idle.
+		const typed = user('typed-charlie', 'Reply with just the word CHARLIE.', {
+			origin: { kind: 'human' },
+			promptSource: 'typed',
+		});
+		expect(prompts(cold([...lines, typed]))).toEqual([
+			'Run the long command in the foreground.',
+			'Reply with just the word CHARLIE.',
+		]);
+	});
+
+	it('opens a turn for a human line even while an enqueue of its words is pending', () => {
+		// Two queued at once, so no single dequeue says which one ran: the
+		// line's own word that a human sent it decides.
+		const human = (source: string) => ({ origin: { kind: 'human' }, promptSource: source });
+		const state = cold([
+			user('u1', 'Go', human('typed')),
+			queue('enqueue', 'first'),
+			queue('enqueue', 'second'),
+			queue('dequeue'),
+			user('u2', 'first', human('queued')),
+			queue('dequeue'),
+			user('u3', 'second', human('queued')),
+		]);
+		expect(prompts(state)).toEqual(['Go', 'first', 'second']);
+		expect(state.pendingQueue).toEqual([]);
+	});
+
+	it('still drops what the runtime injects through the queue', () => {
+		const state = cold([
+			user('u1', 'Go', { origin: { kind: 'human' } }),
+			// A system prompt: 2.1.318 writes these `isMeta`, `promptSource: "system"`.
+			queue('enqueue', 'Your usage limit has reset. Continue.'),
+			queue('dequeue'),
+			user('u2', 'Your usage limit has reset. Continue.', { isMeta: true, promptSource: 'system' }),
+			// A line that names no source, after its enqueue: injected, as before.
+			queue('enqueue', 'injected'),
+			user('u3', 'injected'),
+		]);
+		expect(prompts(state)).toEqual(['Go']);
+	});
+});

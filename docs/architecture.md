@@ -1028,10 +1028,13 @@ tabs.
 machine's files, path derived from cwd and session. Measured 2026-11-06: a
 prompt sent over stream-json is written as a `queue-operation` enqueue, a
 dequeue, then its `user` line with `promptSource: "sdk"` and `entrypoint:
-"sdk-cli"`, where a prompt typed in a terminal has no enqueue. The reducer
-takes such a line for a prompt (`isStreamPrompt`); an enqueued line without
-that source, or any task notification, is still injected content, so herdr's
-transcripts read as before. The watcher
+"sdk-cli"`, where a prompt typed in a terminal has no enqueue. The parser
+takes such a line for a prompt (`sentByHuman`, with the TUI's `typed` and
+`queued` lines, #157); an enqueued line that names no human source, or any
+task notification, is still injected content. A prompt written while a turn
+runs and taken in mid-turn is a `queued_command` attachment with no
+`origin`, `commandMode: "prompt"` and `entrypoint: "sdk-cli"` (measured
+2026-11-06, 2.1.318), which the parser shows as a steer. The watcher
 (`src/claude/sessionWatcher.ts`) reports session, status, block kind and,
 new in the contract, `PaneSnapshot.request`: the pending request as a
 kind-neutral `PendingRequest` (`src/native/pendingRequest.ts`). The session
@@ -1299,7 +1302,9 @@ scratch pane created with `tab create` and `agent start`.
   line at all. A human prompt is therefore recognised by the
   `queued_command` attachment with `origin.kind: "human"`, or by being a
   string `user` line that is not preceded by a queue enqueue of the same
-  content, not by `isMeta` alone. The launch `tool_result` of an async
+  content, not by `isMeta` alone. (Since 2.1.263 a human's line says so
+  itself, `origin.kind: "human"` and a `promptSource`, and that wins over a
+  pending enqueue: see "Queued prompts", #157.) The launch `tool_result` of an async
   `Agent` call holds only a "launched" notice; the report lives in the
   notification's `<output-file>` under `/tmp/claude-<uid>/…/tasks/` and in
   `<session>/subagents/agent-<id>.jsonl`. A synchronous `Agent` call puts the
@@ -1535,9 +1540,19 @@ probes are in the docs root, `findings/queued-prompts.md`.
   transcripts on this machine (2.1.263–2.1.318): 331 such lines; `remove`
   reasons `absorbed_mid_turn` (996), `delivered_to_agent` (26),
   `agent_stopped` (1); `popAll` 9. A prompt typed at an idle TUI has
-  `promptSource: "typed"`, a stream-json one `"sdk"`. The reducer today
-  drops the `"queued"` line, because its enqueue is pending, and keeps the
-  enqueues of a `popAll` (both found by this spike, not yet fixed).
+  `promptSource: "typed"`, a stream-json one `"sdk"`. Until #157 the
+  parser dropped the `"queued"` line, because its enqueue was pending, and
+  kept the enqueues of a `popAll`, so the same words typed later were
+  dropped too. Now a line that says a human sent it (`origin.kind: "human"`,
+  or `promptSource` `typed`, `queued`, `sdk`) is a prompt and spends its
+  enqueue whatever is pending; `remove` and `popAll` spend the entry they
+  name; and dequeues, which name none, spend the pending entries once they
+  are as many as the entries (a `dequeue` is not always the oldest entry: 47
+  of 1,434 on this machine took another). Over every transcript here this
+  shows 329 more prompts and loses none (three turns that had
+  no prompt now show theirs), and a line-by-line read agrees with
+  a whole-file one. Fixtures: `queued-own-turn`, `queue-pull-back`,
+  `queue-cancel` under `tests/fixtures/transcripts/`.
 - **Stream-json addresses queued messages by uuid.** `system:init` lists
   `interrupt_receipt_v1`, `interrupt_cancel_queued_v1`,
   `interrupt_send_now_v1`, `interrupt_requeue_taken_v1` and

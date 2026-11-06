@@ -13,13 +13,22 @@
  * in the vault docs root):
  *
  * - A **turn** starts at a human prompt: a `user` line whose content is a
- *   string, that is not `isMeta`, and that no queue enqueue of the same content
- *   preceded. That last clause is the whole of the difference between a prompt
- *   and a background subagent's `<task-notification>`, which also arrives as a
- *   string `user` line. One exception: a prompt sent over stream-json (the
- *   `claude` kind, ADR-0007) is enqueued and dequeued before its `user` line
- *   as a matter of course, and that line says where it came from
- *   (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`), so it is a prompt.
+ *   string, that is not `isMeta`, and that either says a human sent it or no
+ *   pending queue enqueue of the same content preceded. A line says so by
+ *   `origin.kind: "human"` or its `promptSource` (`typed`, `queued`, `sdk`):
+ *   a prompt queued while Claude worked and run as a turn of its own after
+ *   the turn ended is `enqueue`, `dequeue`, then such a line with
+ *   `promptSource: "queued"` (#157), and a prompt sent over stream-json (the
+ *   `claude` kind, ADR-0007) is enqueued and dequeued before its line as a
+ *   matter of course (`promptSource: "sdk"`, `entrypoint: "sdk-cli"`). A line
+ *   that says nothing of where it came from, after an enqueue of its words,
+ *   is injected content and opens nothing.
+ * - The **queue** is mirrored only as far as the transcript says: `remove`
+ *   and `popAll` name the entry they spend; `dequeue` names none, and is not
+ *   always the oldest (measured: 47 of 1,434 on this machine took another),
+ *   so a dequeue spends entries only once the dequeues not yet paired with a
+ *   line cover every entry pending. A cancelled stream-json message is such a
+ *   bare dequeue. Nothing a human sends is dropped against a stale entry.
  *   A prompt written as content blocks — a pasted image — is a prompt too
  *   (#129): its text blocks are the prompt and each image an entry that
  *   says where its bytes are (#144), never the bytes.
@@ -64,17 +73,23 @@ import {
 /** What one batch did to a Claude session's state. */
 export type ReduceResult = ConversationReduceResult<TranscriptState>;
 
+/** The `promptSource` values of a prompt a human sent (2.1.263–2.1.318). */
+const HUMAN_SOURCES: ReadonlySet<unknown> = new Set(['typed', 'queued', 'sdk', 'suggestion_accepted']);
+
 /**
- * A human prompt written by a stream-json host rather than typed in a
- * terminal: Claude Code 2.1.318 enqueues and dequeues every such prompt
- * before its `user` line (measured 2026-11-06, ADR-0007), so the enqueue that
- * marks injected content elsewhere says nothing here. The line names its
- * source; a task notification is still one, whatever carried it.
+ * Whether a string `user` line says a human sent it, so an enqueue of the
+ * same words does not make it injected content (#157). Claude Code writes
+ * `origin.kind: "human"` and a `promptSource` on such a line: `typed` at an
+ * idle TUI, `queued` for a prompt that waited in the queue and ran as a turn
+ * of its own, `sdk` over stream-json (which Claude enqueues and dequeues
+ * before every prompt, ADR-0007, as does `entrypoint: "sdk-cli"`). A task
+ * notification is never one, whatever carried it.
  */
-function isStreamPrompt(line: Record<string, unknown>, content: string): boolean {
+function sentByHuman(line: Record<string, unknown>, content: string): boolean {
 	const origin = isRecord(line.origin) ? line.origin : null;
 	if (origin?.kind === 'task-notification' || taskNotification(content)) return false;
-	return line.promptSource === 'sdk' || line.entrypoint === 'sdk-cli';
+	if (origin?.kind === 'human') return true;
+	return HUMAN_SOURCES.has(line.promptSource) || line.entrypoint === 'sdk-cli';
 }
 
 /** A Claude session's state: the conversation, and what the parser keeps across batches. */
@@ -88,10 +103,18 @@ export interface TranscriptState {
 	 */
 	raw: Record<string, number>;
 	/**
-	 * Contents of queue enqueues not yet matched to a `user` line, oldest first.
-	 * This is what tells a subagent notification from a human prompt.
+	 * Contents of queue enqueues not yet spent, oldest first: by a `user`
+	 * line or a steer of the same words, by a `remove` or `popAll` naming
+	 * them, or by dequeues once they cover them all ({@link dequeued}). What
+	 * a line that does not say a human sent it is matched against.
 	 */
 	pendingQueue: string[];
+	/**
+	 * Dequeues not yet paired with a line that spent an entry. A dequeue
+	 * names no entry, so these spend {@link pendingQueue} only once they
+	 * cover all of it (#157).
+	 */
+	dequeued: number;
 	/** Which records the conversation stands on, for a rewind (#131). */
 	branch: BranchState;
 	/**
@@ -147,6 +170,7 @@ export function emptyTranscript(): TranscriptState {
 		turns: [],
 		raw: {},
 		pendingQueue: [],
+		dequeued: 0,
 		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
 		info: {},
 	};
@@ -620,11 +644,35 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const draft = new Draft(state.turns);
 	const raw = { ...state.raw };
 	const pendingQueue = [...state.pendingQueue];
+	let dequeued = state.dequeued;
 	const branch = new Branch(state.branch);
 	let info = state.info;
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
+	};
+	/**
+	 * Every entry pending has left Claude's queue once the dequeues not yet
+	 * paired with a line are as many: a cancel (a bare dequeue) leaves no
+	 * stale entry behind, and nothing is guessed while two or more wait.
+	 */
+	const settleQueue = (): void => {
+		if (dequeued === 0 || dequeued < pendingQueue.length) return;
+		pendingQueue.length = 0;
+		dequeued = 0;
+	};
+	/**
+	 * Spends the pending entry of these words, if any. `run` is a line that
+	 * ran the entry, which pairs it with a dequeue; a steer is taken in by a
+	 * `remove` instead, and a `popAll` gives it back.
+	 */
+	const spend = (content: string, run: boolean): boolean => {
+		const index = pendingQueue.indexOf(content);
+		if (index === -1) return false;
+		pendingQueue.splice(index, 1);
+		if (run && dequeued > 0) dequeued--;
+		settleQueue();
+		return true;
 	};
 	/**
 	 * Opens the turn a human prompt starts, after dropping what a rewind or a
@@ -684,16 +732,23 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 
 		switch (type) {
 			case 'queue-operation': {
-				// Only the enqueue matters: it is what a later `user` line of the
-				// same content is matched against. `dequeue` and `remove` say the
-				// queue moved on, and the pairing has already been made by then.
-				if (stringField(parsed, 'operation') === 'enqueue') {
-					const content = stringField(parsed, 'content');
+				// The enqueue is what a later line of the same words is matched
+				// against; the rest spend it (#157). `remove` (taken in mid-turn)
+				// and `popAll` (pulled back with Up, re-sent as new words) name the
+				// entry; `dequeue` names none, and is settled by count.
+				const operation = stringField(parsed, 'operation');
+				const content = stringField(parsed, 'content');
+				if (operation === 'enqueue') {
 					// A notification is read from whichever record carries it, and
 					// some reach the transcript as their enqueue alone (#135).
 					const task = taskNotification(content);
 					if (task) notify(task);
 					else if (content) pendingQueue.push(content);
+				} else if (operation === 'remove' || operation === 'popAll') {
+					spend(content, false);
+				} else if (operation === 'dequeue') {
+					dequeued++;
+					settleQueue();
 				}
 				countRaw(type);
 				continue;
@@ -701,7 +756,12 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'attachment': {
 				const attachment = isRecord(parsed.attachment) ? parsed.attachment : null;
 				const origin = attachment && isRecord(attachment.origin) ? attachment.origin : null;
-				const human = attachment?.type === 'queued_command' && origin?.kind === 'human';
+				// A steer says a human sent it; over stream-json (the `claude` kind)
+				// Claude writes it with no origin, as a prompt from the SDK host
+				// (measured 2026-11-06, 2.1.318, #157).
+				const fromHost =
+					origin === null && parsed.entrypoint === 'sdk-cli' && attachment?.commandMode === 'prompt';
+				const human = attachment?.type === 'queued_command' && (origin?.kind === 'human' || fromHost);
 				// The model's id and display name, before the first reply after a
 				// switch and at the first prompt (#110).
 				const identity = attachment?.type === 'model' && isRecord(attachment.identity) ? attachment.identity : null;
@@ -732,8 +792,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// prompt was accepted and no `user` line will ever pair with it.
 				// Left behind, it would swallow the next ordinary prompt of the
 				// same words as injected content (#93, #96).
-				const enqueued = pendingQueue.indexOf(enqueuedText);
-				if (enqueued !== -1) pendingQueue.splice(enqueued, 1);
+				spend(enqueuedText, false);
 				const turn = draft.current();
 				if (turn) {
 					// A steer is consumed inside the turn already running, and shows
@@ -806,8 +865,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					if (sent) {
 						// A prompt queued while Claude worked and sent as a prompt of its
 						// own afterwards: its enqueue, written as the text blocks, is spent.
-						const queued = pendingQueue.indexOf(sent.raw);
-						if (queued !== -1) pendingQueue.splice(queued, 1);
+						spend(sent.raw, true);
 						const turn = openPrompt(parsed, sent.text);
 						turn.entries.push(...sent.images);
 						continue;
@@ -826,14 +884,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					countRaw(type);
 					continue;
 				}
-				const queued = pendingQueue.indexOf(content);
-				if (queued !== -1 && isStreamPrompt(parsed, content)) {
-					// Its own enqueue, spent; then an ordinary prompt below.
-					pendingQueue.splice(queued, 1);
-				} else if (queued !== -1) {
-					// Enqueued before it arrived: a steer that has already been
-					// rendered from its attachment, or other injected content.
-					pendingQueue.splice(queued, 1);
+				// A human's line spends its own enqueue and is a prompt below,
+				// stale entry or not (#157). Any other line enqueued before it
+				// arrived is injected content.
+				const enqueued = spend(content, true);
+				if (enqueued && !sentByHuman(parsed, content)) {
 					countRaw(type);
 					continue;
 				}
@@ -961,7 +1016,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 
 	branch.settle(draft);
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
-	return { state: { turns, raw, pendingQueue, branch: branch.finish(), info }, changedTurnIds, removedTurnIds };
+	return {
+		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info },
+		changedTurnIds,
+		removedTurnIds,
+	};
 }
 
 /**
