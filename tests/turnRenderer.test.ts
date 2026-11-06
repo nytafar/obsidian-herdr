@@ -10,12 +10,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
-import type { Component } from './fixtures/obsidian';
+import { tooltipOf, type Component } from './fixtures/obsidian';
 import { TurnRenderer } from '../src/native/turnRenderer';
 import { FoldMemory } from '../src/native/foldMemory';
 import { nameTurnItems } from '../src/native/itemKeys';
 import { turnItems, type ToolGroupPresentation } from '../src/native/toolCalls';
-import type { ToolEntry, Turn, TurnEntry } from '../src/native/conversation';
+import type { ResumeEntry, ToolEntry, Turn, TurnEntry } from '../src/native/conversation';
+import { turnTime } from '../src/native/turnTime';
 
 const VAULT = '/vault';
 
@@ -53,6 +54,8 @@ function rendererOn(
 		resolveUri?: (uri: string) => string | null;
 		/** Markdown whose render never lands, as one still in flight. */
 		pending?: (markdown: string) => boolean;
+		/** The clock the prompt's time is labelled by (#139). */
+		now?: () => number;
 	} = {},
 ) {
 	const { el, host } = hostEl();
@@ -68,6 +71,7 @@ function rendererOn(
 		},
 		resolveUri: options.resolveUri ?? (() => null),
 		folds: options.folds,
+		now: options.now,
 	});
 	return {
 		el,
@@ -454,5 +458,118 @@ describe('TurnRenderer: the tool group header and its default fold (#128)', () =
 		renderer.render(turn([tool('t1'), text('m1', 'Done.')]), null);
 
 		expect(el.find('herdr-native-tools')).toBe(group);
+	});
+});
+
+describe('TurnRenderer: when, and for how long (#139)', () => {
+	/** Noon, local time, on the day the turns were written. */
+	const NOW = new Date(2026, 10, 6, 12, 0, 0).getTime();
+	const at = (seconds: number): string => new Date(new Date(2026, 10, 6, 9, 0, 0).getTime() + seconds * 1000).toISOString();
+	const timed = (entries: TurnEntry[], endTs = at(7)): Turn => ({ ...turn(entries), ts: at(0), endTs });
+	const resume = (fields: Partial<ResumeEntry> = {}): ResumeEntry => ({
+		kind: 'resume',
+		id: 'r1',
+		cause: 'hook',
+		text: 'Check the build before you stop.',
+		ts: at(10),
+		endTs: at(82),
+		...fields,
+	});
+
+	it('says over the prompt when it was sent and how long the agent worked, the full time on hover', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(timed([text('m1', 'Done.')]), null);
+
+		const meta = el.find('herdr-native-turn-meta');
+		const label = turnTime(at(0), NOW)?.label ?? '';
+		expect(meta.textContent).toBe(`${label} · worked 7s`);
+		// First in the turn, over the prompt.
+		expect(el.find('herdr-native-turn').children[0]).toBe(meta);
+		const [time] = meta.querySelectorAll('time');
+		expect(time?.getAttribute('datetime')).toBe(at(0));
+		expect(tooltipOf.get(time as object)).toBe(turnTime(at(0), NOW)?.full);
+		expect(tooltipOf.get(meta.find('herdr-native-turn-duration') as object)).toContain('Worked for 7s');
+	});
+
+	it('shows no duration while the turn runs, and redraws the line when it ends', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(timed([text('m1', 'Working on it.')], at(3)), 'working');
+		expect(el.find('herdr-native-turn-meta').textContent).toBe(turnTime(at(0), NOW)?.label);
+
+		renderer.render(timed([text('m1', 'Working on it.')], at(65)), null);
+		expect(el.find('herdr-native-turn-meta').textContent).toContain('worked 1m 5s');
+	});
+
+	it('shows nothing for a turn whose time the agent did not write', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(turn([text('m1', 'Done.')]), null);
+		expect(el.findAll('herdr-native-turn-meta')).toHaveLength(0);
+	});
+
+	it('marks resumed work with its cause, its time and its own duration, and times the prompt’s answer apart', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(timed([text('m1', 'Done.'), resume(), text('m2', 'Checked.')]), null);
+
+		const divider = el.find('herdr-native-resume');
+		expect(divider.find('herdr-native-resume-label').textContent).toBe('Resumed by a hook');
+		expect(divider.find('herdr-native-turn-meta').textContent).toBe(`${turnTime(at(10), NOW)?.label} · worked 1m 12s`);
+		const words = divider.find('herdr-native-resume-text');
+		expect(words.textContent).toBe('Check the build before you stop.');
+		expect(tooltipOf.get(words as object)).toBe('Check the build before you stop.');
+		// The prompt's own line keeps the prompt's answer: 7 seconds.
+		const [meta] = el.find('herdr-native-turn').children;
+		expect(meta?.textContent).toContain('worked 7s');
+		// Between the answer and the resumed work, where it happened.
+		const children = el.find('herdr-native-turn').children;
+		const place = (cls: string) => children.findIndex((child) => child.classList.has(cls));
+		expect(place('herdr-native-resume')).toBeGreaterThan(place('herdr-native-prompt'));
+	});
+
+	it('times the answer while the resumed work still runs, and the resumed work only once it is over', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(timed([text('m1', 'Done.'), resume({ endTs: at(12) }), text('m2', 'Checking…')]), 'working');
+		expect(el.find('herdr-native-resume').find('herdr-native-turn-meta').textContent).toBe(turnTime(at(10), NOW)?.label);
+		const [meta] = el.find('herdr-native-turn').children;
+		expect(meta?.textContent).toContain('worked 7s');
+	});
+
+	it('draws the divider again when what it says changes, and nothing else', () => {
+		const { el, renderer, rendered } = rendererOn({ now: () => NOW });
+		renderer.render(timed([text('m1', 'Done.'), resume({ endTs: at(12) }), text('m2', 'Checking.')]), 'working');
+		const first = el.find('herdr-native-resume');
+		const renders = rendered.length;
+
+		renderer.render(timed([text('m1', 'Done.'), resume({ endTs: at(12) }), text('m2', 'Checking.')]), 'working');
+		expect(el.find('herdr-native-resume')).toBe(first);
+
+		renderer.render(timed([text('m1', 'Done.'), resume({ endTs: at(40) }), text('m2', 'Checking.')]), null);
+		expect(el.find('herdr-native-resume')).not.toBe(first);
+		expect(el.find('herdr-native-resume').textContent).toContain('worked 30s');
+		// The prose around it was not rendered again.
+		expect(rendered.length).toBe(renders);
+	});
+
+	it('says each cause in words of its own', () => {
+		const { el, renderer } = rendererOn({ now: () => NOW });
+		renderer.render(
+			timed([
+				text('m1', 'Done.'),
+				resume({ id: 'a', cause: 'notification', text: 'Background command "build" completed' }),
+				text('m2', 'Built.'),
+				resume({ id: 'b', cause: 'meta', text: '' }),
+				text('m3', 'Again.'),
+				resume({ id: 'c', cause: 'other', text: '', ts: undefined }),
+				text('m4', 'More.'),
+			]),
+			null,
+		);
+		expect(el.findAll('herdr-native-resume-label').map((label) => label.textContent)).toEqual([
+			'Resumed by a notification',
+			'Resumed by a runtime message',
+			'Resumed on its own',
+		]);
+		// Nothing to say, nothing drawn: no empty line, no time it does not have.
+		expect(el.findAll('herdr-native-resume-text')).toHaveLength(1);
+		expect(el.findAll('herdr-native-resume')[2]?.findAll('herdr-native-turn-meta')).toHaveLength(0);
 	});
 });

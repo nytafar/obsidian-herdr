@@ -822,6 +822,47 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/*
+ * When a prompt was sent and how long the agent worked on it (#139): one short
+ * faint line over the prompt, the full date and time on hover.
+ */
+.herdr-native-turn-meta {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	margin-bottom: var(--size-2-1);
+}
+
+/*
+ * Work the agent took up again on its own after answering (#139): a divider
+ * inside the turn. The label and the time share a line and wrap as a pair in
+ * a narrow sidebar; the cause's words keep to one line.
+ */
+.herdr-native-resume {
+	border-top: 1px dashed var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-3) 0 var(--size-4-2);
+	padding-top: var(--size-4-1);
+}
+
+.herdr-native-resume-head {
+	column-gap: var(--size-4-2);
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+}
+
+.herdr-native-resume-head > .herdr-native-turn-meta {
+	margin-bottom: 0;
+}
+
+.herdr-native-resume-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* A bash-mode command and its output (#133), set as the terminal showed it. */
 .herdr-native-shell {
 	border-left: 3px solid var(--interactive-accent);

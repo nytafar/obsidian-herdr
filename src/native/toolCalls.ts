@@ -24,6 +24,7 @@ import {
 	type CompactionEntry,
 	type ImageEntry,
 	type NoticeEntry,
+	type ResumeEntry,
 	type ShellEntry,
 	type ThinkingEntry,
 	type TextEntry,
@@ -569,16 +570,18 @@ export type TurnItem =
 /**
  * The entries that are neither the agent speaking nor a call it made, each
  * drawn as an item of its own kind: a picture sent with the prompt (#129), a
- * compaction (#130), the runtime's notice and a bash-mode command (#133).
+ * compaction (#130), the runtime's notice and a bash-mode command (#133), and
+ * where the agent took up work again on its own (#139).
  */
-export type MarkEntry = ImageEntry | CompactionEntry | NoticeEntry | ShellEntry;
+export type MarkEntry = ImageEntry | CompactionEntry | NoticeEntry | ShellEntry | ResumeEntry;
 
 /** One {@link MarkEntry} as an item, under its own kind. */
 export type MarkItem =
 	| { kind: 'image'; entry: ImageEntry }
 	| { kind: 'compaction'; entry: CompactionEntry }
 	| { kind: 'notice'; entry: NoticeEntry }
-	| { kind: 'shell'; entry: ShellEntry };
+	| { kind: 'shell'; entry: ShellEntry }
+	| { kind: 'resume'; entry: ResumeEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -603,6 +606,8 @@ function markItem(entry: MarkEntry): MarkItem {
 			return { kind: 'notice', entry };
 		case 'shell':
 			return { kind: 'shell', entry };
+		case 'resume':
+			return { kind: 'resume', entry };
 	}
 }
 

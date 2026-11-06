@@ -40,6 +40,9 @@ describe('reduce: a plain turn', () => {
 				entries: [{ kind: 'text', messageId: 'msg_1', text: 'The design settles two seams.' }],
 				// Prose with no `#` line has no headings; the TOC shows the turn alone.
 				headings: [],
+				// When it was prompted and when the answer was last written (#139).
+				ts: '2026-09-15T09:00:00.000Z',
+				endTs: '2026-09-15T09:00:02.000Z',
 			},
 		]);
 		expect(changedTurnIds).toEqual(['u1']);

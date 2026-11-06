@@ -39,6 +39,10 @@
  *   are one block of prose however many transcript lines carried them, and its
  *   `thinking` and `tool_use` blocks are entries of their own.
  * - A `tool_result` attaches to the `tool_use` it answers.
+ * - A turn runs from prompt to prompt. Work Claude takes up again on its own
+ *   after an `end_turn` reply (a Stop hook, a notification) stays in the
+ *   prompt's turn behind a resume entry, and the turn's `endTs` is its
+ *   answer's (#139, `./resume.ts`).
  * - Everything else is **raw**: counted by line type so a session can be
  *   diagnosed, rendered nowhere. A line that is not JSON at all — a half-
  *   written tail — is raw too rather than an error. Unknown types are normal:
@@ -69,6 +73,7 @@ import {
 	type Turn,
 	type TurnEntry,
 } from '../../native/conversation';
+import { emptyResume, Resumes, stampReply, type ResumeState } from './resume';
 import { emptyReading, SessionReader, type SessionReading } from './sessionInfo';
 
 /** What one batch did to a Claude session's state. */
@@ -126,6 +131,8 @@ export interface TranscriptState {
 	info: SessionInfo;
 	/** What reading {@link info} keeps across batches. */
 	reading: SessionReading;
+	/** Whether the answer has ended, and what may set Claude working again (#139, `./resume.ts`). */
+	resume: ResumeState;
 }
 
 /** Where one record landed, for a prompt that later hangs from it (#131). */
@@ -178,6 +185,7 @@ export function emptyTranscript(): TranscriptState {
 		branch: { last: null, records: new Map(), answers: 0, floor: 0, lastPrompt: null, caveat: null },
 		info: {},
 		reading: emptyReading(),
+		resume: emptyResume(),
 	};
 }
 
@@ -258,7 +266,7 @@ function notificationField(content: string, tag: string): string {
  */
 function taskNotification(
 	content: string,
-): { toolUseId: string; completed: boolean; notification: TaskNotification } | null {
+): { toolUseId: string; completed: boolean; summary: string; notification: TaskNotification } | null {
 	if (!content.trimStart().startsWith('<task-notification>')) return null;
 	const summary = notificationField(content, 'summary');
 	return {
@@ -266,6 +274,7 @@ function taskNotification(
 		// `completed`, `failed` and `killed` are the three values this machine's
 		// transcripts carry; only the first is the work having gone well.
 		completed: notificationField(content, 'status') === 'completed',
+		summary,
 		notification: {
 			taskId: notificationField(content, 'task-id'),
 			kind: summary.startsWith('Agent "')
@@ -597,6 +606,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	let dequeued = state.dequeued;
 	const branch = new Branch(state.branch);
 	const reader = new SessionReader(state.info, state.reading);
+	const resumes = new Resumes(state.resume);
 
 	const countRaw = (key: string): void => {
 		raw[key] = (raw[key] ?? 0) + 1;
@@ -635,7 +645,9 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	 * idempotent: the same notification again changes nothing. A background
 	 * command's notification never ends a subagent's call.
 	 */
-	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>): void => {
+	const notify = (task: NonNullable<ReturnType<typeof taskNotification>>, ts: string): void => {
+		// After the answer, a notification is what sets Claude working again (#139).
+		resumes.notified(task.summary, ts);
 		const entry = draft.toolEntry(task.toolUseId);
 		if (!entry) return;
 		if (task.notification.kind === 'command' && AGENT_TOOL.test(entry.name.trim())) return;
@@ -653,8 +665,9 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	};
 	const openPrompt = (line: Json, prompt: string): Turn => {
 		branch.fork(line, draft);
-		const turn = draft.open(stringField(line, 'uuid') || `turn-${draft.length}`, prompt);
+		const turn = draft.open(stringField(line, 'uuid') || `turn-${draft.length}`, prompt, stringField(line, 'timestamp'));
 		branch.prompted(turn.id, line);
+		resumes.prompted();
 		return turn;
 	};
 
@@ -692,7 +705,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// A notification is read from whichever record carries it, and
 					// some reach the transcript as their enqueue alone (#135).
 					const task = taskNotification(content);
-					if (task) notify(task);
+					if (task) notify(task, stringField(parsed, 'timestamp'));
 					else if (content) pendingQueue.push(content);
 				} else if (operation === 'remove' || operation === 'popAll') {
 					spend(content, false);
@@ -721,10 +734,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				const task =
 					attachment?.type === 'queued_command' ? taskNotification(stringField(attachment, 'prompt')) : null;
 				if (task) {
-					notify(task);
+					notify(task, stringField(parsed, 'timestamp'));
 					countRaw(type);
 					continue;
 				}
+				if (attachment && parsed.isSidechain !== true) resumes.attachment(parsed, attachment);
 				if (!human) {
 					countRaw(type);
 					continue;
@@ -744,6 +758,8 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				// same words as injected content (#93, #96).
 				spend(enqueuedText, false);
 				const turn = draft.current();
+				// What follows answers the steer, not anything that resumed.
+				resumes.prompted();
 				if (turn) {
 					// A steer is consumed inside the turn already running, and shows
 					// where it entered the context (CONTEXT.md, native-view-design.md).
@@ -752,7 +768,11 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					draft.touch(turn.id);
 				} else {
 					// Nothing is running: the prompt is simply this turn's prompt.
-					const opened = draft.open(stringField(parsed, 'uuid') || `steer-${text.slice(0, 32)}`, text);
+					const opened = draft.open(
+						stringField(parsed, 'uuid') || `steer-${text.slice(0, 32)}`,
+						text,
+						stringField(parsed, 'timestamp'),
+					);
 					opened.entries.push(...images);
 				}
 				continue;
@@ -760,11 +780,16 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 			case 'user': {
 				const message = isRecord(parsed.message) ? parsed.message : null;
 				const content = message?.content;
-				if (parsed.isSidechain !== true) reader.user(parsed);
+				if (parsed.isSidechain !== true) {
+					reader.user(parsed);
+					if (parsed.isMeta === true) resumes.meta(parsed);
+				}
 				if (parsed.isCompactSummary === true) {
 					// Not the human speaking, however much it reads like a prompt: a
 					// divider in the turn it happened in (#130).
-					const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, '');
+					const turn =
+						draft.current() ??
+						draft.open(stringField(parsed, 'uuid') || `turn-${draft.length}`, '', stringField(parsed, 'timestamp'));
 					turn.entries.push({ kind: 'compaction', summary: compactionSummary(content) });
 					draft.touch(turn.id);
 					continue;
@@ -830,7 +855,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				const task = taskNotification(content);
 				if (task) {
 					// Never a prompt, whether or not its enqueue was seen (#96, #135).
-					notify(task);
+					notify(task, stringField(parsed, 'timestamp'));
 					countRaw(type);
 					continue;
 				}
@@ -852,6 +877,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					// to a new file instead, and there this clears nothing.
 					draft.dropAfter('');
 					branch.cleared();
+					resumes.prompted();
 					countRaw(type);
 					continue;
 				}
@@ -888,10 +914,18 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 				}
 				const messageId = stringField(message, 'id');
 				// A sidechain's answers are a subagent's, not the session's model.
-				if (parsed.isSidechain !== true) reader.reply(message, stringField(parsed, 'effort'));
+				const mainChain = parsed.isSidechain !== true;
+				const ts = stringField(parsed, 'timestamp');
+				if (mainChain) reader.reply(message, stringField(parsed, 'effort'));
 				// Content before any prompt (a transcript read from the middle) still
 				// belongs somewhere: it opens a turn with no prompt of its own.
-				const turn = draft.current() ?? draft.open(messageId || 'turn-0', '');
+				const turn = draft.current() ?? draft.open(messageId || 'turn-0', '', ts);
+				// Work taken up again after the answer ended is marked where it
+				// starts, inside the prompt's turn (#139).
+				if (mainChain) {
+					const resumed = resumes.reply(messageId, stringField(parsed, 'uuid'), ts, stringField(message, 'stop_reason'));
+					if (resumed) turn.entries.push(resumed);
+				}
 				for (const block of content) {
 					if (!isRecord(block)) continue;
 					if (block.type === 'text') {
@@ -930,6 +964,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 						});
 					}
 				}
+				if (mainChain) stampReply(turn, ts);
 				draft.touch(turn.id);
 				continue;
 			}
@@ -952,7 +987,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 					continue;
 				}
 				const at = stringField(parsed, 'timestamp');
-				const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `notice-${draft.length}`, '');
+				const turn = draft.current() ?? draft.open(stringField(parsed, 'uuid') || `notice-${draft.length}`, '', at);
 				const last = turn.entries[turn.entries.length - 1];
 				// Claude Code writes one notice as several lines a moment apart
 				// ("Unknown command" and the arguments it dropped).
@@ -972,7 +1007,7 @@ export function reduce(state: TranscriptState, lines: string[]): ReduceResult {
 	const { turns, changedTurnIds, removedTurnIds } = draft.finish();
 	const { info, reading } = reader.finish();
 	return {
-		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info, reading },
+		state: { turns, raw, pendingQueue, dequeued, branch: branch.finish(), info, reading, resume: resumes.finish() },
 		changedTurnIds,
 		removedTurnIds,
 	};

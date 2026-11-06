@@ -467,6 +467,14 @@ reads are kept as recorded.
 - `session-settings-sdk.jsonl` — the same spike's `claude -p` stream-json
   process: `set_model`'s replayed stdout naming the model by alias and id,
   2.1.318.
+- `resume-stop-hook.jsonl` — `claude -p` with a project Stop hook that
+  blocked once: the answer, the hook's feedback, and the work it asked for,
+  2.1.318 (`tests/claudeResume.test.ts`, #139). A throwaway probe in `/tmp`,
+  so its prompts are kept; the account's and the machine's attachments are
+  dropped.
+- `resume-task-notification.jsonl` — `claude -p` that started a background
+  command, answered, and answered again when the command's notification
+  came, 2.1.318 (#139), scrubbed the same way.
 - `rewind-fork.jsonl` — copied unchanged from
   https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
   commit c43dffdd), MIT License, Copyright (c) 2026 devswha:

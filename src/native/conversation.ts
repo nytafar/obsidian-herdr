@@ -213,6 +213,34 @@ export interface ShellEntry {
 	stderr: string;
 }
 
+/**
+ * What set the agent working again after it had finished answering, with no
+ * prompt between (#139): a hook (a Stop hook's feedback, a hook's added
+ * context), a background task's or another session's notification, a line
+ * the runtime wrote for the agent (a background command that failed), or
+ * nothing the parser recognised.
+ */
+export type ResumeCause = 'hook' | 'notification' | 'meta' | 'other';
+
+/**
+ * Where the agent took up work again on its own after answering the prompt
+ * (#139). The turn stays the prompt's: what follows this entry is the resumed
+ * work, so the prompt's answer and its time end before it
+ * ({@link Turn.endTs}).
+ */
+export interface ResumeEntry {
+	kind: 'resume';
+	/** Stable within the session: the record that resumed, for the view's item names. */
+	id: string;
+	cause: ResumeCause;
+	/** What the cause said, in the agent's or the runtime's words; '' when it said nothing readable. */
+	text: string;
+	/** When the work was taken up again, where the records say. */
+	ts?: string;
+	/** When the agent last wrote in the resumed work so far, where the records say. */
+	endTs?: string;
+}
+
 export type TurnEntry =
 	| TextEntry
 	| ThinkingEntry
@@ -221,7 +249,8 @@ export type TurnEntry =
 	| ImageEntry
 	| CompactionEntry
 	| NoticeEntry
-	| ShellEntry;
+	| ShellEntry
+	| ResumeEntry;
 
 /** One Markdown heading in a turn's assistant prose, for the TOC (#100). */
 export interface TurnHeading {
@@ -255,6 +284,14 @@ export interface Turn {
 	headings: TurnHeading[];
 	/** How the turn ended, where the agent says; see {@link TurnOutcome}. */
 	outcome?: TurnOutcome;
+	/** When the turn opened (the prompt's time), as an ISO timestamp, where the records say (#139). */
+	ts?: string;
+	/**
+	 * When the agent last wrote in answer to the prompt, where the records say
+	 * (#139): its newest reply before any work it resumed on its own
+	 * ({@link ResumeEntry}), so the prompt's duration is the prompt's.
+	 */
+	endTs?: string;
 }
 
 /**
@@ -450,8 +487,9 @@ export class TurnDraft {
 		return null;
 	}
 
-	open(id: string, prompt: string): Turn {
-		const turn: Turn = { id, prompt, entries: [], headings: [] };
+	/** Opens a turn; `ts` is when, where the record that opened it says (#139). */
+	open(id: string, prompt: string, ts = ''): Turn {
+		const turn: Turn = { id, prompt, entries: [], headings: [], ...(ts ? { ts } : {}) };
 		this.turns.push(turn);
 		this.mine.add(id);
 		this.touch(id);

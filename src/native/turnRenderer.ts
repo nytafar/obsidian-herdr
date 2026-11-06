@@ -18,7 +18,7 @@
  * tracks for the scroll.
  */
 
-import { Component } from 'obsidian';
+import { Component, setTooltip } from 'obsidian';
 import { FoldMemory } from './foldMemory';
 import { nameTurnItems } from './itemKeys';
 import type {
@@ -26,6 +26,7 @@ import type {
 	ImageBytes,
 	ImageEntry,
 	NoticeEntry,
+	ResumeEntry,
 	ShellEntry,
 	TextEntry,
 	ThinkingEntry,
@@ -56,6 +57,7 @@ import { progressText, renderChecklist } from './todoList';
 import { findObsidianUris } from './obsidianUri';
 import { copyButton, defaultCopier, renderReplyActions, replyMarkdown, type Copier } from './copyActions';
 import type { ToolTable } from '../agents/format';
+import { workSpan, type WorkSpan } from './turnTime';
 
 /**
  * One piece of a human prompt: literal text, a wikilink to a note, or an
@@ -194,6 +196,11 @@ export interface TurnRendererOptions {
 	 * shown as (ADR-0010); read on every draw. Left out, every format's.
 	 */
 	toolTable?: () => ToolTable;
+	/**
+	 * The time now, in ms, for labelling a prompt's time by calendar day
+	 * (#139): `Date.now` when left out.
+	 */
+	now?: () => number;
 }
 
 /** An image as the view shows it: a source an `img` takes, and what it is. */
@@ -221,6 +228,13 @@ export interface ItemFacts {
 	resolveUri: (uri: string) => string | null;
 	/** The session's format's tool table, as `TurnRendererOptions.toolTable` gives it. */
 	toolTable: ToolTable;
+	/** The time now, in ms, as `TurnRendererOptions.now` gives it (#139). */
+	now: number;
+	/**
+	 * Whether this item is resumed work the agent is still doing (#139): the
+	 * turn's last resume while the turn is active, whose duration is not known yet.
+	 */
+	liveResume: boolean;
 }
 
 /** What a render function is handed for one item. */
@@ -328,6 +342,11 @@ const ITEM_KINDS: ItemKinds = {
 		signature: (item) => JSON.stringify([item.entry.command, item.entry.stdout, item.entry.stderr]),
 		render: (item, context) => renderShell(item.entry, context),
 	},
+	resume: {
+		signature: (item, facts) =>
+			JSON.stringify([item.entry.cause, item.entry.text, resumeSpan(item.entry, facts)]),
+		render: (item, context) => renderResume(item.entry, context),
+	},
 };
 
 /** The signature of an item, through its kind's entry. */
@@ -369,6 +388,12 @@ interface DrawnTurn {
 	 */
 	prompt: string;
 	promptEl: HTMLElement | null;
+	/**
+	 * The prompt's time and the turn's duration as last drawn (#139), and
+	 * their element; '' and null for a turn whose time is not known.
+	 */
+	meta: string;
+	metaEl: HTMLElement | null;
 	/** The prompt's copy button's listener and timer (#140); null without a prompt. */
 	promptComponent: Component | null;
 	/** The reply as Markdown, read by its copy buttons at the click (#140). */
@@ -492,6 +517,8 @@ export class TurnRenderer {
 				el,
 				prompt: '',
 				promptEl: null,
+				meta: '',
+				metaEl: null,
 				promptComponent: null,
 				reply: '',
 				replyActions: null,
@@ -543,6 +570,8 @@ export class TurnRenderer {
 		const latestTodo = this.options.latestTodoId
 			? this.options.latestTodoId()
 			: lastTodoId(items);
+		const now = (this.options.now ?? Date.now)();
+		const lastResume = items.map((item) => item.kind).lastIndexOf('resume');
 		const facts: ItemFacts[] = items.map((item, index) => ({
 			vaultPath,
 			activity,
@@ -550,6 +579,8 @@ export class TurnRenderer {
 			latestTodo: item.kind === 'todo' && item.entry.id === latestTodo,
 			resolveUri: this.options.resolveUri,
 			toolTable,
+			now,
+			liveResume: index === lastResume && activity !== null,
 		}));
 		const signatures = items.map((item, index) => itemSignature(item, facts[index] as ItemFacts));
 		const kept = new Set<string>();
@@ -584,6 +615,7 @@ export class TurnRenderer {
 		});
 		drawn.items = next;
 		this.drawReplyActions(drawn, replyMarkdown(turn));
+		this.drawMeta(drawn, turn, activity, now);
 
 		this.order(drawn);
 		if (changed) this.markHeadings(turn.id, drawn);
@@ -669,6 +701,25 @@ export class TurnRenderer {
 	}
 
 	/**
+	 * The prompt's time and how long the agent worked on it (#139), in one
+	 * short line over the prompt. The duration is the prompt's own answer: it
+	 * shows once that is over, which is when the turn is, or when the agent
+	 * has since taken up other work on its own.
+	 */
+	private drawMeta(drawn: DrawnTurn, turn: Turn, activity: TurnActivity | null, now: number): void {
+		const settled = activity === null || turn.entries.some((entry) => entry.kind === 'resume');
+		const span = workSpan(turn.ts, turn.endTs, settled, now);
+		const meta = span ? JSON.stringify(span) : '';
+		if (meta === drawn.meta && (!span || drawn.metaEl)) return;
+		drawn.metaEl?.remove();
+		drawn.metaEl = null;
+		drawn.meta = meta;
+		if (!span) return;
+		drawn.metaEl = drawn.el.createDiv({ cls: 'herdr-native-turn-meta' });
+		renderSpan(drawn.metaEl, span);
+	}
+
+	/**
 	 * Puts the turn's elements in their order: the prompt, then the items, then
 	 * the reply's copy buttons. An element already in its place is not
 	 * touched, so appending to a turn moves nothing that was there: a new item
@@ -676,6 +727,7 @@ export class TurnRenderer {
 	 */
 	private order(drawn: DrawnTurn): void {
 		const els: HTMLElement[] = [];
+		if (drawn.metaEl) els.push(drawn.metaEl);
 		if (drawn.promptEl) els.push(drawn.promptEl);
 		for (const item of drawn.items.values()) if (item.el) els.push(item.el);
 		if (drawn.replyActions) els.push(drawn.replyActions.el);
@@ -1019,6 +1071,50 @@ function renderCompaction(entry: CompactionEntry, context: ItemContext): ItemDra
 /** The runtime's own notice (#133), a muted line where it was written. */
 function renderNotice(entry: NoticeEntry, context: ItemContext): ItemDraw {
 	return { el: context.parent.createDiv({ cls: 'herdr-native-notice', text: entry.text }) };
+}
+
+/**
+ * When a stretch of work started and, once it is over, how long it took
+ * (#139): "14:02 · worked 7s", the full date and time on hover of each.
+ */
+function renderSpan(el: HTMLElement, span: WorkSpan): void {
+	const time = el.createEl('time', { text: span.time.label, attr: { datetime: span.time.iso } });
+	setTooltip(time, span.time.full);
+	if (!span.duration) return;
+	el.appendText(' \u00b7 ');
+	const duration = el.createSpan({ cls: 'herdr-native-turn-duration', text: `worked ${span.duration}` });
+	setTooltip(duration, `Worked for ${span.duration}, until ${span.endFull}`);
+}
+
+/** A resumed stretch's span: its start, and its duration once it is over. */
+function resumeSpan(entry: ResumeEntry, facts: ItemFacts): WorkSpan | null {
+	return workSpan(entry.ts, entry.endTs, !facts.liveResume, facts.now);
+}
+
+/** What set the agent working again, as the divider says it (#139). */
+const RESUME_LABELS: Record<ResumeEntry['cause'], string> = {
+	hook: 'Resumed by a hook',
+	notification: 'Resumed by a notification',
+	meta: 'Resumed by a runtime message',
+	other: 'Resumed on its own',
+};
+
+/**
+ * Where the agent took up work again on its own after answering (#139): a
+ * divider inside the turn, saying what set it going, when, and for how long.
+ * The cause's words stay on one line, in full on hover.
+ */
+function renderResume(entry: ResumeEntry, context: ItemContext): ItemDraw {
+	const el = context.parent.createDiv({ cls: 'herdr-native-resume' });
+	const head = el.createDiv({ cls: 'herdr-native-resume-head' });
+	head.createSpan({ cls: 'herdr-native-resume-label', text: RESUME_LABELS[entry.cause] });
+	const span = resumeSpan(entry, context.facts);
+	if (span) renderSpan(head.createSpan({ cls: 'herdr-native-turn-meta' }), span);
+	if (entry.text) {
+		const text = el.createDiv({ cls: 'herdr-native-resume-text', text: entry.text });
+		setTooltip(text, entry.text);
+	}
+	return { el };
 }
 
 /**
