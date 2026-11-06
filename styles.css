@@ -830,8 +830,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 /*
  * The tool group (#95): one summary line that expands to a row per call. A
- * `details` element, so the browser owns the open state and a turn redrawn
- * while Claude writes does not close what the reader opened.
+ * `details` element, whose open state the turn renderer keeps by the group's
+ * name across redraws (#127).
  */
 .herdr-native-tools,
 .herdr-native-thinking {
@@ -844,6 +844,48 @@ svg.svg-icon[class*='herdr-kind-'] text {
 .herdr-native-thinking-summary {
 	color: var(--text-faint);
 	cursor: var(--cursor);
+}
+
+/*
+ * The group's header (#128): where it stands, the counts, the failures. The
+ * summary keeps its own display so the disclosure marker stays; the line in
+ * it is the flex row, as wide as what is left beside the marker. The counts
+ * give way first and are cut with an ellipsis; the title and the failures
+ * never shrink, so a narrow sidebar still says that a call failed.
+ */
+.herdr-native-tools-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-tools-title,
+.herdr-native-tools-separator,
+.herdr-native-tools-failed {
+	flex: 0 0 auto;
+}
+
+.herdr-native-tools-counts {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.herdr-native-tools.is-live .herdr-native-tools-title {
+	color: var(--text-muted);
+}
+
+.herdr-native-tools.is-waiting .herdr-native-tools-title {
+	color: var(--text-accent);
+}
+
+.herdr-native-tools-failed,
+.herdr-native-tool.is-error {
+	color: var(--text-error);
 }
 
 .herdr-native-tool {

@@ -28,11 +28,15 @@ import {
 	changeStateClass,
 	sourceText,
 	subagentReport,
+	openRunIndex,
 	toolDetail,
-	toolGroupSummary,
+	toolGroupHeader,
+	toolGroupStartsOpen,
+	toolGroupState,
 	turnItems,
 	vaultNoteLink,
 	type ToolGroupPresentation,
+	type TurnActivity,
 	type TurnItem,
 } from './toolCalls';
 import { fillUriLink } from './noteLinks';
@@ -150,6 +154,10 @@ export interface TurnRendererOptions {
 export interface ItemFacts {
 	/** The vault's absolute path, as `TurnRendererOptions.vaultPath` gives it. */
 	vaultPath: string;
+	/** What the agent is doing in this turn (#128); null for a finished turn. */
+	activity: TurnActivity | null;
+	/** Whether this item is the turn's open run (`openRunIndex`, #128). */
+	openRun: boolean;
 }
 
 /** What a render function is handed for one item. */
@@ -216,6 +224,7 @@ const ITEM_KINDS: ItemKinds = {
 		signature: (item, facts) =>
 			JSON.stringify([
 				facts.vaultPath,
+				toolGroupState(item.tools, facts.activity, facts.openRun),
 				item.tools.map((entry) => [entry.id, entry.name, entry.status, toolDetail(entry, facts.vaultPath)]),
 			]),
 		render: (item, context) => renderToolGroup(item.tools, context),
@@ -339,8 +348,13 @@ export class TurnRenderer {
 	 * reused afterwards: a turn that grows while Claude writes keeps its place
 	 * in the view, and the turns around it are not touched. Inside it, only the
 	 * items that changed are drawn again.
+	 *
+	 * `activity` is what the agent is doing in this turn (#128), null for every
+	 * turn but the session's latest while it works or waits: the surface draws
+	 * the latest turn again when the status moves, and only its tool groups'
+	 * headers change.
 	 */
-	render(turn: Turn): void {
+	render(turn: Turn, activity: TurnActivity | null = null): void {
 		let drawn = this.turns.get(turn.id);
 		if (!drawn) {
 			const el = this.sizerEl.createDiv({ cls: 'herdr-native-turn' });
@@ -385,8 +399,14 @@ export class TurnRenderer {
 			else if (!folds.open.has(key) && choices.includes(false)) folds.open.set(key, false);
 		}
 
-		const facts: ItemFacts = { vaultPath: this.options.vaultPath() };
-		const signatures = items.map((item) => itemSignature(item, facts));
+		const vaultPath = this.options.vaultPath();
+		const openRun = openRunIndex(items);
+		const facts: ItemFacts[] = items.map((_, index) => ({
+			vaultPath,
+			activity,
+			openRun: index === openRun,
+		}));
+		const signatures = items.map((item, index) => itemSignature(item, facts[index] as ItemFacts));
 		const kept = new Set<string>();
 		items.forEach((item, index) => {
 			const key = names.keys[index] ?? '';
@@ -411,7 +431,10 @@ export class TurnRenderer {
 				next.set(key, old);
 				return;
 			}
-			next.set(key, this.drawItem(turnEl, turn.id, key, item, signatures[index] ?? '', facts));
+			next.set(
+				key,
+				this.drawItem(turnEl, turn.id, key, item, signatures[index] ?? '', facts[index] as ItemFacts),
+			);
 			changed = true;
 		});
 		drawn.items = next;
@@ -446,6 +469,16 @@ export class TurnRenderer {
 					if (details.open === applied) return;
 					applied = details.open;
 					open.set(key, applied);
+				});
+				// Reading inside a disclosure the view opened is a choice to keep it
+				// (#128): a running group folds once it settles, and must not fold
+				// under a reader who is selecting or following a row in it. Ovis's
+				// `keepOpen` (devswha/ovis, MIT). A click on the summary is a toggle,
+				// which the listener above takes.
+				component.registerDomEvent(details, 'click', (event) => {
+					const target = event.target as HTMLElement | null;
+					if (!details.open || open.has(key) || target?.closest('summary')) return;
+					open.set(key, true);
 				});
 			},
 		});
@@ -534,19 +567,40 @@ function renderThinking(entry: ThinkingEntry, context: ItemContext): ItemDraw {
 
 /** The tool group: one summary line that expands to a row per call. */
 function renderToolGroup(tools: readonly ToolEntry[], context: ItemContext): ItemDraw {
+	const { activity, openRun, vaultPath } = context.facts;
+	const state = toolGroupState(tools, activity, openRun);
+	const header = toolGroupHeader(tools, state);
 	const details = context.parent.createEl('details', { cls: 'herdr-native-tools' });
-	details.createEl('summary', {
-		cls: 'herdr-native-tools-summary',
-		text: toolGroupSummary(tools),
-	});
+	if (state !== 'settled') details.addClass(state === 'live' ? 'is-live' : 'is-waiting');
+	// The header in three parts (#128): where the group stands, the counts,
+	// which a narrow view may cut short, and the failures, which it never cuts.
+	// The parts are flex items, which a screen reader may run together, so the
+	// summary says the whole line once in words.
+	const label = [header.title, header.counts, header.failed].filter(Boolean).join(', ');
+	const lineEl = details
+		.createEl('summary', { cls: 'herdr-native-tools-summary', attr: { 'aria-label': label } })
+		.createSpan({ cls: 'herdr-native-tools-line' });
+	lineEl.createSpan({ cls: 'herdr-native-tools-title', text: header.title });
+	const separator = (): void => {
+		lineEl.createSpan({ cls: 'herdr-native-tools-separator', text: '·', attr: { 'aria-hidden': 'true' } });
+	};
+	if (header.counts) {
+		separator();
+		lineEl.createSpan({ cls: 'herdr-native-tools-counts', text: header.counts });
+	}
+	if (header.failed) {
+		separator();
+		lineEl.createSpan({ cls: 'herdr-native-tools-failed', text: header.failed });
+	}
 	for (const entry of tools) {
-		const detail = toolDetail(entry, context.facts.vaultPath);
-		details.createDiv({
+		const detail = toolDetail(entry, vaultPath);
+		const rowEl = details.createDiv({
 			cls: 'herdr-native-tool',
 			text: detail ? `${entry.name} ${detail}` : entry.name,
 		});
+		if (entry.status === 'error') rowEl.addClass('is-error');
 	}
-	context.disclose(details, false);
+	context.disclose(details, toolGroupStartsOpen(state));
 	return { el: details };
 }
 

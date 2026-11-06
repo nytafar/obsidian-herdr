@@ -310,3 +310,91 @@ describe('nameTurnItems (#127)', () => {
 		expect(names.keys).toEqual(['group:t3+', 'text:m1', 'group:t3']);
 	});
 });
+
+describe('TurnRenderer: the tool group header and its default fold (#128)', () => {
+	it('opens the running group, says so, and folds it once the turn settles', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1'), tool('t2', 'Bash', 'pending')]), 'working');
+		const running = el.find('herdr-native-tools');
+		expect(running.open).toBe(true);
+		expect(running.hasClass('is-live')).toBe(true);
+		expect(running.find('herdr-native-tools-title').textContent).toBe('Working…');
+
+		renderer.render(turn([tool('t1'), tool('t2', 'Bash', 'done')]), null);
+
+		const settled = el.find('herdr-native-tools');
+		expect(settled.open).toBe(false);
+		expect(settled.find('herdr-native-tools-title').textContent).toBe('Worked');
+	});
+
+	it('says the group needs you while the agent is blocked in it', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1', 'Bash', 'pending')]), 'blocked');
+
+		const group = el.find('herdr-native-tools');
+		expect(group.open).toBe(true);
+		expect(group.hasClass('is-waiting')).toBe(true);
+		expect(group.find('herdr-native-tools-title').textContent).toBe('Needs you');
+	});
+
+	it('settles a group once prose follows it, and leaves the reader’s choice alone', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1')]), 'working');
+		// The reader folds the running group: theirs wins over the rule.
+		click(el.find('herdr-native-tools'));
+		renderer.render(turn([tool('t1'), tool('t2')]), 'working');
+		expect(el.find('herdr-native-tools').open).toBe(false);
+
+		renderer.render(turn([tool('t1'), tool('t2'), text('m1', 'So.'), tool('t3')]), 'working');
+		const [first, second] = el.findAll('herdr-native-tools');
+		expect(first?.find('herdr-native-tools-title').textContent).toBe('Worked');
+		expect(first?.open).toBe(false);
+		expect(second?.find('herdr-native-tools-title').textContent).toBe('Working…');
+		expect(second?.open).toBe(true);
+	});
+
+	it('keeps a running group open once the reader has clicked inside it', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1')]), 'working');
+		el.find('herdr-native-tool').dispatch('click');
+
+		renderer.render(turn([tool('t1')]), null);
+
+		expect(el.find('herdr-native-tools').open).toBe(true);
+	});
+
+	it('takes a click on the summary for a toggle, not for reading', () => {
+		const folds = new FoldMemory();
+		const { el, renderer } = rendererOn({ folds });
+		renderer.render(turn([tool('t1')]), 'working');
+		el.find('herdr-native-tools-title').dispatch('click');
+
+		expect(folds.turn('u1').open.size).toBe(0);
+	});
+
+	it('counts the failures apart from the counts, and marks the failed rows', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1'), tool('t2', 'Bash', 'error')]));
+
+		const group = el.find('herdr-native-tools');
+		expect(group.find('herdr-native-tools-counts').textContent).toBe('read 1 file, ran 1 command');
+		expect(group.find('herdr-native-tools-failed').textContent).toBe('1 failed');
+		expect(group.find('herdr-native-tools-summary').attrs['aria-label']).toBe(
+			'Worked, read 1 file, ran 1 command, 1 failed',
+		);
+		expect(group.findAll('herdr-native-tool').map((row) => row.hasClass('is-error'))).toEqual([
+			false,
+			true,
+		]);
+	});
+
+	it('draws nothing again when the status moves and no group’s state does', () => {
+		const { el, renderer } = rendererOn();
+		renderer.render(turn([tool('t1'), text('m1', 'Done.')]), 'working');
+		const group = el.find('herdr-native-tools');
+
+		renderer.render(turn([tool('t1'), text('m1', 'Done.')]), null);
+
+		expect(el.find('herdr-native-tools')).toBe(group);
+	});
+});

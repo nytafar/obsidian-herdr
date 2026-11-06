@@ -19,7 +19,8 @@
 import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
 import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
 import type { PaneSurface } from './paneSurface';
-import type { ToolGroupPresentation } from './toolCalls';
+import { turnActivity, type ToolGroupPresentation } from './toolCalls';
+import type { Turn } from './reducer';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
 import type { KeySender, PromptSender } from './promptSender';
 import type { WaitingResponder } from './pendingRequest';
@@ -154,6 +155,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * model either, which every tab on the pane shares.
 	 */
 	private readonly folds = new FoldMemory();
+	/** The turn last drawn as the latest, which settles when another arrives (#128). */
+	private activeTurnId: string | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
@@ -362,10 +365,18 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
-			for (const id of change.changedTurnIds) {
+			// The latest turn too, whatever moved: its tool groups say whether the
+			// agent is working or waiting in them (#128), and the status moves
+			// without a line. And the turn that was latest, which has settled.
+			const ids = new Set(change.changedTurnIds);
+			const latest = turns.at(-1)?.id;
+			if (latest) ids.add(latest);
+			if (this.activeTurnId && this.activeTurnId !== latest) ids.add(this.activeTurnId);
+			for (const id of ids) {
 				const turn = turns.find((candidate) => candidate.id === id);
-				if (turn) this.turns?.render(turn);
+				if (turn) this.renderTurn(turn, turn.id === latest);
 			}
+			this.activeTurnId = latest ?? null;
 			this.updateEmpty();
 			this.follower?.settle();
 		}
@@ -375,10 +386,22 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	private renderAll(): void {
 		this.clearTurns();
-		for (const turn of this.model?.state.turns ?? []) this.turns?.render(turn);
+		const turns = this.model?.state.turns ?? [];
+		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
+		this.activeTurnId = turns.at(-1)?.id ?? null;
 		this.updateEmpty();
 		this.updateStatus();
 		this.follower?.settle();
+	}
+
+	/**
+	 * Draws one turn. Only the session's latest turn shows what the agent is
+	 * doing (#128): herdr's status is the pane's, and every turn before the
+	 * latest has finished, whatever its calls still say.
+	 */
+	private renderTurn(turn: Turn, latest: boolean): void {
+		const activity = latest ? turnActivity(this.model?.agentStatus ?? 'unknown') : null;
+		this.turns?.render(turn, activity);
 	}
 
 	/** Drops every turn element and stops watching the one being written. */

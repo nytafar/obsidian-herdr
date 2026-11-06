@@ -405,8 +405,8 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
 
 		const group = el.find('herdr-native-tools');
-		expect(group.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 4 files, ran 2 commands',
+		expect(group.find('herdr-native-tools-counts').textContent).toBe(
+			'read 4 files, ran 2 commands',
 		);
 		expect(group.findAll('herdr-native-tool').map((row) => row.textContent)).toEqual([
 			'Read a.md',
@@ -458,8 +458,8 @@ describe('NativePaneSurface: tool groups', () => {
 			'herdr-native-prompt',
 			'herdr-native-tools',
 		]);
-		expect(el.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 2 files, ran 2 commands',
+		expect(el.find('herdr-native-tools-counts').textContent).toBe(
+			'read 2 files, ran 2 commands',
 		);
 	});
 
@@ -471,8 +471,8 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
 
 		const group = el.find('herdr-native-tools');
-		expect(group.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 4 files, wrote 1 file, ran 1 web search, ran 2 commands',
+		expect(group.find('herdr-native-tools-counts').textContent).toBe(
+			'read 4 files, wrote 1 file, ran 1 web search, ran 2 commands',
 		);
 		expect(group.findAll('herdr-native-tool')).toHaveLength(8);
 		expect(el.findAll('herdr-native-change')).toEqual([]);
@@ -686,9 +686,9 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			'herdr-native-steer',
 			'herdr-native-tools',
 		]);
-		expect(el.findAll('herdr-native-tools-summary').map((line) => line.textContent)).toEqual([
-			'Read 1 file',
-			'Ran 1 command',
+		expect(el.findAll('herdr-native-tools-counts').map((line) => line.textContent)).toEqual([
+			'read 1 file',
+			'ran 1 command',
 		]);
 		expect(el.find('herdr-native-steer').textContent).toBe('also check the styles');
 	});
@@ -707,7 +707,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ changedTurnIds: ['u1'], reset: false },
 		);
 
-		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+		expect(el.find('herdr-native-tools-counts').textContent).toBe('ran 1 subagent');
 		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual([
 			'It settles **two** seams.',
 		]);
@@ -729,9 +729,9 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ changedTurnIds: ['u1'], reset: false },
 		);
 
-		expect(el.findAll('herdr-native-tools-summary').map((summary) => summary.textContent)).toEqual([
-			'Ran 1 subagent',
-			'Read 1 file',
+		expect(el.findAll('herdr-native-tools-counts').map((summary) => summary.textContent)).toEqual([
+			'ran 1 subagent',
+			'read 1 file',
 		]);
 	});
 
@@ -768,7 +768,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 		expect(el.findAll('herdr-native-report')).toEqual([]);
 		expect(MarkdownRenderer.calls).toEqual([]);
 		// The call itself is still in the group, as any other call is.
-		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+		expect(el.find('herdr-native-tools-counts').textContent).toBe('ran 1 subagent');
 	});
 
 	it('renders an asynchronous subagent report once it has been read, and never the launch notice', async () => {
@@ -1016,5 +1016,47 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 
 		expect(models.released).toBe(0);
 		expect(el.find('herdr-native-prompt').textContent).toBe('Arrived while hidden');
+	});
+});
+
+describe('NativePaneSurface: where a tool group stands (#128)', () => {
+	/** The title of every tool group on screen, in order. */
+	function titles(el: FakeElement): string[] {
+		return el.findAll('herdr-native-tools-title').map((title) => title.textContent);
+	}
+
+	it('follows the status on the latest turn, without a line of the transcript', async () => {
+		const model = new FakeModel();
+		model.agentStatus = 'working';
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const turns = [turn('u1', 'Go', [tool('t1', 'Bash', { command: 'make' })])];
+		model.push(turns, { changedTurnIds: ['u1'], reset: false });
+		expect(titles(el)).toEqual(['Working…']);
+
+		model.agentStatus = 'blocked';
+		model.push(turns, { changedTurnIds: [], reset: false });
+		expect(titles(el)).toEqual(['Needs you']);
+
+		model.agentStatus = 'idle';
+		model.push(turns, { changedTurnIds: [], reset: false });
+		expect(titles(el)).toEqual(['Worked']);
+		expect(el.find('herdr-native-tools').open).toBe(false);
+	});
+
+	it('settles the turn that was latest once another arrives', async () => {
+		const model = new FakeModel();
+		model.agentStatus = 'working';
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const first = turn('u1', 'Go', [tool('t1', 'Read')]);
+		model.push([first], { changedTurnIds: ['u1'], reset: false });
+
+		model.push([first, turn('u2', 'Next', [tool('t2', 'Read')])], {
+			changedTurnIds: ['u2'],
+			reset: false,
+		});
+
+		expect(titles(el)).toEqual(['Worked', 'Working…']);
 	});
 });
