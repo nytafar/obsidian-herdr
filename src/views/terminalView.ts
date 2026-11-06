@@ -12,7 +12,7 @@
  * `Notice` all reach it from here.
  *
  * Since issue #92 that lifecycle is one **pane surface** among two
- * (`../native/surface.ts`, ADR-0002): the tab's **view** decides which one is
+ * (`../native/paneSurface.ts`, ADR-0002): the tab's **view** decides which one is
  * mounted, `PaneSurfaceHolder` performs the swap, and the native surface is
  * the other. Since #104 the tab's view state holds two independent fields, the
  * view and the terminal engine, each switched from the tab menu or the
@@ -126,14 +126,14 @@ import {
 } from '../native/renderMode';
 import {
 	effectivePaneView,
-	NativePaneSurface,
 	PaneSurfaceHolder,
 	paneViewAvailability,
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
 	type PaneWhere,
-} from '../native/surface';
+} from '../native/paneSurface';
+import { NativePaneSurface } from '../native/surface';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { linkSourcePath } from '../native/noteLinks';

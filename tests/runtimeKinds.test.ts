@@ -31,7 +31,7 @@ import {
 import { LocalTranscriptSource } from '../src/native/transcriptSource';
 import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
-import { paneViewAvailability } from '../src/native/surface';
+import { paneViewAvailability } from '../src/native/paneSurface';
 import type { ActionHost } from '../src/actions';
 
 const HOME = '/home/test';
