@@ -5,7 +5,8 @@ All under **Settings → Herdr**. Sentence case names match the UI.
 ## Runtimes
 
 The herdr, or herdr-core, instances the plugin can connect to, on this machine
-or over SSH, and which one is active. Each runtime has its own binary, socket,
+or over SSH, or Claude run by Obsidian on this machine, and which one is
+active. Each runtime has its own binary, socket,
 remote vault path and workspace. See [runtimes.md](runtimes.md) for adding,
 editing, removing and switching, and for every field.
 
@@ -14,8 +15,10 @@ editing, removing and switching, and for every field.
 | Runtime row | Name and what it is. The plug makes it active (or reconnects the active one), the pencil opens its form, the bin removes it after asking. The last runtime stays. |
 | Add runtime | A new herdr runtime over SSH, its form open. |
 | Name | What the switcher, the status bar and the list call it. Empty shows a name derived from kind and host. |
-| Kind | Herdr, or herdr-core (hc), which this version lists but cannot connect yet. |
-| Target | This machine or an SSH host. |
+| Kind | Herdr, herdr-core (hc), or Claude, run by Obsidian, which starts Claude Code itself with no multiplexer. |
+| Target | This machine or an SSH host. Claude run by Obsidian is this machine only. |
+| Claude binary | Claude run by Obsidian only. An override for auto-discovery of `claude`, empty to search. |
+| Permission mode | Claude run by Obsidian only. What its agents may do without asking; the default asks for every tool that needs a permission, on the native view's waiting card. |
 | Socket path / Remote socket path | herdr only. The server's socket on the target. Default `~/.config/herdr/herdr.sock`. |
 | Herdr binary / Remote herdr binary | Locally an override for auto-discovery, empty to search; over SSH an absolute path on the remote host. |
 | SSH host, Remote vault path | SSH targets only. The vault path is required for folder actions. |

@@ -2,8 +2,10 @@
 
 A **runtime** is something the plugin can connect to: a **kind** on a
 **target**. The kind is **herdr**, the terminal multiplexer this plugin has
-always supported, or **herdr-core**, the headless `hc` runtime. The target is
-**this machine** or an **SSH host**. Settings → Herdr → Runtimes lists them.
+always supported, **herdr-core**, the headless `hc` runtime, or **Claude, run
+by Obsidian**, the simple mode that needs no multiplexer at all. The target is
+**this machine** or an **SSH host**; Claude run by Obsidian is this machine
+only. Settings → Herdr → Runtimes lists them.
 
 One runtime is **active** at a time. The agent list, the folder actions, the
 notifications and the status bar counts are all for the active runtime;
@@ -242,6 +244,81 @@ machine, add an SSH runtime for it.
 ```bash
 hc ls                      # this machine
 ssh -T <host> hc connect   # should wait silently; Ctrl-D to leave
+```
+
+## Claude, run by Obsidian
+
+The simple mode: the plugin starts Claude Code itself, as its own child
+process, with no herdr or hc to install. It is for getting started; the
+multiplexers are where agents outlive Obsidian, run on other machines, or get
+a terminal (ADR-0007).
+
+### Setting one up
+
+**Add runtime**, then **Kind** → **Claude, run by Obsidian**. The target is
+this machine and cannot be changed. Two fields:
+
+- **Claude binary**: empty means the `claude` found in `/opt/homebrew/bin`,
+  `/usr/local/bin`, `~/.local/bin`, the extra PATH entries, then your login
+  shell's PATH. Set it when Obsidian cannot find Claude.
+- **Permission mode**: what new and resumed agents may do without asking:
+  **Ask (default)**, **Accept edits**, **Plan**, **Auto** or **Don't ask**.
+  It is passed to every process with `--permission-mode`, so your own Claude
+  default never decides it. In the default mode every tool that needs a
+  permission waits for you on the native view's waiting card.
+
+Make it active with the plug, or with the switcher, like any other runtime.
+The settings status names the binary, the permission mode and how many agents
+run and how many are stopped.
+
+### What works
+
+- **Start agent here** from a folder's menu, the command, or the plus in the
+  agent list starts one in that folder. Its process starts at once, so the
+  first prompt does not wait for it, and its tab opens in the native view.
+- **The agent list** shows every session the plugin started in this vault.
+  Running ones show their live status from Claude's own stream: working,
+  done, or blocked with what it waits for. After Obsidian restarts, or the
+  plugin reloads, every row comes back **stopped**. Opening a stopped row, or
+  sending it a prompt, resumes the conversation (`claude --resume`).
+- **The native view** is the only view: prompts, queued prompts, `/` commands
+  and **Stop** (which interrupts the running turn) go straight to the
+  process, and the waiting card answers permissions, questions and plans
+  itself ([native-view.md](native-view.md)). `/clear` is followed, and the
+  row keeps the new session, so a later resume reopens the conversation after
+  the clear.
+- **The row menu** has **Stop agent** for a running row: the turn is
+  interrupted, the process ends, and the row stays as a stopped session.
+  **Forget agent** removes a stopped row; Claude keeps its transcript in
+  `~/.claude/projects`. **Continue in herdr** or **Continue in herdr-core**
+  appears when such a runtime is configured on this machine: it stops the
+  process, starts `claude --resume <session>` in the same folder on that
+  runtime, switches the list there, and removes the row here.
+- Pins work as on herdr, stored in the plugin's settings.
+
+### Limits
+
+- **No terminal view** in this version. The tab's view switch shows the
+  terminal disabled, with the reason; the terminal through `script(1)` comes
+  later.
+- **Agents end with Obsidian.** Closing Obsidian, unloading or reloading the
+  plugin, or removing the runtime stops every agent in order: what is waiting
+  for an answer is denied, a running turn is interrupted, then the process
+  gets end of input, then SIGTERM, then SIGKILL. Switching to another runtime
+  does not stop them: their rows come back live when you switch back, and an
+  agent left waiting on a permission waits for you.
+- **This machine only.** Over SSH, use herdr or herdr-core.
+- **No tabs, splits, focus or rename.** The row name is the folder's, made
+  unique like herdr's agent names.
+- **"Always allow in this project"** writes `<folder>/.claude/settings.local.json`
+  inside the vault; the card names the file before you press it.
+- Sign-in, API key and model errors show as a notice with Claude's own words
+  and its reason, such as `api_error`; the agent stays usable after them.
+
+### Checking by hand
+
+```bash
+which claude && claude --version
 ```
 
 ## Upgrading from the local/remote settings

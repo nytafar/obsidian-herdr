@@ -49,6 +49,23 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   remote machine's commands and skills (user, plugin and the pane's project),
   read over the runtime's connection; while they cannot be read it offers
   only the built-ins.
+- **Claude, run by Obsidian**: a third runtime kind and a simple mode that
+  needs no multiplexer. The plugin starts Claude Code itself on this machine,
+  in Claude's own stream-json mode, and its agents open in the native view.
+  Status comes straight from Claude: working, done, or blocked with what it
+  waits for. After a restart the agents come back as **stopped** rows;
+  opening one or sending it a prompt resumes the conversation. The waiting
+  card answers Claude's dialogs itself: Allow, Deny, **Allow for this
+  session**, and **Always allow in this project**, which names the
+  `.claude/settings.local.json` it writes; a question's options; a plan's
+  approval, or its rejection with feedback. Nothing is answered for you and
+  nothing times out. A **Stop** button interrupts the running turn. The row
+  menu has **Stop agent**, **Forget agent** for a stopped row, and **Continue
+  in herdr** or **Continue in herdr-core**, which hands the conversation to
+  such a runtime with `claude --resume`. The permission mode is a runtime
+  setting (default: ask). Agents end when Obsidian closes or the plugin
+  unloads. There is no terminal view for this kind yet. See
+  [docs/runtimes.md](docs/runtimes.md).
 - **herdr 0.9.5**: the types are regenerated from it. The client records the
   server's version so features can be gated on it, and it recovers from the
   `events_lost` subscription error (0.9.2+) by resubscribing and taking a

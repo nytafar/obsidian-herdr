@@ -16,8 +16,13 @@ plugin) holds general plugin conventions.
   client socket. **herdr-core:** `hc connect` (or `ssh -T <host> … connect`)
   in framed mode, JSON-RPC on channel 0, events and attach on their own
   channels — ADR-0005, the recorded exception, resting on the finding
-  `herdr-core-api`. If a seam proves insufficient, write it up as a finding in
-  the docs root before changing it.
+  `herdr-core-api`. **claude** ("Claude, run by Obsidian", ADR-0007): the
+  plugin spawns `claude -p` in stream-json mode itself, over child_process
+  pipes with no shell, one process per agent, every stdin line through the
+  one strict writer (`src/claude/protocol.ts`); no pty. The `script(1)`
+  terminal view, ADR-0007's recorded exception to "not a PTY", arrives with
+  D2 and only for this kind. If a seam proves insufficient, write it up as a
+  finding in the docs root before changing it.
 - No code from Whip (KaminariOS/whip, AGPL). Read it for behaviour only.
 - Obsidian guidelines are rules: `this.app` never global `app`; `registerEvent`,
   `registerDomEvent`, `registerInterval` for everything that must be torn down;

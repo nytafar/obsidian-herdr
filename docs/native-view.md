@@ -45,7 +45,10 @@ A multi-line chat input sits under the transcript. The button reads **Send**
 while the agent is idle and **Queue** while it is working; a queued prompt is
 picked up mid-turn and shown inline once the agent takes it. Shift+Enter
 inserts a line break. The box is disabled with a reason when the pane has no
-agent, and while the agent is blocked on a question the card handles.
+agent, and while the agent is blocked on a question the card handles. On
+Claude run by Obsidian a **Stop** button sits beside it while a turn runs:
+it interrupts the turn, keeps what Claude had written so far, and leaves the
+agent ready for the next prompt.
 
 Typing `/` completes slash commands and skills from the user, project and
 plugin scopes, with their descriptions; project scope wins, and discovery stops
@@ -83,6 +86,32 @@ On herdr-core Claude shows the trust prompt before its `SessionStart` hook
 runs, so the terminal has no session label yet and the tab shows the terminal,
 where you answer it. Nothing else is answered on your behalf. Tool
 permissions are Claude's own to ask; questions and plan approvals are yours.
+
+### Cards that answer, on Claude run by Obsidian
+
+On Claude run by Obsidian the agent's dialogs come to the plugin as requests
+Claude itself waits on, so the card is the dialog and answers it directly.
+There is no terminal there, and no **Open in terminal**. Nothing is pressed
+for you and nothing times out: an unanswered card waits, and its row shows
+the agent as blocked. Stopping the agent denies whatever it was waiting on.
+
+- **A tool permission** names the tool and what it acts on, with Claude's
+  reason when it gives one (a path outside the folder). **Allow** and
+  **Deny** answer this one call. When Claude suggests them, two more:
+  - **Allow for this session**, with what it grants on the line beside it
+    (accept file edits, access to a folder), until the agent stops.
+  - **Always allow in this project**, with the rule and the file it is
+    written to, `<folder>/.claude/settings.local.json`, inside the vault.
+    Claude reads that file from then on, in every session in that folder.
+  A grant for your user-wide settings is never offered, and the tool's input
+  is never changed: what Claude asked to run is what runs.
+- **A question** shows its options as buttons. One question with one answer
+  is answered by its button; several questions, or one that takes more than
+  one answer, are sent with **Send answers** once each has one. **Dismiss**
+  declines to answer.
+- **A plan** is shown as Markdown with **Approve plan**, or **Reject** with
+  what should change typed above it; Claude revises the plan and asks again.
+- When Claude withdraws a request, as an interrupt does, its card goes.
 
 ## Table of contents
 
@@ -152,6 +181,20 @@ runtime's connection and kept for a few seconds. A remote that
 does not answer within 3 seconds, or cannot be read, offers only Claude's
 built-in commands until it does; it never offers this machine's commands.
 
+## On Claude run by Obsidian
+
+Agents of this runtime are Claude processes the plugin runs itself, and the
+native view is the only view they have; the view switch shows the terminal
+disabled, with the reason ([runtimes.md](runtimes.md)). The transcript is
+still the content, read from this machine's files as on herdr. The session,
+the status and the block come from Claude's own stream instead of a
+multiplexer: working from a prompt to the end of its turn, done when the turn
+ended (until you look at it), blocked while a card waits. A stopped agent's
+tab shows its conversation and keeps its prompt box: sending resumes it.
+
+Hook output and banners in Claude's stream are never shown, since content
+comes from the transcript.
+
 ## Switching runtimes
 
 A native tab belongs to the runtime it was opened on. When you switch the
@@ -175,7 +218,10 @@ picks up again when its runtime is active once more.
   refused while its screen is still settling; send it again.
 - **Claude Code only** for now. Other agent kinds show a terminal. The
   normalized event model is what a second backend would map into.
-- Questions and plan approvals are answered in the terminal; the card takes
-  you there.
+- Questions and plan approvals are answered in the terminal on herdr and
+  herdr-core; the card takes you there. Only Claude run by Obsidian answers
+  them on the card.
+- **Claude run by Obsidian has no terminal view** yet, and its live text is
+  not drawn as it streams: turns appear block by block, as everywhere else.
 - Content blocks appear when complete, not streamed token by token.
 - No diffs: an edit shows as a link to the changed note, not what changed.
