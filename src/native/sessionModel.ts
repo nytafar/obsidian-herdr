@@ -491,7 +491,10 @@ export class SessionModel implements SessionModelView {
 		}
 		// The session shown is over for this pane: its agent went away or moved
 		// to another file. If Claude comes back to it, what ran here is lost (#135).
-		if (this.currentPath && path !== this.currentPath && this.linesRead > 0) {
+		// Only the pane itself says so. A pane the scope does not hold — a
+		// reconnect's scope before it has primed, or a pane that left and will
+		// rejoin — says nothing about its agent, and its work is not lost.
+		if (pane && this.currentPath && path !== this.currentPath && this.linesRead > 0) {
 			this.options.ended?.set(this.currentPath, this.linesRead);
 		}
 		this.closeStream();

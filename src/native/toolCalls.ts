@@ -201,7 +201,7 @@ export interface ToolGroupHeader {
 	/**
 	 * "2 failed", or null when nothing did. Its own part so a narrow view that
 	 * cuts the counts short never cuts this: a failure is what a glance at a
-	 * folded group must not miss. Ovis's `workFailed` (devswha/ovis, MIT).
+	 * folded group must not miss.
 	 */
 	failed: string | null;
 }
@@ -277,9 +277,9 @@ export interface TodoItem {
  *
  * Claude Code sends the whole list on every update, as `todos: [{ content,
  * status, activeForm }]`, so the input is the list as it stands. An item with
- * no words makes the list unreadable rather than shorter, as Ovis reads it
- * (devswha/ovis, MIT, `src/lib/todos.ts`); a status this build does not know
- * reads as pending.
+ * no words makes the list unreadable rather than shorter: a list missing an
+ * item would read as further along than it is. A status this build does not
+ * know reads as pending.
  */
 export function todoList(entry: ToolEntry): TodoItem[] | null {
 	if (toolKind(entry.name) !== 'todo') return null;
@@ -315,22 +315,85 @@ export function todoProgress(items: readonly TodoItem[]): TodoProgress {
 	};
 }
 
+/** The last readable list one turn left, and the call that left it. */
+export interface TurnTodo {
+	entryId: string;
+	items: TodoItem[];
+}
+
+/** The session's newest list: its turn, its call and its items (#143). */
+export interface LatestTodo extends TurnTodo {
+	turnId: string;
+}
+
+/** The last readable list in one turn, or null when it left none. */
+export function turnTodo(turn: Turn): TurnTodo | null {
+	const entries = turn.entries;
+	for (let e = entries.length - 1; e >= 0; e--) {
+		const entry = entries[e];
+		if (entry?.kind !== 'tool') continue;
+		const items = todoList(entry);
+		if (items) return { entryId: entry.id, items };
+	}
+	return null;
+}
+
 /**
  * The session's current to-do list: the one the latest readable `TodoWrite`
  * left, or null when the agent has kept none (#143). Read from the end, so a
  * session that keeps a list finds it at once.
  */
-export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
+export function latestTodo(
+	turns: readonly Turn[],
+	ofTurn: (turn: Turn) => TurnTodo | null = turnTodo,
+): LatestTodo | null {
 	for (let t = turns.length - 1; t >= 0; t--) {
-		const entries = turns[t]?.entries ?? [];
-		for (let e = entries.length - 1; e >= 0; e--) {
-			const entry = entries[e];
-			if (entry?.kind !== 'tool') continue;
-			const list = todoList(entry);
-			if (list) return list;
-		}
+		const turn = turns[t];
+		const todo = turn ? ofTurn(turn) : null;
+		if (turn && todo) return { turnId: turn.id, ...todo };
 	}
 	return null;
+}
+
+/** {@link latestTodo}'s items alone. */
+export function latestTodoList(turns: readonly Turn[]): TodoItem[] | null {
+	return latestTodo(turns)?.items ?? null;
+}
+
+/**
+ * {@link latestTodo} over a session that changes a few turns at a time: each
+ * turn's own list is read once and kept until the turn changes. The reducer
+ * replaces a turn it changes and shares the rest (`reduce`), so a turn object
+ * seen before still says what it said; only a changed turn's entries are read
+ * again, and the rest of the walk is one lookup per turn.
+ */
+export class TodoIndex {
+	private readonly byTurn = new Map<string, { turn: Turn; todo: TurnTodo | null }>();
+
+	latest(turns: readonly Turn[]): LatestTodo | null {
+		return latestTodo(turns, (turn) => {
+			const known = this.byTurn.get(turn.id);
+			if (known?.turn === turn) return known.todo;
+			const todo = turnTodo(turn);
+			this.byTurn.set(turn.id, { turn, todo });
+			return todo;
+		});
+	}
+
+	/** How many turns it holds a reading of. */
+	get size(): number {
+		return this.byTurn.size;
+	}
+
+	/** Forgets one turn, which a rewind dropped. */
+	forget(turnId: string): void {
+		this.byTurn.delete(turnId);
+	}
+
+	/** Forgets every turn: the session is being drawn again from the start. */
+	clear(): void {
+		this.byTurn.clear();
+	}
 }
 
 /**
@@ -523,8 +586,11 @@ export type TurnItem =
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
 	| { kind: 'report'; entry: ToolEntry }
-	/** A to-do list update (#143); `latest` for the turn's last one. */
-	| { kind: 'todo'; entry: ToolEntry; latest: boolean }
+	/**
+	 * A to-do list update (#143). Whether it is the session's newest, the one
+	 * drawn open, is not the turn's to say (`ItemFacts.latestTodo`).
+	 */
+	| { kind: 'todo'; entry: ToolEntry }
 	| MarkItem;
 
 /**
@@ -617,7 +683,7 @@ export function turnItems(
 		}
 		const kind = toolKind(entry.name);
 		if (escapesToolGroup(kind, presentation)) {
-			if (kind === 'todo') items.push({ kind: 'todo', entry, latest: false });
+			if (kind === 'todo') items.push({ kind: 'todo', entry });
 			else items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
 			continue;
 		}
@@ -633,14 +699,6 @@ export function turnItems(
 			items.push({ kind: 'report', entry });
 			group = null;
 		}
-	}
-	// The turn's last list is the one shown open; every update before it folds
-	// (#143).
-	for (let index = items.length - 1; index >= 0; index--) {
-		const item = items[index];
-		if (item?.kind !== 'todo') continue;
-		item.latest = true;
-		break;
 	}
 	return items;
 }

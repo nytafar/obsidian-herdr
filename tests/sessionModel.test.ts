@@ -1051,6 +1051,43 @@ describe('SessionModel: background work the agent left behind (#135)', () => {
 
 		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
 	});
+
+	it('leaves it running across a reconnect whose scope primes the pane after the rebind', () => {
+		// herdr and herdr-core: the fresh scope is empty when the registry
+		// rebinds, and the pane arrives as added once it has primed.
+		const { registry, publish } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		const fresh = publish(LOCAL, null) as FakeWatcher;
+		fresh.added(PANE);
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+	});
+
+	it('leaves it running when the pane leaves the scope and comes back', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		watcher.removed('w4:p1');
+		watcher.added(PANE);
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+	});
+
+	it('still marks it lost when the session rotated away and Claude resumed it', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, RUNNING], [PATH_2, TRANSCRIPT_2]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		// `/clear` moved the agent to another file, then `--resume` came back.
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		expect(handle.model.path).toBe(PATH_2);
+		source.files.set(PATH_1, RUNNING);
+		watcher.set(PANE);
+		watcher.paneUpdated('w4:p1', 'session-1');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+	});
 });
 
 describe('SessionModel: the plan file of a pane in plan approval (#148)', () => {

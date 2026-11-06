@@ -428,6 +428,12 @@ timestamps, types and the tags the reducer reads are kept as recorded.
 - `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
   2.1.318 lines have the same shape.
 - `resend.jsonl` — a prompt cancelled before any reply and sent again, 2.1.318.
+- `command-after-cancel.jsonl` — a prompt cancelled and re-sent, the re-send
+  cancelled too, then `/model`: its caveat a sibling of the cancelled prompt,
+  the command hanging from the caveat, 2.1.281.
+- `plan-feedback.jsonl` — a plan approved with feedback: the ExitPlanMode
+  answer as one `user` line of a tool result and a text block, and the work
+  after it, 2.1.318.
 - `unknown-command.jsonl` — an unknown slash command's two notices, 2.1.286.
 - `usage-limit.jsonl` — a usage limit reached and later reset, 2.1.286.
 - `bash-mode.jsonl` — a `!` command, its output and the agent's answer, 2.1.318.

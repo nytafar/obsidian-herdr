@@ -11,9 +11,8 @@
  * one: its calls are a run, and a run can grow, split (an empty text block
  * between two calls fills in, an asynchronous subagent's report lands) or
  * merge. A group keeps the name of the group its calls were in when the turn
- * was last drawn, so its fold goes with it. The idea and its rules are Ovis's
- * `runNames` (devswha/ovis, MIT, `src/lib/workBlocks.ts`), re-expressed for
- * this view's items: the first run to claim an old name keeps it, and only a
+ * was last drawn, so its fold goes with it. The rules: the first run to claim
+ * an old name keeps it, and only a
  * run with no name left to claim gets a new one, which never takes a name an
  * item already has.
  *

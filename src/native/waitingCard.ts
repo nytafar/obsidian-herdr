@@ -317,8 +317,7 @@ const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
  * An option's label as the card shows it, and whether Claude recommended it.
  *
  * Claude marks its pick by writing "(Recommended)" after the label, which
- * the card draws as a tag instead (after Ovis's `optionName`,
- * `src/lib/promptText.ts`, MIT). Only the shown text changes: an answer is
+ * the card draws as a tag instead. Only the shown text changes: an answer is
  * always sent under the label exactly as Claude wrote it, suffix included,
  * because that is the option it offered. A label that is nothing but the
  * suffix keeps it, so no option is ever drawn blank.
@@ -344,7 +343,7 @@ function textField(entry: ToolEntry, field: string): string {
  * Whether a keystroke in a typed answer sends it: Enter, unless an input
  * method is composing with it. WebKit can deliver the Enter that commits an
  * IME candidate after `compositionend`, as key code 229, so that one is the
- * input method's too (as Ovis's `PromptCard.tsx` reads it, MIT).
+ * input method's too.
  */
 export function isTypedAnswerKey(event: { key: string; isComposing?: boolean; keyCode?: number }): boolean {
 	return event.key === 'Enter' && event.isComposing !== true && event.keyCode !== 229;
