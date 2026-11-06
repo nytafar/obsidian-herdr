@@ -1,4 +1,4 @@
-# Herdr for Obsidian
+# Gjetr: Herdr for Obsidian
 
 Obsidian as an agentic workspace for knowledge work. Your agents work in your
 vault, next to your notes: open any one as a live terminal tab, or, for Claude
@@ -52,28 +52,29 @@ key-based login that does not prompt.
 
 Until the plugin is in the community list, install it with
 [BRAT](https://github.com/TfTHacker/obsidian42-brat): add
-`nytafar/obsidian-herdr` as a beta plugin, then enable **Herdr** under Community
-plugins.
+`nytafar/obsidian-herdr` as a beta plugin, then enable **Gjetr** under Community
+plugins. The plugin id was `herdr` through 0.5; settings saved under that id
+carry over on the first load as `gjetr`.
 
 Or let your coding agent do it, BRAT included
 ([docs/agent-install.md](docs/agent-install.md)):
 
 ```text
-Install the Obsidian plugin Herdr for me: read
+Install the Obsidian plugin Gjetr for me: read
 https://raw.githubusercontent.com/nytafar/obsidian-herdr/main/docs/agent-install.md
 and follow it.
 ```
 
 Manual: put `main.js`, `manifest.json` and `styles.css` from a
 [release](https://github.com/nytafar/obsidian-herdr/releases) into
-`<vault>/.obsidian/plugins/herdr/` and reload Obsidian.
+`<vault>/.obsidian/plugins/gjetr/` and reload Obsidian.
 
 ## Get started
 
-Run **Herdr: Show agents**. While no runtime connects, the list shows a **Get
+Run **Gjetr: Show agents**. While no runtime connects, the list shows a **Get
 started** card: start Claude Code run by Obsidian at once, install herdr-core
 with its official installer where you can watch it, or go to herdr's install
-docs. **Settings → Herdr** shows what the plugin found.
+docs. **Settings → Gjetr** shows what the plugin found.
 
 ## For power users
 

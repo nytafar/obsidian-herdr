@@ -237,7 +237,7 @@ describe('PromptBox: sending', () => {
 
 		await box.send();
 
-		expect(notices).toEqual(['Herdr: could not send the prompt (agent_blocked)']);
+		expect(notices).toEqual(['Gjetr: could not send the prompt (agent_blocked)']);
 		expect(input(el).value).toBe('Summarise the design');
 	});
 

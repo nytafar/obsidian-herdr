@@ -5,7 +5,7 @@ A **runtime** is something the plugin can connect to: a **kind** on a
 always supported, **herdr-core**, the headless `hc` runtime, or **Claude, run
 by Obsidian**, the simple mode that needs no multiplexer at all. The target is
 **this machine** or an **SSH host**; Claude run by Obsidian is this machine
-only. Settings → Herdr → Runtimes lists them.
+only. Settings → Gjetr → Runtimes lists them.
 
 One runtime is **active** at a time. The agent list, the folder actions, the
 notifications and the status bar counts are all for the active runtime;
@@ -82,7 +82,7 @@ and kept for that connection, never looked up per start or per repaint:
 - **herdr-core** also lists hc's own templates (`~/.config/herdr-core/templates`
   on its machine), started as hc runs them.
 - **Claude, run by Obsidian** offers Claude Code only.
-- **Your own entries** (Settings → Herdr → Agents → **Add agent CLI**) show
+- **Your own entries** (Settings → Gjetr → Agents → **Add agent CLI**) show
   on every runtime: a wrapper, another command, or an agent with extra
   arguments. One that cannot start on the active runtime is greyed with the
   reason: herdr cannot start a command of your own (herdr-core can), or the
@@ -126,7 +126,7 @@ attached to it whatever you change, the host included.
   server for an SSH host) that switches to the other one.
 - **Three or more**: the same button opens a menu of all of them, the active one
   checked.
-- **Herdr: Switch runtime** in the command palette works for any count, and has
+- **Gjetr: Switch runtime** in the command palette works for any count, and has
   no default hotkey.
 
 With more than one runtime the status bar shows the active one's name beside
@@ -230,7 +230,7 @@ socket to set and nothing to forward.
 
 ### Setting one up
 
-1. In **Settings → Herdr → Runtimes**, add a runtime and set **Kind** to
+1. In **Settings → Gjetr → Runtimes**, add a runtime and set **Kind** to
    herdr-core (hc).
 2. **This machine:** leave **Hc binary** empty to search Homebrew,
    `/usr/local/bin`, `~/.local/bin` and the login shell's PATH, or give the

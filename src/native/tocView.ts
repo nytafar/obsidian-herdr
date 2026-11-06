@@ -310,7 +310,7 @@ export class TocView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return 'Herdr table of contents';
+		return 'Gjetr table of contents';
 	}
 
 	getIcon(): string {

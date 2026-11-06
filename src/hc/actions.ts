@@ -134,12 +134,12 @@ export class HcActions implements RuntimeActions {
 	async startAgentHere(folderAbsPath: string, options?: StartAgentOptions): Promise<StartedHcAgent | null> {
 		const send = this.host.connection();
 		if (!send) {
-			this.host.notice('Herdr: not connected to herdr-core.');
+			this.host.notice('Gjetr: not connected to herdr-core.');
 			return null;
 		}
 		const issue = remoteVaultPathIssue(this.host.runtime());
 		if (issue) {
-			this.host.notice(`Herdr: ${issue}. Set it in the plugin settings.`);
+			this.host.notice(`Gjetr: ${issue}. Set it in the plugin settings.`);
 			return null;
 		}
 		const agent = await agentToStart(this.host, options);
@@ -168,7 +168,7 @@ export class HcActions implements RuntimeActions {
 		try {
 			run = agent.template ? { argv: [agent.template] } : { line: agentLaunchLine(kind, agent.args, agent.command) };
 		} catch (error) {
-			this.host.notice(`Herdr: could not start an agent. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not start an agent. ${describe(error)}`);
 			return null;
 		}
 		for (let attempt = 0; ; attempt++) {
@@ -176,7 +176,7 @@ export class HcActions implements RuntimeActions {
 				const result = await send<unknown>('terminal.run', { ...run, cwd: folderAbsPath, name, labels });
 				const paneId = parseTerminal(result)?.address ?? '';
 				if (!paneId) throw new Error('herdr-core answered without a terminal address');
-				this.host.notice(`Herdr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
+				this.host.notice(`Gjetr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
 				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
 				return { paneId, name, kind };
 			} catch (error) {
@@ -186,7 +186,7 @@ export class HcActions implements RuntimeActions {
 					name = nameFor();
 					continue;
 				}
-				this.host.notice(`Herdr: could not start an agent. ${describe(error)}`);
+				this.host.notice(`Gjetr: could not start an agent. ${describe(error)}`);
 				return null;
 			}
 		}
@@ -205,7 +205,7 @@ export class HcActions implements RuntimeActions {
 		} catch (error) {
 			if (error instanceof HcError && error.kind === 'not_found') gone = true;
 			else if (!(error instanceof HcError && error.kind === 'finished')) {
-				this.host.notice(`Herdr: could not close the agent. ${describe(error)}`);
+				this.host.notice(`Gjetr: could not close the agent. ${describe(error)}`);
 				return false;
 			}
 		}
@@ -227,7 +227,7 @@ export class HcActions implements RuntimeActions {
 				}
 			}
 		}
-		if (gone) this.host.notice('Herdr: that agent is already gone, so its row was removed from the list.');
+		if (gone) this.host.notice('Gjetr: that agent is already gone, so its row was removed from the list.');
 		this.host.forgetPane(paneId, endpointId);
 		this.host.detachTerminalLeaves(paneId, endpointId);
 		return true;
@@ -242,13 +242,13 @@ export class HcActions implements RuntimeActions {
 			});
 			return true;
 		} catch (error) {
-			this.host.notice(`Herdr: could not ${pinned ? 'pin' : 'unpin'} the agent. ${describe(error)}`);
+			this.host.notice(`Gjetr: could not ${pinned ? 'pin' : 'unpin'} the agent. ${describe(error)}`);
 			return false;
 		}
 	}
 
 	private unsupported(what: string): null {
-		this.host.notice(`Herdr: ${what} is not available on herdr-core.`);
+		this.host.notice(`Gjetr: ${what} is not available on herdr-core.`);
 		return null;
 	}
 }

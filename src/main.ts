@@ -98,6 +98,7 @@ import { hcHookMachine } from './sessionHook/installer';
 import { SESSION_HOOK_COMMAND_NAME } from './hc/sessionWatcher';
 import { SessionHookModal, sessionHookStatusLine, type SessionHookTarget } from './sessionHook/modal';
 import { resolveHerdrBinary } from './herdr/binary';
+import { readLegacyData } from './legacyData';
 import { buildAgentName } from './actions';
 import type { PaneView } from './native/renderMode';
 import {
@@ -225,7 +226,7 @@ export default class HerdrPlugin extends Plugin {
 			// settings status for as long as it lasts.
 			onMismatch: (mismatch, runtime) => {
 				new Notice(
-					`Herdr: ${runtimeDisplayName(runtime)} speaks herdr-core generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Connecting anyway.`,
+					`Gjetr: ${runtimeDisplayName(runtime)} speaks herdr-core generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Connecting anyway.`,
 				);
 			},
 			currentScope: () => this.connection.current?.scope ?? null,
@@ -310,7 +311,7 @@ export default class HerdrPlugin extends Plugin {
 	openSessionHook(onDone?: () => void): void {
 		const target = this.sessionHookTarget();
 		if (!target) {
-			new Notice('Herdr: connect to a herdr-core runtime first.');
+			new Notice('Gjetr: connect to a herdr-core runtime first.');
 			return;
 		}
 		new SessionHookModal(this.app, target, onDone).open();
@@ -529,7 +530,7 @@ export default class HerdrPlugin extends Plugin {
 		this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
 		this.registerView(TOC_VIEW_TYPE, (leaf) => new TocView(leaf, this));
 		// Page preview for links in the native view (#114), behind the mod key.
-		this.registerHoverLinkSource(HOVER_LINK_SOURCE, { display: 'Herdr', defaultMod: true });
+		this.registerHoverLinkSource(HOVER_LINK_SOURCE, { display: 'Gjetr', defaultMod: true });
 		this.registerCommands();
 		this.registerStatusBar();
 		// A reconnect or an endpoint switch replaces the scope and the client the
@@ -596,7 +597,18 @@ export default class HerdrPlugin extends Plugin {
 	private foreignRuntimes: unknown[] = [];
 
 	async loadSettings() {
-		const stored = (await this.loadData()) as Partial<HerdrSettings> | null;
+		let stored = (await this.loadData()) as Partial<HerdrSettings> | null;
+		// The plugin was id `herdr` through 0.5 (see `legacyData.ts`): a first load
+		// as `gjetr` adopts that folder's settings when they are this plugin's,
+		// copied, and saved once below so it never happens again.
+		let adopted = false;
+		if (stored === null || stored === undefined) {
+			const legacy = await readLegacyData(this.app.vault.adapter, this.app.vault.configDir);
+			if (legacy) {
+				stored = legacy;
+				adopted = true;
+			}
+		}
 		// The v1 render mode setting split into a view and an engine (#104); a
 		// file that still holds the old `native` is written back once, below.
 		const renderMode = migrateRenderMode(stored);
@@ -636,7 +648,8 @@ export default class HerdrPlugin extends Plugin {
 			hiddenAgents: normalizeIdList(stored?.hiddenAgents),
 			defaultAgents: agents.defaultAgents,
 		};
-		if (renderMode.migrated || runtimes.migrated || agents.migrated) await this.saveSettings();
+		if (adopted || renderMode.migrated || runtimes.migrated || agents.migrated) await this.saveSettings();
+		if (adopted) new Notice('Gjetr: settings from the plugin\'s old "herdr" folder were carried over.');
 	}
 
 	async saveSettings() {
@@ -741,11 +754,11 @@ export default class HerdrPlugin extends Plugin {
 		try {
 			released = (await this.actions.releaseForGraduation?.(paneId)) ?? null;
 		} catch (error) {
-			new Notice(`Herdr: could not continue the agent. ${error instanceof Error ? error.message : String(error)}`);
+			new Notice(`Gjetr: could not continue the agent. ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		if (!released) {
-			new Notice('Herdr: that agent has no session to continue.');
+			new Notice('Gjetr: that agent has no session to continue.');
 			return;
 		}
 		let moved = false;
@@ -754,7 +767,7 @@ export default class HerdrPlugin extends Plugin {
 			await this.switchRuntime(runtimeId);
 			if (!(await this.scopeReady(runtimeId))) {
 				new Notice(
-					`Herdr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
+					`Gjetr: ${name} did not connect, or has no workspace for this vault, so the agent was left stopped here. Switch back to resume it.`,
 				);
 				return;
 			}
@@ -841,7 +854,7 @@ export default class HerdrPlugin extends Plugin {
 					paneId = agents.start(runtimeId, cwd, unique, { permissionMode, allowOnceOnly }).id;
 					await agents.prompt(runtimeId, paneId, prompt);
 				} catch (error) {
-					new Notice(`Herdr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);
+					new Notice(`Gjetr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);
 					return null;
 				}
 				// The native view: its waiting card is where the permission is answered.
@@ -1120,8 +1133,8 @@ export default class HerdrPlugin extends Plugin {
 		if (!runtime || !shells) {
 			new Notice(
 				shells
-					? 'Herdr: a shell tab needs a "Claude, run by Obsidian" runtime. Add one in the settings.'
-					: 'Herdr: shell tabs are not available on this platform.',
+					? 'Gjetr: a shell tab needs a "Claude, run by Obsidian" runtime. Add one in the settings.'
+					: 'Gjetr: shell tabs are not available on this platform.',
 			);
 			return null;
 		}
@@ -1307,14 +1320,14 @@ export default class HerdrPlugin extends Plugin {
 				);
 			};
 			// What the runtime's kind cannot do is left out, not offered and refused.
-			if (can.tabs) item('Herdr: new tab here', 'plus', () => void this.actions.newTabHere(path));
+			if (can.tabs) item('Gjetr: new tab here', 'plus', () => void this.actions.newTabHere(path));
 			if (can.splits) {
-				item('Herdr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
+				item('Gjetr: split here', 'separator-vertical', () => void this.actions.splitHere(path));
 			}
 			if (can.startAgent) {
-				item('Herdr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
+				item('Gjetr: start agent here', 'bot', () => void this.actions.startAgentHere(path));
 			}
-			if (can.shells) item('Herdr: open shell here', 'square-terminal', () => void this.openShellHere(path));
+			if (can.shells) item('Gjetr: open shell here', 'square-terminal', () => void this.openShellHere(path));
 		};
 
 		this.registerEvent(
@@ -1338,7 +1351,7 @@ export default class HerdrPlugin extends Plugin {
 	private registerStatusBar(): void {
 		const el = this.addStatusBarItem();
 		el.addClass('herdr-status-bar');
-		el.setAttribute('aria-label', 'Herdr agents');
+		el.setAttribute('aria-label', 'Gjetr agents');
 		this.registerDomEvent(el, 'click', () => {
 			void this.activateAgentList();
 		});
@@ -1359,7 +1372,7 @@ export default class HerdrPlugin extends Plugin {
 		// The live name: a rename shows without waiting for a reconnect.
 		const name = runtimeDisplayName(withLiveName(this.settings, this.endpoint.runtime));
 		// Which runtime the counts are for (issue #54), always in the tooltip.
-		const where = `Herdr agents on ${name}`;
+		const where = `Gjetr agents on ${name}`;
 		setTooltip(el, where);
 		el.setAttribute('aria-label', where);
 		// With one runtime there is nothing to tell apart, and the bar stays
@@ -1386,7 +1399,7 @@ export default class HerdrPlugin extends Plugin {
 		if (!leaf) {
 			leaf = workspace.getLeftLeaf(true);
 			if (!leaf) {
-				new Notice('Herdr: could not open the sidebar for the agent list.');
+				new Notice('Gjetr: could not open the sidebar for the agent list.');
 				return;
 			}
 			await leaf.setViewState({ type: AGENT_LIST_VIEW_TYPE, active: true });

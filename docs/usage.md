@@ -1,4 +1,4 @@
-# Using Herdr for Obsidian
+# Using Gjetr (Herdr for Obsidian)
 
 The day-to-day: the agent list, terminals, the native view, starting agents
 and notifications. Where something works on one runtime only, it says so;
@@ -6,7 +6,7 @@ and notifications. Where something works on one runtime only, it says so;
 
 ## The agent list
 
-**Herdr: Show agents** opens it in the left sidebar; it stays wherever you
+**Gjetr: Show agents** opens it in the left sidebar; it stays wherever you
 drag it. Only agents are listed: plain shells stay out.
 
 Each row is one agent: a kind icon coloured by status (orange blocked, green
@@ -83,7 +83,7 @@ herdr client shares.
 
 ## When something is off
 
-**Settings → Herdr** opens with a status block: which binary was found, which
+**Settings → Gjetr** opens with a status block: which binary was found, which
 socket or connection answers, the server version, and which workspace or
 space matched your vault. Every setup problem shows up there first;
 [troubleshooting.md](troubleshooting.md) explains the messages.

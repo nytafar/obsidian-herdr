@@ -1,7 +1,22 @@
 # Changelog
 
-All notable changes to Herdr for Obsidian. Versions are the bare
+All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
+
+## Unreleased
+
+### Changed
+
+- **The plugin is now Gjetr, id `gjetr`.** Commands
+  read **Gjetr: Show agents** and so on, the settings tab is **Settings →
+  Gjetr**, and the plugin folder is `.obsidian/plugins/gjetr/`. The GitHub
+  repository stays `nytafar/obsidian-herdr`, so BRAT keeps working.
+- Settings carry over: on the first load as `gjetr`, the plugin copies
+  `.obsidian/plugins/herdr/data.json` when that folder is this plugin's (its
+  manifest is ours, or, without one, the file has this plugin's own settings
+  keys), saves it once and says so in a notice. Another plugin's data in that
+  folder is never read in, and the old folder is never changed or removed.
+  Hotkeys bound to the old `herdr:` command ids have to be set again.
 
 ## 0.5.0 — 2026-11-06
 

@@ -132,7 +132,7 @@ export function remainingDraft(current: string, sent: string): string {
 /** What a failed send says, with herdr's own message in the tail. */
 export function sendFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
-	return `Herdr: could not send the prompt (${reason})`;
+	return `Gjetr: could not send the prompt (${reason})`;
 }
 
 /** The box, its button and the one send path they share. */
@@ -226,7 +226,7 @@ export class PromptBox {
 			await sender.interrupt(this.options.paneId());
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Herdr: could not stop the turn (${reason})`);
+			this.notify(`Gjetr: could not stop the turn (${reason})`);
 		}
 	}
 

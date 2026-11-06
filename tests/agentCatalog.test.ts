@@ -693,7 +693,7 @@ describe('AgentCatalogs', () => {
 		settings.defaultAgents = {};
 		const launch = subject.defaultLaunch();
 		await new Promise((resolve) => setTimeout(resolve, PROBE_WAIT_NOTICE_MS + 50));
-		expect(notices).toEqual(['Herdr: checking which agent CLIs are installed on this machine…']);
+		expect(notices).toEqual(['Gjetr: checking which agent CLIs are installed on this machine…']);
 		answer(probe(['codex']));
 		expect(await launch).toEqual({ kind: 'codex', label: 'Codex' });
 		// Landed: at once from now on, and no second notice.
@@ -1004,7 +1004,7 @@ describe('starting a catalog entry', () => {
 			pane_id: 'w1:p1',
 			args: ['--profile', 'w'],
 		});
-		expect(requests.at(-1)).toEqual({ method: 'notice', params: 'Herdr: started Codex agent "notes" in notes' });
+		expect(requests.at(-1)).toEqual({ method: 'notice', params: 'Gjetr: started Codex agent "notes" in notes' });
 
 		requests.length = 0;
 		await actions.startAgentHere('/vault/notes', { kind: 'claude', command: '~/bin/c', label: 'Mine' });
@@ -1015,7 +1015,7 @@ describe('starting a catalog entry', () => {
 		const requests: { method: string; params: unknown }[] = [];
 		await new HerdrActions(host(requests, () => Promise.resolve(null))).startAgentHere('/vault/notes');
 		expect(requests).toEqual([
-			{ method: 'notice', params: 'Herdr: no agent CLI was found on this machine. Add one under Settings → Herdr → Agents.' },
+			{ method: 'notice', params: 'Gjetr: no agent CLI was found on this machine. Add one under Settings → Gjetr → Agents.' },
 		]);
 	});
 

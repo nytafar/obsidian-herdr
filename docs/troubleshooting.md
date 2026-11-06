@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the status block at the top of **Settings → Herdr**; every problem
+Start with the status block at the top of **Settings → Gjetr**; every problem
 below shows up there.
 
 **"Herdr binary not found", or terminals never start.** Obsidian was launched
@@ -13,7 +13,7 @@ to the absolute path from `which herdr`.
 
 **"Herdr-core runtimes are not available in this version of the plugin yet".**
 The active runtime is a herdr-core one, which this version can list but not
-connect. Switch to a herdr runtime with **Herdr: Switch runtime** or the list's
+connect. Switch to a herdr runtime with **Gjetr: Switch runtime** or the list's
 toolbar.
 
 **"No herdr workspace matches this vault yet".** Neither the label nor the cwd

@@ -259,8 +259,8 @@ describe('a kind this build cannot run yet', () => {
 		expect(await actions.closePane('t1', endpoint.id)).toBe(false);
 		await actions.startAgentHere('/x');
 		expect(notices).toEqual([
-			`Herdr: ${HERDR_CORE_UNAVAILABLE}.`,
-			`Herdr: ${HERDR_CORE_UNAVAILABLE}.`,
+			`Gjetr: ${HERDR_CORE_UNAVAILABLE}.`,
+			`Gjetr: ${HERDR_CORE_UNAVAILABLE}.`,
 		]);
 		await expect(core.promptSender(() => null).send('t1', 'hi')).rejects.toThrow(
 			HERDR_CORE_UNAVAILABLE,
@@ -322,17 +322,79 @@ describe('nativeViewBlock: capability and transcript access, not the target', ()
 });
 
 /** The plugin's `loadSettings` over a stored `data.json`, with the save recorded. */
-async function load(stored: unknown): Promise<{ settings: HerdrSettings; saved: unknown[] }> {
+async function load(
+	stored: unknown,
+	vaultFiles: Record<string, string> = {},
+): Promise<{ settings: HerdrSettings; saved: unknown[]; reads: string[] }> {
 	const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin & Record<string, unknown>;
 	const saved: unknown[] = [];
+	const reads: string[] = [];
+	// The vault adapter, for the old `herdr` folder's settings (legacyData.ts).
+	plugin.app = {
+		vault: {
+			configDir: '.config-dir',
+			adapter: {
+				exists: (path: string) => {
+					reads.push(path);
+					return Promise.resolve(path in vaultFiles);
+				},
+				read: (path: string) => {
+					reads.push(path);
+					return Promise.resolve(vaultFiles[path] ?? '');
+				},
+			},
+		},
+	} as unknown as HerdrPlugin['app'];
 	plugin.loadData = () => Promise.resolve(structuredClone(stored));
 	plugin.saveData = (data: unknown) => {
 		saved.push(structuredClone(data));
 		return Promise.resolve();
 	};
 	await plugin.loadSettings();
-	return { settings: plugin.settings, saved };
+	return { settings: plugin.settings, saved, reads };
 }
+
+describe('loadSettings: settings from the old plugin id `herdr`', () => {
+	const old = {
+		defaultView: 'terminal',
+		terminalEngine: 'ghostty-web',
+		runtimes: [defaultLocalRuntime()],
+		activeRuntime: 'local',
+		panesPerTab: 3,
+	};
+	const ours = JSON.stringify({ id: 'herdr', name: 'Herdr', author: 'Lasse', authorUrl: 'https://github.com/nytafar' });
+	const xicum = JSON.stringify({ id: 'herdr', name: 'Herdr', author: 'xicum' });
+
+	it('adopts ours on a first load and saves it once under the new id', async () => {
+		const { settings, saved } = await load(null, {
+			'.config-dir/plugins/herdr/data.json': JSON.stringify(old),
+			'.config-dir/plugins/herdr/manifest.json': ours,
+		});
+		expect(settings.panesPerTab).toBe(3);
+		expect(settings.defaultView).toBe('terminal');
+		expect(saved).toHaveLength(1);
+		expect((saved[0] as { panesPerTab: number }).panesPerTab).toBe(3);
+	});
+
+	it('ignores another herdr plugin’s data in the same folder', async () => {
+		const { settings, saved } = await load(null, {
+			'.config-dir/plugins/herdr/data.json': JSON.stringify(old),
+			'.config-dir/plugins/herdr/manifest.json': xicum,
+		});
+		expect(saved).toHaveLength(0);
+		expect(settings.panesPerTab).toBe(DEFAULT_SETTINGS.panesPerTab);
+	});
+
+	it('never looks at the old folder once the plugin has data of its own', async () => {
+		const { settings, saved, reads } = await load(
+			{ ...old, panesPerTab: 1 },
+			{ '.config-dir/plugins/herdr/data.json': JSON.stringify(old), '.config-dir/plugins/herdr/manifest.json': ours },
+		);
+		expect(reads).toEqual([]);
+		expect(saved).toHaveLength(0);
+		expect(settings.panesPerTab).toBe(1);
+	});
+});
 
 describe('loadSettings: a pre-registry data.json (ADR-0004)', () => {
 	const remote = {
@@ -457,7 +519,7 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		};
 		(plugin.updateStatusBar as () => void).call(plugin);
 		expect(spans).toEqual(['New name']);
-		expect(attributes.get('aria-label')).toBe('Herdr agents on New name');
+		expect(attributes.get('aria-label')).toBe('Gjetr agents on New name');
 	});
 });
 

@@ -380,7 +380,7 @@ describe('the claude kind over a fake claude', () => {
 		await waitFor(() => status(h, paneId) === 'done', 'done');
 		expect(stdin(h.log).at(-1)).toMatchObject({ type: 'control_request', request: { subtype: 'interrupt' } });
 		// An interrupt's own aborted result is not an error worth a notice.
-		expect(h.notices.filter((notice) => !notice.startsWith('Herdr: started'))).toEqual([]);
+		expect(h.notices.filter((notice) => !notice.startsWith('Gjetr: started'))).toEqual([]);
 	});
 
 	it('refuses an answer while the agent is stopping, and shows the request as stopping', async () => {
@@ -432,7 +432,7 @@ describe('the claude kind over a fake claude', () => {
 		const paneId = await started(h);
 		await prompt(h, paneId, 'FAIL');
 		await waitFor(() => h.notices.some((notice) => notice.includes('Not logged in')), 'the notice');
-		expect(h.notices.at(-1)).toBe(`Herdr: ${h.scope.get(paneId)?.name}: Not logged in · Please run /login (api_error)`);
+		expect(h.notices.at(-1)).toBe(`Gjetr: ${h.scope.get(paneId)?.name}: Not logged in · Please run /login (api_error)`);
 	});
 
 	it('answers a control request nobody declared with an error, so Claude never hangs', async () => {

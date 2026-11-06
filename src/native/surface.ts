@@ -351,7 +351,7 @@ export function workingLine(status: AgentStatus): string {
 /** What a failed trust answer says, with herdr's message in the tail (#99). */
 export function trustFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
-	return `Herdr: could not trust this folder (${reason})`;
+	return `Gjetr: could not trust this folder (${reason})`;
 }
 
 /**
@@ -1046,7 +1046,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			splitBefore: this.options.noteSplitBefore?.() ?? false,
 		}).catch((error: unknown) => {
 			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Herdr: could not open ${linktext} (${reason})`);
+			this.notify(`Gjetr: could not open ${linktext} (${reason})`);
 		});
 	}
 
@@ -1472,7 +1472,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.answeredRequest = '';
 			for (const buttonEl of buttons) buttonEl.disabled = false;
 			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Herdr: could not answer Claude (${reason})`);
+			this.notify(`Gjetr: could not answer Claude (${reason})`);
 		}
 	}
 

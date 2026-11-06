@@ -89,7 +89,7 @@ export class AgentListView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return 'Herdr agents';
+		return 'Gjetr agents';
 	}
 
 	override getIcon(): string {
