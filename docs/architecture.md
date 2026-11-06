@@ -1215,7 +1215,9 @@ scratch pane created with `tab create` and `agent start`.
   already in flight. Only `blocked` rejects, with `agent_blocked`.
 - **`agent_session` appears after the first prompt, not at startup.** A freshly
   started Claude sits `idle` with no `agent_session` field until the first
-  turn begins; the transcript file is created at that moment.
+  turn begins; the transcript file is created at that moment. (herdr 0.9.5
+  reports it at `agent start` already; "Model, effort, permission mode and
+  context" below.)
 - **A new directory blocks at startup** with the workspace trust prompt:
   `agent start` returns `agent_not_ready` and the status is `blocked` with
   `launch_pending: true`. `send-keys Down Enter` clears it.
@@ -1523,6 +1525,81 @@ prompt; these are the facts a build may rely on.
   call and result. hc's `terminal.keys` replies at once with the status from
   before the key (`{status: "blocked", turn}`); `msg` names the next request
   1-3 s later, and `turn` advances on every status change.
+
+## Model, effort, permission mode and context
+
+Measured 2026-11-06 for issues #110 and #111 against Claude Code 2.1.318,
+herdr 0.9.5 and hc 0.1.18, in `oh-test-*` panes and `claude -p` stream-json
+processes under `/tmp`. The finding `native-view-session-settings` in the
+docs root has the measurements; `native-view-header` the context and
+placement. Nothing in the plugin reads or sets these yet.
+
+- **What the transcript says.** Every `assistant` line: `message.model`
+  and top-level `effort` (and `perTurnEffort`). A `model` attachment
+  (`identity.modelId`, `marketingName`) before the first reply and before
+  the first reply after a switch. `/model` and `/effort` run from the prompt
+  leave three `user` lines: the local-command caveat,
+  `<command-name>/model</command-name>` with `<command-args>`, and
+  `<local-command-stdout>` "Set model to \`Haiku 5.5\` and saved as your
+  default for new sessions" (or "… for this session only", optionally
+  "… with \`medium\` effort"), "Set effort level to low (saved as your
+  default for new sessions): …" (or "(this session only)"). An invalid
+  argument is written as `system` `local_command` instead ("Model 'bogus'
+  not found"; "Invalid argument: bogus. Valid options are: low, medium,
+  high, xhigh, max, auto"). New record types in 2.1.318: `api-request`
+  (`params.model`, `params.output_config.effort`, `betas`),
+  `api-request-shape`, `api-request-blob`, `session-owner`, and
+  `prompt_snapshot` and `session_context` attachments; the last holds the
+  account email, so nothing may log attachments whole.
+- **The window size is not in a herdr or hc transcript.** With
+  `opus[1m]` set, the attachment said `claude-opus-5-5` / "Opus 5.5", the
+  `api-request` had no 1M beta, and `/context` said `1m`; Haiku 5.5 and
+  Sonnet 5.5 were `1m` too on this account. The `[1m]` suffix is no signal.
+  `/context` writes "**Tokens:** 22.6k / 1m (2%)" in an `isMeta` `user`
+  line after a `local_command` with `commandRun.command: "context"`.
+- **Context in use** is `input_tokens + cache_creation_input_tokens +
+  cache_read_input_tokens` of the newest main-chain reply: 22,550 against
+  `/context`'s 22.6k, 26,922 against 26.9k.
+- **`/model <alias>` and `/effort <level>` save the default.** The first
+  writes `model` in `~/.claude/settings.json`, the second
+  `modelSettings.<model id>.effortLevel` (per model). Aliases accepted:
+  `opus`, `opus[1m]`, `sonnet`, `sonnet[1m]`, `haiku`, `fable`, `best`,
+  `default`, `opusplan`, a full id such as `claude-opus-4-8`.
+- **Session only goes through the pickers.** `/model` with no argument
+  lists `N.  <Display name> [✔]` rows, cursor `❯` on the current one, and
+  says "Enter to set as default · s to use this session only · Esc to
+  cancel"; ←/→ there sets the effort. `/effort` with no argument is a
+  `low medium high xhigh max` slider, "←/→ to adjust · Enter to confirm · s
+  for this session only · Esc to cancel". Arrow, then `s`: settings
+  untouched (herdr and hc). A digit in the model picker selects and saves
+  as the default.
+- **Switching model in a conversation with replies asks first**, with an
+  argument too: "Switch model? … ❯ 1. Yes, switch to Haiku 5.5 / 2. No, go
+  back". `2` or `esc` prints "Kept model as …" and writes nothing. Not shown
+  before the first reply or for the same model under another name. herdr
+  stays `done` or `working` (`agent explain`: `osc_title_idle`) and hc's
+  status has no `msg`: only the screen shows it.
+- **Mid-turn**, `/effort high` ran at once and applied from the next reply,
+  and **wrote nothing to the transcript**; `/model` put up the confirm while
+  the turn streamed on. Neither is queued or typed as text.
+- **The `claude` kind's control requests** (stream-json, all answered at
+  once, also mid-turn, applying from the next turn): `set_model {model}` →
+  `{model: "claude-sonnet-5-5"}` plus a replayed "Set model to \`sonnet
+  (claude-sonnet-5-5)\`" stdout line, settings untouched;
+  `apply_flag_settings {settings: {effortLevel}}` → bare success, session
+  only, no record; `set_permission_mode {mode}` → `{mode}`, an unknown mode
+  `error_code: "invalid_mode"` listing `acceptEdits, auto,
+  bypassPermissions, default, dontAsk, plan`; `get_context_usage` →
+  `categories`, `totalTokens`, `maxTokens`, `percentage`,
+  `autocompactSource`. Every `result` has `modelUsage[<model>].contextWindow`
+  (1000000 here); `system:init` has `model` and `permissionMode`.
+  `get_settings` answers with the account email: never call it.
+- **Permission mode** on 2.1.318: `shift+tab` cycled manual, accept edits,
+  plan, auto, manual (footer through `pane.read`); the next `user` line had
+  the new `permissionMode`, the `permission-mode` line lagged, as on 2.1.281.
+- **herdr 0.9.5 reports `agent_session` at `agent start`**, before any
+  prompt (source `herdr:claude`), unlike 0.8.2 below; the transcript file
+  appears with the first prompt or slash command.
 
 ## A second agent: Codex
 
