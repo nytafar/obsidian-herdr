@@ -616,6 +616,42 @@ describe('the claude kind over a fake claude', () => {
 		expect((await actions.releaseForGraduation?.(pinned.id))?.permissionMode).toBe('manual');
 	});
 
+	it('offers an installer row only Allow once and Deny, never a session or project grant, after a resume too (ADR-0008)', async () => {
+		const h = harness();
+		const pinned = h.kind.agents.start(h.runtimeId, h.dir, 'Install herdr-core', {
+			permissionMode: 'manual',
+			allowOnceOnly: true,
+		});
+		expect(h.stored[h.runtimeId]?.find((row) => row.id === pinned.id)?.allowOnceOnly).toBe(true);
+		const card = async () => {
+			await prompt(h, pinned.id, 'BASH');
+			await waitFor(() => status(h, pinned.id) === 'blocked', 'blocked');
+			const request = h.kind.native?.watcher(h.connection)?.snapshot(pinned.id)?.request;
+			expect(request).toMatchObject({ kind: 'permission', toolName: 'Bash', session: null, project: null });
+			await expect(answer(h, pinned.id, { type: 'allow-project' })).rejects.toThrow('that answer does not fit the request');
+			await expect(answer(h, pinned.id, { type: 'allow-session' })).rejects.toThrow('that answer does not fit the request');
+			expect(status(h, pinned.id)).toBe('blocked');
+			await answer(h, pinned.id, { type: 'allow' });
+			await waitFor(() => status(h, pinned.id) === 'done', 'done');
+			const sent = JSON.stringify(lastResponse(h));
+			expect(sent).toContain('"behavior":"allow"');
+			expect(sent).not.toContain('updatedPermissions');
+		};
+		await card();
+		const actions = h.kind.createActions(actionHost(h));
+		await actions.closePane(pinned.id, h.runtimeId);
+		await actions.resumeAgent?.(pinned.id);
+		await waitFor(() => starts(h.log).length === 2, 'the resume');
+		await card();
+	});
+
+	it('reads the allow-once pin back from data.json, and only as true', () => {
+		const row = { id: 'cl-1', sessionId: '11111111-2222-4333-8444-555555555555', cwd: '/v', name: 'a' };
+		expect(
+			normalizeClaudeSessions({ rt: [{ ...row, allowOnceOnly: true }, { ...row, id: 'cl-2', allowOnceOnly: 'yes' }] }),
+		).toEqual({ rt: [{ ...row, allowOnceOnly: true }, { ...row, id: 'cl-2' }] });
+	});
+
 	it('reads a pinned permission mode back from data.json, and drops one it does not know', () => {
 		const row = { id: 'cl-1', sessionId: '11111111-2222-4333-8444-555555555555', cwd: '/v', name: 'a' };
 		expect(

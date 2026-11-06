@@ -119,6 +119,14 @@ export interface StoredClaudeSession {
 	 * after a resume. Absent on every other row.
 	 */
 	permissionMode?: ClaudePermissionMode;
+	/**
+	 * This row's permission cards offer only Allow once and Deny: no grant for
+	 * the session, none for the project. Set with the pinned mode by "Ask
+	 * Claude" (ADR-0008), whose installer command would otherwise be one
+	 * click from a lasting Bash rule for `curl` and `sh` in the vault's
+	 * settings. Absent on every other row.
+	 */
+	allowOnceOnly?: boolean;
 }
 
 /**
@@ -165,6 +173,7 @@ export function normalizeClaudeSessions(
 				...((CLAUDE_PERMISSION_MODES as readonly unknown[]).includes(row.permissionMode)
 					? { permissionMode: row.permissionMode as ClaudePermissionMode }
 					: {}),
+				...(row.allowOnceOnly === true ? { allowOnceOnly: true } : {}),
 			});
 		}
 		if (sessions.length > 0) result[runtimeId] = sessions;
@@ -197,6 +206,8 @@ export interface ClaudeAgentView {
 	transcriptPath: string;
 	/** What runs: the headless process, the TUI of the terminal view, or nothing. */
 	mode: ClaudeProcessMode;
+	/** Its cards offer only Allow once and Deny ({@link StoredClaudeSession.allowOnceOnly}). */
+	allowOnceOnly?: boolean;
 }
 
 /** What changed about an agent, for the scope and the watcher. */
@@ -306,6 +317,12 @@ export const AGENT_FORGOTTEN = 'the agent was removed from the list';
 export const PLUGIN_UNLOADING = 'the plugin is unloading';
 /** A native prompt to a TUI of unknown status, when the user kept it (or nobody could be asked). */
 export const PROMPT_NOT_SENT_KEPT = 'the prompt was not sent: the agent stayed in its terminal view';
+/**
+ * Why a row pinned to Allow once has no terminal view: Claude's own dialog
+ * there offers "don't ask again", which saves a lasting rule.
+ */
+export const ALLOW_ONCE_NO_TERMINAL =
+	"not offered for this agent, which may only be allowed once at a time: Claude's own dialog in the terminal can save a lasting rule";
 /** A native prompt waiting for a switch that a stop overtook. */
 export const PROMPT_NOT_SENT_STOPPED = 'the prompt was not sent: the agent was stopped first';
 
@@ -515,13 +532,14 @@ export class ClaudeAgents {
 	/**
 	 * A new agent in `cwd`, stored and started at once (it idles until
 	 * prompted). `options.permissionMode` pins the row to that mode instead of
-	 * the runtime's, for every process it ever runs.
+	 * the runtime's, for every process it ever runs; `options.allowOnceOnly`
+	 * pins its cards to Allow once and Deny.
 	 */
 	start(
 		runtimeId: string,
 		cwd: string,
 		name: string,
-		options: { permissionMode?: ClaudePermissionMode } = {},
+		options: { permissionMode?: ClaudePermissionMode; allowOnceOnly?: boolean } = {},
 	): ClaudeAgentView {
 		const table = this.table(runtimeId);
 		const id = this.host.newAgentId(new Set(table.keys()));
@@ -531,6 +549,7 @@ export class ClaudeAgents {
 			cwd,
 			name,
 			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+			...(options.allowOnceOnly ? { allowOnceOnly: true } : {}),
 		});
 		table.set(id, record);
 		this.persist(runtimeId);
@@ -633,8 +652,12 @@ export class ClaudeAgents {
 		// Claude was already told no.
 		if (request && record.process?.isStopping) throw new Error('the agent is stopping, so this request was denied');
 		if (!request || !record.process?.alive) throw new Error('that request is no longer waiting');
-		// The project grant is only offered where its file is known.
-		const response = answer.type === 'allow-project' && !record.settings ? null : permissionResponse(request, answer);
+		// The project grant is only offered where its file is known, and no
+		// grant at all on a row pinned to Allow once.
+		const offered =
+			!(record.stored.allowOnceOnly && (answer.type === 'allow-session' || answer.type === 'allow-project')) &&
+			!(answer.type === 'allow-project' && !record.settings);
+		const response = offered ? permissionResponse(request, answer) : null;
 		if (!response) throw new Error('that answer does not fit the request');
 		record.process.send(controlResponse(requestId, response));
 		record.pending.delete(requestId);
@@ -723,6 +746,7 @@ export class ClaudeAgents {
 	openTerminal(runtimeId: string, agentId: string, viewer: PtyViewer): PtyAttachment {
 		const record = this.record(runtimeId, agentId);
 		if (!this.host.pty) throw new Error('the terminal view is not available on this platform');
+		if (record.stored.allowOnceOnly) throw new Error(ALLOW_ONCE_NO_TERMINAL);
 		if (record.stopping && record.hold) throw new Error(record.hold.reason);
 		this.refuseHeld(record);
 		// Opening a tab on a stopped agent is a person resuming it.
@@ -1384,7 +1408,7 @@ export class ClaudeAgents {
 		const first = record.pending.values().next();
 		let request: PendingRequest | null = null;
 		if (!first.done) {
-			request = this.requestViews.get(first.value) ?? pendingRequestOf(first.value, record.settings);
+			request = this.requestViews.get(first.value) ?? this.cardOf(record, first.value);
 			this.requestViews.set(first.value, request);
 			if (record.process?.isStopping) {
 				const stopping = this.stoppingViews.get(first.value) ?? { ...request, stopping: true };
@@ -1403,6 +1427,12 @@ export class ClaudeAgents {
 			transcriptPath: this.transcriptFile(runtimeId, record),
 			mode: this.modeOf(record),
 		};
+	}
+
+	/** The waiting card for a request: without grants on a row pinned to Allow once. */
+	private cardOf(record: AgentRecord, request: ToolPermissionRequest): PendingRequest {
+		const card = pendingRequestOf(request, record.settings);
+		return record.stored.allowOnceOnly ? { ...card, session: null, project: null } : card;
 	}
 
 	/** An agent in its terminal view: the status Claude reported, no request (it is answered in the TUI). */

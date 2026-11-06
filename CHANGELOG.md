@@ -104,7 +104,9 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   starts in the vault), or install herdr-core with its official command:
   copy it, run it in a terminal tab, or ask Claude to run it. Ask Claude
   always starts in the asking permission mode, whatever the runtime's mode,
-  so the command waits on a permission card. **Check again** finds `hc`
+  so the command waits on a permission card, which offers only Allow once
+  and Deny: no session or project rule for the installer is ever saved, and
+  that agent has no terminal view, where Claude's own dialog could save one. **Check again** finds `hc`
   afterwards and adds herdr-core on this machine in one click, then offers
   the Claude session hook. A link covers herdr instead. The plugin never
   downloads or installs anything itself.

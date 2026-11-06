@@ -314,6 +314,13 @@ export interface RuntimeKindAdapter<
 	 * null: a `claude` shell tab, which is no agent.
 	 */
 	paneNativeReason?(paneId: string): string | null;
+	/**
+	 * Why a pane of this kind has no terminal view though the kind has one,
+	 * or null: a `claude` agent pinned to Allow once (ADR-0008's installer),
+	 * whose terminal dialog could save a lasting rule. Its tabs show the
+	 * native view instead.
+	 */
+	paneTerminalReason?(endpoint: Endpoint, paneId: string): string | null;
 	/** A tab title for a pane no scope lists (a `claude` shell tab), or null. */
 	paneTitle?(paneId: string): string | null;
 	/**

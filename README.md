@@ -76,7 +76,8 @@ three ways in:
    with Ctrl-C (Linux for now: not on Windows, and not on macOS until it is
    verified there), or **Ask Claude** to run it. Claude always runs that
    session in the asking permission mode, whatever your runtime is set to, so
-   the command waits on a permission card until you allow it. When the
+   the command waits on a permission card until you allow it, once: the card
+   offers no "always allow" for it. When the
    install is done, **Check again** finds `hc`, and **Add herdr-core on this
    machine** adds the runtime, makes it active and offers the Claude session
    hook for the native view.

@@ -38,7 +38,7 @@ import type { PlatformPath } from 'node:path';
 import type { ConnectionTunnel } from '../connection';
 import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/binary';
 import { ClaudeActions } from '../claude/actions';
-import { ClaudeAgents, type ClaudeQuestion, type StoredClaudeSession } from '../claude/agents';
+import { ALLOW_ONCE_NO_TERMINAL, ClaudeAgents, type ClaudeQuestion, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
 import {
 	defaultPtySpawn,
@@ -319,6 +319,8 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			});
 		},
 		paneNativeReason: (paneId) => (isShellId(paneId) ? SHELL_NO_NATIVE : null),
+		paneTerminalReason: (endpoint, paneId) =>
+			agents.get(endpoint.runtime.id, paneId)?.allowOnceOnly ? ALLOW_ONCE_NO_TERMINAL : null,
 		paneTitle: (paneId) => {
 			const cwd = isShellId(paneId) ? shells?.cwd(paneId) : null;
 			return cwd ? `Shell: ${nodePath.basename(cwd) || cwd}` : null;

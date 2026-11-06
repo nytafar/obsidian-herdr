@@ -40,7 +40,11 @@ it first shows, and again on **Check again**. It offers (ADR-0008):
     asking permission mode (`manual`), whatever the runtime's **Permission
     mode** says, and keeps it after a resume, so the installer arrives on the
     native view's waiting card with the full command, and nothing runs until
-    you press Allow.
+    you press Allow. Its card offers only **Allow** (once) and **Deny**, never
+    "Allow for this session" or "Always allow in this project", which would
+    save a lasting rule for `curl` and `sh` in the vault's settings; for the
+    same reason that agent has no terminal view, where Claude's own dialog
+    offers one.
 - **After the install**: once `hc` is found, **Add herdr-core on this
   machine** (or **Use herdr-core on this machine** when such a runtime exists)
   adds the runtime, makes it active, and once it connects opens the Claude

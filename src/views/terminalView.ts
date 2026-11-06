@@ -753,7 +753,10 @@ export class TerminalView extends ItemView {
 		const kind = this.plugin.kindOf(endpoint.runtime.kind);
 		// A kind that runs but has no terminal of its own (ADR-0007) says so; a
 		// kind this build cannot run at all keeps its terminal, which says why.
-		const terminalReason = kind.unavailable === null ? kind.terminalUnavailable : null;
+		const terminalReason =
+			kind.unavailable === null
+				? (kind.terminalUnavailable ?? (paneId ? (kind.paneTerminalReason?.(endpoint, paneId) ?? null) : null))
+				: null;
 		// A pane that is no agent (a `claude` shell tab) has nothing to show natively.
 		const paneReason = paneId ? (kind.paneNativeReason?.(paneId) ?? null) : null;
 		if (paneReason) return { remote: false, kindReason: paneReason, terminalReason };

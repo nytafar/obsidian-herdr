@@ -788,14 +788,14 @@ export default class HerdrPlugin extends Plugin {
 			switchRuntime: (id) => this.switchRuntime(id),
 			waitForRuntime: (id) => this.scopeReady(id),
 			startAgentInVault: () => this.actions.startAgentHere(this.vaultPath()),
-			startClaudeAgent: async ({ runtimeId, cwd, name, prompt, permissionMode }) => {
+			startClaudeAgent: async ({ runtimeId, cwd, name, prompt, permissionMode, allowOnceOnly }) => {
 				const runtime = runtimeById(this.settings, runtimeId);
 				if (!runtime || runtime.kind !== 'claude') return null;
 				const agents = this.claudeKind.agents;
 				let paneId: string;
 				try {
 					const unique = buildAgentName(name, { folder: '', vault: '' }, agents.names(runtimeId));
-					paneId = agents.start(runtimeId, cwd, unique, { permissionMode }).id;
+					paneId = agents.start(runtimeId, cwd, unique, { permissionMode, allowOnceOnly }).id;
 					await agents.prompt(runtimeId, paneId, prompt);
 				} catch (error) {
 					new Notice(`Herdr: could not start Claude. ${error instanceof Error ? error.message : String(error)}`);

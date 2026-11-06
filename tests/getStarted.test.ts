@@ -387,6 +387,9 @@ describe('the flow', () => {
 				name: 'Install herdr-core',
 				prompt: askClaudePrompt('linux'),
 				permissionMode: 'manual',
+				// The installer's card offers Allow once and Deny only: no grant
+				// for curl or sh is ever written to the vault's settings.
+				allowOnceOnly: true,
 			});
 			// The waiting card answers on the published connection only.
 			expect(named(host, 'switchRuntime')).toEqual([['switchRuntime', 'rt-claude']]);

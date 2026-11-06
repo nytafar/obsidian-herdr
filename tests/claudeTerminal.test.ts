@@ -21,6 +21,7 @@ import type { ActionHost } from '../src/actions';
 import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
 import {
 	AGENT_FORGOTTEN,
+	ALLOW_ONCE_NO_TERMINAL,
 	AGENT_RELEASED,
 	AGENT_STOPPED,
 	CLAUDE_QUIT,
@@ -677,6 +678,22 @@ describe('switches and stops that race a tab (the D2 review)', () => {
 		await pause(50);
 		expect(h.pty.children).toHaveLength(0);
 		expect(streamStarts(h)).toEqual([]);
+	});
+});
+
+describe('an agent pinned to Allow once (Get started\'s installer)', () => {
+	it('has no terminal view, where Claude\'s own dialog could save a lasting rule', async () => {
+		const h = harness();
+		const pinned = h.kind.agents.start(h.runtimeId, h.dir, 'Install herdr-core', { permissionMode: 'manual', allowOnceOnly: true });
+		await waitFor(() => streamStarts(h).length === 1, 'the stream start');
+		const reason = h.kind.paneTerminalReason?.(h.connection.endpoint, pinned.id) ?? null;
+		expect(reason).toBe(ALLOW_ONCE_NO_TERMINAL);
+		expect(h.kind.paneTerminalReason?.(h.connection.endpoint, 'cl-other')).toBeNull();
+		const tab = openTab(h, pinned.id);
+		expect(tab.closed).toEqual([ALLOW_ONCE_NO_TERMINAL]);
+		await new Promise((done) => setTimeout(done, 50));
+		expect(h.pty.children).toHaveLength(0);
+		expect(agent(h, pinned.id)?.mode).toBe('stream');
 	});
 });
 

@@ -233,6 +233,8 @@ export interface GetStartedHost {
 		name: string;
 		prompt: string;
 		permissionMode: ClaudePermissionMode;
+		/** The row's cards offer only Allow once and Deny. */
+		allowOnceOnly: boolean;
 	}): Promise<string | null>;
 	/** A shell tab in `folder` on a `claude` runtime, `command` run first. */
 	openShellHere(folder: string, options: { command?: string; runtimeId?: string }): Promise<string | null>;
@@ -395,6 +397,9 @@ export class GetStartedFlow {
 				name: ASK_CLAUDE_AGENT_NAME,
 				prompt: askClaudePrompt(this.host.platform),
 				permissionMode: ASK_CLAUDE_PERMISSION_MODE,
+				// Allow once and Deny only: a session or project grant would
+				// leave a Bash rule for `curl` and `sh` behind.
+				allowOnceOnly: true,
 			});
 		});
 	}
