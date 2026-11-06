@@ -64,7 +64,8 @@ runtimes you add and switch between. See [docs/runtimes.md](docs/runtimes.md).
   agent in that repository; it is left out where that file cannot be told for
   sure; a question's options; a plan's
   approval, or its rejection with feedback. Nothing is answered for you and
-  nothing times out. A **Stop** button interrupts the running turn. The row
+  nothing times out; while an agent stops, its card says so and takes no
+  answer, since stopping denies what waits. A **Stop** button interrupts the running turn. The row
   menu has **Stop agent**, **Forget agent** for a stopped row, and **Continue
   in herdr** or **Continue in herdr-core** once the session has had a turn,
   which hands the conversation to such a runtime with `claude --resume`, in

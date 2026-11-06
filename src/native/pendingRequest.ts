@@ -84,6 +84,11 @@ export interface PendingRequest {
 	session: PendingGrant | null;
 	/** "Always allow in this project", or null when the runtime suggested none. */
 	project: PendingProjectGrant | null;
+	/**
+	 * The agent is stopping, and the request is denied with it: the card says
+	 * so and takes no answer. Absent or false otherwise.
+	 */
+	stopping?: boolean;
 }
 
 /** What the user chose on the card. */

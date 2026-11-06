@@ -827,7 +827,12 @@ and, while it runs, its process. Status is the stream's:
 keyed on `is_error` with `terminal_reason`, never on `subtype`, and shown as a
 notice; an interrupt's own `aborted_*` result is not. A control request of a
 subtype nothing declared is answered with the CLI's own error shape, and
-`control_cancel_request` withdraws a pending one (its card closes).
+`control_cancel_request` withdraws a pending one (its card closes). Once a
+stop has begun, its denials are already on their way, so the pending request
+is shown with `PendingRequest.stopping` (the card says the agent is stopping
+and disables its buttons) and an answer is refused with "the agent is
+stopping"; before, `alive` still held and the answer was written after the
+denial (measured live).
 
 **The connection** has no transport. Discovery finds `claude` like the other
 binaries (override, the usual directories, extra PATH, the login shell's

@@ -252,6 +252,8 @@ export class ClaudeAgents {
 	private readonly listeners = new Set<Listener>();
 	/** One card model per request, so an unchanged request reads as the same object. */
 	private readonly requestViews = new WeakMap<ToolPermissionRequest, PendingRequest>();
+	/** The same, for a request whose agent is stopping. */
+	private readonly stoppingViews = new WeakMap<ToolPermissionRequest, PendingRequest>();
 	private statusSeq = 0;
 
 	constructor(private readonly host: ClaudeAgentsHost) {}
@@ -338,6 +340,9 @@ export class ClaudeAgents {
 	respond(runtimeId: string, agentId: string, requestId: string, answer: WaitingAnswer): void {
 		const record = this.record(runtimeId, agentId);
 		const request = record.pending.get(requestId);
+		// A stop denies what waits first, so an answer now would come after
+		// Claude was already told no.
+		if (request && record.process?.isStopping) throw new Error('the agent is stopping, so this request was denied');
 		if (!request || !record.process?.alive) throw new Error('that request is no longer waiting');
 		// The project grant is only offered where its file is known.
 		const response = answer.type === 'allow-project' && !record.settings ? null : permissionResponse(request, answer);
@@ -360,7 +365,10 @@ export class ClaudeAgents {
 		const record = this.table(runtimeId).get(agentId);
 		const process = record?.process;
 		if (!record || !process) return;
-		await process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] });
+		const stopped = process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] });
+		// The waiting card says the agent is stopping until it has.
+		if (record.process === process) this.update(runtimeId, record);
+		await stopped;
 	}
 
 	/** Stops the agent if it runs and removes its row. The transcript stays. */
@@ -626,6 +634,11 @@ export class ClaudeAgents {
 		if (!first.done) {
 			request = this.requestViews.get(first.value) ?? pendingRequestOf(first.value, record.settings);
 			this.requestViews.set(first.value, request);
+			if (record.process?.isStopping) {
+				const stopping = this.stoppingViews.get(first.value) ?? { ...request, stopping: true };
+				this.stoppingViews.set(first.value, stopping);
+				request = stopping;
+			}
 		}
 		const status = this.statusOf(record);
 		return {

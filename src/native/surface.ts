@@ -1351,11 +1351,17 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		component: Component,
 	): void {
 		const buttons: HTMLButtonElement[] = [];
+		// A stopping agent has denied the request already: shown, not answerable.
+		const stopping = request.stopping === true;
+		if (stopping) {
+			el.createDiv({ cls: 'herdr-native-waiting-stopping', text: 'The agent is stopping, so this request is being denied.' });
+		}
 		const send = (answer: WaitingAnswer): void => {
 			void this.answer(request, answer, buttons);
 		};
 		const button = (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => {
 			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
+			buttonEl.disabled = stopping;
 			buttons.push(buttonEl);
 			component.registerDomEvent(buttonEl, 'click', () => {
 				const chosen = answer();
@@ -1446,7 +1452,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 				}
 				return { type: 'answer', answers };
 			});
-			submit.disabled = !complete();
+			submit.disabled = submit.disabled || !complete();
 		}
 		button(actions, 'Dismiss', ['herdr-native-waiting-deny'], () => ({ type: 'dismiss' }));
 	}
@@ -1457,7 +1463,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	private async answer(request: PendingRequest, answer: WaitingAnswer, buttons: HTMLButtonElement[]): Promise<void> {
 		const responder = this.options.responder;
-		if (!responder || this.answeredRequest === request.id) return;
+		if (!responder || request.stopping || this.answeredRequest === request.id) return;
 		this.answeredRequest = request.id;
 		for (const buttonEl of buttons) buttonEl.disabled = true;
 		try {

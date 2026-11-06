@@ -700,6 +700,12 @@
 	margin-top: var(--size-4-1);
 }
 
+.herdr-native-waiting-stopping {
+	color: var(--text-warning);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+}
+
 .herdr-native-waiting-question + .herdr-native-waiting-question {
 	margin-top: var(--size-4-3);
 }

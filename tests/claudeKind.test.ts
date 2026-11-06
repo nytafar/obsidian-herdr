@@ -379,6 +379,26 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.notices.filter((notice) => !notice.startsWith('Herdr: started'))).toEqual([]);
 	});
 
+	it('refuses an answer while the agent is stopping, and shows the request as stopping', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		await prompt(h, paneId, 'WRITE');
+		await waitFor(() => status(h, paneId) === 'blocked', 'blocked');
+		const before = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.request;
+		expect(before?.stopping).toBeFalsy();
+		const stopping = h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+		const during = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.request;
+		expect(during).toMatchObject({ id: before?.id, stopping: true });
+		await expect(
+			h.kind.responder?.(() => h.client).respond(paneId, before?.id ?? '', { type: 'allow' }),
+		).rejects.toThrow('the agent is stopping');
+		await stopping;
+		// Only the stop's own denial reached Claude.
+		const responses = stdin(h.log).filter((message) => message.type === 'control_response');
+		expect(responses).toHaveLength(1);
+		expect(JSON.stringify(responses[0])).toContain('"behavior":"deny"');
+	});
+
 	it('closes a waiting card when Claude withdraws the request', async () => {
 		const h = harness();
 		const paneId = await started(h);

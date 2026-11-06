@@ -251,6 +251,22 @@ describe('the waiting card answers the runtime’s request', () => {
 		expect(buttons(el).every((entry) => entry.disabled)).toBe(true);
 	});
 
+	it('says the agent is stopping and takes no answer once it is', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(WRITE);
+		model.block({ ...WRITE, stopping: true });
+		const card = el.find('herdr-native-waiting');
+		expect(card.find('herdr-native-waiting-stopping').textContent).toBe(
+			'The agent is stopping, so this request is being denied.',
+		);
+		expect(buttons(el).length).toBeGreaterThan(0);
+		expect(buttons(el).every((entry) => entry.disabled)).toBe(true);
+		press(el, 'Allow');
+		await settle();
+		expect(answers).toEqual([]);
+	});
+
 	it('keeps the card as it is while the same request waits', async () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);

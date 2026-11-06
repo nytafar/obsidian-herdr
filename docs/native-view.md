@@ -93,7 +93,8 @@ On Claude run by Obsidian the agent's dialogs come to the plugin as requests
 Claude itself waits on, so the card is the dialog and answers it directly.
 There is no terminal there, and no **Open in terminal**. Nothing is pressed
 for you and nothing times out: an unanswered card waits, and its row shows
-the agent as blocked. Stopping the agent denies whatever it was waiting on.
+the agent as blocked. Stopping the agent denies whatever it was waiting on;
+until it has stopped, the card says so and takes no answer.
 
 - **A tool permission** names the tool and what it acts on, with Claude's
   reason when it gives one (a path outside the folder). **Allow** and
