@@ -3,7 +3,7 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
-## Unreleased
+## 0.6.0 — 2026-11-06
 
 ### Changed
 

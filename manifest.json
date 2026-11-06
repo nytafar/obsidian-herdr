@@ -1,7 +1,7 @@
 {
 	"id": "gjetr",
 	"name": "Gjetr",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"minAppVersion": "1.7.2",
 	"description": "Herdr for Obsidian: your herdr and herdr-core agents in the vault, as terminals or as Claude Code sessions rendered as Markdown.",
 	"author": "Lasse",
