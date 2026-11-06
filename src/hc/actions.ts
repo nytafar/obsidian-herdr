@@ -10,6 +10,8 @@
  * - Close: `terminal.kill`, then `terminal.rm`.
  * - Pin: the shared `herdr.pinned` label.
  * - Prompt: `terminal.send`; keys: `terminal.keys`.
+ * - Screen access for dialog answers (#164): `terminal.read`, one key per
+ *   `terminal.keys`, text over a short attach.
  * - New tab, split, rename and focus have no hc method: the capabilities hide
  *   them, and a call that slips through says so instead of sending anything.
  *
@@ -36,6 +38,7 @@ import {
 	type PromptSender,
 } from '../native/promptSender';
 import { imageExtension, imagePaste, type PromptImage } from '../native/promptImages';
+import { checkScreenKey, checkScreenText, type ScreenAccess, type ScreenKey } from '../native/screenAccess';
 import { HcError } from './connection';
 import { LABEL_AGENT, LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
 
@@ -334,6 +337,66 @@ export function hcKeySender(client: () => PromptClient | null): KeySender {
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
 			try {
 				await connected.request('terminal.keys', { terminal: paneId, keys: keys.map(hcKeyName) });
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+		},
+	};
+}
+
+/** What typing needs of an hc client beyond `request` (`HcClient` has it). */
+type HcTypingClient = PromptClient & Pick<HcImageClient, 'input'>;
+
+function typingClient(client: PromptClient): HcTypingClient | null {
+	const candidate = client as Partial<HcTypingClient>;
+	return typeof candidate.input === 'function' ? (candidate as HcTypingClient) : null;
+}
+
+/**
+ * Screen access on herdr-core (#164, ADR-0009): `terminal.read {lines: 0}`
+ * for the visible screen, `terminal.keys` with one key per call (its reply is
+ * the status from before the key, so it confirms nothing and is not read),
+ * and text as one AUTOMATIC_INPUT frame on a short resumed attach at the
+ * terminal's own grid ({@link HcImageClient.input}): `terminal.keys` would
+ * lowercase letters, and `terminal.send` presses Enter.
+ */
+export function hcScreenAccess(client: () => PromptClient | null): ScreenAccess {
+	const connected = (): PromptClient => {
+		const current = client();
+		if (!current) throw new Error(NO_CONNECTION_MESSAGE);
+		return current;
+	};
+	return {
+		async read(paneId: string): Promise<string> {
+			const requester = connected();
+			let result: { text?: unknown } | null;
+			try {
+				result = await requester.request<{ text?: unknown } | null>('terminal.read', {
+					terminal: paneId,
+					lines: 0,
+				});
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+			if (typeof result?.text !== 'string') throw new Error('herdr-core did not return the screen');
+			return result.text;
+		},
+		async press(paneId: string, key: ScreenKey): Promise<void> {
+			const checked = checkScreenKey(key);
+			const requester = connected();
+			try {
+				await requester.request('terminal.keys', { terminal: paneId, keys: [checked] });
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+		},
+		async type(paneId: string, text: string): Promise<void> {
+			checkScreenText(text);
+			const typer = typingClient(connected());
+			if (!typer) throw new Error('this herdr-core connection cannot type into a terminal');
+			if (!text) return;
+			try {
+				await typer.input(paneId, text);
 			} catch (error) {
 				throw new Error(describe(error));
 			}

@@ -34,7 +34,7 @@
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
 import { defaultDeps, expandHome, resolveHerdrBinary, type DiscoveryDeps, type DiscoveryResult } from '../herdr/binary';
 import { probeLocal, probeOverHc, readHcTemplates } from '../agents/probe';
-import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
+import { HcActions, hcKeySender, hcPromptSender, hcScreenAccess } from '../hc/actions';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
@@ -313,6 +313,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 		},
 		promptSender: (client) => hcPromptSender(client),
 		keySender: (client) => hcKeySender(client),
+		screen: (client) => hcScreenAccess(client),
 		createTabLabels: (connection) => new HcTabLabels(connection.scope),
 		statusLines: (connection) => (connection ? hcStatusLines(connection) : null),
 	};

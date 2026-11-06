@@ -37,6 +37,7 @@ import type {
 } from '../connection';
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
 import type { WaitingResponder } from '../native/pendingRequest';
+import type { ScreenAccess } from '../native/screenAccess';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
@@ -406,6 +407,13 @@ export interface RuntimeKindAdapter<
 	 * (`PaneSnapshot.request`, ADR-0007) has one.
 	 */
 	responder?(client: () => PromptClient | null): WaitingResponder;
+	/**
+	 * Read a pane's screen, press one key, type text (#164, ADR-0009), over
+	 * the same client: how a dialog in a multiplexer pane is answered. Absent
+	 * for a kind with no screen to answer on (`claude`, whose requests come as
+	 * messages and go through {@link responder}).
+	 */
+	screen?(client: () => PromptClient | null): ScreenAccess;
 	/**
 	 * The tab labels views on this connection read, built once per connection.
 	 * `alive()` is true while that connection is the published one.
