@@ -426,6 +426,7 @@ describe('NativePaneSurface: tool groups', () => {
 			'herdr-native-change',
 			'herdr-native-source',
 			'herdr-native-block',
+			'herdr-native-reply-actions',
 		]);
 		expect(el.find('herdr-native-change').textContent).toBe('Updated notes/b');
 		expect(el.find('herdr-native-source').textContent).toBe('Searched the web for “herdr protocol”');

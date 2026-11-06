@@ -649,5 +649,16 @@ export function settingNamed(container: unknown, name: string): Setting {
 	return first;
 }
 
-export function setIcon(): void {}
-export function setTooltip(): void {}
+/**
+ * The icon `setIcon` last put on each element, and the tooltip `setTooltip`
+ * last gave it, so a test can read what a button shows (#140).
+ */
+export const iconOf = new WeakMap<object, string>();
+export const tooltipOf = new WeakMap<object, string>();
+
+export function setIcon(el: object, icon: string): void {
+	iconOf.set(el, icon);
+}
+export function setTooltip(el: object, tooltip: string): void {
+	tooltipOf.set(el, tooltip);
+}

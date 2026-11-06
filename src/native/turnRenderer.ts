@@ -52,6 +52,7 @@ import {
 import { fillUriLink } from './noteLinks';
 import { progressText, renderChecklist } from './todoList';
 import { findObsidianUris } from './obsidianUri';
+import { copyButton, defaultCopier, renderReplyActions, replyMarkdown, type Copier } from './copyActions';
 
 /**
  * One piece of a human prompt: literal text, a wikilink to a note, or an
@@ -152,6 +153,11 @@ export interface TurnRendererOptions {
 	 * this renderer; a renderer of its own when left out.
 	 */
 	folds?: FoldMemory;
+	/**
+	 * Where the copy buttons put text and say they could not (#140): the
+	 * clipboard and a notice when left out.
+	 */
+	copier?: Copier;
 	/** A turn element was created: it is the one Claude is writing. */
 	onTurnCreated?: (turnEl: HTMLElement) => void;
 }
@@ -228,6 +234,7 @@ const ITEM_KINDS: ItemKinds = {
 		render: (item, context) => {
 			const el = context.parent.createDiv({ cls: 'herdr-native-steer' });
 			renderPrompt(el, item.entry.text, context.options.resolveUri);
+			copyPromptButton(el, context.component, item.entry.text, context.options);
 			return { el };
 		},
 	},
@@ -304,6 +311,12 @@ interface DrawnTurn {
 	/** The prompt as last drawn, and its element; null for a turn without one. */
 	prompt: string;
 	promptEl: HTMLElement | null;
+	/** The prompt's copy button's listener and timer (#140); null without a prompt. */
+	promptComponent: Component | null;
+	/** The reply as Markdown, read by its copy buttons at the click (#140). */
+	reply: string;
+	/** The reply's copy buttons under the turn, once it has one (#140). */
+	replyActions: { el: HTMLElement; component: Component } | null;
 	/** Its items by name, in the order they are drawn. */
 	items: Map<string, DrawnItem>;
 	/**
@@ -375,6 +388,8 @@ export class TurnRenderer {
 		this.folds.forget(turnId);
 		if (!drawn) return;
 		for (const item of drawn.items.values()) item.component.unload();
+		drawn.promptComponent?.unload();
+		drawn.replyActions?.component.unload();
 		drawn.el.remove();
 		this.turns.delete(turnId);
 	}
@@ -383,6 +398,8 @@ export class TurnRenderer {
 	clear(): void {
 		for (const drawn of this.turns.values()) {
 			for (const item of drawn.items.values()) item.component.unload();
+			drawn.promptComponent?.unload();
+			drawn.replyActions?.component.unload();
 		}
 		this.turns.clear();
 		this.sizerEl.empty();
@@ -407,6 +424,9 @@ export class TurnRenderer {
 				el,
 				prompt: '',
 				promptEl: null,
+				promptComponent: null,
+				reply: '',
+				replyActions: null,
 				items: new Map(),
 				headingToken: Symbol('draw'),
 				headingEls: [],
@@ -421,9 +441,14 @@ export class TurnRenderer {
 		if (turn.prompt !== drawn.prompt || (turn.prompt && !drawn.promptEl)) {
 			drawn.promptEl?.remove();
 			drawn.promptEl = null;
+			drawn.promptComponent?.unload();
+			drawn.promptComponent = null;
 			if (turn.prompt) {
 				drawn.promptEl = turnEl.createDiv({ cls: 'herdr-native-prompt' });
 				renderPrompt(drawn.promptEl, turn.prompt, this.options.resolveUri);
+				drawn.promptComponent = new Component();
+				drawn.promptComponent.load();
+				copyPromptButton(drawn.promptEl, drawn.promptComponent, turn.prompt, this.options);
 			}
 			drawn.prompt = turn.prompt;
 		}
@@ -483,6 +508,7 @@ export class TurnRenderer {
 			changed = true;
 		});
 		drawn.items = next;
+		this.drawReplyActions(drawn, replyMarkdown(turn));
 
 		this.order(drawn);
 		if (changed) this.markHeadings(turn.id, drawn);
@@ -531,14 +557,40 @@ export class TurnRenderer {
 	}
 
 	/**
-	 * Puts the turn's elements in their order: the prompt, then the items. An
-	 * element already in its place is not touched, so appending to a turn moves
-	 * nothing and only a new item in the middle is inserted where it belongs.
+	 * The reply's copy buttons (#140): there while the turn has prose, gone
+	 * when it has none. They read the reply at the click, so a reply that grows
+	 * leaves them standing.
+	 */
+	private drawReplyActions(drawn: DrawnTurn, reply: string): void {
+		drawn.reply = reply;
+		if (reply && !drawn.replyActions) {
+			const component = new Component();
+			component.load();
+			const el = renderReplyActions(
+				drawn.el,
+				component,
+				() => drawn.reply,
+				this.options.copier ?? defaultCopier,
+			);
+			drawn.replyActions = { el, component };
+		} else if (!reply && drawn.replyActions) {
+			drawn.replyActions.component.unload();
+			drawn.replyActions.el.remove();
+			drawn.replyActions = null;
+		}
+	}
+
+	/**
+	 * Puts the turn's elements in their order: the prompt, then the items, then
+	 * the reply's copy buttons. An element already in its place is not
+	 * touched, so appending to a turn moves nothing that was there: a new item
+	 * is inserted where it belongs, in front of the copy buttons at the end.
 	 */
 	private order(drawn: DrawnTurn): void {
 		const els: HTMLElement[] = [];
 		if (drawn.promptEl) els.push(drawn.promptEl);
 		for (const item of drawn.items.values()) if (item.el) els.push(item.el);
+		if (drawn.replyActions) els.push(drawn.replyActions.el);
 		els.forEach((el, index) => {
 			const at = drawn.el.children[index] ?? null;
 			if (at !== el) drawn.el.insertBefore(el, at);
@@ -579,6 +631,21 @@ export class TurnRenderer {
 		}
 		void Promise.allSettled(renders).then(mark);
 	}
+}
+
+/** A prompt's copy button (#140): the prompt as typed, links and all. */
+function copyPromptButton(
+	el: HTMLElement,
+	component: Component,
+	prompt: string,
+	options: TurnRendererOptions,
+): void {
+	copyButton(
+		el,
+		component,
+		{ cls: 'herdr-native-copy-prompt', icon: 'copy', label: 'Copy prompt', text: () => prompt },
+		options.copier ?? defaultCopier,
+	);
 }
 
 /**

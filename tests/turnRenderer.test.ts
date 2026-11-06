@@ -94,13 +94,16 @@ describe('TurnRenderer: drawing only what changed (#127)', () => {
 		const { el, renderer } = rendererOn();
 		renderer.render(turn([text('m1', 'First.'), tool('t1')]));
 		const turnEl = el.find('herdr-native-turn');
-		const [promptEl, blockEl, groupEl] = turnEl.children;
+		const [promptEl, blockEl, groupEl, actionsEl] = turnEl.children;
 
 		renderer.render(turn([text('m1', 'First.'), tool('t1'), text('m2', 'Second.')]));
 
 		expect(turnEl.children.slice(0, 3)).toEqual([promptEl, blockEl, groupEl]);
 		expect(turnEl.children[3]?.textContent).toBe('Second.');
-		expect(turnEl.inserted).toBe(0);
+		// The reply's copy buttons stay last (#140): the one insert is the new
+		// block put in front of them, and nothing that was there moves.
+		expect(turnEl.children[4]).toBe(actionsEl);
+		expect(turnEl.inserted).toBe(1);
 	});
 
 	it('draws a changed item where it was, not at the end', () => {
@@ -114,6 +117,7 @@ describe('TurnRenderer: drawing only what changed (#127)', () => {
 			'herdr-native-prompt',
 			'herdr-native-tools',
 			'herdr-native-block',
+			'herdr-native-reply-actions',
 		]);
 	});
 

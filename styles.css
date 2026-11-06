@@ -755,6 +755,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/*
+ * Copy actions (#140): a prompt's button at its top right, over the text's
+ * end, and the reply's two under the turn. Shown while the pointer or focus
+ * is on the prompt or the turn, so a long transcript is not a column of
+ * icons; invisible means unclickable too. The reply's row keeps its height
+ * while hidden, so the reveal moves nothing.
+ */
+.herdr-native-prompt,
+.herdr-native-steer {
+	position: relative;
+}
+
+.herdr-native-copy-prompt {
+	background-color: var(--background-primary);
+	inset-inline-end: 0;
+	position: absolute;
+	top: 0;
+}
+
+.herdr-native-reply-actions {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-1);
+}
+
+.herdr-native-copy {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.herdr-native-prompt:hover .herdr-native-copy,
+.herdr-native-prompt:focus-within .herdr-native-copy,
+.herdr-native-steer:hover .herdr-native-copy,
+.herdr-native-steer:focus-within .herdr-native-copy,
+.herdr-native-turn:hover > .herdr-native-reply-actions .herdr-native-copy,
+.herdr-native-reply-actions:focus-within .herdr-native-copy,
+.herdr-native-copy.is-copied,
+.herdr-native-copy.is-failed {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.herdr-native-copy.is-copied {
+	color: var(--text-success);
+}
+
+.herdr-native-copy.is-failed {
+	color: var(--text-error);
+}
+
+/* A pointer that cannot hover would never see the reveal. */
+@media (hover: none) {
+	.herdr-native-copy {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
 /* The runtime's own notice (#133): not the agent speaking, so muted and small. */
 .herdr-native-notice {
 	color: var(--text-muted);

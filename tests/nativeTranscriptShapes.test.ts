@@ -125,6 +125,7 @@ describe('a picture sent with a prompt (#129)', () => {
 			'herdr-native-prompt',
 			'herdr-native-image',
 			'herdr-native-block',
+			'herdr-native-reply-actions',
 		]);
 		expect(turnEl.find('herdr-native-image').textContent).toBe('Image (PNG)');
 	});
