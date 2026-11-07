@@ -3,6 +3,60 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## 0.7.0 — 2026-11-07
+
+The native view catches up with Claude Code's own: answer it, steer it and
+read it without switching to the terminal. Gjetr is now in Obsidian's
+community plugins.
+
+### Added
+
+- **Answer from the view on herdr and herdr-core**: questions (with typed
+  answers, option descriptions and the recommended one marked), permissions,
+  plans and the folder trust prompt, from the waiting card. The card says when
+  it is sending, shows errors inline, folds, and works from the keyboard.
+- **Session bar** in the prompt box: model, effort and permission mode
+  pickers, and the context used; a click on it shows Claude's context
+  breakdown. Works on herdr, herdr-core and Claude run by Obsidian.
+- **Prompt box**: one box with a toolbar strip. New settings **Prompt box
+  style** (Divided, Joined, Floating) and **Context readout** (Detail, or a
+  gauge with the tokens in its tooltip).
+- **Queued prompts** held by the plugin, with Send now, Edit and Discard.
+- **Images** in prompts: shown in the conversation, pasted or dropped into the
+  prompt box.
+- **To-do list** rendered and kept in view; **subagents** followed while they
+  run; the **plan** on herdr and herdr-core read from Claude's plan file.
+- **Copy** a reply as Markdown or plain text, and a prompt.
+- **Timestamps and turn durations**, and work Claude resumes on its own after
+  an answer.
+- **Commands** to focus the prompt, jump between turns and find in the
+  conversation; a jump-to-latest button.
+- Long sessions load a page of turns at a time, with earlier ones on request.
+
+### Changed
+
+- Tool groups stay open while Claude writes, and their header says working,
+  needs you or done, with failed calls counted. Only changed items redraw.
+- Narrow sidebar and reduced-motion layouts; a failed read retries.
+- A pane running another agent than Claude stays a terminal instead of
+  opening an empty native view.
+- README: install from the community plugins directory.
+
+### Fixed
+
+- Enter in the prompt box threw "isOpen is not a function" when deciding
+  between picking a `/` or `@` suggestion and sending.
+- Prompts with a pasted image or block no longer vanish; compaction shows as a
+  divider; turns abandoned by a rewind or cancelled re-send go away; a `/clear`
+  inside the same file no longer keeps stale tool calls; Claude's own notices
+  show; background command notifications are told from subagents', and running
+  work is marked lost when Claude exits.
+- herdr panes find their transcript under `CLAUDE_CONFIG_DIR` and in symlinked
+  folders.
+- A queued prompt that runs as its own turn is no longer dropped; Claude run by
+  Obsidian no longer stays working after its turn ends.
+- Typing into a herdr-core terminal no longer resizes it to 200×120.
+
 ## 0.6.1 — 2026-11-06
 
 For the community directory's review.
