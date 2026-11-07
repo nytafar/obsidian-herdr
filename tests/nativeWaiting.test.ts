@@ -23,12 +23,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
 import { NativePaneSurface } from '../src/native/surface';
-import {
-	emptyTranscript,
-	type ToolEntry,
-	type TranscriptState,
-	type Turn,
-} from '../src/native/reducer';
+import { PLAN_IN_TERMINAL, QUESTION_IN_TERMINAL } from '../src/native/waitingCardView';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { ToolEntry, Turn } from '../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,
@@ -49,6 +46,8 @@ class FakeModel implements SessionModelView {
 	agentSession = '';
 	agentStatus: AgentStatus = 'idle';
 	blockKind: BlockKind | null = null;
+	/** The plan file's text, as the real model reads it while blocked in plan mode (#148). */
+	plan: string | null = null;
 	connected = true;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	/** The pane's one claim on the block it is in, as the real model holds it. */
@@ -261,12 +260,50 @@ describe('waiting card: which kind (#99)', () => {
 		expect(el.find('herdr-native-waiting-body').textContent).toBe(
 			'Do you prefer tea or coffee?',
 		);
-		expect(el.findAll('herdr-native-waiting-option').map((o) => o.textContent)).toEqual([
+		expect(el.findAll('herdr-native-waiting-choice-label').map((o) => o.textContent)).toEqual([
 			'Tea',
 			'Coffee',
 		]);
-		// Answering a question is the user's, in the terminal.
+		// Each description on the line under its option, not a tooltip (#141).
+		expect(el.findAll('herdr-native-waiting-choice-description').map((o) => o.textContent)).toEqual([
+			'You prefer tea.',
+			'You prefer coffee.',
+		]);
+		// Answering a question is the user's, in the terminal, and the card says
+		// that is where a typed answer goes too: herdr takes none from the view.
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+		expect(el.findAll('herdr-native-waiting-other-input')).toEqual([]);
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(QUESTION_IN_TERMINAL);
+	});
+
+	it('draws Claude’s "(Recommended)" suffix as a tag', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([
+			turn('u1', 'Ask', [
+				tool('toolu_01Gx', 'AskUserQuestion', {
+					questions: [
+						{
+							question: 'Which store?',
+							options: [{ label: 'Redis (Recommended)' }, { label: 'Postgres' }],
+						},
+					],
+				}),
+			]),
+		]);
+		model.setStatus('blocked');
+		expect(el.findAll('herdr-native-waiting-choice-label').map((o) => o.textContent)).toEqual(['Redis', 'Postgres']);
+		const tags = el.findAll('herdr-native-waiting-tag');
+		expect(tags.map((tag) => tag.textContent)).toEqual(['Recommended']);
+		expect(tags[0]?.closest('.herdr-native-waiting-option')?.textContent).toBe('RedisRecommended');
+	});
+
+	it('says a reported question with nothing to show is answered in the terminal', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([turn('u1', 'Ask me', [tool('toolu_01Rd', 'Read', {}, 'ok')])]);
+		model.setStatus('blocked', 'question');
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(QUESTION_IN_TERMINAL);
 	});
 
 	it('shows the plan for ExitPlanMode, with no button', async () => {
@@ -285,11 +322,49 @@ describe('waiting card: which kind (#99)', () => {
 		model.setStatus('blocked');
 
 		expect(title(el)).toBe('Claude is ready to code');
-		expect(el.find('herdr-native-waiting-body').textContent).toBe(
+		// Markdown, as the plan file's is (#148).
+		expect(MarkdownRenderer.calls.at(-1)?.markdown).toBe(
 			'Create `d.txt` in /tmp/herdr-perm-FJK7 with the Write tool.',
 		);
+		expect(MarkdownRenderer.calls.at(-1)?.el).toBe(el.find('herdr-native-waiting-plan'));
 		// Enter here switches the session to auto mode, a lasting side effect.
 		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+	});
+
+	it('shows the plan from Claude\'s plan file when ExitPlanMode is not in the transcript yet (#148)', async () => {
+		// Claude Code 2.1.286 writes the call only with its answer: the newest
+		// call is the Write of the plan file, landed, and the model has read it.
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.push([
+			turn('u1', 'Plan the ledger', [
+				tool('toolu_01Wr', 'Write', { file_path: '/home/lasse/.claude/plans/wondrous-roaming-charm.md' }, 'File created'),
+			]),
+		]);
+		model.setStatus('blocked');
+		// Blocked before the file was read: no plan yet, the generic card.
+		expect(title(el)).toBe('Claude is waiting for permission');
+
+		model.plan = '# Agent-first ledger\n\n1. Schema\n';
+		model.setStatus('blocked');
+		expect(title(el)).toBe('Claude is ready to code');
+		expect(MarkdownRenderer.calls.at(-1)?.markdown).toBe('# Agent-first ledger\n\n1. Schema');
+		expect(MarkdownRenderer.calls.at(-1)?.el).toBe(el.find('herdr-native-waiting-plan'));
+		expect(el.find('herdr-native-waiting-hint').textContent).toBe(PLAN_IN_TERMINAL);
+		expect(buttonLabels(el)).toEqual(['Open in terminal']);
+	});
+
+	it('keeps a dangling call and a named question ahead of the plan file (#148)', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.plan = 'An older plan';
+		model.push([turn('u1', 'Run it', [tool('toolu_01XB', 'Bash', { command: 'ls' })])]);
+		model.setStatus('blocked', 'permission');
+		expect(title(el)).toBe('Claude wants to use Bash');
+
+		model.push([turn('u1', 'Ask', [tool('toolu_01Rd', 'Read', {}, 'ok')])]);
+		model.setStatus('blocked', 'question');
+		expect(title(el)).toBe('Claude asked a question');
 	});
 
 	it('names no tool when the newest call landed and an older one never did', async () => {
@@ -394,14 +469,14 @@ describe('waiting card: what it presses (#99)', () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 		const box = el.find('herdr-native-prompt-box');
-		expect(box.hasClass('herdr-is-hidden')).toBe(false);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(false);
 
 		model.setStatus('blocked');
-		expect(box.hasClass('herdr-is-hidden')).toBe(true);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(true);
 
 		model.setStatus('working');
 		expect(card(el)).toBeNull();
-		expect(box.hasClass('herdr-is-hidden')).toBe(false);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(false);
 	});
 });
 

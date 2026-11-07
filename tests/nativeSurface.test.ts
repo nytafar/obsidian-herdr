@@ -10,13 +10,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
 import { MarkdownRenderer } from './fixtures/obsidian';
+import { READ_FAILURE_LINE } from '../src/native/sessionLines';
 import { NativePaneSurface } from '../src/native/surface';
-import {
-	emptyTranscript,
-	type ToolEntry,
-	type TranscriptState,
-	type Turn,
-} from '../src/native/reducer';
+import type { FoldMemory } from '../src/native/foldMemory';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
+import type { ToolEntry, Turn } from '../src/native/conversation';
 import type { ToolGroupPresentation } from '../src/native/toolCalls';
 import type {
 	BlockKind,
@@ -26,6 +24,7 @@ import type {
 	SessionModelView,
 } from '../src/native/sessionModel';
 import type { AgentStatus } from '../src/herdr/types.gen';
+import type { SubagentTranscript } from '../src/native/subagents';
 import type { App } from 'obsidian';
 import type { StatusLine } from '../src/views/paneTerminal';
 
@@ -40,7 +39,24 @@ class FakeModel implements SessionModelView {
 	blockKind: BlockKind | null = null;
 	connected = true;
 	readProblem: string | null = null;
+	/** Views that say they show the session's subagents now (#147). */
+	shown = 0;
+	/** What `subagentTranscript` hands out, by call (#147). */
+	transcripts = new Map<string, SubagentTranscript>();
 	private readonly listeners = new Set<(change: SessionChange) => void>();
+
+	showSubagents(): () => void {
+		this.shown++;
+		let live = true;
+		return () => {
+			if (live) this.shown--;
+			live = false;
+		};
+	}
+
+	subagentTranscript(callId: string): SubagentTranscript | null {
+		return this.transcripts.get(callId) ?? null;
+	}
 
 	on(listener: (change: SessionChange) => void): () => void {
 		this.listeners.add(listener);
@@ -126,6 +142,8 @@ function surfaceOn(
 		presentation?: ToolGroupPresentation;
 		vaultPath?: string;
 		onStatus?: (line: StatusLine) => void;
+		openSubagent?: (title: string, transcript: SubagentTranscript) => void;
+		notify?: (message: string) => void;
 	} = {},
 ): {
 	surface: NativePaneSurface;
@@ -155,6 +173,8 @@ function surfaceOn(
 		// view, and the vault is the app's, never a path this file invents.
 		presentation: () => options.presentation ?? 'highlight',
 		vaultPath: () => options.vaultPath ?? VAULT,
+		...(options.openSubagent ? { openSubagent: options.openSubagent } : {}),
+		...(options.notify ? { notify: options.notify } : {}),
 	});
 	return { surface, models, el, host, openLinkText, vault };
 }
@@ -405,8 +425,8 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
 
 		const group = el.find('herdr-native-tools');
-		expect(group.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 4 files, ran 2 commands',
+		expect(group.find('herdr-native-tools-counts').textContent).toBe(
+			'read 4 files, ran 2 commands',
 		);
 		expect(group.findAll('herdr-native-tool').map((row) => row.textContent)).toEqual([
 			'Read a.md',
@@ -425,6 +445,7 @@ describe('NativePaneSurface: tool groups', () => {
 			'herdr-native-change',
 			'herdr-native-source',
 			'herdr-native-block',
+			'herdr-native-reply-actions',
 		]);
 		expect(el.find('herdr-native-change').textContent).toBe('Updated notes/b');
 		expect(el.find('herdr-native-source').textContent).toBe('Searched the web for “herdr protocol”');
@@ -458,8 +479,8 @@ describe('NativePaneSurface: tool groups', () => {
 			'herdr-native-prompt',
 			'herdr-native-tools',
 		]);
-		expect(el.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 2 files, ran 2 commands',
+		expect(el.find('herdr-native-tools-counts').textContent).toBe(
+			'read 2 files, ran 2 commands',
 		);
 	});
 
@@ -471,8 +492,8 @@ describe('NativePaneSurface: tool groups', () => {
 		model.push([busyTurn()], { changedTurnIds: ['u1'], reset: false });
 
 		const group = el.find('herdr-native-tools');
-		expect(group.find('herdr-native-tools-summary').textContent).toBe(
-			'Read 4 files, wrote 1 file, ran 1 web search, ran 2 commands',
+		expect(group.find('herdr-native-tools-counts').textContent).toBe(
+			'read 4 files, wrote 1 file, ran 1 web search, ran 2 commands',
 		);
 		expect(group.findAll('herdr-native-tool')).toHaveLength(8);
 		expect(el.findAll('herdr-native-change')).toEqual([]);
@@ -686,9 +707,9 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			'herdr-native-steer',
 			'herdr-native-tools',
 		]);
-		expect(el.findAll('herdr-native-tools-summary').map((line) => line.textContent)).toEqual([
-			'Read 1 file',
-			'Ran 1 command',
+		expect(el.findAll('herdr-native-tools-counts').map((line) => line.textContent)).toEqual([
+			'read 1 file',
+			'ran 1 command',
 		]);
 		expect(el.find('herdr-native-steer').textContent).toBe('also check the styles');
 	});
@@ -707,7 +728,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ changedTurnIds: ['u1'], reset: false },
 		);
 
-		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+		expect(el.find('herdr-native-tools-counts').textContent).toBe('ran 1 subagent');
 		expect(MarkdownRenderer.calls.map((call) => call.markdown)).toEqual([
 			'It settles **two** seams.',
 		]);
@@ -729,9 +750,9 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ changedTurnIds: ['u1'], reset: false },
 		);
 
-		expect(el.findAll('herdr-native-tools-summary').map((summary) => summary.textContent)).toEqual([
-			'Ran 1 subagent',
-			'Read 1 file',
+		expect(el.findAll('herdr-native-tools-counts').map((summary) => summary.textContent)).toEqual([
+			'ran 1 subagent',
+			'read 1 file',
 		]);
 	});
 
@@ -768,7 +789,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 		expect(el.findAll('herdr-native-report')).toEqual([]);
 		expect(MarkdownRenderer.calls).toEqual([]);
 		// The call itself is still in the group, as any other call is.
-		expect(el.find('herdr-native-tools-summary').textContent).toBe('Ran 1 subagent');
+		expect(el.find('herdr-native-tools-counts').textContent).toBe('ran 1 subagent');
 	});
 
 	it('renders an asynchronous subagent report once it has been read, and never the launch notice', async () => {
@@ -781,7 +802,7 @@ describe('NativePaneSurface: steers and subagent reports', () => {
 			{ description: 'Check the styles' },
 			'Async agent launched successfully. agentId: a1f2',
 		);
-		launched.notification = { taskId: 'a1f2', outputFile: '/tmp/a1f2.output' };
+		launched.notification = { taskId: 'a1f2', kind: 'agent', outputFile: '/tmp/a1f2.output' };
 
 		model.push([turn('u1', 'Start the long job', [launched])], {
 			changedTurnIds: ['u1'],
@@ -846,22 +867,50 @@ describe('NativePaneSurface: keeping up', () => {
 });
 
 describe('NativePaneSurface: a transcript the runtime cannot read', () => {
-	it('says why in the empty line, above any turns, and drops it once readable', async () => {
+	/** The failure line, which is built once and hidden rather than removed. */
+	function shownFailure(el: FakeElement): FakeElement | null {
+		const [line] = el.findAll('herdr-native-read-failure');
+		return line && !line.hasClass('herdr-is-hidden') ? line : null;
+	}
+
+	it('says it failed above any turns, with the reason behind Details, and hides it once readable', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
 		await surface.attach(host);
 		model.path = '/transcript.jsonl';
 		model.readProblem = 'cannot be read: over the limit';
 		model.push([], { changedTurnIds: [], reset: false });
-		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+		const line = shownFailure(el);
+		expect(line?.find('herdr-native-read-failure-text').textContent).toBe(READ_FAILURE_LINE);
+		expect(line?.find('herdr-native-read-detail').textContent).toBe('cannot be read: over the limit');
+		expect(line?.getAttribute('role')).toBe('alert');
+		// A view that cannot read says so, and does not also guess "no turns yet".
+		expect(el.findAll('herdr-native-empty')).toEqual([]);
 
 		// Turns read before the file grew past the limit stay, under the reason.
 		model.push([turn('u1', 'Before')], { changedTurnIds: ['u1'], reset: false });
-		expect(el.find('herdr-native-empty').textContent).toBe('cannot be read: over the limit');
+		expect(shownFailure(el)).not.toBeNull();
 
 		model.readProblem = null;
 		model.push([turn('u1', 'Before')], { changedTurnIds: [], reset: false });
+		expect(shownFailure(el)).toBeNull();
 		expect(el.findAll('herdr-native-empty')).toEqual([]);
+	});
+
+	it('reads the transcript again when Try again is pressed (#146)', async () => {
+		const model = new FakeModel();
+		const retryRead = vi.fn();
+		Object.assign(model, { retryRead });
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		model.readProblem = 'cannot be read: over the limit';
+		model.push([], { changedTurnIds: [], reset: false });
+		// Shown twice: one button, one listener, one retry per press.
+		model.push([], { changedTurnIds: [], reset: false });
+
+		el.find('herdr-native-read-retry').dispatch('click');
+
+		expect(retryRead).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -930,7 +979,31 @@ describe('NativePaneSurface: detach', () => {
 	});
 });
 
+/**
+ * The status line saying nothing: still there, as the live region it is
+ * (#142), with no words and clipped out of sight.
+ */
+function expectSilentStatus(el: FakeElement): void {
+	const status = el.find('herdr-native-status');
+	expect(status.textContent).toBe('');
+	expect(status.hasClass('herdr-native-visually-hidden')).toBe(true);
+}
+
 describe('NativePaneSurface: what the agent is doing (#94)', () => {
+	it('is a live region from the first draw, shown once it has words (#142)', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const status = el.find('herdr-native-status');
+		expect(status.attrs.role).toBe('status');
+		expect(status.attrs['aria-live']).toBe('polite');
+		expectSilentStatus(el);
+		model.agentStatus = 'working';
+		model.push([], { changedTurnIds: [], reset: false });
+		expect(el.find('herdr-native-status')).toBe(status);
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(false);
+	});
+
 	it('says the agent is working, between blocks and while nothing arrives', async () => {
 		const model = new FakeModel();
 		const { surface, el, host } = surfaceOn(model);
@@ -950,12 +1023,12 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		await surface.attach(host);
 		model.agentStatus = 'working';
 		model.push([], { changedTurnIds: [], reset: false });
-		expect(el.findAll('herdr-native-status')).toHaveLength(1);
+		expect(el.find('herdr-native-status').textContent).toBe('Working…');
 
 		model.agentStatus = 'done';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 	});
 
 	it('says the agent is waiting when it is blocked', async () => {
@@ -987,7 +1060,7 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		model.agentStatus = 'idle';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
 		expect(el.find('herdr-native-prompt-send').disabled).toBe(false);
 
@@ -999,7 +1072,7 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 		model.agentStatus = 'idle';
 		model.push([], { changedTurnIds: [], reset: false });
 
-		expect(el.findAll('herdr-native-status')).toEqual([]);
+		expectSilentStatus(el);
 		expect(el.find('herdr-native-prompt-send').textContent).toBe('Send');
 	});
 
@@ -1016,5 +1089,228 @@ describe('NativePaneSurface: what the agent is doing (#94)', () => {
 
 		expect(models.released).toBe(0);
 		expect(el.find('herdr-native-prompt').textContent).toBe('Arrived while hidden');
+	});
+});
+
+describe('NativePaneSurface: the current to-do list (#143)', () => {
+	it('keeps it under the turns, out of their scroll, and follows the latest update', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const plan = el.find('herdr-native-plan');
+		expect(plan.hasClass('herdr-is-hidden')).toBe(true);
+		// Reachable without scrolling: not inside the one scroll container.
+		expect(el.find('herdr-native-turns').findAll('herdr-native-plan')).toEqual([]);
+
+		const todos = (status: string) => [{ content: 'Ship it', status, activeForm: 'Shipping it' }];
+		const first = turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos: todos('in_progress') }, 'ok')]);
+		model.push([first], { changedTurnIds: ['u1'], reset: false });
+		expect(plan.hasClass('herdr-is-hidden')).toBe(false);
+		expect(plan.find('herdr-native-plan-current').textContent).toBe('Shipping it');
+
+		model.push(
+			[first, turn('u2', 'Next', [tool('t2', 'TodoWrite', { todos: todos('completed') }, 'ok')])],
+			{ changedTurnIds: ['u2'], reset: false },
+		);
+		expect(plan.hasClass('herdr-is-hidden')).toBe(true);
+	});
+
+	it('opens only the session’s newest list in the turns, whichever turn holds it', async () => {
+		const model = new FakeModel();
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const todos = [{ content: 'Ship it', status: 'pending' }];
+		const open = (): boolean[] => el.findAll('herdr-native-todo').map((update) => update.open);
+		const first = turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos }, 'ok')]);
+		const quiet = turn('u2', 'Look', [tool('r1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.push([first, quiet], { changedTurnIds: ['u1', 'u2'], reset: false });
+		expect(open()).toEqual([true]);
+
+		// A later turn's list: the first turn is neither changed nor the one
+		// that was latest, and its list still folds.
+		const later = turn('u3', 'More', [tool('t2', 'TodoWrite', { todos }, 'ok')]);
+		model.push([first, quiet, later], { changedTurnIds: ['u3'], reset: false });
+		expect(open()).toEqual([false, true]);
+
+		// A rewind drops that turn: the first list is the newest again.
+		model.push([first, quiet], { changedTurnIds: [], removedTurnIds: ['u3'], reset: false });
+		expect(open()).toEqual([true]);
+	});
+
+	it('opens no finished turn’s list when the whole session is drawn', async () => {
+		const model = new FakeModel();
+		const todos = [{ content: 'Ship it', status: 'pending' }];
+		model.state = {
+			...model.state,
+			turns: [
+				turn('u1', 'Go', [tool('t1', 'TodoWrite', { todos }, 'ok')]),
+				turn('u2', 'Next', [tool('t2', 'TodoWrite', { todos }, 'ok')]),
+			],
+		};
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+
+		expect(el.findAll('herdr-native-todo').map((update) => update.open)).toEqual([false, true]);
+	});
+
+	it('reads the entries of no turn that did not change to find the list', async () => {
+		const model = new FakeModel();
+		const { surface, host } = surfaceOn(model);
+		await surface.attach(host);
+		// A long finished turn whose entries count their readers.
+		let reads = 0;
+		const entries = [tool('t1', 'TodoWrite', { todos: [{ content: 'Ship it', status: 'pending' }] }, 'ok')];
+		const old: Turn = { id: 'u1', prompt: 'Go', headings: [], entries: [] };
+		Object.defineProperty(old, 'entries', {
+			get: () => {
+				reads++;
+				return entries;
+			},
+		});
+		const latest = turn('u2', 'Next', [tool('r1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.push([old, latest], { changedTurnIds: ['u1', 'u2'], reset: false });
+		reads = 0;
+
+		// The status moves, then the latest turn grows: the old turn is unchanged.
+		model.agentStatus = 'working';
+		model.push([old, latest], { changedTurnIds: [], reset: false });
+		const grown = turn('u2', 'Next', [...latest.entries, tool('r2', 'Read', { file_path: '/y' }, 'ok')]);
+		model.push([old, grown], { changedTurnIds: ['u2'], reset: false });
+
+		expect(reads).toBe(0);
+	});
+});
+
+describe('NativePaneSurface: what the reader opened, bounded by the session (#127)', () => {
+	/** The surface's fold memory, which no view exposes. */
+	const foldsOf = (surface: NativePaneSurface): FoldMemory =>
+		(surface as unknown as { folds: FoldMemory }).folds;
+
+	/** The reader opening the first tool group on screen. */
+	function openGroup(el: FakeElement): void {
+		const details = el.find('herdr-native-tools');
+		details.open = !details.open;
+		details.dispatch('toggle');
+	}
+
+	it('lets go of a turn the model dropped while the tab was detached', async () => {
+		const model = new FakeModel();
+		const first = turn('u1', 'Go', [tool('t1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.state = { ...model.state, turns: [first] };
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		openGroup(el);
+		expect(foldsOf(surface).has('u1')).toBe(true);
+
+		await surface.detach();
+		// A rewind while nobody listened: the change never reached the renderer.
+		model.push([turn('u2', 'Again')], { changedTurnIds: ['u2'], removedTurnIds: ['u1'], reset: false });
+		await surface.attach(host);
+
+		expect(foldsOf(surface).has('u1')).toBe(false);
+	});
+
+	it('lets go of the turns a reset took away', async () => {
+		const model = new FakeModel();
+		const first = turn('u1', 'Go', [tool('t1', 'Read', { file_path: '/x' }, 'ok')]);
+		model.state = { ...model.state, turns: [first] };
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		openGroup(el);
+
+		// `/clear`: another session, none of these turns.
+		model.push([turn('n1', 'Fresh')], { changedTurnIds: [], reset: true });
+
+		expect(foldsOf(surface).has('u1')).toBe(false);
+	});
+});
+
+describe('NativePaneSurface: where a tool group stands (#128)', () => {
+	/** The title of every tool group on screen, in order. */
+	function titles(el: FakeElement): string[] {
+		return el.findAll('herdr-native-tools-title').map((title) => title.textContent);
+	}
+
+	it('follows the status on the latest turn, without a line of the transcript', async () => {
+		const model = new FakeModel();
+		model.agentStatus = 'working';
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const turns = [turn('u1', 'Go', [tool('t1', 'Bash', { command: 'make' })])];
+		model.push(turns, { changedTurnIds: ['u1'], reset: false });
+		expect(titles(el)).toEqual(['Working…']);
+
+		model.agentStatus = 'blocked';
+		model.push(turns, { changedTurnIds: [], reset: false });
+		expect(titles(el)).toEqual(['Needs you']);
+
+		model.agentStatus = 'idle';
+		model.push(turns, { changedTurnIds: [], reset: false });
+		expect(titles(el)).toEqual(['Worked']);
+		expect(el.find('herdr-native-tools').open).toBe(false);
+	});
+
+	it('settles the turn that was latest once another arrives', async () => {
+		const model = new FakeModel();
+		model.agentStatus = 'working';
+		const { surface, el, host } = surfaceOn(model);
+		await surface.attach(host);
+		const first = turn('u1', 'Go', [tool('t1', 'Read')]);
+		model.push([first], { changedTurnIds: ['u1'], reset: false });
+
+		model.push([first, turn('u2', 'Next', [tool('t2', 'Read')])], {
+			changedTurnIds: ['u2'],
+			reset: false,
+		});
+
+		expect(titles(el)).toEqual(['Worked', 'Working…']);
+	});
+});
+
+describe('NativePaneSurface: a subagent at work (#147)', () => {
+	it('says it shows the session’s subagents only while attached and shown', async () => {
+		const model = new FakeModel();
+		const { surface, host } = surfaceOn(model);
+		expect(model.shown).toBe(0);
+		await surface.attach(host);
+		expect(model.shown).toBe(1);
+		await surface.setVisible(false);
+		expect(model.shown).toBe(0);
+		await surface.setVisible(true);
+		expect(model.shown).toBe(1);
+		await surface.detach();
+		expect(model.shown).toBe(0);
+	});
+
+	it('opens the transcript of the subagent working under a call', async () => {
+		const model = new FakeModel();
+		const opened: string[] = [];
+		const notices: string[] = [];
+		const { surface, el, host } = surfaceOn(model, {
+			openSubagent: (title, transcript) => opened.push(`${title}: ${transcript.state.turns.length}`),
+			notify: (message) => notices.push(message),
+		});
+		await surface.attach(host);
+		const call: ToolEntry = {
+			...tool('toolu_a1', 'Agent', { description: 'Check the styles' }, 'Async agent launched successfully.'),
+			status: 'running',
+			subagent: { running: true, latest: null, calls: 0 },
+		};
+		model.transcripts.set('toolu_a1', {
+			state: { turns: [turn('s1', 'Check the styles')], raw: {} },
+			running: true,
+			on: () => () => {},
+			release: () => {},
+		});
+		model.agentStatus = 'working';
+		model.push([turn('u1', 'Start the long job', [call])], { changedTurnIds: ['u1'], reset: false });
+
+		el.find('herdr-native-subagent-open').dispatch('click');
+		expect(opened).toEqual(['Subagent: Check the styles: 1']);
+
+		// One the model cannot read says so.
+		model.transcripts.clear();
+		el.find('herdr-native-subagent-open').dispatch('click');
+		expect(notices).toEqual(['This subagent’s transcript cannot be read from here.']);
 	});
 });

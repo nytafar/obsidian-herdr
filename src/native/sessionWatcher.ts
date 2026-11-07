@@ -18,6 +18,7 @@
 
 import type { AgentStatus } from '../herdr/types.gen';
 import type { PendingRequest } from './pendingRequest';
+import type { SessionInfo } from './conversation';
 
 export type Unsubscribe = () => void;
 
@@ -49,24 +50,76 @@ export interface PaneSnapshot {
 	 * `/` and `@` are relative to it.
 	 */
 	cwd: string;
+	/**
+	 * The agent the pane runs, by the agent catalog's ids (`claude`), which
+	 * picks the format its session is read with (`../agents/format.ts`).
+	 * Absent where the runtime does not say, which is read as the catalog's
+	 * default agent, as before agents had formats.
+	 */
+	agent?: string;
 	/** The agent session the runtime reports for the pane, empty until it has one. */
 	agentSession: string;
 	/**
 	 * The transcript's path on the transcript's own host, when the runtime
 	 * reports it (herdr-core's session label holds the hook's
-	 * `transcript_path`). Absent, the model derives it from cwd and session
-	 * with Claude Code's own layout (`./transcriptSource.ts`).
+	 * `transcript_path`). Absent, the model asks the agent's format for it,
+	 * from cwd and session (`AgentFormat.transcriptPath`).
 	 */
 	transcriptPath?: string;
 	agentStatus: AgentStatus;
+	/**
+	 * The agent's process has ended while the runtime keeps its session on
+	 * show (the `claude` kind keeps a stopped agent's): whatever it had running
+	 * in the background is lost (#135). Absent where the runtime drops the
+	 * session with the process, as herdr and herdr-core do.
+	 */
+	stopped?: boolean;
 	/** The kind of block, while `blocked` and only when the runtime knows it. */
 	blockKind?: BlockKind;
+	/**
+	 * What the agent says it waits for, in its own words, while `blocked`, for
+	 * a runtime that passes them on (herdr-core's status `msg`). The screen
+	 * answer driver checks it against the request before every key
+	 * (ADR-0009 §1). Absent where the runtime says none.
+	 */
+	blockMessage?: string;
 	/**
 	 * The dialog the runtime itself is waiting on, while `blocked`, for a kind
 	 * that owns its agents' dialogs (the `claude` kind, ADR-0007): the waiting
 	 * card shows it and answers it. Absent everywhere else.
 	 */
 	request?: PendingRequest;
+	/**
+	 * What the runtime itself knows of the session, sooner than the transcript
+	 * says it (#110, #111): the `claude` kind hears model, mode, effort and the
+	 * context window from its process. Put over the format's reading per field
+	 * by the session model; absent where the runtime knows nothing of its own.
+	 */
+	sessionInfo?: SessionInfo;
+}
+
+/**
+ * A pane as its runtime last reported it, and nothing more: what a tab may
+ * look at on a timer without following the pane (the trust watch, #167). A
+ * glance has no side effects, where {@link SessionWatcher.snapshot} may have
+ * (herdr's reads the Claude process of a pane with a session for its
+ * transcript, which only a pane a native view follows may cost).
+ */
+export interface PaneGlance {
+	paneId: string;
+	/** The pane's working directory, as the runtime reports it. */
+	cwd: string;
+	/**
+	 * The agent the runtime sees running in the pane now, by the agent
+	 * catalog's ids, or null when it sees none (a shell). Unlike
+	 * {@link PaneSnapshot.agent}, which names the agent whose session the view
+	 * follows, this says what runs before any session exists.
+	 */
+	agent: string | null;
+	agentSession: string;
+	agentStatus: AgentStatus;
+	/** As {@link PaneSnapshot.blockMessage}. */
+	blockMessage?: string;
 }
 
 /**
@@ -78,6 +131,12 @@ export interface PaneSnapshot {
 export interface SessionWatcher {
 	/** The pane as the runtime last reported it, or null when it is not in scope. */
 	snapshot(paneId: string): PaneSnapshot | null;
+	/**
+	 * The pane as the runtime last reported it, read with no side effects, or
+	 * null when it is not in scope (see {@link PaneGlance}). Present on the
+	 * kinds whose screen the plugin reads (herdr, herdr-core).
+	 */
+	glance?(paneId: string): PaneGlance | null;
 	/**
 	 * The session a pane reports, pushed whenever the runtime says anything
 	 * about it: rotation (`/clear`, `--resume`) has no event of its own on
@@ -105,12 +164,20 @@ export interface SessionWatcher {
 	 */
 	onMembership(handler: (paneId: string) => void): Unsubscribe;
 	/**
+	 * Fires with a pane whose {@link PaneSnapshot.sessionInfo} changed while
+	 * nothing {@link onStatus} reports did (#160), for a kind that hears the
+	 * session's settings from its process (the `claude` kind's `system:init`).
+	 * The model reads the snapshot back. Absent where the runtime knows none.
+	 */
+	onSessionInfo?(handler: (paneId: string) => void): Unsubscribe;
+	/**
 	 * Why this pane cannot be shown in the native view although its runtime
-	 * can, or null when it can or the runtime does not know the pane. Only a
-	 * kind whose session needs something on the pane's side says anything
-	 * here: herdr-core, whose session is the Claude hook's label (ADR-0006),
-	 * so a terminal without one stays a terminal and names the install
-	 * command. herdr's watcher leaves it out.
+	 * can, or null when it can or the runtime does not know the pane. A pane
+	 * running an agent with no format, or one whose session the runtime
+	 * cannot vouch for, says so on herdr and herdr-core (`./agentSupport.ts`,
+	 * #155, #137); the `claude` kind runs only Claude and leaves this out. herdr-core says more, since its session is the Claude
+	 * hook's label (ADR-0006): a terminal without one stays a terminal and
+	 * names the install command.
 	 */
 	unavailable?(paneId: string): string | null;
 	/**

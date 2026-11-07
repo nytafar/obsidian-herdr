@@ -10,6 +10,8 @@
  * - Close: `terminal.kill`, then `terminal.rm`.
  * - Pin: the shared `herdr.pinned` label.
  * - Prompt: `terminal.send`; keys: `terminal.keys`.
+ * - Screen access for dialog answers (#164): `terminal.read`, one key per
+ *   `terminal.keys`, text over a short attach.
  * - New tab, split, rename and focus have no hc method: the capabilities hide
  *   them, and a call that slips through says so instead of sending anything.
  *
@@ -31,10 +33,14 @@ import { remoteVaultPathIssue } from '../runtimes';
 import type { RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import {
 	NO_CONNECTION_MESSAGE,
+	PromptHeldBack,
 	type KeySender,
 	type PromptClient,
+	type PromptSendOptions,
 	type PromptSender,
 } from '../native/promptSender';
+import { imageExtension, imagePaste, type PromptImage } from '../native/promptImages';
+import { checkScreenKey, checkScreenText, type ScreenAccess, type ScreenKey } from '../native/screenAccess';
 import { HcError } from './connection';
 import { LABEL_AGENT, LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
 
@@ -253,19 +259,114 @@ export class HcActions implements RuntimeActions {
 	}
 }
 
-/** The prompt box over `terminal.send`: pasted, then Enter, one call. */
-export function hcPromptSender(client: () => PromptClient | null): PromptSender {
+/** What images need of an hc client beyond `request` (`HcClient` has both). */
+export interface HcImageClient extends PromptClient {
+	/** Types text into a terminal's program with no Enter. */
+	input(terminal: string, text: string): Promise<void>;
+	/** Whether the core lists a method in its `hello`. */
+	hasMethod(method: string): boolean;
+}
+
+function imageClient(client: PromptClient | null): HcImageClient | null {
+	const candidate = client as Partial<HcImageClient> | null;
+	return candidate && typeof candidate.input === 'function' && typeof candidate.hasMethod === 'function'
+		? (candidate as HcImageClient)
+		: null;
+}
+
+/** Why images cannot go out over this herdr-core connection, or null (#144). */
+export function hcImagesUnavailable(client: PromptClient | null): string | null {
+	if (!client) return 'herdr-core is not connected';
+	const images = imageClient(client);
+	if (!images) return 'this herdr-core connection cannot type into a terminal';
+	if (!images.hasMethod('terminal.put')) return 'this herdr-core has no terminal.put; a newer hc sends images';
+	return null;
+}
+
+/** A file name for one image `terminal.put` writes beside the terminal. */
+export function hcImageName(image: PromptImage, index: number, now: number): string {
+	return `image-${now}-${index + 1}.${imageExtension(image.mediaType)}`;
+}
+
+/**
+ * The prompt box over `terminal.send`: pasted, then Enter, one call.
+ *
+ * Images (#144) go as a dropped file does on Claude's terminal: each is put
+ * beside the terminal with `terminal.put` (on the terminal's own machine,
+ * removed with the terminal), the paths are typed as one bracketed paste with
+ * no Enter ({@link HcImageClient.input}), which Claude turns into image
+ * attachments, and `terminal.send` then pastes the text and presses the Enter
+ * that sends both — an empty text included (measured 2026-11-06, hc 0.1.18,
+ * `docs/architecture.md`, "Images in prompts").
+ *
+ * A held row (#159) asks the core first: a terminal whose program says
+ * `working` or `blocked` gets nothing, and the row waits for the next turn
+ * ({@link PromptHeldBack}). An `idle` one is typed with `if: "idle"`, so a
+ * turn that starts in between is refused with `status_mismatch` and nothing
+ * typed. `if` takes only `idle` or `working`, and Claude stays `done` after a
+ * turn until it is prompted (hc 0.1.18 refuses a `done` terminal with "t48 is
+ * done, not idle", measured 2026-11-06), so a `done` one is typed with no
+ * guard, as herdr types every held row. Images are pasted before the send, so
+ * a held row with images is never guarded: a refusal would strand the paste
+ * in the input.
+ */
+export function hcPromptSender(client: () => PromptClient | null, now: () => number = Date.now): PromptSender {
 	return {
-		async send(paneId: string, text: string): Promise<void> {
+		async send(
+			paneId: string,
+			text: string,
+			images: readonly PromptImage[] = [],
+			options: PromptSendOptions = {},
+		): Promise<void> {
 			const connected = client();
 			if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
 			try {
-				await connected.request('terminal.send', { terminal: paneId, text });
+				const guard = options.held ? await heldGuard(connected, paneId, images.length > 0) : {};
+				if (images.length) {
+					const reason = hcImagesUnavailable(connected);
+					const typer = imageClient(connected);
+					if (reason || !typer) throw new Error(reason ?? 'images cannot be sent');
+					const stamp = now();
+					const paths: string[] = [];
+					for (const [index, image] of images.entries()) {
+						const put = await connected.request<{ path?: unknown } | null>('terminal.put', {
+							terminal: paneId,
+							name: hcImageName(image, index, stamp),
+							data: image.data,
+						});
+						if (typeof put?.path !== 'string' || !put.path) throw new Error('herdr-core did not say where the image went');
+						paths.push(put.path);
+					}
+					await typer.input(paneId, imagePaste(paths));
+				}
+				await connected.request('terminal.send', { terminal: paneId, text, ...guard });
 			} catch (error) {
+				if (error instanceof PromptHeldBack) throw error;
+				if (options.held && error instanceof HcError && HELD_BACK_KINDS.has(error.kind)) {
+					throw new PromptHeldBack(describe(error));
+				}
 				throw new Error(describe(error));
 			}
 		},
+		imagesUnavailable: () => hcImagesUnavailable(client()),
 	};
+}
+
+/** The refusals of `terminal.send` that mean "not now" to a held row (#159). */
+const HELD_BACK_KINDS: ReadonlySet<string> = new Set(['status_mismatch', 'blocked']);
+
+/** The program states a held row is not typed into (#159). */
+const NOT_READY: ReadonlySet<string> = new Set(['working', 'blocked']);
+
+/**
+ * What a held row's `terminal.send` carries (#159): `if: "idle"` when the
+ * program says `idle` and nothing was pasted before it, none otherwise; a
+ * program that is working or blocked holds the row back.
+ */
+async function heldGuard(client: PromptClient, paneId: string, pasted: boolean): Promise<{ if?: 'idle' }> {
+	const state = parseTerminal(await client.request<unknown>('terminal.get', { terminal: paneId }))?.status?.state;
+	if (state && NOT_READY.has(state)) throw new PromptHeldBack(`${paneId} is ${state}`);
+	return state === 'idle' && !pasted ? { if: 'idle' } : {};
 }
 
 /** Key presses over `terminal.keys`, in hc's key names. */
@@ -280,5 +381,112 @@ export function hcKeySender(client: () => PromptClient | null): KeySender {
 				throw new Error(describe(error));
 			}
 		},
+	};
+}
+
+/** What typing needs of an hc client beyond `request` (`HcClient` has it). */
+type HcTypingClient = PromptClient & Pick<HcImageClient, 'input'>;
+
+function typingClient(client: PromptClient): HcTypingClient | null {
+	const candidate = client as Partial<HcTypingClient>;
+	return typeof candidate.input === 'function' ? (candidate as HcTypingClient) : null;
+}
+
+/**
+ * `text` as `terminal.keys` names, one per character, or null when a
+ * character has no key name. hc 0.1.18 names only the unshifted keys of a US
+ * layout, lowercases a bare letter (a capital is `shift+<letter>`), calls a
+ * space `space`, and types `shift+<digit or punctuation>` as the unshifted
+ * character, so `!`, `?`, `:`, `(` and anything outside ASCII cannot go this
+ * way (measured 2026-11-06, `docs/architecture.md`, "Screen access, as
+ * built").
+ */
+export function hcTextKeys(text: string): string[] | null {
+	const keys: string[] = [];
+	for (const char of text) {
+		if (/^[a-z0-9,.;\-/\\'[\]=`]$/.test(char)) keys.push(char);
+		else if (/^[A-Z]$/.test(char)) keys.push(`shift+${char.toLowerCase()}`);
+		else if (char === ' ') keys.push('space');
+		else return null;
+	}
+	return keys;
+}
+
+/**
+ * Screen access on herdr-core (#164, ADR-0009): `terminal.read {lines: 0}`
+ * for the visible screen, `terminal.keys` with one key per call (its reply is
+ * the status from before the key, so it confirms nothing and is not read).
+ * Text goes key by key in one `terminal.keys` call when every character has a
+ * key name ({@link hcTextKeys}): that never touches the terminal's size, and
+ * the call answers once the keys are in, so a key pressed after it lands
+ * after the text. Other text goes as one AUTOMATIC_INPUT frame on a short
+ * resumed attach at the terminal's own grid ({@link HcImageClient.input}),
+ * which refuses where closing it would resize the terminal (#172);
+ * `terminal.send` presses Enter.
+ */
+export function hcScreenAccess(client: () => PromptClient | null): ScreenAccess {
+	const connected = (): PromptClient => {
+		const current = client();
+		if (!current) throw new Error(NO_CONNECTION_MESSAGE);
+		return current;
+	};
+	return {
+		async read(paneId: string): Promise<string> {
+			const requester = connected();
+			let result: { text?: unknown } | null;
+			try {
+				result = await requester.request<{ text?: unknown } | null>('terminal.read', {
+					terminal: paneId,
+					lines: 0,
+				});
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+			if (typeof result?.text !== 'string') throw new Error('herdr-core did not return the screen');
+			return result.text;
+		},
+		async press(paneId: string, key: ScreenKey): Promise<void> {
+			const checked = checkScreenKey(key);
+			const requester = connected();
+			try {
+				await requester.request('terminal.keys', { terminal: paneId, keys: [checked] });
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+		},
+		async type(paneId: string, text: string): Promise<void> {
+			checkScreenText(text);
+			const requester = connected();
+			if (!text) return;
+			const keys = hcTextKeys(text);
+			const typer = keys ? null : typingClient(requester);
+			if (!keys && !typer) throw new Error('this herdr-core connection cannot type into a terminal');
+			try {
+				if (keys) await requester.request('terminal.keys', { terminal: paneId, keys });
+				else await typer?.input(paneId, text);
+			} catch (error) {
+				throw new Error(describe(error));
+			}
+		},
+	};
+}
+
+/**
+ * The terminal's agent status as hc reports it now (`terminal.get`'s
+ * `status.state`: `idle`, `working`, `blocked`, `done`), or null while the
+ * agent reports none: what the session settings driver checks before it
+ * sends anything (#169, #170).
+ */
+export function hcAgentStatus(client: () => PromptClient | null): (paneId: string) => Promise<string | null> {
+	return async (paneId) => {
+		const connected = client();
+		if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+		let result: unknown;
+		try {
+			result = await connected.request<unknown>('terminal.get', { terminal: paneId });
+		} catch (error) {
+			throw new Error(describe(error));
+		}
+		return parseTerminal(result)?.status?.state ?? null;
 	};
 }

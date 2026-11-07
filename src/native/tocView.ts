@@ -3,7 +3,7 @@
  *
  * A right-sidebar view listing the turns of the **active native view**, each
  * turn's headings nested beneath it, the way Obsidian's own outline lists a
- * note. Headings are computed in the reducer (`turnHeadings`, #100), so nothing
+ * note. Headings are computed in the parser (`turnHeadings`, #100), so nothing
  * here parses Markdown; a click scrolls the view through its seams,
  * `NativePaneSurface.scrollToTurn` for a prompt and `scrollToHeading` for a
  * heading (#118), both of which switch following off (#106).
@@ -27,7 +27,8 @@ import { Component, ItemView, type App, type WorkspaceLeaf } from 'obsidian';
 import type HerdrPlugin from '../main';
 import { TerminalView, TERMINAL_VIEW_TYPE } from '../views/terminalView';
 import type { SessionHandleOf, SessionModels, SessionModelView } from './sessionModel';
-import type { Turn } from './reducer';
+import { earlierTurnCount, type Turn } from './conversation';
+import { EarlierTurnsBar } from './earlierTurns';
 
 export const TOC_VIEW_TYPE = 'herdr-toc';
 
@@ -83,7 +84,7 @@ export interface TocPanelOptions {
 	): void;
 	/**
 	 * The same for one heading of a turn's prose (#118). The index is the
-	 * heading's place in that turn's `headings`, which is the order the reducer
+	 * heading's place in that turn's `headings`, which is the order the parser
 	 * computes and this list draws; the surface pairs it with the elements
 	 * Obsidian rendered, and falls back to the turn when they cannot be paired.
 	 */
@@ -94,6 +95,13 @@ export interface TocPanelOptions {
 		turnId: string,
 		index: number,
 	): void;
+	/**
+	 * Whether any open native view shows the pane (#152), asked when the
+	 * layout changes. A list left following a pane no view shows lets its
+	 * model go: nothing would scroll to its turns, and the model is a whole
+	 * session held for nobody. Left out, the list holds on.
+	 */
+	shown?(endpointId: string, paneId: string): boolean;
 }
 
 /**
@@ -161,6 +169,20 @@ export class TocPanel {
 		this.activeLeafChanged(leaf);
 	}
 
+	/**
+	 * Leaves were opened, closed or moved: a pane no native view shows any
+	 * more is not followed (#152), and the list says no native view is active.
+	 */
+	layoutChanged(): void {
+		if (!this.paneId || !this.options.shown) return;
+		if (this.options.shown(this.endpointId, this.paneId)) return;
+		this.release();
+		this.paneId = '';
+		this.endpointId = '';
+		this.followedLeaf = null;
+		this.render();
+	}
+
 	/** Gives the model and the row listeners back. */
 	unmount(): void {
 		this.release();
@@ -189,12 +211,22 @@ export class TocPanel {
 		this.component = new Component();
 		this.component.load();
 
-		const turns = this.handle?.model.state.turns ?? [];
+		const model = this.handle?.model;
+		const turns = model?.state.turns ?? [];
 		if (!this.paneId) {
 			listEl.createDiv({ cls: 'herdr-toc-empty', text: 'No native view is active.' });
 			return;
 		}
-		if (turns.length === 0) {
+		// The turns the model does not hold, ahead of the ones it does (#152).
+		const earlier = model ? earlierTurnCount(model.state) : 0;
+		if (earlier > 0) {
+			new EarlierTurnsBar(listEl, {
+				component: this.component,
+				onLoad: () => this.handle?.model.loadEarlier?.(),
+				cls: 'herdr-toc-earlier',
+			}).update(earlier, model?.loadingEarlier ?? false);
+		}
+		if (turns.length === 0 && earlier === 0) {
 			listEl.createDiv({ cls: 'herdr-toc-empty', text: 'Nothing in this session yet.' });
 			return;
 		}
@@ -203,8 +235,13 @@ export class TocPanel {
 
 	/** One turn: its prompt, then the headings of its prose, nested under it. */
 	private renderTurn(listEl: HTMLElement, turn: Turn): void {
+		// A turn nobody prompted — what a compaction or the runtime's notices
+		// open before the first prompt (#130, #133) — has no row of its own;
+		// its headings, if it has any, still do.
+		const label = turnLabel(turn);
+		if (!label && turn.headings.length === 0) return;
 		const turnEl = listEl.createDiv({ cls: 'herdr-toc-turn' });
-		this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], firstLine(turn.prompt), turn.id);
+		if (label) this.renderRow(turnEl, ['herdr-toc-item', 'herdr-toc-prompt'], label, turn.id);
 		turn.headings.forEach((heading, index) => {
 			this.renderRow(
 				turnEl,
@@ -264,6 +301,19 @@ export class TocPanel {
 	}
 }
 
+/**
+ * What a turn's row says: its prompt's first line, for a bash-mode command
+ * the command (#133), or for a prompt that was only a picture, that it was
+ * one (#129). Empty for a turn nobody prompted.
+ */
+export function turnLabel(turn: Turn): string {
+	const line = firstLine(turn.prompt);
+	if (line) return line;
+	const first = turn.entries[0];
+	if (first?.kind === 'shell') return `! ${first.command}`;
+	return first?.kind === 'image' ? 'Image' : '';
+}
+
 /** A prompt's first line, which is all a one-line row can say. */
 function firstLine(text: string): string {
 	return (text.split('\n', 1)[0] ?? '').trim();
@@ -302,6 +352,7 @@ export class TocView extends ItemView {
 				this.scrollNative(leaf, endpointId, paneId, (view) =>
 					view.scrollNativeToHeading(turnId, index),
 				),
+			shown: (endpointId, paneId) => this.nativeLeaves(endpointId, paneId).length > 0,
 		});
 	}
 
@@ -325,6 +376,9 @@ export class TocView extends ItemView {
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (leaf) => this.panel.activeLeafChanged(leaf)),
 		);
+		// A native tab closed with the focus going to a sidebar says nothing
+		// as a leaf change; the layout change does (#152).
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.panel.layoutChanged()));
 		// A tab that swapped its surface where it stands (#105): no leaf became
 		// active, so the leaf change above is silent about it.
 		this.register(
@@ -359,7 +413,15 @@ export class TocView extends ItemView {
 		paneId: string,
 		move: (view: TerminalView) => void,
 	): void {
-		const showing = this.app.workspace
+		const showing = this.nativeLeaves(endpointId, paneId);
+		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
+		const view = leaf?.view;
+		if (view instanceof TerminalView) move(view);
+	}
+
+	/** The leaves showing the pane in native mode, looked up now. */
+	private nativeLeaves(endpointId: string, paneId: string): WorkspaceLeaf[] {
+		return this.app.workspace
 			.getLeavesOfType(TERMINAL_VIEW_TYPE)
 			.filter(
 				(leaf) =>
@@ -367,9 +429,6 @@ export class TocView extends ItemView {
 					leaf.view.nativePaneId() === paneId &&
 					leaf.view.nativeEndpointId() === endpointId,
 			);
-		const leaf = showing.find((candidate) => candidate === followed) ?? showing.at(0);
-		const view = leaf?.view;
-		if (view instanceof TerminalView) move(view);
 	}
 }
 

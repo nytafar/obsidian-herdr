@@ -14,13 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	encodeProjectDir,
 	DEFAULT_CHUNK_BYTES,
 	LocalTranscriptSource,
-	transcriptPath,
 	type TailOptions,
 	type TranscriptStream,
 } from '../src/native/transcriptSource';
+import { encodeProjectDir, transcriptPath } from '../src/agents/claude/paths';
 
 describe('encodeProjectDir (ADR-0003)', () => {
 	it('replaces everything that is not a letter or a digit with a dash', () => {
@@ -166,6 +165,50 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 		appendFileSync(path, 'tant"}\n');
 		await eventually(() => lines.length === 2);
 		expect(lines[1]).toBe('{"type":"assistant"}');
+	});
+
+	it('says the unended last line as a tail, each time it changes, and as a line once it ends (#138)', async () => {
+		const path = join(dir, 'session.jsonl');
+		writeFileSync(path, 'one\n{"type":"assis');
+		const source = new LocalTranscriptSource();
+		const seen: { lines: string[]; tail: string | undefined }[] = [];
+		streams.push(
+			source.open(path, (lines, _restart, tail) => seen.push({ lines, tail }), { debounceMs: 5, pollMs: 20 }),
+		);
+		await eventually(() => seen.length === 1);
+		expect(seen[0]).toEqual({ lines: ['one'], tail: '{"type":"assis' });
+
+		// The tail grew and no line ended: a batch for the tail alone.
+		appendFileSync(path, 'tant"}');
+		await eventually(() => seen.length === 2);
+		expect(seen[1]).toEqual({ lines: [], tail: '{"type":"assistant"}' });
+		// A look that finds nothing new says nothing.
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(seen).toHaveLength(2);
+
+		appendFileSync(path, '\n');
+		await eventually(() => seen.length === 3);
+		expect(seen[2]).toEqual({ lines: ['{"type":"assistant"}'], tail: '' });
+	});
+
+	it('says no tail short of the end of the file, where a held line is its middle (#138)', async () => {
+		const path = join(dir, 'session.jsonl');
+		const written = Array.from({ length: 20 }, (_, i) => `{"n":${i}}`);
+		writeFileSync(path, `${written.join('\n')}\n{"n":"last"}`);
+		const source = new LocalTranscriptSource();
+		const seen: { lines: string[]; tail: string | undefined }[] = [];
+		streams.push(
+			source.open(path, (lines, _restart, tail) => seen.push({ lines, tail }), {
+				debounceMs: 5,
+				pollMs: 20,
+				chunkBytes: 13,
+			}),
+		);
+
+		await eventually(() => seen.flatMap((batch) => batch.lines).length === written.length);
+		expect(seen.flatMap((batch) => batch.lines)).toEqual(written);
+		expect(seen.slice(0, -1).every((batch) => !batch.tail)).toBe(true);
+		expect(seen.at(-1)?.tail).toBe('{"n":"last"}');
 	});
 
 	it('follows a file that does not exist yet', async () => {
@@ -373,5 +416,39 @@ describe('LocalTranscriptSource.open: following a growing transcript (#94)', () 
 		// About 3 MB, so no fewer than three reads, and no line lost between them.
 		expect(seen.length).toBeGreaterThanOrEqual(3);
 		expect(current(seen).every((delivered) => delivered === line)).toBe(true);
+	});
+
+	it('reads at most its budget per look, and then only what the file gained (#147)', async () => {
+		const path = join(dir, 'agent-a1.jsonl');
+		// 100 bytes a line, newline and all.
+		const written = Array.from({ length: 50 }, (_, i) => `{"n":${String(i).padStart(2, '0')},"p":"${'z'.repeat(83)}"}`);
+		writeFileSync(path, `${written.join('\n')}\n`);
+
+		const seen = batches(path, { budgetBytes: 1000 });
+
+		await eventually(() => current(seen).length === written.length);
+		expect(current(seen)).toEqual(written);
+		// Ten lines' worth per look, the rest left for the next.
+		expect(seen.length).toBeGreaterThanOrEqual(5);
+		expect(seen.every((batch) => batch.lines.length <= 10)).toBe(true);
+
+		appendFileSync(path, '{"n":50}\n');
+		await eventually(() => current(seen).length === written.length + 1);
+		expect(seen.at(-1)?.lines).toEqual(['{"n":50}']);
+	});
+});
+
+describe('LocalTranscriptSource.list (#147)', () => {
+	it('lists a folder’s names, and nothing for a folder that is not there', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'herdr-list-'));
+		try {
+			writeFileSync(join(dir, 'agent-a1.jsonl'), '');
+			writeFileSync(join(dir, 'agent-a1.meta.json'), '{}');
+			const source = new LocalTranscriptSource();
+			expect((await source.list(dir))?.sort()).toEqual(['agent-a1.jsonl', 'agent-a1.meta.json']);
+			expect(await source.list(join(dir, 'missing'))).toBeNull();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

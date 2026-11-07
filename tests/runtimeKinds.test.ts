@@ -29,9 +29,10 @@ import {
 	type TranscriptAccess,
 } from '../src/runtime/kind';
 import { LocalTranscriptSource } from '../src/native/transcriptSource';
+import { HerdrCommandCatalog } from '../src/herdr/paneClaude';
 import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
-import { paneViewAvailability } from '../src/native/surface';
+import { paneViewAvailability } from '../src/native/paneSurface';
 import type { ActionHost } from '../src/actions';
 
 const HOME = '/home/test';
@@ -203,6 +204,28 @@ describe('the herdr kind (ADR-0004)', () => {
 		// model reopens its tail whenever the source it is handed changes.
 		expect(kind.native?.transcripts(local, null)).toBe(kind.native?.transcripts(local, null));
 		expect(kind.native?.transcripts(remote, null)).toBeNull();
+	});
+
+	it('reads a local pane’s own Claude for its `/` list, and nothing over SSH or unconnected (#132)', () => {
+		const local = endpointOf(defaultLocalRuntime());
+		const remote = endpointOf({ ...newRuntime('herdr', 'ssh', []), host: 'xl' });
+		const connection = (endpoint: typeof local) =>
+			({
+				endpoint,
+				client: {} as never,
+				scope: { paneInfo: () => undefined },
+			}) as unknown as Parameters<NonNullable<NonNullable<typeof kind.native>['commandCatalog']>>[1];
+		const here = connection(local);
+		const catalog = kind.native?.commandCatalog?.(local, here, 'claude');
+		expect(catalog).toBeInstanceOf(HerdrCommandCatalog);
+		// One per connection, so its cache lasts across `/`s.
+		expect(kind.native?.commandCatalog?.(local, here, 'claude')).toBe(catalog);
+		// Without the connection, this machine's `~/.claude` as before.
+		expect(kind.native?.commandCatalog?.(local, null, 'claude')).toBeNull();
+		expect(kind.native?.commandCatalog?.(remote, connection(remote), 'claude')).toBeNull();
+		// The pane-Claude reader is Claude's (ADR-0010): another agent's list
+		// is its own format's, read by the prompt box.
+		expect(kind.native?.commandCatalog?.(local, here, 'codex')).toBeNull();
 	});
 });
 

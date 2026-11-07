@@ -12,7 +12,7 @@
  * `Notice` all reach it from here.
  *
  * Since issue #92 that lifecycle is one **pane surface** among two
- * (`../native/surface.ts`, ADR-0002): the tab's **view** decides which one is
+ * (`../native/paneSurface.ts`, ADR-0002): the tab's **view** decides which one is
  * mounted, `PaneSurfaceHolder` performs the swap, and the native surface is
  * the other. Since #104 the tab's view state holds two independent fields, the
  * view and the terminal engine, each switched from the tab menu or the
@@ -110,7 +110,13 @@ import {
 	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState } from '../herdr/scope';
-import type { SessionWatcher } from '../native/sessionWatcher';
+import type { PaneGlance, PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
+import { agentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
+import { ScreenAnswerer } from '../native/screenAnswer';
+import type { ScreenAnswering } from '../native/screenAnswerers';
+import { TrustWatch } from '../native/trustWatch';
+
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
 import {
@@ -126,17 +132,23 @@ import {
 } from '../native/renderMode';
 import {
 	effectivePaneView,
-	NativePaneSurface,
 	PaneSurfaceHolder,
 	paneViewAvailability,
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
 	type PaneWhere,
-} from '../native/surface';
+} from '../native/paneSurface';
+import { NativePaneSurface } from '../native/surface';
+import { imagesUnavailable } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
+import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
+import { normalizeContextReadoutStyle, normalizePromptBoxStyle } from '../native/composerLook';
 import { linkSourcePath } from '../native/noteLinks';
+
+/** How often a tab looks for its pane's trust prompt while the agent has no session (#167). */
+const TRUST_WATCH_MS = 1000;
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
 
@@ -209,7 +221,9 @@ export function parseTerminalState(raw: unknown): TerminalViewState | null {
  * Two decisions, both a function of the view alone (plus the endpoint), kept
  * pure so the header can be asserted without an Obsidian view: the toggle
  * between the two views, and whether the observe/control eye applies at all.
- * The native-only readouts coming in #111 belong in here too.
+ * The header keeps icons only: the model, effort, mode and context readouts
+ * of #111 live in the native view's session bar under the prompt box (#161),
+ * not here.
  */
 export interface TerminalHeaderActions {
 	/** Icon, tooltip and state of the view toggle; what a click *does*. */
@@ -260,7 +274,8 @@ export function terminalHeaderActions(
  * Where a pane lives, with the pane's own reason against the native view on
  * top of its runtime's (ADR-0006): an hc terminal whose Claude has not
  * labelled it with its session stays a terminal and names the install
- * command. The runtime's reason comes first; only a connected runtime has a
+ * command, and a pane running another agent than Claude names it (#155).
+ * The runtime's reason comes first; only a connected runtime has a
  * pane reason, so a tab on one that is not keeps what it shows.
  */
 export function withPaneReason(block: PaneWhere, paneReason: string | null): PaneWhere {
@@ -575,6 +590,22 @@ export class TerminalView extends ItemView {
 	private visibility: VisibilityTracker | null = null;
 	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
+	/**
+	 * "Trust new folders automatically" for this tab's pane (#167): looks at
+	 * the screen while the pane's agent has no session yet, whichever surface
+	 * the tab shows, since an hc terminal at the prompt has no native view.
+	 * It reads the pane by `glance`, never `snapshot`, which on herdr may read
+	 * the Claude process of a pane this tab does not follow.
+	 */
+	private readonly trustWatch = new TrustWatch({
+		enabled: () => this.plugin.settings.nativeAutoTrustFolders === true,
+		claimed: () => this.plugin.screenAnswerers.trustClaimed(this.trustKey()),
+		pane: () => this.paneGlance(),
+		answering: (agent) => this.screenAnswering(agent),
+		claim: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
+		release: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
+		notify: (message) => new Notice(message),
+	});
 	/** Pending `updateHeader` frame, so a burst of `changed` retitles once (#36). */
 	private pendingHeader = 0;
 	/**
@@ -735,9 +766,24 @@ export class TerminalView extends ItemView {
 	 * are relative to (#98).
 	 */
 	private paneCwd(): string {
+		return this.paneSnapshot()?.cwd ?? '';
+	}
+
+	/** The pane as its runtime's session watcher last reported it, or null. */
+	private paneSnapshot(): PaneSnapshot | null {
 		const { paneId, endpointId } = this.terminal.identity;
-		if (!paneId) return '';
-		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId)?.cwd ?? '';
+		if (!paneId) return null;
+		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId) ?? null;
+	}
+
+	/**
+	 * This tab's pane as its runtime last reported it, read with no side
+	 * effects (`SessionWatcher.glance`), or null for a kind that offers none.
+	 */
+	private paneGlance(): PaneGlance | null {
+		const { paneId, endpointId } = this.terminal.identity;
+		if (!paneId) return null;
+		return this.plugin.nativeWatcher(endpointId)?.glance?.(paneId) ?? null;
 	}
 
 	/**
@@ -791,6 +837,44 @@ export class TerminalView extends ItemView {
 		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
 	}
 
+	/**
+	 * Reading and answering this pane's dialog on its screen (ADR-0009), or
+	 * null for a kind with no screen (the `claude` kind) or an agent whose
+	 * format reads none. The driver is the plugin's one for this runtime and
+	 * agent, so every tab on the pane shares its one-answer guard, and it
+	 * reads the runtime's client per call. `agent` is the one the trust watch
+	 * saw running; the card's is its session's. Nothing here reads the pane
+	 * by `snapshot`, so the trust watch's use costs no process read.
+	 */
+	private screenAnswering(agent?: string): ScreenAnswering | null {
+		const endpointId = this.terminal.identity.endpointId;
+		const kind = this.kind();
+		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
+		const running = agent ?? this.paneGlance()?.agent ?? undefined;
+		const format = running ? agentFormat(running) : defaultAgentFormat();
+		const parse = format?.screenDialog;
+		if (!screen || !format || !parse) return null;
+		const answerer = this.plugin.screenAnswerers.answerer(
+			`${endpointId}\n${kind.kind}\n${format.agent}`,
+			() => new ScreenAnswerer({ screen, parse }),
+		);
+		return {
+			answerer,
+			screen,
+			parse,
+			statusMessage: () => this.paneGlance()?.blockMessage ?? null,
+			cwd: () => this.paneGlance()?.cwd ?? '',
+			claimTrust: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
+			releaseTrust: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
+		};
+	}
+
+	/** This tab's pane, plugin-wide, for the trust prompt's one claim (#167). */
+	private trustKey(): string {
+		const { endpointId, paneId } = this.terminal.identity;
+		return `${endpointId}\n${paneId}`;
+	}
+
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
 	private kind(): RuntimeKindAdapter {
 		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
@@ -810,12 +894,21 @@ export class TerminalView extends ItemView {
 			// Plugin-held and reference counted, so two tabs on one pane read one
 			// transcript (ADR-0003).
 			models: this.plugin.sessionModels,
+			// Prompts typed while the agent works wait in the plugin's queue (#159).
+			queues: this.plugin.promptQueues,
 			// Prompts go through the tab's own runtime, its kind's sender over its
 			// own client, and only while that runtime is the connected one and can
 			// show a native view at all (ADR-0002, ADR-0006); `--wait` is never
 			// asked for (#97, ADR-0003).
 			sender: {
-				send: (paneId, text) => this.kind().promptSender(nativeClient).send(paneId, text),
+				send: (paneId, text, images, options) =>
+					this.kind().promptSender(nativeClient).send(paneId, text, images, options),
+				// Whether images can go with a prompt (#144), asked of the kind as
+				// it is now: herdr-core's answer depends on the core's version.
+				imagesUnavailable: (paneId) => imagesUnavailable(this.kind().promptSender(nativeClient), paneId),
+				// The pane gate (review of #169): nothing typed into a picker the
+				// session bar opened, nor one that may still be open.
+				blocked: (paneId) => this.kind().promptSender(nativeClient).blocked?.(paneId) ?? null,
 				// Stop, for a kind with a real interrupt (ADR-0007).
 				...(this.kind().promptSender(nativeClient).interrupt
 					? {
@@ -838,6 +931,21 @@ export class TerminalView extends ItemView {
 						},
 					}
 				: {}),
+			// The waiting card's answers on the pane's screen (ADR-0009), for a
+			// kind with one and an agent whose dialogs its format reads.
+			screen: () => this.screenAnswering(),
+			// The session bar's pickers (#161), for a kind that can change the
+			// model, effort and mode; asked of the kind as it is now, every draw,
+			// so the pane is read by `glance`. herdr and herdr-core drive the
+			// agent's own pickers, read by its format (#169, #170).
+			sessionSettings: () => {
+				const agent = this.paneGlance()?.agent;
+				const format = agent ? agentFormat(agent) : defaultAgentFormat();
+				return this.kind().sessionSettings?.(nativeClient, format ?? null) ?? null;
+			},
+			// The readout's breakdown (#171), for a kind that asks without
+			// writing to the conversation; the others send `/context`.
+			contextUsage: () => this.kind().contextUsage?.(nativeClient) ?? null,
 			// The waiting card's "Trust this folder" (#99), over the same client and
 			// only ever `Down Enter` on the workspace trust prompt.
 			keySender: {
@@ -861,7 +969,24 @@ export class TerminalView extends ItemView {
 					cwd: () => this.paneCwd(),
 					// The commands of the machine the agent runs on: over the
 					// runtime's connection for herdr-core over SSH (ADR-0006).
-					catalog: () => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId),
+					catalog: (agent) => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId, agent),
+					// The catalogue of the agent the pane runs (ADR-0010): none
+					// named is the default agent's, one without a format has none.
+					format: () => {
+						const agent = this.paneSnapshot()?.agent;
+						return agent ? agentFormat(agent) : undefined;
+					},
+					paneId: () => this.paneId,
+					// The most used commands first (#149), counted in the plugin's
+					// data whatever runtime the pane is on.
+					usage: () => normalizeCommandUsage(this.plugin.settings.commandUsage),
+					onCommandUsed: (name) => {
+						this.plugin.settings.commandUsage = withCommandUsed(
+							normalizeCommandUsage(this.plugin.settings.commandUsage),
+							name,
+						);
+						void this.plugin.saveSettings();
+					},
 					// The agent opens a mention on its own machine: on an SSH
 					// runtime, the remote vault's copy of the file.
 					vaultPath: () => {
@@ -872,13 +997,17 @@ export class TerminalView extends ItemView {
 					},
 				});
 				// Closed with the box: a popover open on a mode switch or a closed
-				// tab must not outlive the text area it belongs to. `isOpen` is
+				// tab must not outlive the text area it belongs to. `isShowing` is
 				// how the box knows the enter is the popover's, not a send (#103).
-				return { close: () => suggest.close(), isOpen: () => suggest.isOpen() };
+				return { close: () => suggest.close(), isShowing: () => suggest.isShowing() };
 			},
 			// Both read fresh on every draw, so a setting change and a vault the
 			// user moved reach a view that is already open (#95).
 			presentation: () => normalizeToolGroupPresentation(this.plugin.settings.nativeToolGroups),
+			composer: () => ({
+				boxStyle: normalizePromptBoxStyle(this.plugin.settings.nativePromptBoxStyle),
+				readout: normalizeContextReadoutStyle(this.plugin.settings.nativeContextReadout),
+			}),
 			vaultPath: () => this.plugin.vaultPath(),
 			// Links open beside this leaf, never in it (#114), on the side
 			// opposite the one a terminal is placed on beside its note.
@@ -911,6 +1040,12 @@ export class TerminalView extends ItemView {
 	/** The runtime of {@link nativePaneId}'s pane, or '' when that is ''. */
 	nativeEndpointId(): string {
 		return this.nativePaneId() ? this.terminal.identity.endpointId : '';
+	}
+
+	/** The native surface this tab shows, or null while it shows a terminal. */
+	nativeSurface(): NativePaneSurface | null {
+		const surface = this.surfaces.current;
+		return surface instanceof NativePaneSurface ? surface : null;
 	}
 
 	/** Brings a turn into view, for a click in the table of contents (#100). */
@@ -1019,9 +1154,9 @@ export class TerminalView extends ItemView {
 
 		// Header actions, in the order Obsidian shows them (#105). Surface-specific
 		// first — the view toggle, then the observe/control eye, which only a
-		// terminal has — and connection actions last, so the native-only readouts
-		// of #111 (context, model, effort) can join the first group without
-		// moving anything else.
+		// terminal has — and connection actions last. Icons only: the model,
+		// effort, mode and context of #111 are the native view's session bar,
+		// under its prompt box (#161).
 		this.viewActionEl = this.addAction('book-open', 'Switch to native view', () => {
 			this.detached('view toggle', () => this.togglePaneView());
 		});
@@ -1063,6 +1198,7 @@ export class TerminalView extends ItemView {
 		this.bindWindow(window);
 		this.bindWindow(this.containerEl.win);
 		this.registerEvent(this.app.workspace.on('window-open', (_workspaceWindow, win) => this.bindWindow(win)));
+		this.registerInterval(this.containerEl.win.setInterval(() => this.trustWatch.tick(), TRUST_WATCH_MS));
 		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {
@@ -1201,7 +1337,8 @@ export class TerminalView extends ItemView {
 		labels.ensure(scope.get(this.paneId)?.tabId);
 		this.scheduleHeader();
 		// A pane whose native view comes and goes with its session (an hc
-		// terminal's label, ADR-0006): mount whichever surface it can show now.
+		// terminal's label, ADR-0006) or its agent (#155): mount whichever
+		// surface it can show now.
 		const watcher = this.plugin.nativeWatcher(this.terminal.identity.endpointId);
 		const off = watcher?.onAvailability?.((paneId) => {
 			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
@@ -1605,5 +1742,24 @@ export function switchRenderModeCommand(app: App, checking: boolean): boolean {
 	const view = app.workspace.getActiveViewOfType(TerminalView);
 	if (!view) return false;
 	if (!checking) view.showRenderModeMenu();
+	return true;
+}
+
+/** What a native view command does to the surface of the active tab (#145). */
+export type NativeViewAction = 'focus-prompt' | 'next-turn' | 'previous-turn' | 'find';
+
+/**
+ * The native view's commands (#145), registered in `main.ts` with no default
+ * hotkey. Offered only while the active tab shows the native view, whatever
+ * runtime its pane is on; the terminal view has its own keys for all of this.
+ * Focusing the prompt is offered only while there is a box to take it.
+ */
+export function nativeViewCommand(app: App, action: NativeViewAction, checking: boolean): boolean {
+	const surface = app.workspace.getActiveViewOfType(TerminalView)?.nativeSurface();
+	if (!surface) return false;
+	if (action === 'focus-prompt') return checking ? surface.canFocusPrompt() : surface.focusPrompt();
+	if (checking) return true;
+	if (action === 'find') surface.findInConversation();
+	else surface.stepTurn(action === 'next-turn' ? 1 : -1);
 	return true;
 }

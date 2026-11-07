@@ -20,62 +20,26 @@
  */
 
 import {
-	isAsyncLaunchNotice,
+	type ToolKind,
+	type CompactionEntry,
+	type ImageEntry,
+	type NoticeEntry,
+	type ResumeEntry,
+	type ShellEntry,
 	type ThinkingEntry,
 	type TextEntry,
 	type SteerEntry,
+	type SubagentProgress,
 	type ToolEntry,
 	type ToolStatus,
+	type Turn,
 	type TurnEntry,
-} from './reducer';
+} from './conversation';
+import { toolKindOf, type ToolTable } from '../agents/format';
 import { trimTrailingSlashes } from '../paths';
+import type { AgentStatus } from '../herdr/types.gen';
 
-/**
- * The kinds a tool call is shown as. Claude Code's tool names change between
- * releases and a vault picks up MCP tools with names of their own, so the table
- * below is an alias table over a small set of kinds, and anything it does not
- * know is `other` rather than a gap.
- */
-export type ToolKind =
-	| 'bash'
-	| 'read'
-	| 'edit'
-	| 'write'
-	| 'grep'
-	| 'glob'
-	| 'webfetch'
-	| 'websearch'
-	| 'todo'
-	| 'agent'
-	| 'question'
-	| 'other';
-
-/**
- * Tool name (lower-cased) to kind. The names are the ones Claude Code 2.1.266
- * writes, counted over every transcript on this machine on 2026-09-15, plus the
- * older `Task` spelling of `Agent` and the edit variants.
- */
-const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
-	bash: 'bash',
-	read: 'read',
-	edit: 'edit',
-	multiedit: 'edit',
-	notebookedit: 'edit',
-	write: 'write',
-	grep: 'grep',
-	glob: 'glob',
-	webfetch: 'webfetch',
-	websearch: 'websearch',
-	todowrite: 'todo',
-	agent: 'agent',
-	task: 'agent',
-	askuserquestion: 'question',
-};
-
-/** The kind a tool name is shown as; `other` for one this build does not know. */
-export function toolKind(name: string): ToolKind {
-	return TOOL_KINDS[name.trim().toLowerCase()] ?? 'other';
-}
+export type { ToolKind } from './conversation';
 
 /** One kind's share of a summary line: "ran 2 commands", "read 1 file". */
 interface ToolPhrase {
@@ -108,10 +72,19 @@ const TOOL_PHRASES: Readonly<Record<ToolKind, ToolPhrase>> = {
  * appear: "Read 4 files, ran 2 commands". Only the first letter is capitalised,
  * so the parts read as one sentence however they are ordered.
  */
-export function toolGroupSummary(tools: readonly ToolEntry[]): string {
+export function toolGroupSummary(tools: readonly ToolEntry[], table?: ToolTable): string {
+	const line = toolGroupCounts(tools, table);
+	return line ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : '';
+}
+
+/**
+ * The counts by kind as they read after a title, all lower case: "read 4
+ * files, ran 2 commands". Empty for a group with no calls.
+ */
+export function toolGroupCounts(tools: readonly ToolEntry[], table?: ToolTable): string {
 	const counts = new Map<ToolKind, number>();
 	for (const entry of tools) {
-		const kind = toolKind(entry.name);
+		const kind = toolKindOf(entry.name, table);
 		counts.set(kind, (counts.get(kind) ?? 0) + 1);
 	}
 	const parts: string[] = [];
@@ -119,8 +92,114 @@ export function toolGroupSummary(tools: readonly ToolEntry[]): string {
 		const phrase = TOOL_PHRASES[kind];
 		parts.push(`${phrase.verb} ${count} ${count === 1 ? phrase.one : phrase.many}`);
 	}
-	const line = parts.join(', ');
-	return line ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : '';
+	return parts.join(', ');
+}
+
+/**
+ * What the agent is doing in a turn, as far as that turn's tool groups care
+ * (#128): `working` or `blocked` for the session's latest turn while herdr's
+ * status says so, and nothing for every other turn, which has finished
+ * whatever its calls still say. A call left pending in an old turn is one the
+ * agent was interrupted in, not one it is still making.
+ */
+export type TurnActivity = 'working' | 'blocked';
+
+/** The activity a turn shows for an agent status, or null when it shows none. */
+export function turnActivity(status: AgentStatus): TurnActivity | null {
+	return status === 'working' || status === 'blocked' ? status : null;
+}
+
+/**
+ * Where a tool group stands (#128): `live` while the agent is making its
+ * calls, `waiting` while it is blocked on the reader in them, `settled` once
+ * the work moved on or the turn ended.
+ */
+export type ToolGroupState = 'live' | 'waiting' | 'settled';
+
+/**
+ * Where a group stands, from its turn's activity and whether it is the
+ * turn's open run (`openRun`, {@link openRunIndex}): the run the next call
+ * would join. That run is the one working, or the one the agent is blocked
+ * in. A group further up is settled, unless a call in it has not come back —
+ * a background subagent still at work — which keeps it live, never waiting:
+ * the block is in the open run.
+ */
+export function toolGroupState(
+	tools: readonly ToolEntry[],
+	activity: TurnActivity | null,
+	openRun: boolean,
+): ToolGroupState {
+	if (!activity) return 'settled';
+	if (openRun) return activity === 'blocked' ? 'waiting' : 'live';
+	const unanswered = tools.some((entry) => entry.status === 'pending' || entry.status === 'running');
+	return unanswered ? 'live' : 'settled';
+}
+
+/**
+ * The index of the turn's open run among its items, or -1: the last group,
+ * when nothing that ends a run comes after it. A call that escaped the group
+ * (a vault change, a source) or the runtime's notice does not end it
+ * (`turnItems`), so it does not end it here either; anything else does.
+ */
+export function openRunIndex(items: readonly TurnItem[]): number {
+	for (let index = items.length - 1; index >= 0; index--) {
+		const kind = items[index]?.kind;
+		if (kind === 'group') return index;
+		// A subagent at work reads under its group and does not end the run.
+		if (kind !== 'change' && kind !== 'source' && kind !== 'todo' && kind !== 'notice' && kind !== 'subagent') {
+			return -1;
+		}
+	}
+	return -1;
+}
+
+/** What a group's header says, in the three parts it is drawn in. */
+export interface ToolGroupHeader {
+	/** "Working…", "Needs you" or "Worked". */
+	title: string;
+	/** The counts by kind ({@link toolGroupCounts}); may be cut short on screen. */
+	counts: string;
+	/**
+	 * "2 failed", or null when nothing did. Its own part so a narrow view that
+	 * cuts the counts short never cuts this: a failure is what a glance at a
+	 * folded group must not miss.
+	 */
+	failed: string | null;
+}
+
+/** A group's header for where it stands (#128). */
+export function toolGroupHeader(
+	tools: readonly ToolEntry[],
+	state: ToolGroupState,
+	table?: ToolTable,
+): ToolGroupHeader {
+	const title = state === 'live' ? 'Working…' : state === 'waiting' ? 'Needs you' : 'Worked';
+	const failures = tools.filter((entry) => entry.status === 'error').length;
+	// Work the agent left running when it went away (#135) is as much a thing
+	// a glance must not miss as a failure.
+	const lost = tools.filter((entry) => entry.status === 'lost').length;
+	// A call the user refused, where the agent tells that from a failure.
+	const declined = tools.filter((entry) => entry.status === 'declined').length;
+	const parts = [
+		failures > 0 ? `${failures} failed` : '',
+		declined > 0 ? `${declined} declined` : '',
+		lost > 0 ? `${lost} lost` : '',
+	].filter(Boolean);
+	return {
+		title,
+		counts: toolGroupCounts(tools, table),
+		failed: parts.length ? parts.join(', ') : null,
+	};
+}
+
+/**
+ * Whether a group starts open, until the reader opens or closes it (#128):
+ * open while it runs or waits on the reader, who may need what is in it to
+ * answer, and folded once it settles, so a finished turn reads as its prose.
+ * The reader's own choice always wins (`./foldMemory.ts`).
+ */
+export function toolGroupStartsOpen(state: ToolGroupState): boolean {
+	return state !== 'settled';
 }
 
 /**
@@ -142,10 +221,151 @@ const CHANGE_KINDS: readonly ToolKind[] = ['write', 'edit'];
 /** The kinds shown as a source. */
 const SOURCE_KINDS: readonly ToolKind[] = ['websearch', 'webfetch'];
 
-/** Whether this call renders on its own instead of inside the group. */
+/**
+ * Whether this call renders on its own instead of inside the group: a vault
+ * change, a source, and a to-do list update (#143), which is where a long
+ * turn has got to.
+ */
 export function escapesToolGroup(kind: ToolKind, presentation: ToolGroupPresentation): boolean {
 	if (presentation === 'collapse') return false;
-	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind);
+	return CHANGE_KINDS.includes(kind) || SOURCE_KINDS.includes(kind) || kind === 'todo';
+}
+
+/** Where one item of the agent's to-do list stands, as `TodoWrite` says it. */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/** One item of the agent's to-do list. */
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	/** What the item says while it is being done ("Writing the tests"), if given. */
+	activeForm: string | null;
+}
+
+/**
+ * The to-do list a `TodoWrite` call left, or null when it is not one or its
+ * list cannot be read (#143).
+ *
+ * Claude Code sends the whole list on every update, as `todos: [{ content,
+ * status, activeForm }]`, so the input is the list as it stands. An item with
+ * no words makes the list unreadable rather than shorter: a list missing an
+ * item would read as further along than it is. A status this build does not
+ * know reads as pending.
+ */
+export function todoList(entry: ToolEntry, table?: ToolTable): TodoItem[] | null {
+	if (toolKindOf(entry.name, table) !== 'todo') return null;
+	const todos = entry.input.todos;
+	if (!Array.isArray(todos)) return null;
+	const items: TodoItem[] = [];
+	for (const todo of todos as unknown[]) {
+		if (typeof todo !== 'object' || todo === null) return null;
+		const { content, status, activeForm } = todo as Record<string, unknown>;
+		if (typeof content !== 'string' || !content.trim()) return null;
+		items.push({
+			content: content.trim(),
+			status: status === 'completed' || status === 'in_progress' ? status : 'pending',
+			activeForm: typeof activeForm === 'string' && activeForm.trim() ? activeForm.trim() : null,
+		});
+	}
+	return items;
+}
+
+/** How far a list has got: done of total, and the item being worked on. */
+export interface TodoProgress {
+	done: number;
+	total: number;
+	/** The first item in progress, else null. */
+	current: TodoItem | null;
+}
+
+export function todoProgress(items: readonly TodoItem[]): TodoProgress {
+	return {
+		done: items.filter((item) => item.status === 'completed').length,
+		total: items.length,
+		current: items.find((item) => item.status === 'in_progress') ?? null,
+	};
+}
+
+/** The last readable list one turn left, and the call that left it. */
+export interface TurnTodo {
+	entryId: string;
+	items: TodoItem[];
+}
+
+/** The session's newest list: its turn, its call and its items (#143). */
+export interface LatestTodo extends TurnTodo {
+	turnId: string;
+}
+
+/** The last readable list in one turn, or null when it left none. */
+export function turnTodo(turn: Turn, table?: ToolTable): TurnTodo | null {
+	const entries = turn.entries;
+	for (let e = entries.length - 1; e >= 0; e--) {
+		const entry = entries[e];
+		if (entry?.kind !== 'tool') continue;
+		const items = todoList(entry, table);
+		if (items) return { entryId: entry.id, items };
+	}
+	return null;
+}
+
+/**
+ * The session's current to-do list: the one the latest readable `TodoWrite`
+ * left, or null when the agent has kept none (#143). Read from the end, so a
+ * session that keeps a list finds it at once.
+ */
+export function latestTodo(
+	turns: readonly Turn[],
+	ofTurn: (turn: Turn) => TurnTodo | null = turnTodo,
+): LatestTodo | null {
+	for (let t = turns.length - 1; t >= 0; t--) {
+		const turn = turns[t];
+		const todo = turn ? ofTurn(turn) : null;
+		if (turn && todo) return { turnId: turn.id, ...todo };
+	}
+	return null;
+}
+
+/** {@link latestTodo}'s items alone. */
+export function latestTodoList(turns: readonly Turn[], table?: ToolTable): TodoItem[] | null {
+	return latestTodo(turns, (turn) => turnTodo(turn, table))?.items ?? null;
+}
+
+/**
+ * {@link latestTodo} over a session that changes a few turns at a time: each
+ * turn's own list is read once and kept until the turn changes. The parser
+ * replaces a turn it changes and shares the rest (`reduce`), so a turn object
+ * seen before still says what it said; only a changed turn's entries are read
+ * again, and the rest of the walk is one lookup per turn.
+ */
+export class TodoIndex {
+	private readonly byTurn = new Map<string, { turn: Turn; todo: TurnTodo | null }>();
+
+	/** `table` is the session's format's; the index is cleared when the session changes. */
+	latest(turns: readonly Turn[], table?: ToolTable): LatestTodo | null {
+		return latestTodo(turns, (turn) => {
+			const known = this.byTurn.get(turn.id);
+			if (known?.turn === turn) return known.todo;
+			const todo = turnTodo(turn, table);
+			this.byTurn.set(turn.id, { turn, todo });
+			return todo;
+		});
+	}
+
+	/** How many turns it holds a reading of. */
+	get size(): number {
+		return this.byTurn.size;
+	}
+
+	/** Forgets one turn, which a rewind dropped. */
+	forget(turnId: string): void {
+		this.byTurn.delete(turnId);
+	}
+
+	/** Forgets every turn: the session is being drawn again from the start. */
+	clear(): void {
+		this.byTurn.clear();
+	}
 }
 
 /**
@@ -220,14 +440,17 @@ export function vaultNoteLink(path: string, vaultPath: string): string | null {
  */
 export function changeLine(status: ToolStatus): { lead: string; trail: string } {
 	if (status === 'error') return { lead: 'Could not update ', trail: '' };
+	if (status === 'declined') return { lead: 'Declined to update ', trail: '' };
 	if (status === 'done') return { lead: 'Updated ', trail: '' };
+	// Answered, and no record says whether it landed (#137): never "Updated".
+	if (status === 'unknown') return { lead: 'Tried to update ', trail: '' };
 	return { lead: 'Updating ', trail: '…' };
 }
 
 /** The class a vault-change line carries beside its own, for a state worth showing. */
 export function changeStateClass(status: ToolStatus): string | null {
-	if (status === 'error') return 'is-error';
-	if (status === 'done') return null;
+	if (status === 'error' || status === 'declined') return 'is-error';
+	if (status === 'done' || status === 'unknown') return null;
 	return 'is-pending';
 }
 
@@ -319,14 +542,48 @@ export function sourceText(entry: ToolEntry): {
  * (`docs/architecture.md`, issue #96), so until that read lands there is
  * nothing to show and the notice is never shown at all.
  *
- * The notice, not the notification, is what tells the two apart: the
- * notification arrives only when the subagent finishes, and between the launch
- * and that moment the notice would otherwise read as the report.
+ * The parser's status is what tells the two apart, with no agent's notice text
+ * read here: a call whose work went on after its result is `running` (or
+ * `lost`, when the agent went away meanwhile) until a notification ends it,
+ * and between the launch and that moment the notice would otherwise read as
+ * the report.
  */
-export function subagentReport(entry: ToolEntry): string {
-	if (toolKind(entry.name) !== 'agent') return '';
-	const report = isAsyncLaunchNotice(entry.result) ? entry.report : entry.report ?? entry.result;
+export function subagentReport(entry: ToolEntry, table?: ToolTable): string {
+	if (toolKindOf(entry.name, table) !== 'agent') return '';
+	const background = entry.notification !== null || entry.status === 'running' || entry.status === 'lost';
+	const report = background ? entry.report : entry.report ?? entry.result;
 	return report?.trim() ? report : '';
+}
+
+/** The longest a subagent's last words are shown in one line (#147). */
+const ACTIVITY_CHARS = 160;
+
+/**
+ * What a subagent at work is called (#147): the description its call gave,
+ * or the gist of the message that set it working again.
+ */
+export function subagentLabel(entry: ToolEntry): string {
+	for (const field of ['description', 'summary'] as const) {
+		const value = entry.input[field];
+		if (typeof value === 'string' && value.trim()) return firstLine(value);
+	}
+	return 'Subagent';
+}
+
+/**
+ * What a subagent did last, in one line (#147): its newest call as a tool
+ * row says it, or the start of what it last said; "Starting" before it did
+ * anything.
+ */
+export function subagentActivity(progress: SubagentProgress, vaultPath: string): string {
+	const latest = progress.latest;
+	if (!latest) return 'Starting';
+	if (latest.kind === 'tool') {
+		const detail = toolDetail(latest, vaultPath);
+		return detail ? `${latest.name} ${detail}` : latest.name;
+	}
+	const line = firstLine(latest.text);
+	return line.length > ACTIVITY_CHARS ? `${line.slice(0, ACTIVITY_CHARS - 1)}…` : line;
 }
 
 /** One thing the surface draws inside a turn, in the order it draws them. */
@@ -337,7 +594,34 @@ export type TurnItem =
 	| { kind: 'group'; tools: ToolEntry[] }
 	| { kind: 'change'; entry: ToolEntry }
 	| { kind: 'source'; entry: ToolEntry }
-	| { kind: 'report'; entry: ToolEntry };
+	| { kind: 'report'; entry: ToolEntry }
+	/**
+	 * A subagent at work (#147): what it did last, under the group that holds
+	 * the call it hangs under. Drawn while its progress says it is working.
+	 */
+	| { kind: 'subagent'; entry: ToolEntry }
+	/**
+	 * A to-do list update (#143). Whether it is the session's newest, the one
+	 * drawn open, is not the turn's to say (`ItemFacts.latestTodo`).
+	 */
+	| { kind: 'todo'; entry: ToolEntry }
+	| MarkItem;
+
+/**
+ * The entries that are neither the agent speaking nor a call it made, each
+ * drawn as an item of its own kind: a picture sent with the prompt (#129), a
+ * compaction (#130), the runtime's notice and a bash-mode command (#133), and
+ * where the agent took up work again on its own (#139).
+ */
+export type MarkEntry = ImageEntry | CompactionEntry | NoticeEntry | ShellEntry | ResumeEntry;
+
+/** One {@link MarkEntry} as an item, under its own kind. */
+export type MarkItem =
+	| { kind: 'image'; entry: ImageEntry }
+	| { kind: 'compaction'; entry: CompactionEntry }
+	| { kind: 'notice'; entry: NoticeEntry }
+	| { kind: 'shell'; entry: ShellEntry }
+	| { kind: 'resume'; entry: ResumeEntry };
 
 /**
  * Whether this entry draws nothing at all.
@@ -349,6 +633,22 @@ export type TurnItem =
  */
 function rendersNothing(entry: TurnEntry): boolean {
 	return (entry.kind === 'thinking' || entry.kind === 'text') && !entry.text.trim();
+}
+
+/** A {@link MarkEntry} under its own kind, for the switch that draws it. */
+function markItem(entry: MarkEntry): MarkItem {
+	switch (entry.kind) {
+		case 'image':
+			return { kind: 'image', entry };
+		case 'compaction':
+			return { kind: 'compaction', entry };
+		case 'notice':
+			return { kind: 'notice', entry };
+		case 'shell':
+			return { kind: 'shell', entry };
+		case 'resume':
+			return { kind: 'resume', entry };
+	}
 }
 
 /**
@@ -366,6 +666,7 @@ function rendersNothing(entry: TurnEntry): boolean {
 export function turnItems(
 	entries: readonly TurnEntry[],
 	presentation: ToolGroupPresentation,
+	table?: ToolTable,
 ): TurnItem[] {
 	const items: TurnItem[] = [];
 	let group: { kind: 'group'; tools: ToolEntry[] } | null = null;
@@ -387,9 +688,22 @@ export function turnItems(
 			items.push({ kind: 'steer', entry });
 			continue;
 		}
-		const kind = toolKind(entry.name);
+		if (entry.kind === 'notice') {
+			// The runtime speaking mid-work is not the agent stopping: like a
+			// vault change, it is drawn where it was written and the run goes on.
+			items.push(markItem(entry));
+			continue;
+		}
+		if (entry.kind !== 'tool') {
+			// Visible, so it ends the run like a steer does.
+			group = null;
+			items.push(markItem(entry));
+			continue;
+		}
+		const kind = toolKindOf(entry.name, table);
 		if (escapesToolGroup(kind, presentation)) {
-			items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
+			if (kind === 'todo') items.push({ kind: 'todo', entry });
+			else items.push({ kind: SOURCE_KINDS.includes(kind) ? 'source' : 'change', entry });
 			continue;
 		}
 		if (!group) {
@@ -400,10 +714,14 @@ export function turnItems(
 		// The call itself folds into the group; what the subagent reported is
 		// prose, and reads after it (#96).
 		// Prose ends the run, as a text block does, so a later call reads after it.
-		if (subagentReport(entry)) {
+		if (subagentReport(entry, table)) {
 			items.push({ kind: 'report', entry });
 			group = null;
 		}
+		// A subagent at work reads after the group that holds its call, which
+		// goes on taking the calls after it (#147); one at work again, after
+		// its report.
+		if (entry.subagent?.running) items.push({ kind: 'subagent', entry });
 	}
 	return items;
 }

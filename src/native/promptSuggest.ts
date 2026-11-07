@@ -8,7 +8,7 @@
  * - **`/` at the very start of the prompt** offers the command catalog
  *   (`./commandCatalog.ts`) of the pane's own machine, read here for a local
  *   runtime and over the connection for a remote herdr-core one
- *   (`../hc/commandCatalog.ts`), because that is where Claude Code reads a command
+ *   (`../hc/commandCatalog.ts`), because that is where the agent reads a command
  *   from: a leading `/command` is executed, a slash anywhere else is text
  *   (`docs/architecture.md`, "Agent prompts and session identity").
  * - **`@` at a word boundary** offers vault files, and what goes into the
@@ -24,7 +24,7 @@
  * picked — so the prompt box has to know when it is, or Enter-to-send (#103)
  * would send a half-typed `/comm` instead of completing it. Obsidian opens and
  * closes the popover through {@link PopoverSuggest.open} and `close`, so
- * {@link PromptSuggest.isOpen} follows those two calls and nothing else.
+ * {@link PromptSuggest.isShowing} follows those two calls and nothing else.
  *
  * Only that is unit tested (`tests/promptSuggest.test.ts`): what the rest
  * decides is the trigger and the text it writes back, and both are pure
@@ -34,16 +34,21 @@
 
 import { AbstractInputSuggest, type App, type TFile } from 'obsidian';
 import {
-	LocalCommandCatalog,
 	matchCommands,
 	scopeLabel,
 	type CatalogEntry,
 	type CommandCatalogSource,
+	type CommandUsage,
 } from './commandCatalog';
 import { mentionFor, vaultFileAbsolutePath } from './promptMentions';
+import type { AgentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
 
 /** How many files a `@` offers at once. */
 const FILE_LIMIT = 50;
+
+/** What a pane whose agent has no format offers after a `/`: nothing. */
+const NO_COMMANDS: CommandCatalogSource = { catalog: () => [] };
 
 /** What is being completed, and the text it replaces. */
 export interface PromptTrigger {
@@ -100,17 +105,37 @@ export interface PromptSuggestOptions {
 	 */
 	cwd: () => string;
 	/**
-	 * Where the `/` catalog is read, asked on every `/`: the pane's machine,
-	 * which for a herdr-core runtime over SSH is another one and answers
-	 * asynchronously. Not given, or null, is this machine's files, walked by
-	 * this suggest and kept for the TTL.
+	 * Where the `/` catalog of the pane's agent is read, asked on every `/`
+	 * with that agent's id: the pane's machine, which for a herdr-core runtime
+	 * over SSH is another one and answers asynchronously. A runtime reads
+	 * catalogues per agent (`NativeSessionAdapter.commandCatalog`). Not given,
+	 * or null, is this machine's catalogue of the pane's agent ({@link format}),
+	 * walked by this suggest and kept for the TTL.
 	 */
-	catalog?: () => CommandCatalogSource | null;
+	catalog?: (agent: string) => CommandCatalogSource | null;
+	/**
+	 * The format of the agent the pane runs, whose catalogue is offered
+	 * (ADR-0010). Two cases, kept apart: undefined (or not given) is a runtime
+	 * that names no agent, read as the catalog's default agent's, as before
+	 * agents had formats; null is an agent this build has no format for, which
+	 * offers no commands at all.
+	 */
+	format?: () => AgentFormat | null | undefined;
+	/** The pane this box prompts, for a catalog that reads per pane (#132). */
+	paneId?: () => string;
 	/**
 	 * The vault's base path on the pane's machine (an SSH runtime's remote
 	 * vault path), or '' when it has none: where a mentioned file is opened.
 	 */
 	vaultPath: () => string;
+	/**
+	 * How often each command has been picked (#149), read on every `/`, so the
+	 * commands a user reaches for are offered first. Left out, nothing is ranked
+	 * by use.
+	 */
+	usage?: () => CommandUsage;
+	/** A command was picked from the popover; the caller counts and keeps it. */
+	onCommandUsed?: (name: string) => void;
 }
 
 /** The popover the prompt box shows while a `/` or an `@` is being typed. */
@@ -118,10 +143,10 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private readonly textEl: HTMLTextAreaElement;
 	private readonly options: PromptSuggestOptions;
 	/** This machine's catalog, for a suggest that was given no source. */
-	private localCatalog: LocalCommandCatalog | null = null;
+	private localCatalog: { format: AgentFormat; source: CommandCatalogSource } | null = null;
 	/** The trigger the offered suggestions were built for. */
 	private trigger: PromptTrigger | null = null;
-	/** Whether the popover is showing; see {@link PromptSuggest.isOpen}. */
+	/** Whether the popover is showing; see {@link PromptSuggest.isShowing}. */
 	private showing = false;
 
 	constructor(inputEl: HTMLTextAreaElement, options: PromptSuggestOptions) {
@@ -137,8 +162,12 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	 * Whether the popover is showing, which is the one thing the prompt box asks
 	 * of the suggest: the enter picks a suggestion while it is, and sends the
 	 * prompt only when it is not (#103).
+	 *
+	 * Not `isOpen`: Obsidian's suggest sets a plain `isOpen` field on every
+	 * instance as it is created, which hides a method of that name, and the
+	 * prompt box's Enter handler then threw "isOpen is not a function".
 	 */
-	isOpen(): boolean {
+	isShowing(): boolean {
 		return this.showing;
 	}
 
@@ -173,8 +202,8 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		if (!trigger) return [];
 		if (trigger.kind === 'command') {
 			const offer = (entries: CatalogEntry[]): PromptSuggestion[] =>
-				matchCommands(entries, trigger.query).map((entry) => ({ kind: 'command' as const, entry }));
-			const entries = this.catalogSource().catalog(this.options.cwd());
+				matchCommands(entries, trigger.query, this.options.usage?.()).map((entry) => ({ kind: 'command' as const, entry }));
+			const entries = this.catalogSource().catalog(this.options.cwd(), this.options.paneId?.());
 			return Array.isArray(entries) ? offer(entries) : entries.then(offer);
 		}
 		return this.files(trigger.query).map((file) => ({ kind: 'file' as const, file }));
@@ -203,6 +232,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		// the popover is gone, and the next enter is the prompt box's (#103).
 		this.close();
 		if (!trigger) return;
+		if (suggestion.kind === 'command') this.options.onCommandUsed?.(suggestion.entry.name);
 		const cursor = this.textEl.selectionStart ?? this.textEl.value.length;
 		const replacement =
 			suggestion.kind === 'command' ? `/${suggestion.entry.name}` : this.mention(suggestion.file);
@@ -224,12 +254,19 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 		return mentionFor({ path, cwd: this.options.cwd() });
 	}
 
-	/** The pane's machine's catalog, or this machine's when none was given. */
+	/**
+	 * The pane's agent's catalogue: the runtime's reader for that agent, or
+	 * this machine's when the runtime gives none. An agent with no format has
+	 * none to offer.
+	 */
 	private catalogSource(): CommandCatalogSource {
-		const given = this.options.catalog?.();
+		const named = this.options.format?.();
+		const format = named === undefined ? defaultAgentFormat() : named;
+		if (!format) return NO_COMMANDS;
+		const given = this.options.catalog?.(format.agent);
 		if (given) return given;
-		this.localCatalog ??= new LocalCommandCatalog();
-		return this.localCatalog;
+		if (this.localCatalog?.format !== format) this.localCatalog = { format, source: format.commands.local() };
+		return this.localCatalog.source;
 	}
 
 	/** Vault files whose path contains the query, shortest path first. */

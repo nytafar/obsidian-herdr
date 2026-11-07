@@ -46,7 +46,8 @@ import { afterAll, bench, describe } from 'vitest';
 import { hostEl, type FakeElement } from '../fixtures/dom';
 import { MarkdownRenderer } from '../fixtures/obsidian';
 import { NativePaneSurface } from '../../src/native/surface';
-import { emptyTranscript, reduce, type TranscriptState } from '../../src/native/reducer';
+import { emptyTranscript, reduce, type TranscriptState } from '../../src/agents/claude/transcript';
+import { earlierTurnCount, turnWindow } from '../../src/native/conversation';
 import type {
 	BlockKind,
 	SessionChange,
@@ -213,6 +214,18 @@ const largeState = reduced(large);
 const longestState = reduced(longest);
 const repeatedState = reduced(repeated);
 
+/**
+ * A state held in one page (#152): the newest 100 turns and 16 MiB of
+ * transcript, as a session model holds one. The earlier turns are named only.
+ */
+function paged(): TranscriptState {
+	const state = emptyTranscript();
+	state.window = turnWindow();
+	return state;
+}
+
+const repeatedPaged = reduce(paged(), repeated).state;
+
 const options = { iterations: 5, time: 0, warmupIterations: 1, warmupTime: 0 };
 
 describe('reduce over a whole transcript', () => {
@@ -227,6 +240,27 @@ describe('reduce over a whole transcript', () => {
 		() => void reduce(emptyTranscript(), repeated),
 		options,
 	);
+});
+
+/**
+ * The same lines one per batch, the way a tail delivers a live session (#138):
+ * a batch folds in place, so this is the whole read plus per-batch overhead,
+ * where a fold that copied the session per batch made it quadratic.
+ */
+function lineByLine(lines: string[]): void {
+	let state = emptyTranscript();
+	for (const line of lines) state = reduce(state, [line]).state;
+}
+
+describe('reduce one line per batch, as a tail delivers it', () => {
+	bench('(a) one large real session', () => lineByLine(large), options);
+	bench('(b) the three largest, concatenated', () => lineByLine(longest), options);
+	bench(`(c) (b) ${COPIES} times over, several hundred turns`, () => lineByLine(repeated), options);
+});
+
+describe('reduce over a whole transcript, held in one page (#152)', () => {
+	bench('(a) one large real session', () => void reduce(paged(), large), options);
+	bench(`(c) (b) ${COPIES} times over, several hundred turns`, () => void reduce(paged(), repeated), options);
 });
 
 describe('the surface drawing every turn', () => {
@@ -264,6 +298,10 @@ afterAll(async () => {
 		const nodes = countNodes(await draw(state));
 		say(`${shape(name, lines, state)}, ${nodes} elements after the draw`);
 	}
+	const held = countNodes(await draw(repeatedPaged));
+	say(
+		`(c) held in one page: ${repeatedPaged.turns.length} turns held, ${earlierTurnCount(repeatedPaged)} not, ${held} elements after the draw`,
+	);
 	say(`budgets: (a) reduce+draw < ${BUDGET_MS.large} ms, (b) and (c) < ${BUDGET_MS.longest} ms`);
 	say(`elements: under ${NODE_BUDGET} or unmounting goes back on the table`);
 });

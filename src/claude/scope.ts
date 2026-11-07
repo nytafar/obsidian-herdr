@@ -9,7 +9,10 @@
  *   A stopped row is `idle` with `stopped: true`.
  * - **Client.** No transport. `ping` answers at once, `start` reports the one
  *   `connected` edge, and `request` takes three methods for the native view:
- *   `agent.prompt`, `agent.interrupt` and `agent.respond`. Disposing it ends
+ *   `agent.prompt`, `agent.interrupt` and `agent.respond`, and the session
+ *   bar's `agent.set_model`, `agent.set_effort` and
+ *   `agent.set_permission_mode` (#162) and `agent.context_usage` (#171).
+ *   Disposing it ends
  *   nothing: the processes belong to the table, not to a connection.
  * - **Tab labels.** None: the kind has no tabs.
  *
@@ -26,6 +29,7 @@ import {
 } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 import type { WaitingAnswer } from '../native/pendingRequest';
+import { promptImages } from '../native/promptImages';
 import type { TabLabels } from '../tabLabels';
 import type { ClaudeAgents, ClaudeAgentStatus, ClaudeAgentView, ClaudeRuntimeSetup } from './agents';
 
@@ -185,6 +189,12 @@ export interface ClaudeRespondParams {
 	answer: WaitingAnswer;
 }
 
+/** A request's string parameter; anything else is refused as empty. */
+function stringParam(value: unknown): string {
+	if (typeof value !== 'string' || !value) throw new Error('a setting needs a value');
+	return value;
+}
+
 /** Said by a request on a client whose connection was retired. */
 export const CLAUDE_NOT_CONNECTED = 'not connected to this Claude runtime';
 
@@ -228,7 +238,12 @@ export class ClaudeClient implements ConnectionClient {
 					// Settles once the prompt is written, which a switch from the
 					// terminal view can take a moment to allow, or never will be.
 					return this.agents
-						.prompt(this.runtimeId, target, typeof args.text === 'string' ? args.text : '')
+						.prompt(
+							this.runtimeId,
+							target,
+							typeof args.text === 'string' ? args.text : '',
+							promptImages(args.images),
+						)
 						.then(() => null as T);
 				case 'agent.interrupt':
 					this.agents.interrupt(this.runtimeId, target);
@@ -238,6 +253,22 @@ export class ClaudeClient implements ConnectionClient {
 					this.agents.respond(this.runtimeId, target, request, answer);
 					break;
 				}
+				// Settle once Claude has answered, with its refusal as the error.
+				case 'agent.set_model':
+					return this.agents
+						.changeSetting(this.runtimeId, target, { setting: 'model', model: stringParam(args.model) })
+						.then(() => null as T);
+				case 'agent.set_effort':
+					return this.agents
+						.changeSetting(this.runtimeId, target, { setting: 'effort', effort: stringParam(args.effort) })
+						.then(() => null as T);
+				// The breakdown itself is the answer (#171).
+				case 'agent.context_usage':
+					return this.agents.contextUsage(this.runtimeId, target) as Promise<T>;
+				case 'agent.set_permission_mode':
+					return this.agents
+						.changeSetting(this.runtimeId, target, { setting: 'mode', mode: stringParam(args.mode) })
+						.then(() => null as T);
 				default:
 					throw new Error(`${method} is not supported by Claude run by Obsidian`);
 			}

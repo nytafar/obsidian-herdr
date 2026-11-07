@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Pro
+ ▝▝   ▝▝   /tmp/oh-test-settings-herdr60
+
+
+❯ /model
+  ⎿  Kept model as Haiku 5.5
+
+❯ /effort
+  ⎿  Cancelled
+
+❯ Reply with the single word ok. Use no tools.
+
+● ok
+
+✻ Cogitated for 0s · done 8:33 PM
+
+❯ /model
+  ⎿  Kept model as Haiku 5.5
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      ◐ medium · /effort · Update available! Run: mise up…
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  23k   haiku    36%    207m    0m
+  ⏵⏵ accept edits on (shift+tab to cycle)

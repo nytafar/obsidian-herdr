@@ -1,0 +1,40 @@
+  notes-from-the-long-afternoon-meeting-about-drinks.txt
+  containing the single word hi. Do nothing else.
+
+● Write(…s-from-the-long-afternoon-meeting-about-drinks.txt)
+  ⎿  Wrote 1 line to notes-from-the-long-afternoon-meet
+     ing-about-drinks.txt
+      1 hi
+
+● I created /tmp/oh-test-narrow-hc60/notes-from-the-long-aft
+  ernoon-meeting-about-drinks.txt containing hi.
+
+  Every question and command before this one was rejected,
+  so I have no answers to the earlier questions.
+
+✻ Worked for 2s · done 6:02 PM
+
+❯ Use the Edit tool now to replace hi with hello in
+  notes-from-the-long-afternoon-meeting-about-drinks.txt.
+  Do nothing else.
+
+● Update(…-from-the-long-afternoon-meeting-about-drinks.txt)
+
+────────────────────────────────────────────────────────────
+ Edit file
+ notes-from-the-long-afternoon-meeting-about-drinks.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1 -hi
+ 1   No newline at end of file
+ 2 +hello
+ 3   No newline at end of file
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to
+ notes-from-the-long-afternoon-meeting-about-drinks.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file
+      edits and common file commands) for this session
+      (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

@@ -34,7 +34,9 @@
 import type { ConnectionScope, ConnectionTunnel } from '../connection';
 import { defaultDeps, expandHome, resolveHerdrBinary, type DiscoveryDeps, type DiscoveryResult } from '../herdr/binary';
 import { probeLocal, probeOverHc, readHcTemplates } from '../agents/probe';
-import { HcActions, hcKeySender, hcPromptSender } from '../hc/actions';
+import { HcActions, hcAgentStatus, hcKeySender, hcPromptSender, hcScreenAccess } from '../hc/actions';
+import { screenSettingsSender } from '../native/screenSettings';
+import { gatePromptSender } from '../native/paneGate';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
@@ -44,7 +46,8 @@ import { HcTabLabels } from '../hc/tabLabels';
 import { hcSessionWatcher } from '../hc/sessionWatcher';
 import { HcTranscriptSource } from '../hc/transcriptSource';
 import { HcCommandCatalog } from '../hc/commandCatalog';
-import { BUILTIN_CATALOG_SOURCE } from '../native/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../agents/claude/commands';
+import { agentFormat } from '../agents/format';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
@@ -172,8 +175,11 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 			// The `/` list of the machine the agent runs on: this one's files on
 			// a local runtime, one `machine.exec` over the connection on an SSH
 			// one, and only the built-ins while that connection is not there.
-			commandCatalog: (endpoint, connection) => {
+			// The reader over the connection is Claude's directory layout; any
+			// other agent on an SSH runtime gets its format's built-ins (ADR-0010).
+			commandCatalog: (endpoint, connection, agent) => {
 				if (endpoint.runtime.target !== 'ssh') return null;
+				if (agent !== 'claude') return { catalog: () => agentFormat(agent)?.commands.builtin() ?? [] };
 				if (!connection) return BUILTIN_CATALOG_SOURCE;
 				const scope = connection.scope;
 				let catalog = remoteCatalogs.get(scope);
@@ -311,8 +317,23 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 			]);
 			return { ...probe, templates };
 		},
-		promptSender: (client) => hcPromptSender(client),
+		// Behind the pane gate, as on herdr (review of #169).
+		promptSender: (client) => gatePromptSender(hcPromptSender(client), () => client()),
 		keySender: (client) => hcKeySender(client),
+		screen: (client) => hcScreenAccess(client),
+		// The session bar's pickers (#169, #170), as on herdr.
+		sessionSettings: (client, format) =>
+			format?.screenSettings
+				? screenSettingsSender({
+						screen: hcScreenAccess(client),
+						prompt: hcPromptSender(client),
+						reader: format.screenSettings,
+						status: hcAgentStatus(client),
+						owner: () => client(),
+						models: format.models,
+						modeLabels: format.modeLabels,
+					})
+				: null,
 		createTabLabels: (connection) => new HcTabLabels(connection.scope),
 		statusLines: (connection) => (connection ? hcStatusLines(connection) : null),
 	};

@@ -206,12 +206,22 @@ export class ItemView extends View {
  * it needs — a document, a scope, a focused field — no test here has.
  */
 export class PopoverSuggest<T> {
+	/**
+	 * Obsidian's own suggest sets a plain `isOpen` field on every instance as it
+	 * is created, so a subclass method of that name is hidden by it and calling
+	 * it throws "isOpen is not a function". Kept here so a test catches that.
+	 */
+	isOpen = false;
 	constructor(
 		public app: unknown,
 		public scope?: unknown,
 	) {}
-	open(): void {}
-	close(): void {}
+	open(): void {
+		this.isOpen = true;
+	}
+	close(): void {
+		this.isOpen = false;
+	}
 	selectSuggestion(_value: T): void {}
 }
 
@@ -233,7 +243,21 @@ export class AbstractInputSuggest<T> extends PopoverSuggest<T> {
 }
 
 export class Modal {
+	/** What `setTitle` set; a test calls `onOpen` itself and reads the rows (`builtSettings(contentEl)`). */
+	title = '';
+	readonly contentEl = {
+		paragraphs: [] as string[],
+		createEl(_tag: string, options?: { text?: string }): unknown {
+			this.paragraphs.push(options?.text ?? '');
+			return {};
+		},
+		empty(): void {},
+	};
 	constructor(public app: unknown) {}
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
 }
 
 /** Stand-in for the palette-style picker; only constructible here. */
@@ -243,6 +267,29 @@ export class FuzzySuggestModal<T> extends Modal {
 	getItems(): T[] {
 		return [];
 	}
+}
+
+/**
+ * Stand-in for the suggest modal behind "Find in conversation" (#145). Every
+ * opened modal is kept in {@link SuggestModal.opened}, so a test can type into
+ * one (`getSuggestions`) and pick (`onChooseSuggestion`) as Obsidian would.
+ */
+export class SuggestModal<T> extends Modal {
+	static readonly opened: SuggestModal<unknown>[] = [];
+	emptyStateText = '';
+	placeholder = '';
+	setPlaceholder(placeholder: string): void {
+		this.placeholder = placeholder;
+	}
+	open(): void {
+		SuggestModal.opened.push(this);
+	}
+	close(): void {}
+	getSuggestions(_query: string): T[] | Promise<T[]> {
+		return [];
+	}
+	renderSuggestion(_value: T, _el: HTMLElement): void {}
+	onChooseSuggestion(_item: T, _evt?: unknown): void {}
 }
 
 export class Notice {
@@ -273,12 +320,18 @@ export class FileSystemAdapter {}
  */
 export class Menu {
 	static shown: Menu[] = [];
-	readonly items: { title: string; disabled: boolean; checked: boolean }[] = [];
+	readonly items: { title: string; disabled: boolean; checked: boolean; isLabel: boolean; click: (() => void) | null }[] = [];
 	position: { x: number; y: number } | null = null;
 	addItem(build: (item: MenuItemStub) => void): this {
 		const item = new MenuItemStub();
 		build(item);
-		this.items.push({ title: item.title, disabled: item.disabled, checked: item.checked });
+		this.items.push({
+			title: item.title,
+			disabled: item.disabled,
+			checked: item.checked,
+			isLabel: item.isLabel,
+			click: item.click,
+		});
 		return this;
 	}
 	addSeparator(): this {
@@ -297,6 +350,9 @@ export class MenuItemStub {
 	title = '';
 	disabled = false;
 	checked = false;
+	isLabel = false;
+	/** What a click on the item runs, so a test can pick it. */
+	click: (() => void) | null = null;
 	setTitle(title: string): this {
 		this.title = title;
 		return this;
@@ -312,10 +368,12 @@ export class MenuItemStub {
 		this.disabled = disabled;
 		return this;
 	}
-	setIsLabel(): this {
+	setIsLabel(isLabel = true): this {
+		this.isLabel = isLabel;
 		return this;
 	}
-	onClick(): this {
+	onClick(handler?: () => void): this {
+		this.click = handler ?? null;
 		return this;
 	}
 }
@@ -626,5 +684,16 @@ export function settingNamed(container: unknown, name: string): Setting {
 	return first;
 }
 
-export function setIcon(): void {}
-export function setTooltip(): void {}
+/**
+ * The icon `setIcon` last put on each element, and the tooltip `setTooltip`
+ * last gave it, so a test can read what a button shows (#140).
+ */
+export const iconOf = new WeakMap<object, string>();
+export const tooltipOf = new WeakMap<object, string>();
+
+export function setIcon(el: object, icon: string): void {
+	iconOf.set(el, icon);
+}
+export function setTooltip(el: object, tooltip: string): void {
+	tooltipOf.set(el, tooltip);
+}

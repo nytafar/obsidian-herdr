@@ -52,6 +52,18 @@ import {
 	type ToolGroupPresentation,
 } from './native/toolCalls';
 import {
+	CONTEXT_READOUT_STYLE_LABELS,
+	CONTEXT_READOUT_STYLES,
+	DEFAULT_CONTEXT_READOUT_STYLE,
+	DEFAULT_PROMPT_BOX_STYLE,
+	normalizeContextReadoutStyle,
+	normalizePromptBoxStyle,
+	PROMPT_BOX_STYLE_LABELS,
+	PROMPT_BOX_STYLES,
+	type ContextReadoutStyle,
+	type PromptBoxStyle,
+} from './native/composerLook';
+import {
 	DEFAULT_PANE_VIEW,
 	normalizePaneView,
 	PANE_VIEWS,
@@ -260,6 +272,24 @@ export interface HerdrSettings extends RuntimeSettings {
 	 * `native/waitingCard.ts`.
 	 */
 	nativeAutoTrustFolders: boolean;
+	/**
+	 * How the native view's prompt box looks (issue #173): the toolbar strip
+	 * divided off, joined to the text, or the whole box floating over the
+	 * transcript. A class only, applied live. See `native/composerLook.ts`.
+	 */
+	nativePromptBoxStyle: PromptBoxStyle;
+	/**
+	 * How the prompt box's context readout reads (issue #173): the token
+	 * counts and percentage, or a small ring with the percentage.
+	 */
+	nativeContextReadout: ContextReadoutStyle;
+	/**
+	 * How often each `/` command was picked in the native prompt box, by name
+	 * (issue #149), so the popover offers the most used first. Read through
+	 * `normalizeCommandUsage` (`native/commandCatalog.ts`), since a hand-edited
+	 * file may hold anything here.
+	 */
+	commandUsage: Record<string, number>;
 	/** Open the terminal view after starting an agent. */
 	openTerminalAfterStart: boolean;
 	/**
@@ -448,6 +478,9 @@ export const DEFAULT_SETTINGS: HerdrSettings = {
 	terminalScrollbackMb: DEFAULT_SCROLLBACK_MB,
 	nativeToolGroups: DEFAULT_TOOL_GROUP_PRESENTATION,
 	nativeAutoTrustFolders: false,
+	nativePromptBoxStyle: DEFAULT_PROMPT_BOX_STYLE,
+	nativeContextReadout: DEFAULT_CONTEXT_READOUT_STYLE,
+	commandUsage: {},
 	openTerminalAfterStart: true,
 	splitIntoFolderTab: true,
 	panesPerTab: DEFAULT_PANES_PER_TAB,
@@ -714,6 +747,12 @@ export interface SettingsCallbacks {
 	refreshRuntimes: () => void;
 	/** Why runtimes of this kind cannot connect in this build, or null when they can. */
 	kindUnavailable: (kind: RuntimeKind) => string | null;
+	/**
+	 * Whether a runtime's transcripts can be read from here, which the agent
+	 * catalog's native flag needs beside the agent seam's gate (ADR-0010).
+	 * Not given reads as true.
+	 */
+	nativeReachable?: (runtime: RuntimeConfig) => boolean;
 	/** The runtime whose form is open, or null. Held by the tab across redisplays. */
 	editingRuntime: () => string | null;
 	/** Opens the form for a runtime, or closes it with null, and redisplays. */
@@ -1609,9 +1648,37 @@ export function buildNativeViewSection(
 		);
 
 	new Setting(containerEl)
+		.setName('Prompt box style')
+		.setDesc(
+			'How the box you type in looks. Divided gives the strip with the pickers and buttons its own background; joined keeps it on one surface with the text; floating raises the box over the conversation, with icon buttons.',
+		)
+		.addDropdown((dropdown) => {
+			for (const style of PROMPT_BOX_STYLES) dropdown.addOption(style, PROMPT_BOX_STYLE_LABELS[style]);
+			dropdown.setValue(normalizePromptBoxStyle(settings.nativePromptBoxStyle)).onChange(async (value) => {
+				settings.nativePromptBoxStyle = normalizePromptBoxStyle(value);
+				await callbacks.save();
+				callbacks.refreshNativeViews();
+			});
+		});
+
+	new Setting(containerEl)
+		.setName('Context readout')
+		.setDesc(
+			'How the prompt box shows how full the context window is. Detail shows the tokens, the window and the share; gauge shows a small ring with the share, and the tokens when you hover it. Either opens the context breakdown when clicked.',
+		)
+		.addDropdown((dropdown) => {
+			for (const style of CONTEXT_READOUT_STYLES) dropdown.addOption(style, CONTEXT_READOUT_STYLE_LABELS[style]);
+			dropdown.setValue(normalizeContextReadoutStyle(settings.nativeContextReadout)).onChange(async (value) => {
+				settings.nativeContextReadout = normalizeContextReadoutStyle(value);
+				await callbacks.save();
+				callbacks.refreshNativeViews();
+			});
+		});
+
+	new Setting(containerEl)
 		.setName('Trust new folders automatically')
 		.setDesc(
-			'Answer the workspace trust prompt from the native view, on a runtime that reports the prompt as the trust prompt. No runtime reports it today, herdr and herdr-core included, so for now this does nothing: answer the prompt with the trust button on the waiting card, or in the terminal. Nothing else is answered for you: tool permissions are Claude\u2019s own, and questions and plan approval are yours. Off by default.',
+			'Answer Claude\u2019s workspace trust prompt for an agent open in a tab, on herdr and herdr-core, once the prompt is read on the screen and names the agent\u2019s own folder. Nothing else is answered for you: tool permissions, questions and plan approval are yours to answer, on the waiting card or in the terminal. Off by default.',
 		)
 		.addToggle((toggle) =>
 			toggle.setValue(settings.nativeAutoTrustFolders === true).onChange(async (value) => {
@@ -1693,6 +1760,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 				}
 			},
 			kindUnavailable: (kind) => plugin.kindUnavailable(kind),
+			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
 			editingRuntime: () => this.editing,
 			editRuntime: (id) => {
 				this.editing = id;

@@ -20,12 +20,15 @@
 
 import { LineSplitter } from '../herdr/lineSplitter';
 import {
+	contextUsageRequest,
 	controlResponse,
 	denyResponse,
 	encodeLine,
 	interruptRequest,
 	parseStreamLine,
+	sessionControlRequest,
 	STOPPED_DENIAL,
+	type SessionControl,
 	type StreamEvent,
 } from './protocol';
 
@@ -58,6 +61,20 @@ export const INTERRUPT_WAIT_MS = 1500;
 export const EOF_WAIT_MS = 2000;
 /** How long a stop waits after SIGTERM before SIGKILL. Measured: 0.75 s. */
 export const TERM_WAIT_MS = 5000;
+
+/**
+ * How long a session setting waits for Claude's answer. Measured: a few
+ * milliseconds, mid-turn too (#162).
+ */
+export const CONTROL_WAIT_MS = 10000;
+
+/** Claude's answer to one of the plugin's control requests. */
+export type ControlAnswer = Extract<StreamEvent, { type: 'response' }>;
+
+/** Said when Claude has not answered a setting in {@link CONTROL_WAIT_MS}. */
+export const CONTROL_TIMEOUT = 'Claude did not answer';
+/** Said for a setting whose process went before Claude answered it. */
+export const CONTROL_EXITED = 'the agent stopped before Claude answered';
 
 /** How much stderr is kept for an exit report. */
 const STDERR_TAIL_BYTES = 2048;
@@ -97,6 +114,8 @@ export class ClaudeProcess {
 	private exitWaiters: (() => void)[] = [];
 	private resultWaiters: (() => void)[] = [];
 	private requestSeq = 0;
+	/** The plugin's control requests waiting for Claude's answer, by request id. */
+	private readonly controls = new Map<string, { settle: (answer: ControlAnswer | Error) => void }>();
 
 	constructor(private readonly options: ClaudeProcessOptions) {}
 
@@ -153,6 +172,49 @@ export class ClaudeProcess {
 	/** The `interrupt` control request: ends the running turn, keeps the process. */
 	interrupt(): void {
 		this.send(interruptRequest(this.nextRequestId('interrupt')));
+	}
+
+	/**
+	 * Changes a session setting (#162) and settles with Claude's answer, a
+	 * refusal included. Rejects when the line cannot be written, when the
+	 * process exits first, or when no answer comes in {@link CONTROL_WAIT_MS}.
+	 */
+	sessionControl(control: SessionControl): Promise<ControlAnswer> {
+		const requestId = this.nextRequestId(control.setting);
+		return this.control(requestId, sessionControlRequest(requestId, control));
+	}
+
+	/**
+	 * Asks for the context breakdown (#171), which writes nothing to the
+	 * conversation; settles as {@link sessionControl} does.
+	 */
+	contextUsage(): Promise<ControlAnswer> {
+		const requestId = this.nextRequestId('context');
+		return this.control(requestId, contextUsageRequest(requestId));
+	}
+
+	/** Writes one control request and settles with the answer to its id. */
+	private control(requestId: string, request: object): Promise<ControlAnswer> {
+		return new Promise<ControlAnswer>((resolve, reject) => {
+			try {
+				this.send(request);
+			} catch (error) {
+				reject(error instanceof Error ? error : new Error(String(error)));
+				return;
+			}
+			const handle = this.options.timers.setTimeout(() => {
+				this.controls.delete(requestId);
+				reject(new Error(CONTROL_TIMEOUT));
+			}, CONTROL_WAIT_MS);
+			this.controls.set(requestId, {
+				settle: (answer) => {
+					this.options.timers.clearTimeout(handle);
+					this.controls.delete(requestId);
+					if (answer instanceof Error) reject(answer);
+					else resolve(answer);
+				},
+			});
+		});
 	}
 
 	/**
@@ -236,6 +298,8 @@ export class ClaudeProcess {
 		} catch {
 			// A failing subscriber must not stop the stream.
 		}
+		// After the event: what the answer set is folded in before its caller hears of it.
+		if (event.type === 'response') this.controls.get(event.requestId)?.settle(event);
 	}
 
 	private release(waiters: (() => void)[]): void {
@@ -245,6 +309,7 @@ export class ClaudeProcess {
 	private finish(code: number | null, signal: string | null, error: string): void {
 		this.release(this.exitWaiters);
 		this.release(this.resultWaiters);
+		for (const control of [...this.controls.values()]) control.settle(new Error(CONTROL_EXITED));
 		this.options.onExit({ code, signal, stopping: this.stopping !== null, error });
 	}
 }

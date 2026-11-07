@@ -397,7 +397,8 @@ matches what the view spawns in observe mode; the first line is a
 
 ## Smoking the native view's history inside Obsidian (#93)
 
-The reducer, the transcript source, the session model and what the surface draws
+Claude's transcript parser (`src/agents/claude/transcript.ts`), the transcript
+source, the session model and what the surface draws
 are unit tested (`tests/transcriptReducer.test.ts`, `tests/transcriptSource.test.ts`,
 `tests/sessionModel.test.ts`, `tests/nativeSurface.test.ts`, the first of them
 against the live transcript of whatever session runs them). What needs Obsidian
@@ -414,6 +415,93 @@ is the Markdown: only the app can render a wikilink, a callout or an embed.
    `ls ~/.claude/projects/"$(pwd | tr -c 'a-zA-Z0-9' '-' | sed 's/-$//')"/`
    lists its transcripts; the one named by that pane's `agent_session.value` in
    `herdr agent list` is the file the view is showing.
+
+## Recorded transcript fixtures (#129–#135)
+
+`tests/transcriptShapes.test.ts` reads fixtures cut from real Claude Code
+transcripts on this machine and scrubbed: prose, commands, tool input and
+output replaced, paths moved under `/home/user`, image bytes cut to a stub,
+bookkeeping lines (`api-request`, `ai-title`, …) dropped. Ids, parents,
+timestamps, types and the tags the parser (`src/agents/claude/transcript.ts`)
+reads are kept as recorded.
+
+- `array-prompt.jsonl` — a TUI prompt with a pasted image, Claude Code 2.1.283
+  (no 2.1.318 transcript on this machine has one).
+- `compaction.jsonl` — an idle compaction between two turns, 2.1.286; the
+  2.1.318 lines have the same shape.
+- `resend.jsonl` — a prompt cancelled before any reply and sent again, 2.1.318.
+- `command-after-cancel.jsonl` — a prompt cancelled and re-sent, the re-send
+  cancelled too, then `/model`: its caveat a sibling of the cancelled prompt,
+  the command hanging from the caveat, 2.1.281.
+- `plan-feedback.jsonl` — a plan approved with feedback: the ExitPlanMode
+  answer as one `user` line of a tool result and a text block, and the work
+  after it, 2.1.318.
+- `unknown-command.jsonl` — an unknown slash command's two notices, 2.1.286.
+- `usage-limit.jsonl` — a usage limit reached and later reset, 2.1.286.
+- `bash-mode.jsonl` — a `!` command, its output and the agent's answer, 2.1.318.
+- `in-file-clear.jsonl` — the three `/clear` lines recorded at the start of a
+  rotated 2.1.286 file, with a turn and a late tool result written around them
+  in the same shapes (no transcript here clears inside its own file).
+- `background-command.jsonl` — a background command's launch and its
+  notification as enqueue and `user` line, 2.1.318.
+- `subagent-notification.jsonl` — a background subagent's notification taken
+  in mid-turn: its enqueue, a `remove` and the `queued_command` attachment,
+  with no `user` line, 2.1.318.
+- `queued-own-turn.jsonl` — prompts queued while Claude worked that ran as
+  turns of their own: one behind an interrupted command, one behind a
+  tool-less answer (`enqueue`, `dequeue`, a `promptSource: "queued"` line),
+  and two pulled back with Up (`popAll`) and never sent, 2.1.318 (#157).
+- `queue-pull-back.jsonl` — a queued prompt pulled back with Up, edited and
+  taken in as a steer, then its first words typed again at idle, 2.1.318.
+- `queue-cancel.jsonl` — `claude -p` in stream-json: two messages written
+  while a command ran, one cancelled (a bare `dequeue`) and one taken in
+  mid-turn as an attachment with no `origin`, 2.1.318.
+- `session-settings.jsonl` — spike #110's herdr pane (`tests/claudeSessionInfo.test.ts`,
+  #160): `/context` twice, `/model` saved and for this session only (once
+  with an effort), `/effort` saved and for this session only, an invalid
+  argument to each, a mid-turn `/effort` that wrote nothing, five kept
+  models, 2.1.318. A throwaway probe, so its prompts are kept; the
+  attachments that name the account and the machine are dropped, the
+  `/context` tables cut after the category table and the TUI's coloured
+  `/context` stdout replaced.
+- `session-settings-sdk.jsonl` — the same spike's `claude -p` stream-json
+  process: `set_model`'s replayed stdout naming the model by alias and id,
+  2.1.318.
+- `resume-stop-hook.jsonl` — `claude -p` with a project Stop hook that
+  blocked once: the answer, the hook's feedback, and the work it asked for,
+  2.1.318 (`tests/claudeResume.test.ts`, #139). A throwaway probe in `/tmp`,
+  so its prompts are kept; the account's and the machine's attachments are
+  dropped.
+- `resume-task-notification.jsonl` — `claude -p` that started a background
+  command, answered, and answered again when the command's notification
+  came, 2.1.318 (#139), scrubbed the same way.
+- `rewind-fork.jsonl` — copied unchanged from
+  https://github.com/devswha/ovis (`server/fixtures/claude-rewind-2.1.304-fork.jsonl`,
+  commit c43dffdd), MIT License, Copyright (c) 2026 devswha:
+  two answered prompts, a Restore to before the first, and the prompt that
+  forks the session.
+
+## Smoking tool groups and the to-do list (#127, #128, #143)
+
+What a redraw costs and which disclosure is open are unit tested on the DOM
+harness (`tests/turnRenderer.test.ts`, `tests/toolGroupHeader.test.ts`,
+`tests/todoList.test.ts`). What needs Obsidian is the browser's own `<details>`,
+the layout of a narrow header and the feel of it while Claude writes.
+
+1. With an agent working in a native tab, open the tool group it is filling and
+   a thought above it: both stay open as lines arrive, and selecting text in
+   the earlier prose is not lost to a redraw.
+2. The running group is open by itself and titled "Working…"; once Claude
+   writes prose after it, or the turn ends, it folds and reads "Worked".
+   A group you clicked into, or opened or closed yourself, stays as you left it.
+   A permission prompt titles the group "Needs you".
+3. Make a call fail (a `Bash` command that exits non-zero): the folded header
+   says "1 failed" in the error colour, and narrowing the sidebar cuts the
+   counts with an ellipsis before it ever cuts that.
+4. Ask for a task long enough that Claude keeps a to-do list: each update shows
+   as a checklist where it was made, the earlier ones fold, and the strip above
+   the prompt box says "To-do · 1 of 3 done · <what it is doing>" and opens to
+   the whole list. It goes away once every item is done.
 
 ## Smoking live updates and session following (#94)
 
@@ -512,3 +600,41 @@ no test invokes ssh or starts an agent CLI. To smoke it inside Obsidian:
    not exist and press **Done**: it shows in the menu as "(not found)", and
    its settings row says "was not found on …". Install it and press **Check
    again**: the mark goes without a reconnect.
+
+## The agent seam (#137)
+
+`tests/agentSeam.test.ts` reads the recorded Codex rollouts
+(`fixtures/codex/`) with a stub parser behind the seam's interface
+(`fixtures/codexParser.ts`) and puts
+the result through the session model, the turn renderer, the tool groups,
+the table of contents, copy, find and the waiting card: nothing above the
+seam knows the session is not Claude's. No Codex format is registered, so
+the native view is not offered for Codex. `tests/agentFormat.test.ts` covers
+the registry, the gate (a format and a trusted session binding), the
+catalog's `native` flag, and what Claude's format reads: the dialogs it
+blocks on, where a background report is, and session info. Nothing here
+needs Obsidian: a Claude pane looks as it did before.
+
+Live equals cold (#138): `tests/transcriptLiveCold.test.ts` folds every
+fixture under `fixtures/transcripts/` (Claude's parser) and `fixtures/codex/`
+(the stub) in 25 seeded random splits, and asserts the state the whole file
+folds to, exact changed and removed turn ids per batch, and that a preview
+of each next line leaves the state alone and shows what folding it does. A
+failure names its seed and split. The preview through the session model is
+`tests/sessionModel.test.ts`, "the line still being written"; the tail that
+delivers it, `tests/transcriptSource.test.ts`. Whether Claude leaves a line
+unended long enough to see the preview is a hand check in a live view.
+
+## Claude's dialogs on the screen (#163)
+
+`tests/screenDialog.test.ts` puts every recorded screen in
+`fixtures/screens/claude-2.1.318/` through `parseClaudeScreen`: the wide ones
+from spike #151 and the 60- and 90-column ones recorded for the parser on
+herdr and hc (the folder's README says how). A last test fails when a
+fixture has no check, so a new recording cannot go unread. Labels,
+questions, commands, folders and typed text are compared with
+`wrappedEquals`, never by position. The rest are screens the parser must
+refuse, made by altering a fixture one line: the dialog's rule off the top,
+a line after the hint, two cursors or none, rows numbered out of turn, a
+torn `Submit` row, other wording on the plan or the trust prompt. Nothing
+here needs a live pane.

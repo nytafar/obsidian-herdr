@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Pro
+ ▝▝   ▝▝   /tmp/oh-test-settings-herdr60
+
+
+❯ /model
+  ⎿  Kept model as Haiku 5.5
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+   Effort
+
+         Faster                             Smarter
+         ────────────────────▲─────────────────────
+         low     medium     high     xhigh      max
+      ~1.9x the estimated cost of medium (the default)
+
+
+   ←/→ to adjust · Enter to confirm · s for this session
+   only · Esc to cancel

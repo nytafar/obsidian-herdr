@@ -1,0 +1,40 @@
+
+● User declined to answer questions
+  ⎿  · Which cup size would you like for the coffee you are
+     ordering this morning at the station kiosk? (Small /
+     Large)
+     · Which lid? (Yes / No)
+
+✻ Churned for 1s · done 6:02 PM
+
+❯ Run exactly this Bash command now and nothing else: touch
+  a-rather-long-file-name-for-wrapping-on-hc.txt
+  another-quite-long-file-name-to-wrap-on-hc.txt   Then
+  reply ok.
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Baked for 1s · done 6:02 PM
+
+❯ Use the Write tool now to create the file
+  notes-from-the-long-afternoon-meeting-about-drinks.txt
+  containing the single word hi. Do nothing else.
+
+● Write(…s-from-the-long-afternoon-meeting-about-drinks.txt)
+
+────────────────────────────────────────────────────────────
+ Create file
+ notes-from-the-long-afternoon-meeting-about-drinks.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hi
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create
+ notes-from-the-long-afternoon-meeting-about-drinks.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file
+      edits and common file commands) for this session
+      (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

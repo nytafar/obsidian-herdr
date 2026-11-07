@@ -1,0 +1,45 @@
+  ⎿  User rejected Claude's plan:
+     ╭──────────────────────────────────────────────────────────────────────────────╮
+     │ Create c.txt in /tmp/oh-test-narrow-herdr60 containing the single word plan. │
+     │ Verify by reading the file back.                                             │
+     ╰──────────────────────────────────────────────────────────────────────────────╯
+
+✻ Brewed for 3s · done 5:58 PM
+
+❯ Use the AskUserQuestion tool now to ask me exactly one single-choice question: 'Which
+  of these hot drinks would you like me to prepare for the long afternoon meeting with
+  the whole design team today?' with header 'Drink' and options 'Tea with milk and a
+  little honey' (description 'A mild black tea, served with milk and a spoon of honey on
+  the side, in the large mug'), 'Coffee', 'Water'. After my answer, reply with my answer
+  verbatim. Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which of these hot drinks would you like me to prepare for the long afternoon
+     meeting with the whole design team today? (Tea with milk and a little honey / Coffee
+     / Water)
+
+✻ Cogitated for 1s · done 5:59 PM
+
+❯ Use the AskUserQuestion tool now to ask me exactly one multi-select question
+  (multiSelect true): 'Which fruits would you like in the salad?' with header 'Fruit' and
+  options 'Green apples from the orchard behind the old stone farmhouse at the end of
+  the lane' (description 'Crisp'), 'Banana', 'Cherry'. After my answer, reply with my
+  answer verbatim. Do nothing else.
+──────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Fruit  ✔ Submit  →
+
+Which fruits would you like in the salad?
+
+❯ 1. [ ] Green apples from the orchard behind the old stone farmhouse at the end of the
+         lane
+         Crisp
+  2. [ ] Banana
+         Banana
+  3. [ ] Cherry
+         Cherry
+  4. [ ] Type something
+     Submit
+──────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

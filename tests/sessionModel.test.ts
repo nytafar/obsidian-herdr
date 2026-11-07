@@ -42,6 +42,10 @@ class FakeTail implements TranscriptStream {
 	emit(lines: string[]): void {
 		if (!this.closed) this.onLines(lines);
 	}
+	/** Lines that ended, and the last line as written so far without its newline (#138). */
+	write(lines: string[], tail: string): void {
+		if (!this.closed) this.onLines(lines, false, tail);
+	}
 	/** The file was replaced or truncated: these lines are it from its start. */
 	restart(lines: string[]): void {
 		if (!this.closed) this.onLines(lines, true);
@@ -162,7 +166,18 @@ class FakeWatcher implements SessionWatcher {
 		(paneId: string, status: AgentStatus, blockKind?: BlockKind) => void
 	>();
 	private readonly membershipHandlers = new Set<(paneId: string) => void>();
+	private readonly infoHandlers = new Set<(paneId: string) => void>();
 	constructor(private pane: PaneSnapshot | null) {}
+
+	onSessionInfo(handler: (paneId: string) => void): Unsubscribe {
+		this.infoHandlers.add(handler);
+		return () => this.infoHandlers.delete(handler);
+	}
+
+	/** What the runtime itself says of the session moved, and nothing else did (#160). */
+	infoChanged(paneId: string): void {
+		for (const handler of [...this.infoHandlers]) handler(paneId);
+	}
 
 	snapshot(paneId: string): PaneSnapshot | null {
 		return this.pane && this.pane.paneId === paneId ? this.pane : null;
@@ -190,7 +205,7 @@ class FakeWatcher implements SessionWatcher {
 	/** Whether anything is still subscribed: a model that let go leaves nothing. */
 	get subscribed(): boolean {
 		return (
-			this.sessionHandlers.size + this.statusHandlers.size + this.membershipHandlers.size > 0
+			this.sessionHandlers.size + this.statusHandlers.size + this.membershipHandlers.size + this.infoHandlers.size > 0
 		);
 	}
 
@@ -288,6 +303,21 @@ describe('SessionModel: the pane’s current transcript', () => {
 		expect(handle.model.path).toBe(PATH_1);
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['First question']);
 		expect(handle.model.agentStatus).toBe('idle');
+	});
+
+	it('names the turns a rewind dropped in the change it emits (#131)', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// A prompt hanging from before the first one, with an answer since.
+		source.tails[0]?.emit([
+			'{"type":"user","message":{"role":"user","content":"Instead"},"uuid":"u9","parentUuid":null}',
+		]);
+
+		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['Instead']);
+		expect(changes).toEqual([{ changedTurnIds: ['u9'], removedTurnIds: ['u1'], reset: false }]);
 	});
 
 	it('has no session yet when the pane has no agent session', () => {
@@ -412,6 +442,38 @@ describe('SessionModel: following the agent session (ADR-0003)', () => {
 		watcher.paneUpdated('w4:p1', 'session-2');
 		expect(handle.model.path).toBe(PATH_2);
 		expect(handle.model.readProblem).toBeNull();
+	});
+
+	it('reads the file again on a fresh tail when asked to try again (#146)', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		source.tails[0]?.problem('over the limit');
+		expect(handle.model.readProblem).toBe('over the limit');
+		changes.length = 0;
+
+		handle.model.retryRead();
+
+		expect(source.tails).toHaveLength(2);
+		expect(source.tails[0]?.closed).toBe(true);
+		expect(source.openTails).toHaveLength(1);
+		expect(source.openTails[0]?.path).toBe(PATH_1);
+		expect(handle.model.readProblem).toBeNull();
+		// The file again from its start: the view draws it whole.
+		expect(changes[0]).toEqual({ changedTurnIds: [], reset: true });
+		expect(handle.model.state.turns).toHaveLength(1);
+	});
+
+	it('leaves a model whose runtime is not connected alone on a retry', () => {
+		const { registry, source, publish } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		publish(null);
+		const open = source.openTails.length;
+
+		handle.model.retryRead();
+
+		expect(source.openTails).toHaveLength(open);
 	});
 
 	it('starts tailing when a fresh Claude’s session id appears', () => {
@@ -932,5 +994,538 @@ describe('SessionModel: a background subagent’s report (#96)', () => {
 		]);
 		expect(handle.model.state.turns.map((turn) => turn.prompt)).toEqual(['After the clear']);
 		expect(reportOf(handle.model)).toBeNull();
+	});
+});
+
+describe('SessionModel: the line still being written (#138)', () => {
+	/** More of u1's answer, as one record: what Claude writes before its newline. */
+	const MORE =
+		'{"type":"assistant","message":{"id":"m-u1","role":"assistant","content":[{"type":"text","text":"And more."}]},"uuid":"a2"}';
+	const NEXT_PROMPT = '{"type":"user","message":{"role":"user","content":"Next question"},"uuid":"u9"}';
+
+	function answer(model: { state: { turns: { entries: unknown[] }[] } }): string {
+		const entry = model.state.turns[0]?.entries[0] as { text?: string } | undefined;
+		return entry?.text ?? '';
+	}
+
+	it('shows a whole record before its newline, and the line once, when it ends', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		const tail = source.tails[0] as FakeTail;
+
+		tail.write([], MORE);
+
+		expect(changes).toEqual([{ changedTurnIds: ['u1'], reset: false }]);
+		expect(answer(handle.model)).toBe('First answer.\n\nAnd more.');
+
+		tail.write([MORE], '');
+
+		// The preview gave way to the line itself: merged once, not twice.
+		expect(changes.at(-1)).toEqual({ changedTurnIds: ['u1'], reset: false });
+		expect(answer(handle.model)).toBe('First answer.\n\nAnd more.');
+	});
+
+	it('shows nothing of a record still being written', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		(source.tails[0] as FakeTail).write([], MORE.slice(0, -3));
+
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		expect(answer(handle.model)).toBe('First answer.');
+	});
+
+	it('removes a turn only the preview held when the preview goes without its line', () => {
+		const { registry, source } = registryWith(filesWith([PATH_1, TRANSCRIPT_1]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		const tail = source.tails[0] as FakeTail;
+
+		tail.write([], NEXT_PROMPT);
+		expect(handle.model.state.turns.map((turn) => turn.id)).toEqual(['u1', 'u9']);
+
+		tail.write([], '');
+
+		expect(changes).toEqual([
+			{ changedTurnIds: ['u9'], reset: false },
+			{ changedTurnIds: [], removedTurnIds: ['u9'], reset: false },
+		]);
+		expect(handle.model.state.turns.map((turn) => turn.id)).toEqual(['u1']);
+	});
+
+	it('reads a previewed notification’s report once, from the line, and applies it once', async () => {
+		const lines = LAUNCHED.split('\n').filter(Boolean);
+		const { registry, source } = registryWith(
+			filesWith([PATH_1, `${lines.slice(0, 2).join('\n')}\n`], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const tail = source.tails[0] as FakeTail;
+		const call = (): { status?: string; notification?: unknown } =>
+			(handle.model.state.turns[0]?.entries[0] ?? {}) as { status?: string; notification?: unknown };
+
+		tail.write([], lines[2] as string);
+
+		// The view sees the call finish; the model reads nothing for a preview.
+		expect(call().status).toBe('done');
+		await Promise.resolve();
+		expect(source.reads).toEqual([]);
+
+		tail.write([lines[2] as string], lines[3] as string);
+		await vi.waitFor(() => expect(reportOf(handle.model)).toBe('The styles are **fine**.'));
+		tail.write([lines[3] as string], '');
+
+		expect(source.reads).toEqual([OUTPUT_FILE]);
+		expect(call().status).toBe('done');
+		expect(reportOf(handle.model)).toBe('The styles are **fine**.');
+	});
+});
+
+describe('SessionModel: background work the agent left behind (#135)', () => {
+	/** A turn whose background command is still running when it ends. */
+	const RUNNING = [
+		'{"type":"user","message":{"role":"user","content":"Start the slow check"},"uuid":"u1"}',
+		'{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_b1","name":"Bash","input":{"command":"sleep 600","run_in_background":true}}]},"uuid":"a1"}',
+		'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b1","content":"Command running in background with ID: b1. Output is being written to: /tmp/b1.output"}]},"uuid":"r1","parentUuid":"a1"}',
+		'',
+	].join('\n');
+
+	function statusOf(model: { state: { turns: { entries: unknown[] }[] } }, id: string): string | undefined {
+		for (const turn of model.state.turns) {
+			for (const entry of turn.entries) {
+				const tool = entry as { kind: string; id?: string; status?: string };
+				if (tool.kind === 'tool' && tool.id === id) return tool.status;
+			}
+		}
+		return undefined;
+	}
+
+	it('marks it lost once the runtime says the agent stopped, and says so', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		// The `claude` kind keeps a stopped agent's session on show.
+		watcher.set({ ...PANE, stopped: true });
+		watcher.statusChanged('w4:p1', 'idle');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+		expect(changes).toEqual([{ changedTurnIds: ['u1'], reset: false }]);
+	});
+
+	it('marks lost what the earlier run left running when Claude resumes the session, and nothing after', () => {
+		// herdr and herdr-core drop the session when the agent exits: the view
+		// empties, and `--resume` brings the same file back.
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		watcher.set({ ...PANE, agentSession: '' });
+		watcher.paneUpdated('w4:p1', '');
+		expect(handle.model.state.turns).toEqual([]);
+
+		source.files.set(
+			PATH_1,
+			RUNNING +
+				[
+					'{"type":"user","message":{"role":"user","content":"Again"},"uuid":"u2","parentUuid":"r1"}',
+					'{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_b2","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]},"uuid":"a2"}',
+					'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b2","content":"Command running in background with ID: b2."}]},"uuid":"r2","parentUuid":"a2"}',
+					'',
+				].join('\n'),
+		);
+		watcher.set(PANE);
+		watcher.paneUpdated('w4:p1', 'session-1');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+		expect(statusOf(handle.model, 'toolu_b2')).toBe('running');
+	});
+
+	it('leaves running work running across a reconnect to the same session', () => {
+		const { registry, reconnect } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		reconnect();
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+	});
+
+	it('leaves it running across a reconnect whose scope primes the pane after the rebind', () => {
+		// herdr and herdr-core: the fresh scope is empty when the registry
+		// rebinds, and the pane arrives as added once it has primed.
+		const { registry, publish } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		const fresh = publish(LOCAL, null) as FakeWatcher;
+		fresh.added(PANE);
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+	});
+
+	it('leaves it running when the pane leaves the scope and comes back', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, RUNNING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		watcher.removed('w4:p1');
+		watcher.added(PANE);
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('running');
+	});
+
+	it('still marks it lost when the session rotated away and Claude resumed it', () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, RUNNING], [PATH_2, TRANSCRIPT_2]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+
+		// `/clear` moved the agent to another file, then `--resume` came back.
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		expect(handle.model.path).toBe(PATH_2);
+		source.files.set(PATH_1, RUNNING);
+		watcher.set(PANE);
+		watcher.paneUpdated('w4:p1', 'session-1');
+
+		expect(statusOf(handle.model, 'toolu_b1')).toBe('lost');
+	});
+});
+
+describe('SessionModel: the plan file of a pane in plan approval (#148)', () => {
+	/** Where Claude writes the plan of PATH_1's session, by its slug. */
+	const planOf = (slug: string): string => `/home/lasse/.claude/plans/${slug}.md`;
+	/** The lines 2.1.286 writes up to its plan approval: plan mode entered, the slug on every line. */
+	const planning = (slug: string): string =>
+		[
+			'{"type":"permission-mode","permissionMode":"auto","sessionId":"session-1"}',
+			'{"type":"user","message":{"role":"user","content":"Plan it"},"uuid":"u1","permissionMode":"auto"}',
+			`{"type":"attachment","attachment":{"type":"plan_mode","planFilePath":"${planOf(slug)}","planExists":false},"slug":"${slug}"}`,
+			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Planning."}]},"uuid":"a1","slug":"${slug}"}`,
+			'',
+		].join('\n');
+	/** Lets the read the model started land. */
+	const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+	it('reads the plan file the slug names when the pane blocks in plan mode', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, planning('mellow-purring-pike')], [planOf('mellow-purring-pike'), '# Plan\n\n1. Step one\n']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+		expect(handle.model.plan).toBeNull();
+
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([planOf('mellow-purring-pike')]);
+		expect(handle.model.plan).toBe('# Plan\n\n1. Step one\n');
+		// The status, then the plan once it was read.
+		expect(changes).toHaveLength(2);
+
+		// The block is over: the plan goes, and the next block reads it again,
+		// since a rejected plan comes back revised.
+		watcher.statusChanged('w4:p1', 'working');
+		expect(handle.model.plan).toBeNull();
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toHaveLength(2);
+		expect(handle.model.plan).toBe('# Plan\n\n1. Step one\n');
+		handle.release();
+	});
+
+	it('reads it for a block the runtime calls a permission, as herdr-core may', async () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, planning('a-slug')], [planOf('a-slug'), 'Plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked', 'permission');
+		await settle();
+		expect(handle.model.plan).toBe('Plan');
+		handle.release();
+	});
+
+	it('follows the session to its new slug', async () => {
+		const files = filesWith([PATH_1, planning('old-slug')], [planOf('old-slug'), 'old'], [planOf('new-slug'), 'new']);
+		const { registry, source, watcher } = registryWith(files);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(handle.model.plan).toBe('old');
+
+		source.openTails[0]?.emit([
+			'{"type":"assistant","message":{"id":"m2","role":"assistant","content":[]},"uuid":"a2","slug":"new-slug"}',
+		]);
+		await settle();
+		expect(source.reads.at(-1)).toBe(planOf('new-slug'));
+		expect(handle.model.plan).toBe('new');
+		handle.release();
+	});
+
+	it('reads the plan once the lines saying plan mode land after the block', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, TRANSCRIPT_1], [planOf('late-slug'), 'Late plan']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+
+		source.openTails[0]?.emit(planning('late-slug').split('\n').filter(Boolean));
+		await settle();
+		expect(handle.model.plan).toBe('Late plan');
+		handle.release();
+	});
+
+	it('never reads outside the plans folder', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith(
+				[PATH_1, planning('fine-slug').replace(/fine-slug/g, '../../secret')],
+				['/home/lasse/secret.md', 'not a plan'],
+			),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('reads nothing once plan mode is over', async () => {
+		const done = `${planning('a-slug')}{"type":"attachment","attachment":{"type":"plan_mode_exit"},"slug":"a-slug"}\n`;
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, done], [planOf('a-slug'), 'Stale plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('reads nothing for a block the runtime names a question', async () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, planning('a-slug')], [planOf('a-slug'), 'Plan']));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked', 'question');
+		await settle();
+		expect(source.reads).toEqual([]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+
+	it('has no plan when the file is missing or blank', async () => {
+		const { registry, source, watcher } = registryWith(filesWith([PATH_1, planning('no-file')]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(source.reads).toEqual([planOf('no-file')]);
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+
+		const blank = registryWith(filesWith([PATH_1, planning('blank')], [planOf('blank'), '  \n']));
+		const other = blank.registry.acquire(LOCAL, 'w4:p1');
+		blank.watcher.statusChanged('w4:p1', 'blocked');
+		await settle();
+		expect(other.model.plan).toBeNull();
+		other.release();
+	});
+
+	it('drops a read that lands after the block ended', async () => {
+		const { registry, source, watcher } = registryWith(
+			filesWith([PATH_1, planning('slow-slug')], [planOf('slow-slug'), 'Slow plan']),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		source.hold = true;
+		watcher.statusChanged('w4:p1', 'blocked');
+		watcher.statusChanged('w4:p1', 'working');
+		source.release();
+		await settle();
+		expect(handle.model.plan).toBeNull();
+		handle.release();
+	});
+});
+
+describe('SessionModel: what the runtime says of the session (#160)', () => {
+	const WITH_MODEL = [
+		'{"type":"user","permissionMode":"default","message":{"role":"user","content":"Go"},"uuid":"u1"}',
+		'{"type":"attachment","uuid":"m1","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5","marketingName":"Opus 5.5"}}}',
+		'{"type":"assistant","effort":"high","message":{"id":"m-u1","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":2,"cache_creation_input_tokens":8,"cache_read_input_tokens":90,"output_tokens":4}},"uuid":"a-u1"}',
+		'',
+	].join('\n');
+
+	it('lays the runtime’s word over the reading per field, and emits when only it moved', () => {
+		const { registry, watcher } = registryWith(filesWith([PATH_1, WITH_MODEL]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		expect(handle.model.sessionInfo).toEqual({
+			model: { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+			effort: 'high',
+			permissionMode: 'default',
+			contextUsed: 100,
+			usage: { input: 100, output: 4, cached: 90 },
+		});
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		watcher.set({
+			...PANE,
+			sessionInfo: {
+				model: { id: 'claude-opus-5-5', label: 'claude-opus-5-5' },
+				permissionMode: 'plan',
+				contextWindow: { tokens: 1000000, source: 'runtime' },
+			},
+		});
+		watcher.infoChanged('w4:p1');
+		expect(changes).toEqual([{ changedTurnIds: [], reset: false }]);
+		// The process knows the id only; the name the transcript gave stays.
+		expect(handle.model.sessionInfo).toMatchObject({
+			model: { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+			effort: 'high',
+			permissionMode: 'plan',
+			contextWindow: { tokens: 1000000, source: 'runtime' },
+		});
+
+		// The same overlay again, or another pane's, is nothing to tell.
+		watcher.infoChanged('w4:p1');
+		watcher.infoChanged('w9:p9');
+		expect(changes).toHaveLength(1);
+
+		// Another model from the process wins, by its id until a record names it.
+		watcher.set({ ...PANE, sessionInfo: { model: { id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' } } });
+		watcher.infoChanged('w4:p1');
+		expect(handle.model.sessionInfo.model).toEqual({ id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' });
+		expect(handle.model.sessionInfo.permissionMode).toBe('default');
+		handle.release();
+	});
+});
+
+describe('SessionModel: a subagent at work, while a view shows it (#147)', () => {
+	/** A turn that launched an async subagent, which has not reported yet. */
+	const WORKING = [
+		'{"type":"user","message":{"role":"user","content":"Start the long job"},"uuid":"u1"}',
+		'{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_a1","name":"Agent","input":{"description":"Check the styles"}}]},"uuid":"a1"}',
+		'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a1","content":"Async agent launched successfully.\\nagentId: a1f2 (internal ID)"}]},"uuid":"r1"}',
+		'',
+	].join('\n');
+
+	/** The subagent's own lines, as it writes them. */
+	const OWN_LINES = [
+		'{"type":"user","isSidechain":true,"timestamp":"2026-11-06T10:00:00.000Z","message":{"role":"user","content":"Check the styles"}}',
+		'{"type":"assistant","isSidechain":true,"timestamp":"2026-11-06T10:00:01.000Z","message":{"id":"s1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/home/lasse/hvelv/styles.css"}}]}}',
+	];
+
+	/** What a call's progress says, or undefined when none is on it. */
+	function progressOf(model: { state: { turns: { entries: unknown[] }[] } }): unknown {
+		for (const turn of model.state.turns) {
+			for (const entry of turn.entries) {
+				const tool = entry as { kind: string; id?: string; subagent?: unknown };
+				if (tool.kind === 'tool' && tool.id === 'toolu_a1') return tool.subagent;
+			}
+		}
+		return undefined;
+	}
+
+	function registryOf(files: Map<string, string>, grace = 0) {
+		const source = new FakeSource(files);
+		const watcher = new FakeWatcher(PANE);
+		const pending = new Map<number, () => void>();
+		let next = 1;
+		const registry = new SessionModelRegistry({
+			watcher: () => watcher,
+			source: () => source,
+			home: '/home/lasse',
+			subagentGraceMs: grace,
+			subagentTimers: {
+				set: (callback) => {
+					pending.set(next, callback);
+					return next++;
+				},
+				clear: (handle) => {
+					pending.delete(handle as number);
+				},
+			},
+		});
+		const fire = (): void => {
+			for (const [id, callback] of [...pending]) {
+				pending.delete(id);
+				callback();
+			}
+		};
+		const subagentTails = (): FakeTail[] => source.openTails.filter((tail) => tail.path === SUBAGENT_FILE);
+		return { registry, source, watcher, fire, subagentTails };
+	}
+
+	it('reads no subagent’s transcript until a view shows the session', () => {
+		const { registry, source } = registryOf(filesWith([PATH_1, WORKING]));
+		registry.acquire(LOCAL, 'w4:p1');
+		expect(source.tails.map((tail) => tail.path)).toEqual([PATH_1]);
+	});
+
+	it('writes what the subagent did last onto its call, as a changed turn', () => {
+		const { registry, subagentTails } = registryOf(filesWith([PATH_1, WORKING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const changes: SessionChange[] = [];
+		handle.model.on((change) => changes.push(change));
+
+		const hide = handle.model.showSubagents();
+		expect(subagentTails()).toHaveLength(1);
+		expect(progressOf(handle.model)).toEqual({ running: true, latest: null, calls: 0 });
+		subagentTails()[0]?.emit(OWN_LINES);
+		expect(progressOf(handle.model)).toMatchObject({ running: true, calls: 1, latest: { name: 'Read' } });
+		expect(changes.at(-1)).toEqual({ changedTurnIds: ['u1'], reset: false });
+
+		// No view shows it: the tail goes, and so does what it said.
+		hide();
+		expect(subagentTails()).toEqual([]);
+		expect(progressOf(handle.model)).toBeUndefined();
+	});
+
+	it('keeps following for a moment after the last view went, so a tab switched back reads nothing again', () => {
+		const { registry, source, fire, subagentTails } = registryOf(filesWith([PATH_1, WORKING]), 10_000);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents()();
+		expect(subagentTails()).toHaveLength(1);
+		const again = handle.model.showSubagents();
+		fire();
+		expect(subagentTails()).toHaveLength(1);
+		expect(source.tails.filter((tail) => tail.path === SUBAGENT_FILE)).toHaveLength(1);
+		again();
+		fire();
+		expect(subagentTails()).toEqual([]);
+	});
+
+	it('says the subagent stopped when its notification lands, and still reads its report', async () => {
+		const { registry, source, subagentTails } = registryOf(
+			filesWith([PATH_1, WORKING], [OUTPUT_FILE, SUBAGENT_TRANSCRIPT]),
+		);
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents();
+		subagentTails()[0]?.emit(OWN_LINES);
+		source.tails[0]?.emit([
+			`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-06T10:05:00.000Z","content":${JSON.stringify(NOTIFICATION)}}`,
+		]);
+		expect(progressOf(handle.model)).toMatchObject({ running: false });
+		await vi.waitFor(() => expect(reportOf(handle.model)).toBe('The styles are **fine**.'));
+	});
+
+	it('opens a subagent’s transcript on request, followed until it is let go', () => {
+		const { registry, subagentTails } = registryOf(filesWith([PATH_1, WORKING]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		const transcript = handle.model.subagentTranscript('toolu_a1');
+		expect(subagentTails()).toHaveLength(1);
+		subagentTails()[0]?.emit(OWN_LINES);
+		expect(transcript?.state.turns.map((turn) => turn.prompt)).toEqual(['Check the styles']);
+		transcript?.release();
+		expect(subagentTails()).toEqual([]);
+		expect(handle.model.subagentTranscript('toolu_none')).toBeNull();
+	});
+
+	it('drops the subagents of a session that rotated away', () => {
+		const { registry, watcher, subagentTails } = registryOf(filesWith([PATH_1, WORKING], [PATH_2, TRANSCRIPT_2]));
+		const handle = registry.acquire(LOCAL, 'w4:p1');
+		handle.model.showSubagents();
+		expect(subagentTails()).toHaveLength(1);
+		watcher.set({ ...PANE, agentSession: 'session-2' });
+		watcher.paneUpdated('w4:p1', 'session-2');
+		expect(subagentTails()).toEqual([]);
+		expect(handle.model.path).toBe(PATH_2);
 	});
 });

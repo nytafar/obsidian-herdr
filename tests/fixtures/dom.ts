@@ -102,6 +102,11 @@ export class FakeElement {
 		return child;
 	}
 
+	/** Obsidian's SVG twin of `createEl`: the same shape here, a tag and attributes (#173). */
+	createSvg(tag: string, info?: FakeElementInfo | string): FakeElement {
+		return this.createEl(tag, info);
+	}
+
 	addClass(...classes: string[]): void {
 		for (const cls of classes) this.classList.add(cls);
 	}
@@ -184,6 +189,16 @@ export class FakeElement {
 		this.scrolledIntoView.push(options ?? null);
 	}
 
+	/**
+	 * Where a layout put the element's top, in viewport pixels; a test sets it
+	 * for the turn commands (#145), which measure turns against the view.
+	 */
+	top = 0;
+
+	getBoundingClientRect(): { top: number } {
+		return { top: this.top };
+	}
+
 	addEventListener(type: string, handler: (event: unknown) => void): void {
 		this.listeners.push({ type, handler });
 	}
@@ -215,6 +230,41 @@ export class FakeElement {
 
 	replaceWith(...nodes: (string | Node)[]): void {
 		this.parent?.replaceChild(this, nodes);
+	}
+
+	/**
+	 * `node` moved in front of `ref`, or to the end when `ref` is null, as the
+	 * DOM does it: out of wherever it was first. The turn renderer puts a new
+	 * item where it belongs this way (#127).
+	 */
+	insertBefore(node: FakeElement, ref: FakeElement | null): FakeElement {
+		if (node.parent) {
+			const from = node.parent.nodes.indexOf(node);
+			if (from !== -1) node.parent.nodes.splice(from, 1);
+		}
+		const at = ref ? this.nodes.indexOf(ref) : -1;
+		if (at === -1) this.nodes.push(node);
+		else this.nodes.splice(at, 0, node);
+		node.parent = this;
+		this.inserted++;
+		return node;
+	}
+
+	/** How many `insertBefore` calls moved a node here, for the "touches nothing" cases. */
+	inserted = 0;
+
+	/**
+	 * `<details>`'s own property, reflected as the `open` attribute the way the
+	 * DOM reflects it. A test that plays the reader sets it and dispatches
+	 * `toggle`, which is what the browser does on a click on the summary.
+	 */
+	get open(): boolean {
+		return 'open' in this.attrs;
+	}
+
+	set open(value: boolean) {
+		if (value) this.attrs.open = '';
+		else delete this.attrs.open;
 	}
 
 	/** `old` swapped for `nodes` in place, each moved out of wherever it was. */

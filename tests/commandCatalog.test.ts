@@ -13,12 +13,12 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, realpathSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-	BUILTIN_COMMANDS,
-	loadCommandCatalog,
 	matchCommands,
-	projectCommandRoots,
+	normalizeCommandUsage,
+	withCommandUsed,
 	type CatalogEntry,
 } from '../src/native/commandCatalog';
+import { BUILTIN_COMMANDS, loadCommandCatalog, projectCommandRoots } from '../src/agents/claude/commands';
 
 let root = '';
 let home = '';
@@ -211,10 +211,58 @@ describe('loadCommandCatalog: symlinks', () => {
 });
 
 describe('matchCommands', () => {
-	it('offers everything for an empty query, in name order', () => {
-		const names = matchCommands(catalog(), '').map((entry) => entry.name);
-		expect(names).toEqual([...names].sort());
-		expect(names).toContain('shared');
+	function entry(name: string, scope: CatalogEntry['scope'] = 'user'): CatalogEntry {
+		return { name, scope, kind: 'command', description: '', argumentHint: '', path: null };
+	}
+
+	it('offers everything for an empty query, grouped by scope and in name order inside one', () => {
+		const entries = [
+			entry('zeta', 'builtin'),
+			entry('beta', 'user'),
+			entry('alpha', 'builtin'),
+			entry('mine', 'project'),
+		];
+		expect(matchCommands(entries, '').map((e) => e.name)).toEqual(['mine', 'beta', 'alpha', 'zeta']);
+		expect(matchCommands(catalog(), '').map((e) => e.name)).toContain('shared');
+	});
+
+	it('puts the more used first inside a tier or a scope, never above a better match (#149)', () => {
+		const entries = [
+			entry('commit'),
+			entry('compact', 'builtin'),
+			entry('config', 'builtin'),
+			entry('recompile'),
+		];
+		const usage = { config: 5, compact: 2, recompile: 50 };
+
+		expect(matchCommands(entries, 'co', usage).map((e) => e.name)).toEqual([
+			'config',
+			'compact',
+			'commit',
+			'recompile',
+		]);
+		expect(matchCommands(entries, '', usage).map((e) => e.name)).toEqual([
+			'recompile',
+			'commit',
+			'config',
+			'compact',
+		]);
+	});
+
+	it('counts a pick without changing the map it was given', () => {
+		const before = { review: 2 };
+		expect(withCommandUsed(before, 'review')).toEqual({ review: 3 });
+		expect(withCommandUsed(before, 'clear')).toEqual({ review: 2, clear: 1 });
+		expect(before).toEqual({ review: 2 });
+	});
+
+	it('keeps only positive counts from what was stored', () => {
+		expect(normalizeCommandUsage({ a: 2, b: -1, c: 'x', d: 0, '': 3, e: 1.7 })).toEqual({
+			a: 2,
+			e: 1,
+		});
+		expect(normalizeCommandUsage(null)).toEqual({});
+		expect(normalizeCommandUsage([1])).toEqual({});
 	});
 
 	it('matches a prefix before a substring, case-insensitively', () => {

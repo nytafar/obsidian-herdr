@@ -31,6 +31,42 @@ export interface PendingQuestion {
 }
 
 /**
+ * The questions of an `AskUserQuestion` call's input, as Claude asked them:
+ * what the `claude` kind's request carries and what a herdr or herdr-core
+ * card reads off a dangling call. Entries that are not a question with text
+ * are skipped, and options without a label too.
+ */
+export function questionsFromInput(input: Readonly<Record<string, unknown>>): PendingQuestion[] {
+	const list = Array.isArray(input.questions) ? (input.questions as unknown[]) : [];
+	const questions: PendingQuestion[] = [];
+	for (const entry of list) {
+		const question = recordOf(entry);
+		if (!question || typeof question.question !== 'string') continue;
+		const options = (Array.isArray(question.options) ? (question.options as unknown[]) : [])
+			.map(recordOf)
+			.filter((option): option is Record<string, unknown> => option !== null && typeof option.label === 'string')
+			.map((option) => ({ label: textOf(option.label), description: textOf(option.description) }));
+		questions.push({
+			question: question.question,
+			header: textOf(question.header),
+			options,
+			multiSelect: question.multiSelect === true,
+		});
+	}
+	return questions;
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function textOf(value: unknown): string {
+	return typeof value === 'string' ? value : '';
+}
+
+/**
  * What a "remember this" choice would grant, in words, for the card to say
  * before it is pressed.
  */
@@ -97,7 +133,13 @@ export type WaitingAnswer =
 	| { type: 'allow-session' }
 	| { type: 'allow-project' }
 	| { type: 'deny' }
-	/** Answers keyed by question text; a multi-select answer joins its labels. */
+	/**
+	 * Answers keyed by question text. Each is an option's label as Claude wrote
+	 * it, the user's own typed words (the dialog's "Other", #141), or, for a
+	 * multiple choice, the labels and then the typed words joined with ", ". A
+	 * kind with a responder delivers the text as it is; the `claude` kind's
+	 * `can_use_tool` answer does (measured on Claude Code 2.1.318).
+	 */
 	| { type: 'answer'; answers: Record<string, string> }
 	| { type: 'dismiss' }
 	| { type: 'approve-plan' }

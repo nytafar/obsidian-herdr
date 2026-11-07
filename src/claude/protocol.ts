@@ -25,14 +25,15 @@
  * never sent.
  */
 
-import type {
-	PendingGrant,
-	PendingProjectGrant,
-	PendingQuestion,
-	PendingRequest,
-	WaitingAnswer,
+import {
+	questionsFromInput,
+	type PendingGrant,
+	type PendingProjectGrant,
+	type PendingRequest,
+	type WaitingAnswer,
 } from '../native/pendingRequest';
 import type { ClaudePermissionMode } from '../runtimes';
+import type { PromptImage } from '../native/promptImages';
 import type { LocalSettingsTarget } from './projectRoot';
 
 /** What starts one agent process. */
@@ -123,9 +124,27 @@ export function encodeLine(message: object): string {
 	return `${json}\n`;
 }
 
-/** A prompt, or a slash command, as one user message. */
-export function userMessage(text: string): object {
-	return { type: 'user', message: { role: 'user', content: text } };
+/**
+ * A prompt, or a slash command, as one user message. With images (#144) the
+ * content is blocks: the text first, when there is any, then one base64
+ * `image` block each, which `claude -p` in stream-json takes as they are
+ * (measured 2026-11-06, Claude Code 2.1.318, `docs/architecture.md`, "Images
+ * in prompts").
+ *
+ * `uuid` names the message to Claude (#158): it reports the message's fate
+ * under it in `command_lifecycle`, and every `result` lists the messages it
+ * answers in `user_message_uuids`, which is how a turn that absorbed a queued
+ * message is known to have answered both (`docs/architecture.md`, "Queued
+ * prompts").
+ */
+export function userMessage(text: string, images: readonly PromptImage[] = [], uuid?: string): object {
+	const named = uuid ? { uuid } : {};
+	if (!images.length) return { type: 'user', message: { role: 'user', content: text }, ...named };
+	const content: object[] = text.trim() ? [{ type: 'text', text }] : [];
+	for (const image of images) {
+		content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
+	}
+	return { type: 'user', message: { role: 'user', content }, ...named };
 }
 
 /** A control request from the plugin (`interrupt`). */
@@ -136,6 +155,77 @@ export function controlRequest(requestId: string, request: Record<string, unknow
 /** The `interrupt` control request: ends the running turn, keeps the process. */
 export function interruptRequest(requestId: string): object {
 	return controlRequest(requestId, { subtype: 'interrupt' });
+}
+
+/**
+ * A session setting the plugin changes (#162): the model by an alias Claude
+ * takes, the reasoning effort, or the permission mode. Session only: none of
+ * them touches Claude's settings files (measured on 2.1.318,
+ * `docs/architecture.md`, "Model, effort, permission mode and context").
+ */
+export type SessionControl =
+	| { setting: 'model'; model: string }
+	| { setting: 'effort'; effort: string }
+	| { setting: 'mode'; mode: string };
+
+/**
+ * The control request for one {@link SessionControl}: `set_model`,
+ * `apply_flag_settings {effortLevel}` or `set_permission_mode`. These three,
+ * `get_context_usage` ({@link contextUsageRequest}) and `interrupt` are every
+ * request the plugin makes; never `initialize` or `get_settings`, whose
+ * answers carry the account email.
+ */
+export function sessionControlRequest(requestId: string, control: SessionControl): object {
+	switch (control.setting) {
+		case 'model':
+			return controlRequest(requestId, { subtype: 'set_model', model: control.model });
+		case 'effort':
+			return controlRequest(requestId, { subtype: 'apply_flag_settings', settings: { effortLevel: control.effort } });
+		case 'mode':
+			return controlRequest(requestId, { subtype: 'set_permission_mode', mode: control.mode });
+	}
+}
+
+/**
+ * The `get_context_usage` control request (#171): the context breakdown
+ * `/context` shows, without writing anything to the conversation.
+ */
+export function contextUsageRequest(requestId: string): object {
+	return controlRequest(requestId, { subtype: 'get_context_usage' });
+}
+
+/**
+ * What `get_context_usage` answers, as far as it is read here (measured on
+ * 2.1.318 against a `claude -p` with no prompt): `categories` (`name`,
+ * `tokens`, `kind`: `used`, `deferred`, `buffer`, `free`), `totalTokens`,
+ * `maxTokens`, `percentage` and `model`. The rest of the answer (memory
+ * file paths, tools, skills, the grid) is dropped where it is read.
+ */
+export interface ContextUsage {
+	model: string;
+	totalTokens: number;
+	maxTokens: number;
+	percentage: number;
+	categories: { name: string; tokens: number }[];
+}
+
+/** A `get_context_usage` answer's payload as {@link ContextUsage}, or null when it is not one. */
+function contextUsage(payload: Record<string, unknown> | null): ContextUsage | null {
+	if (!payload || !Array.isArray(payload.categories)) return null;
+	const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+	const categories: ContextUsage['categories'] = [];
+	for (const entry of payload.categories as unknown[]) {
+		const category = record(entry);
+		const name = text(category?.name);
+		if (name) categories.push({ name, tokens: number(category?.tokens) });
+	}
+	return {
+		model: text(payload.model),
+		totalTokens: number(payload.totalTokens),
+		maxTokens: number(payload.maxTokens),
+		percentage: number(payload.percentage),
+		categories,
+	};
 }
 
 /** The success answer to one of Claude's control requests. */
@@ -183,9 +273,11 @@ export interface ToolPermissionRequest {
 export type StreamEvent =
 	/**
 	 * `system:init`: sent at the start of every turn, with the session id and
-	 * the cwd Claude runs in, which is the real path (a symlink resolved).
+	 * the cwd Claude runs in, which is the real path (a symlink resolved),
+	 * and the model and permission mode the turn runs with (#160; the model's
+	 * id, `claude-haiku-5-5`, measured on 2.1.318).
 	 */
-	| { type: 'init'; sessionId: string; cwd: string; permissionMode: string }
+	| { type: 'init'; sessionId: string; cwd: string; permissionMode: string; model: string }
 	/** `system:status`: a permission mode change, or compacting. */
 	| { type: 'status'; permissionMode: string | null }
 	/** The end of a turn. */
@@ -197,14 +289,49 @@ export type StreamEvent =
 			/** The text a result carries, or the first of `errors`; empty for none. */
 			message: string;
 			sessionId: string;
+			/**
+			 * The user messages this turn answered, by the uuid each was sent
+			 * with: `user_message_uuids`, else `user_message_uuid`. Null when
+			 * the result names none (an older Claude), which is not the same
+			 * as an empty list.
+			 */
+			answered: string[] | null;
+			/**
+			 * Each model's context window, from `modelUsage[<model>]
+			 * .contextWindow` (#160): `{"claude-haiku-5-5": 1000000}`.
+			 */
+			windows: Record<string, number>;
 	  }
+	/**
+	 * `command_lifecycle`: the fate of a user message sent with a uuid. Only
+	 * its end matters here (`completed`, `cancelled`, `discarded` or
+	 * `refused`); `queued` and `started` are not ends.
+	 */
+	| { type: 'lifecycle'; uuid: string; ended: boolean }
 	| { type: 'permission'; request: ToolPermissionRequest }
 	/** Some other control request; it must be answered, with an error. */
 	| { type: 'control'; requestId: string; subtype: string }
 	/** Claude withdrew a request (an interrupt landed while it was pending). */
 	| { type: 'cancel'; requestId: string }
-	/** The answer to one of the plugin's own requests. */
-	| { type: 'response'; requestId: string; ok: boolean }
+	/**
+	 * The answer to one of the plugin's own requests, with the model or the
+	 * permission mode it says is now set (`set_model` answers `{model}`,
+	 * `set_permission_mode` `{mode}`); '' where it says neither. A refusal
+	 * carries Claude's words and code (#162, measured on 2.1.318:
+	 * `invalid_mode` "Cannot set permission mode: must be one of …",
+	 * `not_found` "Model 'bogus' not found"). `get_context_usage` answers
+	 * with the breakdown (#171).
+	 */
+	| {
+			type: 'response';
+			requestId: string;
+			ok: boolean;
+			model: string;
+			mode: string;
+			error?: string;
+			errorCode?: string;
+			context?: ContextUsage;
+	  }
 	/** Anything else: assistant and user messages, hooks, partials, rate limits. */
 	| { type: 'other' };
 
@@ -241,6 +368,7 @@ export function parseStreamLine(line: string): StreamEvent | null {
 					sessionId: text(message.session_id),
 					cwd: text(message.cwd),
 					permissionMode: text(message.permissionMode),
+					model: text(message.model),
 				};
 			}
 			if (message.subtype === 'status') {
@@ -260,7 +388,14 @@ export function parseStreamLine(line: string): StreamEvent | null {
 				terminalReason: text(message.terminal_reason),
 				message: text(message.result) || first || '',
 				sessionId: text(message.session_id),
+				answered: answeredUuids(message),
+				windows: contextWindows(message),
 			};
+		}
+		case 'command_lifecycle': {
+			const uuid = text(message.command_uuid);
+			if (!uuid) return { type: 'other' };
+			return { type: 'lifecycle', uuid, ended: LIFECYCLE_ENDS.has(text(message.state)) };
 		}
 		case 'control_request': {
 			const requestId = text(message.request_id);
@@ -278,11 +413,52 @@ export function parseStreamLine(line: string): StreamEvent | null {
 		case 'control_response': {
 			const response = record(message.response);
 			const requestId = text(response?.request_id);
-			return requestId ? { type: 'response', requestId, ok: response?.subtype === 'success' } : { type: 'other' };
+			if (!requestId) return { type: 'other' };
+			const ok = response?.subtype === 'success';
+			const payload = ok ? record(response?.response) : null;
+			if (!ok) {
+				return {
+					type: 'response',
+					requestId,
+					ok,
+					model: '',
+					mode: '',
+					error: text(response?.error),
+					errorCode: text(response?.error_code),
+				};
+			}
+			const context = contextUsage(payload);
+			// `get_context_usage` names its model too, which is no model set.
+			if (context) return { type: 'response', requestId, ok, model: '', mode: '', context };
+			return { type: 'response', requestId, ok, model: text(payload?.model), mode: text(payload?.mode) };
 		}
 		default:
 			return { type: 'other' };
 	}
+}
+
+/** The terminal states of `command_lifecycle`: after one, the message is no longer Claude's to answer. */
+const LIFECYCLE_ENDS = new Set(['completed', 'cancelled', 'discarded', 'refused']);
+
+/** Each model's context window in a `result`'s `modelUsage`; models that state none are left out. */
+function contextWindows(message: Record<string, unknown>): Record<string, number> {
+	const windows: Record<string, number> = {};
+	const usage = record(message.modelUsage);
+	if (!usage) return windows;
+	for (const [model, entry] of Object.entries(usage)) {
+		const window = record(entry)?.contextWindow;
+		if (typeof window === 'number' && Number.isFinite(window) && window > 0) windows[model] = window;
+	}
+	return windows;
+}
+
+/** The uuids a `result` answers; null when it names none at all. */
+function answeredUuids(message: Record<string, unknown>): string[] | null {
+	if (Array.isArray(message.user_message_uuids)) {
+		return (message.user_message_uuids as unknown[]).filter((entry): entry is string => typeof entry === 'string');
+	}
+	const one = text(message.user_message_uuid);
+	return one ? [one] : null;
 }
 
 function toolRequest(requestId: string, request: Record<string, unknown>): ToolPermissionRequest {
@@ -350,25 +526,6 @@ function grant(updates: PermissionUpdate[]): PendingGrant | null {
 	return updates.length > 0 ? { lines: updates.map(describeUpdate) } : null;
 }
 
-function questionsOf(input: Record<string, unknown>): PendingQuestion[] {
-	const list = Array.isArray(input.questions) ? (input.questions as unknown[]) : [];
-	const questions: PendingQuestion[] = [];
-	for (const entry of list) {
-		const question = record(entry);
-		if (!question || typeof question.question !== 'string') continue;
-		const options = (Array.isArray(question.options) ? (question.options as unknown[]) : [])
-			.map(record)
-			.filter((option): option is Record<string, unknown> => option !== null && typeof option.label === 'string')
-			.map((option) => ({ label: text(option.label), description: text(option.description) }));
-		questions.push({
-			question: question.question,
-			header: text(question.header),
-			options,
-			multiSelect: question.multiSelect === true,
-		});
-	}
-	return questions;
-}
 
 /**
  * A `can_use_tool` request as the waiting card shows it. `settings` is where
@@ -395,7 +552,7 @@ export function pendingRequestOf(request: ToolPermissionRequest, settings: Local
 		toolUseId: request.toolUseId,
 		input: request.input,
 		reason,
-		questions: kind === 'question' ? questionsOf(request.input) : [],
+		questions: kind === 'question' ? questionsFromInput(request.input) : [],
 		plan: kind === 'plan' ? text(request.input.plan).trim() : '',
 		// Questions and plans are the user's to answer; "remember" makes no sense.
 		session: kind === 'permission' ? grant(sessionSuggestions(request)) : null,

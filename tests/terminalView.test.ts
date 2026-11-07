@@ -19,7 +19,7 @@ import {
 } from '../src/views/terminalView';
 import type { SessionWatcher } from '../src/native/sessionWatcher';
 import { NATIVE_NO_LABEL_REASON } from '../src/hc/sessionWatcher';
-import { effectivePaneView } from '../src/native/surface';
+import { effectivePaneView } from '../src/native/paneSurface';
 // The session-and-renderer half of the view moved to the lifecycle module (#83);
 // its pure decisions moved with it.
 import {
@@ -37,7 +37,7 @@ import {
 import { buildArgv } from '../src/bridge/terminalSession';
 import type { PaneState } from '../src/herdr/scope';
 import type { WorkspaceLeaf } from 'obsidian';
-import { NATIVE_REMOTE_REASON } from '../src/native/surface';
+import { NATIVE_REMOTE_REASON } from '../src/native/paneSurface';
 
 // Only the DOM-free decisions are unit tested: the view itself needs a canvas,
 // the ghostty WASM and a live herdr. See tests/README.md for the smoke recipe.

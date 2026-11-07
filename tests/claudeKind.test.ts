@@ -23,7 +23,8 @@ import type { ClaudeClient, ClaudeScope } from '../src/claude/scope';
 import { endpointOf, type Connection } from '../src/connection';
 import type { DiscoveryResult } from '../src/herdr/binary';
 import type { WaitingAnswer } from '../src/native/pendingRequest';
-import { encodeProjectDir } from '../src/native/transcriptSource';
+import { SEND_NOW } from '../src/native/promptSender';
+import { encodeProjectDir } from '../src/agents/claude/paths';
 import {
 	claudeEnv,
 	createClaudeKind,
@@ -36,6 +37,8 @@ import { newRuntime, type ClaudePermissionMode } from '../src/runtimes';
 import { normalizeClaudeSessions } from '../src/claude/agents';
 
 const FAKE = resolve(__dirname, 'fixtures/fake-claude.mjs');
+/** Any uuid the plugin names a prompt with (#158). */
+const A_UUID: unknown = expect.any(String);
 
 interface Harness {
 	kind: ClaudeKind;
@@ -232,6 +235,15 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.scope.get(paneId)).toMatchObject({ agentStatus: 'idle', stopped: false, cwd: h.dir });
 	});
 
+	it('never refuses its own agent the native view: it runs only Claude (#155)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const watcher = h.kind.native?.watcher(h.connection);
+		expect(watcher?.snapshot(paneId)).not.toBeNull();
+		expect(watcher?.unavailable?.(paneId) ?? null).toBeNull();
+		expect(h.kind.paneNativeReason?.(paneId)).toBeNull();
+	});
+
 	it('maps a turn to working, then done, and a look to idle', async () => {
 		const h = harness();
 		const paneId = await started(h);
@@ -243,7 +255,108 @@ describe('the claude kind over a fake claude', () => {
 		h.kind.native?.watcher(h.connection)?.looking?.(paneId, {}, true);
 		expect(status(h, paneId)).toBe('idle');
 		expect(statuses).toEqual(['working', 'done', 'idle']);
-		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' } });
+		expect(stdin(h.log)[0]).toEqual({ type: 'user', message: { role: 'user', content: 'hello' }, uuid: A_UUID });
+	});
+
+	it('puts what the process says of the session in the snapshot, and tells the model apart from a status (#160)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const watcher = h.kind.native?.watcher(h.connection);
+		const told: string[] = [];
+		watcher?.onSessionInfo?.((pane) => told.push(pane));
+		expect(watcher?.snapshot(paneId)?.sessionInfo).toBeUndefined();
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		expect(watcher?.snapshot(paneId)?.sessionInfo).toEqual({
+			model: { id: 'claude-haiku-5-5', label: 'claude-haiku-5-5' },
+			permissionMode: 'manual',
+			contextWindow: { tokens: 1000000, source: 'runtime' },
+		});
+		// When init named the model and mode, and when the result named the
+		// window: through their own call, not as a status.
+		expect(told.length).toBeGreaterThanOrEqual(2);
+		expect(new Set(told)).toEqual(new Set([paneId]));
+	});
+
+	it('ends a turn that absorbed a steer as done: one result answers both prompts (#158)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const statuses: string[] = [];
+		h.kind.native?.watcher(h.connection)?.onStatus((_pane, value) => statuses.push(value));
+		await prompt(h, paneId, 'STEER');
+		await prompt(h, paneId, 'and check the other file too');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const [first, second] = stdin(h.log);
+		expect(first?.uuid).toEqual(expect.any(String));
+		expect(second?.uuid).toEqual(expect.any(String));
+		expect(second?.uuid).not.toBe(first?.uuid);
+		// The lifecycle ends that follow the result keep it done.
+		await new Promise((done) => setTimeout(done, 60));
+		expect(status(h, paneId)).toBe('done');
+		expect(statuses).toEqual(['working', 'done']);
+	});
+
+	it('does not hold an agent working for a queued prompt that was cancelled (#158)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		await prompt(h, paneId, 'STEER');
+		await prompt(h, paneId, 'DROPPED');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		await new Promise((done) => setTimeout(done, 60));
+		expect(status(h, paneId)).toBe('done');
+	});
+
+	it('stays working while a queued prompt waits for its own turn', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const statuses: string[] = [];
+		h.kind.native?.watcher(h.connection)?.onStatus((_pane, value) => statuses.push(value));
+		await prompt(h, paneId, 'SLOW');
+		await prompt(h, paneId, 'next');
+		await new Promise((done) => setTimeout(done, 60));
+		await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		// The interrupted turn's result answered only the first; the second ran as its own turn.
+		expect(statuses).toEqual(['working', 'done']);
+	});
+
+	it('writes a held row and a Send now as the same user line, each under its uuid (#159)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const sender = h.kind.promptSender(() => h.client);
+		await sender.send(paneId, 'held row', [], { held: true });
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		await sender.send(paneId, 'sent now', [], SEND_NOW);
+		await waitFor(() => stdin(h.log).filter((message) => message.type === 'user').length === 2, 'two lines');
+		const users = stdin(h.log).filter((message) => message.type === 'user');
+		expect(users.map((message) => JSON.stringify(message.message))).toEqual([
+			JSON.stringify({ role: 'user', content: 'held row' }),
+			JSON.stringify({ role: 'user', content: 'sent now' }),
+		]);
+		expect(users.every((message) => typeof message.uuid === 'string')).toBe(true);
+	});
+
+	it('sends a prompt’s images as image blocks after its text, and says images can go (#144)', async () => {
+		const h = harness();
+		const paneId = await started(h);
+		const sender = h.kind.promptSender(() => h.client);
+		const image = { mediaType: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' };
+
+		expect(sender.imagesUnavailable?.(paneId)).toBeNull();
+		await sender.send(paneId, 'What is this?', [image]);
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+
+		expect(stdin(h.log)[0]).toEqual({
+			type: 'user',
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'What is this?' },
+					{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+				],
+			},
+			uuid: A_UUID,
+		});
 	});
 
 	it('marks a turn that ends while a view looks as seen, and stops when the last view looks away', async () => {
@@ -381,6 +494,182 @@ describe('the claude kind over a fake claude', () => {
 		expect(stdin(h.log).at(-1)).toMatchObject({ type: 'control_request', request: { subtype: 'interrupt' } });
 		// An interrupt's own aborted result is not an error worth a notice.
 		expect(h.notices.filter((notice) => !notice.startsWith('Gjetr: started'))).toEqual([]);
+	});
+
+	describe('session settings (#162)', () => {
+		function settings(h: Harness) {
+			const sender = h.kind.sessionSettings?.(() => h.client, null);
+			if (!sender) throw new Error('no session settings');
+			return sender;
+		}
+
+		function info(h: Harness, paneId: string) {
+			return h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.sessionInfo;
+		}
+
+		/** The control requests the fake read, by subtype. */
+		function controls(h: Harness): Record<string, unknown>[] {
+			return stdin(h.log)
+				.filter((message) => message.type === 'control_request')
+				.map((message) => message.request as Record<string, unknown>);
+		}
+
+		it('says what it can: every setting, this session only, mid-turn too', () => {
+			const sender = settings(harness());
+			expect(sender.scopes).toEqual(['session']);
+			expect(sender.settings).toEqual(['model', 'effort', 'mode']);
+			expect(sender.midTurn).toBe(true);
+		});
+
+		it('switches the model with set_model, and the answer updates the session info', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const told: string[] = [];
+			h.kind.native?.watcher(h.connection)?.onSessionInfo?.((pane) => told.push(pane));
+			await settings(h).setModel(paneId, 'sonnet', 'session');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_model', model: 'sonnet' });
+			expect(info(h, paneId)?.model).toEqual({ id: 'claude-sonnet-5-5', label: 'claude-sonnet-5-5' });
+			// The window was the old model's.
+			expect(info(h, paneId)?.contextWindow).toBeUndefined();
+			expect(told).toContain(paneId);
+		});
+
+		it('sets the effort with apply_flag_settings, and records it, since the answer is bare', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await settings(h).setEffort(paneId, 'high', 'session');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } });
+			expect(info(h, paneId)?.effort).toBe('high');
+			// Claude says yes to a level it does not know; the plugin never asks it.
+			await expect(settings(h).setEffort(paneId, 'bogus', 'session')).rejects.toThrow('no effort level "bogus"');
+			expect(controls(h)).toHaveLength(1);
+		});
+
+		it('sets the permission mode with set_permission_mode, manual as Claude’s default', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await settings(h).setMode(paneId, 'plan');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_permission_mode', mode: 'plan' });
+			expect(info(h, paneId)?.permissionMode).toBe('plan');
+			await settings(h).setMode(paneId, 'manual');
+			expect(controls(h).at(-1)).toEqual({ subtype: 'set_permission_mode', mode: 'default' });
+			expect(info(h, paneId)?.permissionMode).toBe('default');
+		});
+
+		it('rejects with Claude’s own words: invalid_mode, and an unknown model', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await expect(settings(h).setMode(paneId, 'bogus')).rejects.toThrow(
+				'Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan',
+			);
+			await expect(settings(h).setModel(paneId, 'nosuchmodel', 'session')).rejects.toThrow("Model 'nosuchmodel' not found");
+			// Nothing changed on a refusal.
+			expect(info(h, paneId)?.permissionMode).toBeUndefined();
+			expect(info(h, paneId)?.model).toBeUndefined();
+		});
+
+		it('changes a setting mid-turn, and the running turn goes on', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'SLOW');
+			await new Promise((done) => setTimeout(done, 60));
+			expect(status(h, paneId)).toBe('working');
+			await settings(h).setModel(paneId, 'opus', 'session');
+			expect(status(h, paneId)).toBe('working');
+			expect(info(h, paneId)?.model?.id).toBe('claude-opus-5-5');
+			await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+		});
+
+		it('never saves the default, refuses while stopping, and keeps an Allow once row’s mode', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await expect(settings(h).setModel(paneId, 'sonnet', 'default')).rejects.toThrow('this session only');
+			const pinned = h.kind.agents.start(h.runtimeId, h.dir, 'Install herdr-core', {
+				permissionMode: 'manual',
+				allowOnceOnly: true,
+			});
+			await expect(settings(h).setMode(pinned.id, 'auto')).rejects.toThrow('Allow once');
+			const stopping = h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await expect(settings(h).setEffort(paneId, 'low', 'session')).rejects.toThrow('the agent is stopping');
+			await stopping;
+			expect(controls(h)).toEqual([]);
+		});
+
+		it('resumes a stopped agent for a setting, as a prompt does', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await settings(h).setMode(paneId, 'acceptEdits');
+			expect(starts(h.log)).toHaveLength(2);
+			expect(starts(h.log)[1]).toContain('--resume');
+			expect(info(h, paneId)?.permissionMode).toBe('acceptEdits');
+		});
+
+		it('never asks Claude for its settings or initialization, whose answers carry the account email', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			const sender = settings(h);
+			await sender.setModel(paneId, 'haiku', 'session');
+			await sender.setEffort(paneId, 'low', 'session');
+			await sender.setMode(paneId, 'auto');
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const subtypes = controls(h).map((request) => request.subtype);
+			expect(subtypes).toEqual(['set_model', 'apply_flag_settings', 'set_permission_mode']);
+			expect(subtypes).not.toContain('get_settings');
+			expect(subtypes).not.toContain('initialize');
+		});
+	});
+
+	describe('the context breakdown (#171)', () => {
+		function reader(h: Harness) {
+			const read = h.kind.contextUsage?.(() => h.client);
+			if (!read) throw new Error('no context reader');
+			return read;
+		}
+
+		it('asks with get_context_usage, writes nothing to the conversation, and takes the window', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'hello');
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			const before = stdin(h.log).filter((message) => message.type === 'user').length;
+			const breakdown = await reader(h).read(paneId);
+			expect(breakdown).toMatchObject({ model: 'claude-haiku-5-5', used: '14.6k', window: '1m', percent: '1%' });
+			expect(breakdown.categories).toEqual([
+				{ name: 'System prompt', tokens: '2.3k', share: '0.2%' },
+				{ name: 'Messages', tokens: '107', share: '0.0%' },
+				{ name: 'Autocompact buffer', tokens: '33k', share: '3.3%' },
+				{ name: 'Free space', tokens: '952.4k', share: '95.2%' },
+			]);
+			const requests = stdin(h.log).filter((message) => message.type === 'control_request');
+			expect(requests.at(-1)?.request).toEqual({ subtype: 'get_context_usage' });
+			expect(stdin(h.log).filter((message) => message.type === 'user')).toHaveLength(before);
+			const info = h.kind.native?.watcher(h.connection)?.snapshot(paneId)?.sessionInfo;
+			expect(info?.contextWindow).toEqual({ tokens: 1_000_000, source: 'runtime' });
+			// Two reads are two reports.
+			expect((await reader(h).read(paneId)).id).not.toBe(breakdown.id);
+		});
+
+		it('reads mid-turn, and resumes a stopped agent for it', async () => {
+			const h = harness();
+			const paneId = await started(h);
+			await prompt(h, paneId, 'SLOW');
+			await new Promise((done) => setTimeout(done, 60));
+			expect(status(h, paneId)).toBe('working');
+			await expect(reader(h).read(paneId)).resolves.toMatchObject({ used: '14.6k' });
+			expect(status(h, paneId)).toBe('working');
+			await h.kind.promptSender(() => h.client).interrupt?.(paneId);
+			await waitFor(() => status(h, paneId) === 'done', 'done');
+			await h.kind.createActions(actionHost(h)).closePane(paneId, h.runtimeId);
+			await expect(reader(h).read(paneId)).resolves.toMatchObject({ window: '1m' });
+			expect(starts(h.log)).toHaveLength(2);
+		});
 	});
 
 	it('refuses an answer while the agent is stopping, and shows the request as stopping', async () => {

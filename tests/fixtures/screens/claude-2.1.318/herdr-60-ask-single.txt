@@ -1,0 +1,32 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Pro
+ ▝▝   ▝▝   /tmp/oh-test-narrow-herdr60
+
+
+❯ Use the AskUserQuestion tool now to ask me exactly one
+  single-choice question: 'Which of these hot drinks would
+  you like me to prepare for the long afternoon meeting
+  today?' with header 'Drink' and options 'Tea with milk
+  and a little honey' (description 'A mild black tea,
+  served with milk and a spoon of honey on the side'),
+  'Coffee', 'Water'. After my answer, reply with my answer
+  verbatim. Do nothing else.
+────────────────────────────────────────────────────────────
+ ☐ Drink
+
+│ Which of these hot drinks would you like me to prepare for
+│ the long afternoon meeting today?
+
+❯ 1. Tea with milk and a little honey
+     A mild black tea, served with milk and a spoon of honey
+     on the side
+  2. Coffee
+     Coffee
+  3. Water
+     Hot water
+  4. Type something.
+────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

@@ -22,8 +22,12 @@
  *
  * **Status** comes from the stream, not from a screen:
  *
- * - `working` from a prompt written until its `result` (one per message,
- *   queued ones included);
+ * - `working` from a prompt written until Claude has answered it: every
+ *   prompt goes under its own uuid, and is answered by a `result` that
+ *   lists it in `user_message_uuids` (one result can answer several, when a
+ *   queued prompt is absorbed into the running turn) or ends by its
+ *   `command_lifecycle` (a cancelled one gets no result); a result that
+ *   names nothing answers the oldest;
  * - `blocked` while a `can_use_tool` request waits, with `question` for
  *   `AskUserQuestion` and `permission` for everything else; never `trust`;
  * - `done` once the last turn ended, until a person looks at the agent or
@@ -71,11 +75,15 @@
  */
 
 import type { BlockKind } from '../native/sessionWatcher';
+import type { SessionInfo } from '../native/conversation';
+import { foldContextWindow, foldRuntimeInfo } from './sessionInfo';
 import type { PendingRequest, WaitingAnswer } from '../native/pendingRequest';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { isAbsolute, resolve, type PlatformPath } from 'node:path';
-import { claudeTranscriptFile } from '../native/transcriptSource';
+import { claudeTranscriptFile } from '../agents/claude/paths';
+import { CLAUDE_EFFORTS } from '../agents/claude/transcript';
 import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from '../runtimes';
 import {
 	claudeArgv,
@@ -86,10 +94,13 @@ import {
 	permissionResponse,
 	SESSION_ID_RE,
 	userMessage,
+	type ContextUsage,
+	type SessionControl,
 	type StreamEvent,
 	type ToolPermissionRequest,
 } from './protocol';
 import { ClaudeProcess, type ClaudeSpawn, type ClaudeTimers } from './process';
+import type { PromptImage } from '../native/promptImages';
 import { PROGRAM_STATUS_REPLY, ProgramStatusScanner, type ProgramState, type ProgramStatusScan } from './programStatus';
 import type { LocalSettingsTarget } from './projectRoot';
 import type { PtyPlatform, PtySpawn, PtyTools } from './pty';
@@ -209,6 +220,12 @@ export interface ClaudeAgentView {
 	mode: ClaudeProcessMode;
 	/** Its cards offer only Allow once and Deny ({@link StoredClaudeSession.allowOnceOnly}). */
 	allowOnceOnly?: boolean;
+	/**
+	 * What the headless process said of the session (#160): model, permission
+	 * mode, context window (`./sessionInfo.ts`). Empty while none runs. The
+	 * same object until a field changes.
+	 */
+	sessionInfo: SessionInfo;
 }
 
 /** What changed about an agent, for the scope and the watcher. */
@@ -324,6 +341,19 @@ export const PROMPT_NOT_SENT_KEPT = 'the prompt was not sent: the agent stayed i
  */
 export const ALLOW_ONCE_NO_TERMINAL =
 	"not offered for this agent, which may only be allowed once at a time: Claude's own dialog in the terminal can save a lasting rule";
+/** Said for a session setting while the agent runs in its terminal view (#162). */
+export const SETTINGS_IN_TERMINAL = 'the agent is in its terminal view; change it there';
+/** Said for a session setting while the agent moves between its views. */
+export const SETTINGS_SWITCHING = 'the agent is moving between its views; try again once it has';
+/** Said for the context breakdown while the agent runs in its terminal view (#171). */
+export const CONTEXT_IN_TERMINAL = 'the agent is in its terminal view; run /context there';
+/** Said when Claude answered `get_context_usage` with something else. */
+export const CONTEXT_NOT_ANSWERED = 'Claude did not answer with a breakdown';
+/** Said for a mode change on a row pinned to Allow once (ADR-0008). */
+export const MODE_PINNED = 'this agent asks before every permission (Allow once), so its mode stays';
+/** Said when Claude refused a setting without words of its own. */
+export const SETTING_REFUSED = 'Claude refused it';
+
 /** A native prompt waiting for a switch that a stop overtook. */
 export const PROMPT_NOT_SENT_STOPPED = 'the prompt was not sent: the agent was stopped first';
 
@@ -341,11 +371,11 @@ interface AgentRecord {
 	/** The current process has sent an `init`, so it took its prompts. */
 	initSeen: boolean;
 	/** Prompts written to the current process before its first `init`. */
-	unclaimed: string[];
+	unclaimed: ClaudePrompt[];
 	/** The current process is already the other way of starting; never a third. */
 	retried: boolean;
-	/** Prompts written whose `result` has not come yet. */
-	turns: number;
+	/** The uuids of the prompts written whose answer has not come, oldest first (#158). */
+	open: Set<string>;
 	/** The last turn ended and nobody has looked or prompted since. */
 	finished: boolean;
 	/** Pending `can_use_tool` requests, oldest first (Map keeps insertion order). */
@@ -378,11 +408,18 @@ interface AgentRecord {
 	stopping: Promise<void> | null;
 	/** Why nothing may start this agent's process now; null when anything may. */
 	hold: Hold | null;
+	/** What the current headless process said of the session (#160); empty without one. */
+	info: SessionInfo;
 }
 
 /** A native prompt that waits for its switch: delivered then, or rejected. */
-interface QueuedPrompt {
+/** One prompt as the agent takes it: its text and the images sent with it (#144). */
+export interface ClaudePrompt {
 	text: string;
+	images: readonly PromptImage[];
+}
+
+interface QueuedPrompt extends ClaudePrompt {
 	resolve(): void;
 	reject(error: Error): void;
 }
@@ -423,6 +460,19 @@ function asError(error: unknown): Error {
 
 type Listener = (runtimeId: string, agentId: string, change: ClaudeAgentChange) => void;
 
+/**
+ * Writes one prompt under a fresh uuid and holds the agent `working` until
+ * Claude answers that uuid: a `result` that names it in
+ * `user_message_uuids` (a queued prompt absorbed into the running turn
+ * shares that turn's result), or a `command_lifecycle` end (a queued prompt
+ * cancelled never gets a result). Throws when the line could not be written.
+ */
+function writePrompt(record: AgentRecord, process: ClaudeProcess, prompt: ClaudePrompt): void {
+	const uuid = randomUUID();
+	process.send(userMessage(prompt.text, prompt.images, uuid));
+	record.open.add(uuid);
+}
+
 /** A record for a row, with no process. */
 function newRecord(stored: StoredClaudeSession): AgentRecord {
 	return {
@@ -435,7 +485,7 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		initSeen: false,
 		unclaimed: [],
 		retried: false,
-		turns: 0,
+		open: new Set(),
 		finished: false,
 		pending: new Map(),
 		status: 'stopped',
@@ -453,6 +503,7 @@ function newRecord(stored: StoredClaudeSession): AgentRecord {
 		epoch: 0,
 		stopping: null,
 		hold: null,
+		info: {},
 	};
 }
 
@@ -578,28 +629,28 @@ export class ClaudeAgents {
 	 * process could not start). Never kept for later. Rejects with a readable
 	 * error.
 	 */
-	prompt(runtimeId: string, agentId: string, text: string): Promise<void> {
+	prompt(runtimeId: string, agentId: string, text: string, images: readonly PromptImage[] = []): Promise<void> {
 		try {
-			return this.promptNow(runtimeId, agentId, text);
+			return this.promptNow(runtimeId, agentId, { text, images });
 		} catch (error) {
 			return Promise.reject(asError(error));
 		}
 	}
 
-	private promptNow(runtimeId: string, agentId: string, text: string): Promise<void> {
+	private promptNow(runtimeId: string, agentId: string, prompt: ClaudePrompt): Promise<void> {
 		const record = this.record(runtimeId, agentId);
 		this.refuseHeld(record);
 		if (record.switching === 'tui') throw new Error(SWITCHING_TO_TUI);
 		if (record.switching === 'stream') {
 			// The switch under way delivers it with the others.
 			this.wantStream(record);
-			return this.enqueue(record, text);
+			return this.enqueue(record, prompt);
 		}
 		if (record.tui) {
 			if (record.tui.isStopping) throw new Error(AGENT_STOPPING);
 			const status = this.statusOf(record);
 			if (status === 'working' || status === 'blocked') throw new Error(TUI_BUSY);
-			const sent = this.enqueue(record, text);
+			const sent = this.enqueue(record, prompt);
 			this.wantStream(record);
 			this.settle(runtimeId, record);
 			return sent;
@@ -611,9 +662,8 @@ export class ClaudeAgents {
 		if (!record.process) this.spawn(runtimeId, record);
 		const process = record.process;
 		if (!process?.alive) throw new Error('the agent could not be started');
-		process.send(userMessage(text));
-		if (!record.initSeen) record.unclaimed.push(text);
-		record.turns++;
+		writePrompt(record, process, prompt);
+		if (!record.initSeen) record.unclaimed.push(prompt);
 		record.finished = false;
 		this.update(runtimeId, record);
 		return Promise.resolve();
@@ -626,8 +676,10 @@ export class ClaudeAgents {
 		if (record.stopping) throw new Error(AGENT_STOPPING);
 	}
 
-	private enqueue(record: AgentRecord, text: string): Promise<void> {
-		return new Promise<void>((resolve, reject) => record.queued.push({ text, resolve, reject }));
+	private enqueue(record: AgentRecord, prompt: ClaudePrompt): Promise<void> {
+		return new Promise<void>((resolve, reject) =>
+			record.queued.push({ text: prompt.text, images: prompt.images, resolve, reject }),
+		);
 	}
 
 	/** Rejects every prompt still waiting for a switch: none is ever sent later. */
@@ -644,6 +696,82 @@ export class ClaudeAgents {
 		}
 		if (!record.process?.alive) throw new Error('the agent is not running');
 		record.process.interrupt();
+	}
+
+	/**
+	 * Changes the model, effort or permission mode of the agent's session
+	 * (#162), with the control request over its headless process: session
+	 * only, at any status but while stopping, applying from the next turn.
+	 * Settles once Claude has answered, and rejects with Claude's words when
+	 * it refuses (an unknown mode is `invalid_mode`). What Claude answers
+	 * goes in the session info: the model and mode from the answer itself,
+	 * the effort from the request, since `apply_flag_settings` answers bare.
+	 * A stopped agent is resumed for it, as a prompt resumes it.
+	 */
+	async changeSetting(runtimeId: string, agentId: string, control: SessionControl): Promise<void> {
+		const record = this.record(runtimeId, agentId);
+		this.refuseHeld(record);
+		if (record.switching) throw new Error(SETTINGS_SWITCHING);
+		if (record.tui) throw new Error(SETTINGS_IN_TERMINAL);
+		if (record.process?.isStopping) throw new Error(AGENT_STOPPING);
+		if (control.setting === 'mode' && record.stored.allowOnceOnly) throw new Error(MODE_PINNED);
+		// Claude answers success to an effort it does not know (measured on 2.1.318).
+		if (control.setting === 'effort' && !CLAUDE_EFFORTS.includes(control.effort)) {
+			throw new Error(`Claude has no effort level "${control.effort}"`);
+		}
+		// `--permission-mode manual` starts it; `set_permission_mode` calls it `default`.
+		const sent: SessionControl =
+			control.setting === 'mode' && control.mode === 'manual' ? { setting: 'mode', mode: 'default' } : control;
+		if (!record.process) {
+			// A person asked: a Stop no longer holds it.
+			record.hold = null;
+			this.wantStream(record);
+			this.spawn(runtimeId, record);
+		}
+		const process = record.process;
+		if (!process?.alive) throw new Error('the agent could not be started');
+		const answer = await process.sessionControl(sent);
+		if (!answer.ok) throw new Error(answer.error || answer.errorCode || SETTING_REFUSED);
+		if (control.setting === 'effort' && record.process === process && record.info.effort !== control.effort) {
+			record.info = { ...record.info, effort: control.effort };
+			this.emit(runtimeId, record.stored.id, 'status');
+		}
+	}
+
+	/**
+	 * The context breakdown of the agent's session (#171): the
+	 * `get_context_usage` control request over its headless process, which
+	 * writes nothing to the conversation, at any status but while stopping.
+	 * The window it states goes in the session info, as a result's does. A
+	 * stopped agent is resumed for it, as a prompt resumes it.
+	 */
+	async contextUsage(runtimeId: string, agentId: string): Promise<ContextUsage> {
+		const record = this.record(runtimeId, agentId);
+		this.refuseHeld(record);
+		if (record.switching) throw new Error(SETTINGS_SWITCHING);
+		if (record.tui) throw new Error(CONTEXT_IN_TERMINAL);
+		if (record.process?.isStopping) throw new Error(AGENT_STOPPING);
+		if (!record.process) {
+			// A person asked: a Stop no longer holds it.
+			record.hold = null;
+			this.wantStream(record);
+			this.spawn(runtimeId, record);
+		}
+		const process = record.process;
+		if (!process?.alive) throw new Error('the agent could not be started');
+		const answer = await process.contextUsage();
+		if (!answer.ok) throw new Error(answer.error || answer.errorCode || CONTEXT_NOT_ANSWERED);
+		const usage = answer.context;
+		if (!usage) throw new Error(CONTEXT_NOT_ANSWERED);
+		if (record.process === process) {
+			const windows = usage.model && usage.maxTokens > 0 ? { [usage.model]: usage.maxTokens } : {};
+			const info = foldContextWindow(record.info, windows);
+			if (info !== record.info) {
+				record.info = info;
+				this.emit(runtimeId, record.stored.id, 'status');
+			}
+		}
+		return usage;
 	}
 
 	/** Answers a pending permission request. Throws a readable error. */
@@ -722,7 +850,7 @@ export class ClaudeAgents {
 		}
 		const stops: Promise<void>[] = [];
 		const process = record.process;
-		if (process) stops.push(process.stop({ busy: record.turns > 0, pending: [...record.pending.keys()] }));
+		if (process) stops.push(process.stop({ busy: record.open.size > 0, pending: [...record.pending.keys()] }));
 		if (record.tui) stops.push(record.tui.stop());
 		if (stops.length === 0) return;
 		const stopping: Promise<void> = Promise.all(stops).then(
@@ -885,7 +1013,12 @@ export class ClaudeAgents {
 	 * that attempt never read, written again here. Returns how many of them
 	 * were written. Throws while the agent may not start.
 	 */
-	private spawn(runtimeId: string, record: AgentRecord, how?: AgentRecord['spawnedWith'], replay: string[] = []): number {
+	private spawn(
+		runtimeId: string,
+		record: AgentRecord,
+		how?: AgentRecord['spawnedWith'],
+		replay: ClaudePrompt[] = [],
+	): number {
 		this.mayStart(record);
 		const setup = this.setups.get(runtimeId);
 		if (!setup) throw new Error('the runtime has not found claude yet');
@@ -920,8 +1053,10 @@ export class ClaudeAgents {
 		record.spawnedWith = resume ? 'resume' : 'session-id';
 		record.initSeen = false;
 		record.unclaimed = [];
+		// A new process says the session's settings afresh.
+		record.info = {};
 		record.retried = how !== undefined;
-		record.turns = 0;
+		record.open.clear();
 		record.finished = false;
 		record.pending.clear();
 		process.start();
@@ -929,15 +1064,14 @@ export class ClaudeAgents {
 		if (record.process !== process) return 0;
 		this.live.set(process, () => process.stop({ busy: true, pending: [] }));
 		let written = 0;
-		for (const text of replay) {
+		for (const prompt of replay) {
 			try {
-				process.send(userMessage(text));
+				writePrompt(record, process, prompt);
 			} catch {
 				break;
 			}
 			written++;
-			record.unclaimed.push(text);
-			record.turns++;
+			record.unclaimed.push(prompt);
 		}
 		this.update(runtimeId, record);
 		return written;
@@ -969,6 +1103,17 @@ export class ClaudeAgents {
 
 	private onEvent(runtimeId: string, record: AgentRecord, process: ClaudeProcess, event: StreamEvent): void {
 		if (record.process !== process) return;
+		const info = foldRuntimeInfo(record.info, event);
+		const moved = info !== record.info;
+		record.info = info;
+		this.onStreamEvent(runtimeId, record, process, event);
+		// The views hear of it as of a status: a result has told them already.
+		if (moved && event.type !== 'result' && record.process === process) {
+			this.emit(runtimeId, record.stored.id, 'status');
+		}
+	}
+
+	private onStreamEvent(runtimeId: string, record: AgentRecord, process: ClaudeProcess, event: StreamEvent): void {
 		switch (event.type) {
 			case 'init': {
 				record.initSeen = true;
@@ -1002,15 +1147,29 @@ export class ClaudeAgents {
 					this.update(runtimeId, record);
 					return;
 				}
-				record.turns = Math.max(0, record.turns - 1);
+				if (event.answered) {
+					for (const uuid of event.answered) record.open.delete(uuid);
+				} else {
+					// A result that names nothing answers the oldest, one per message.
+					const oldest = record.open.values().next();
+					if (!oldest.done) record.open.delete(oldest.value);
+				}
 				if (!event.isError) this.markStarted(runtimeId, record);
-				if (record.turns === 0) record.finished = true;
+				if (record.open.size === 0) record.finished = true;
 				if (event.isError && !event.terminalReason.startsWith('aborted')) {
 					const reason = event.terminalReason ? ` (${event.terminalReason})` : '';
 					this.host.notice(
 						`Gjetr: ${record.stored.name || 'Claude'}: ${event.message || event.subtype || 'the turn failed'}${reason}`,
 					);
 				}
+				this.update(runtimeId, record);
+				return;
+			}
+			case 'lifecycle': {
+				// A message cancelled while queued never gets a result; one that
+				// completed has had it already, and is gone by now.
+				if (!event.ended || !record.open.delete(event.uuid)) return;
+				if (record.open.size === 0) record.finished = true;
 				this.update(runtimeId, record);
 				return;
 			}
@@ -1047,9 +1206,10 @@ export class ClaudeAgents {
 		this.live.delete(process);
 		if (record.process !== process) return;
 		record.process = null;
-		record.turns = 0;
+		record.open.clear();
 		record.finished = false;
 		record.pending.clear();
+		record.info = {};
 		// Claude refused how it was started: the session id is taken (the row
 		// had started after all), or there is no conversation under it. Started
 		// once more the other way, with what the refused process never read.
@@ -1087,7 +1247,7 @@ export class ClaudeAgents {
 		}
 		if (!record.process?.alive) return 'stopped';
 		if (record.pending.size > 0) return 'blocked';
-		if (record.turns > 0) return 'working';
+		if (record.open.size > 0) return 'working';
 		return record.finished ? 'done' : 'idle';
 	}
 
@@ -1241,7 +1401,7 @@ export class ClaudeAgents {
 				runtimeId,
 				record,
 				undefined,
-				queued.map((prompt) => prompt.text),
+				queued.map((prompt) => ({ text: prompt.text, images: prompt.images })),
 			);
 		} catch (error) {
 			const message = asError(error).message;
@@ -1433,6 +1593,7 @@ export class ClaudeAgents {
 			statusSeq: record.statusSeq,
 			started: record.stored.started === true,
 			transcriptPath: this.transcriptFile(runtimeId, record),
+			sessionInfo: record.info,
 			mode: this.modeOf(record),
 		};
 	}
@@ -1454,6 +1615,7 @@ export class ClaudeAgents {
 			statusSeq: record.statusSeq,
 			started: record.stored.started === true,
 			transcriptPath: this.transcriptFile(runtimeId, record),
+			sessionInfo: record.info,
 			mode: this.modeOf(record),
 		};
 	}

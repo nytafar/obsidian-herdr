@@ -37,8 +37,12 @@ import { primeHerdrScope, startHerdrStream } from '../herdr/connect';
 import { defaultDeps as sshDefaultDeps, SshTunnel, terminalArgvPrefix, type RunCommand } from '../herdr/ssh';
 import { probeLocal, probeOverSsh } from '../agents/probe';
 import { clientKeySender, clientPromptSender } from '../native/promptSender';
+import { herdrAgentStatus, herdrScreenAccess } from '../native/screenAccess';
+import { screenSettingsSender } from '../native/screenSettings';
+import { gatePromptSender } from '../native/paneGate';
 import { LocalTranscriptSource } from '../native/transcriptSource';
-import { herdrSessionWatcher } from '../herdr/sessionWatcher';
+import { herdrSessionWatcher, sessionBelongsTo } from '../herdr/sessionWatcher';
+import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
 import { TabLabelCache } from '../tabLabels';
 import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
 
@@ -94,6 +98,26 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 	};
 	/** One for every local runtime of this kind: they all read this machine's files. */
 	const localTranscripts = new LocalTranscriptSource();
+	/**
+	 * Each local connection's pane Claude reader (issue #132), shared by its
+	 * session watcher and its `/` list. A connection over SSH has none: its
+	 * panes' processes are on another machine, and its native view is off.
+	 */
+	const paneClaude = new WeakMap<HerdrClient, PaneClaudeResolver>();
+	const paneCatalogs = new WeakMap<HerdrClient, HerdrCommandCatalog>();
+	const resolverFor = (connection: {
+		endpoint: Endpoint;
+		client: HerdrClient;
+	}): PaneClaudeResolver | null => {
+		if (connection.endpoint.runtime.target !== 'local') return null;
+		const { client } = connection;
+		let resolver = paneClaude.get(client);
+		if (!resolver) {
+			resolver = new PaneClaudeResolver(localPaneClaudeDeps((paneId) => client.paneProcessInfo(paneId), home()));
+			paneClaude.set(client, resolver);
+		}
+		return resolver;
+	};
 	return {
 		kind: 'herdr',
 		unavailable: null,
@@ -102,10 +126,28 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		nativeUnavailable: null,
 		native: {
 			transcriptAccess: (endpoint) => (endpoint.runtime.target === 'local' ? 'local' : null),
-			watcher: (connection) => herdrSessionWatcher(connection),
+			watcher: (connection) => herdrSessionWatcher(connection, resolverFor(connection)),
 			// A local file needs no connection, so a tab on a local herdr keeps
 			// following its transcript while another runtime is active.
 			transcripts: (endpoint) => (endpoint.runtime.target === 'local' ? localTranscripts : null),
+			// A Claude pane's: its own Claude's configuration folder, read over
+			// the connection; without it, this machine's `~/.claude` as before.
+			// Any other agent's is its format's, read here (ADR-0010).
+			commandCatalog: (_endpoint, connection, agent) => {
+				if (agent !== 'claude') return null;
+				const resolver = connection ? resolverFor(connection) : null;
+				if (!connection || !resolver) return null;
+				let catalog = paneCatalogs.get(connection.client);
+				if (!catalog) {
+					const { scope } = connection;
+					catalog = new HerdrCommandCatalog(resolver, (paneId) => {
+						const session = scope.paneInfo(paneId)?.agent_session;
+						return sessionBelongsTo(scope.get(paneId)?.agent, session?.agent) ? (session?.value ?? '') : '';
+					});
+					paneCatalogs.set(connection.client, catalog);
+				}
+				return catalog;
+			},
 		},
 		connection: {
 			discover: (endpoint) => {
@@ -200,8 +242,25 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 					: await probeLocal(programs, { extraPath: host.extraPath(), vaultRoot: host.vaultPath() }, deps());
 			return { ...probe, herdrVersion: connection.client.serverVersion };
 		},
-		promptSender: (client) => clientPromptSender(client),
+		// Behind the pane gate: nothing is typed into a picker the session bar
+		// opened (review of #169). The settings driver sends unwrapped.
+		promptSender: (client) => gatePromptSender(clientPromptSender(client), () => client()),
 		keySender: (client) => clientKeySender(client),
+		screen: (client) => herdrScreenAccess(client),
+		// The session bar's pickers (#169, #170): Claude's own pickers and
+		// footer on the pane's screen, for an agent whose format reads them.
+		sessionSettings: (client, format) =>
+			format?.screenSettings
+				? screenSettingsSender({
+						screen: herdrScreenAccess(client),
+						prompt: clientPromptSender(client),
+						reader: format.screenSettings,
+						status: herdrAgentStatus(client),
+						owner: () => client(),
+						models: format.models,
+						modeLabels: format.modeLabels,
+					})
+				: null,
 		// One `tab.list` cache per connection (issue #43), over its own client
 		// and scope.
 		createTabLabels: (connection, alive) => {

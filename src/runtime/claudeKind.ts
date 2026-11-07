@@ -40,6 +40,7 @@ import { expandHome, resolveHerdrBinary, type DiscoveryResult } from '../herdr/b
 import { ClaudeActions } from '../claude/actions';
 import { ALLOW_ONCE_NO_TERMINAL, ClaudeAgents, type ClaudeQuestion, type StoredClaudeSession } from '../claude/agents';
 import type { ClaudeSpawn, ClaudeTimers } from '../claude/process';
+import type { ContextUsage } from '../claude/protocol';
 import {
 	defaultPtySpawn,
 	defaultPtyTools,
@@ -52,8 +53,10 @@ import { ClaudeShells, isShellId } from '../claude/shells';
 import { ClaudeTerminalSession } from '../claude/terminalSession';
 import { ClaudeClient, ClaudeScope, NoTabLabels } from '../claude/scope';
 import { localSettingsTarget, nodeProjectRootEnv, type LocalSettingsTarget } from '../claude/projectRoot';
+import { contextBreakdownOf } from '../claude/sessionInfo';
 import { claudeSessionWatcher } from '../claude/sessionWatcher';
 import { NO_CONNECTION_MESSAGE } from '../native/promptSender';
+import type { SettingScope } from '../native/sessionSettings';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { CLAUDE_PERMISSION_MODE_LABELS, normalizePermissionMode } from '../runtimes';
@@ -243,6 +246,8 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 	const localTranscripts = new LocalTranscriptSource();
 	const watchers = new WeakMap<ClaudeScope, SessionWatcher>();
 	const refuse = (): Error => new Error(`The terminal view is ${terminalUnavailable ?? CLAUDE_TERMINAL_UNAVAILABLE}.`);
+	/** Each breakdown read here gets its own id. */
+	let contextReads = 0;
 	return {
 		kind: 'claude',
 		agents,
@@ -334,11 +339,20 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		},
 		createActions: (actionHost) => new ClaudeActions(actionHost, agents, shells),
 		promptSender: (client) => ({
-			async send(paneId, text) {
+			// Images go as stream-json image blocks (#144); the TUI, when it
+			// is up, hands the prompt to the headless process like any other.
+			// A held row and Send now (#159) are the same line: a turn that
+			// runs takes it in at its next tool boundary, under its uuid (#158).
+			async send(paneId, text, images = []) {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
-				await connected.request('agent.prompt', { target: paneId, text });
+				await connected.request('agent.prompt', {
+					target: paneId,
+					text,
+					...(images.length ? { images: [...images] } : {}),
+				});
 			},
+			imagesUnavailable: () => null,
 			async interrupt(paneId) {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
@@ -352,6 +366,44 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 				const connected = client();
 				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
 				await connected.request('agent.respond', { target: paneId, request: requestId, answer });
+			},
+		}),
+		// The session bar's pickers (#162): control requests over the agent's
+		// own process, session only, mid-turn too (they apply from the next
+		// turn). The default is never saved from here: how a `/model <alias>`
+		// user message behaves over stream-json is not measured.
+		sessionSettings: (client) => {
+			const request = async (method: string, params: Record<string, string>): Promise<void> => {
+				const connected = client();
+				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+				await connected.request(method, params);
+			};
+			const sessionOnly = (scope: SettingScope): void => {
+				if (scope !== 'session') throw new Error('Claude run by Obsidian changes this session only');
+			};
+			return {
+				scopes: ['session'],
+				settings: ['model', 'effort', 'mode'],
+				midTurn: true,
+				async setModel(paneId, model, scope) {
+					sessionOnly(scope);
+					await request('agent.set_model', { target: paneId, model });
+				},
+				async setEffort(paneId, effort, scope) {
+					sessionOnly(scope);
+					await request('agent.set_effort', { target: paneId, effort });
+				},
+				setMode: (paneId, mode) => request('agent.set_permission_mode', { target: paneId, mode }),
+			};
+		},
+		// The readout's breakdown (#171): `get_context_usage`, which writes
+		// nothing to the conversation, where herdr and herdr-core send `/context`.
+		contextUsage: (client) => ({
+			async read(paneId) {
+				const connected = client();
+				if (!connected) throw new Error(NO_CONNECTION_MESSAGE);
+				const usage = await connected.request<ContextUsage>('agent.context_usage', { target: paneId });
+				return contextBreakdownOf(usage, `get_context_usage-${++contextReads}`);
 			},
 		}),
 		createTabLabels: () => new NoTabLabels(),

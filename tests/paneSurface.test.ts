@@ -17,7 +17,7 @@ import {
 	surfaceKindFor,
 	type PaneSurface,
 	type PaneSurfaceKind,
-} from '../src/native/surface';
+} from '../src/native/paneSurface';
 import { effectiveEngine } from '../src/native/renderMode';
 import type { PaneIdentity, TerminalEffect } from '../src/views/paneTerminal';
 

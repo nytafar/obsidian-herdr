@@ -21,30 +21,52 @@
  * status as `unknown`, which is also what disables the prompt box. It follows
  * again when its own runtime comes back.
  *
- * Content comes from the transcript source, meaning from the reducer, and
+ * Content comes from the transcript source, meaning from the parser, and
  * status from the watcher's transitions; none of those three knows a pane
  * exists.
+ *
+ * **Read with the pane's agent's format** (ADR-0010): the watcher names the
+ * agent, and its `AgentFormat` (`../agents/format.ts`) is the parser, the
+ * transcript's location when the runtime names no path, the images, the
+ * background reports and the plan file. Nothing here knows which agent it
+ * is; a pane whose agent changes is a new session, read from the start.
+ *
+ * **A page at a time** (#152): the state holds the session's newest turns,
+ * within a page of turns and transcript bytes (`TurnWindow`), and names the
+ * earlier ones; what a session costs is a page, not its length. "Load
+ * earlier turns" ({@link SessionModel.loadEarlier}) reads the file again
+ * beside the tail with one more page and takes the tail's place once it has
+ * caught up, so nothing is shown twice or lost between the two.
  *
  * No Obsidian here: the view layer subscribes, and `src/main.ts` holds the
  * registry and hands it each runtime's watcher and source through its kind.
  */
 
 import {
+	attachSubagentProgress,
 	attachSubagentReport,
-	emptyTranscript,
-	lastAssistantText,
-	reduce,
-	type TaskNotification,
-	type TranscriptState,
-} from './reducer';
-import { toolKind } from './toolCalls';
-import {
-	transcriptPath,
-	type TranscriptSource,
-	type TranscriptStream,
-} from './transcriptSource';
+	DEFAULT_PAGE,
+	earlierTurnCount,
+	emptyConversation,
+	markLost,
+	mergeSessionInfo,
+	previewTail,
+	turnWindow,
+	type ConversationState,
+	type TurnPage,
+	type ImageBytes,
+	type ImageEntry,
+	type ReduceResult,
+	type SessionInfo,
+	type ToolEntry,
+} from './conversation';
+import type { TranscriptSource, TranscriptStream } from './transcriptSource';
 import type { BlockKind, SessionWatcher, Unsubscribe } from './sessionWatcher';
 import type { PendingRequest } from './pendingRequest';
+import { SubagentFollower, type SubagentTimers, type SubagentTranscript } from './subagents';
+import { agentFormat, type AgentFormat, type PlanReader } from '../agents/format';
+import { DEFAULT_AGENT_KIND } from '../agents/catalog';
+import { clearTimer, setTimer } from '../timers';
 import type { AgentStatus } from '../herdr/types.gen';
 
 export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './sessionWatcher';
@@ -53,8 +75,19 @@ export type { BlockKind, PaneSnapshot, SessionWatcher, Unsubscribe } from './ses
 export interface SessionChange {
 	/** Turns created or changed, in order. Empty when only the status moved. */
 	changedTurnIds: string[];
+	/**
+	 * Turns that are gone without a reset: what a rewind or a re-sent prompt
+	 * left behind (#131). Absent when none are.
+	 */
+	removedTurnIds?: string[];
 	/** The whole view is stale: reloaded, replaced, or the session rotated. */
 	reset: boolean;
+	/**
+	 * With `reset`: the same session, with earlier turns loaded (#152). The
+	 * reader is somewhere in it, so the view keeps their place rather than
+	 * going to the end.
+	 */
+	earlier?: boolean;
 }
 
 /**
@@ -63,7 +96,19 @@ export interface SessionChange {
  * satisfies.
  */
 export interface SessionModelView {
-	readonly state: TranscriptState;
+	readonly state: ConversationState;
+	/**
+	 * The format the session is read with: the pane's agent's (ADR-0010).
+	 * Null while the pane has none the model can read; optional so a fake need
+	 * not say it, and a view without one words what it shows for any agent.
+	 */
+	readonly format?: AgentFormat | null;
+	/**
+	 * What the session is running with (#110, #111): the format's reading of the
+	 * records, with the runtime's own word put over it per field. Model,
+	 * effort, usage. Optional so a fake need not say it.
+	 */
+	readonly sessionInfo?: SessionInfo;
 	/** The transcript being shown, or null while the pane has no session yet. */
 	readonly path: string | null;
 	/**
@@ -80,6 +125,18 @@ export interface SessionModelView {
 	 * so a fake need not say it; a missing value is no problem.
 	 */
 	readonly readProblem?: string | null;
+	/**
+	 * Reads the transcript again from its start, on a fresh tail, which is what
+	 * the read-problem line's "Try again" does (#146). Optional so a fake need
+	 * not have it; a model without one offers no retry.
+	 */
+	retryRead?(): void;
+	/**
+	 * The bytes of an image a prompt carried, read from the transcript when a
+	 * view shows it (#144), or null. Optional so a fake need not read any; a
+	 * view without it shows the image's label alone.
+	 */
+	readImage?(image: ImageEntry): Promise<ImageBytes | null>;
 	readonly agentSession: string;
 	readonly agentStatus: AgentStatus;
 	/**
@@ -92,6 +149,15 @@ export interface SessionModelView {
 	 * reports one (ADR-0007); null otherwise. Optional so a fake need not say it.
 	 */
 	readonly request?: PendingRequest | null;
+	/**
+	 * The plan Claude is waiting to have approved, read from its plan file
+	 * (#148), while the pane is blocked in plan mode on no request of the
+	 * runtime's own; null otherwise, and until the file has been read. Claude
+	 * writes `ExitPlanMode` to the transcript only with its answer, so this is
+	 * where a herdr or herdr-core pane's plan comes from. Optional so a fake
+	 * need not say it.
+	 */
+	readonly plan?: string | null;
 	/**
 	 * Whether the model's own runtime is the connected one. False while another
 	 * runtime is active or none is: the content stays as it was, the status is
@@ -112,6 +178,29 @@ export interface SessionModelView {
 	 * block the view answers by itself.
 	 */
 	claimBlock(toolUseId: string): boolean;
+	/**
+	 * Says a visible view shows the session, until the returned function is
+	 * called (#147): only then are its subagents' transcripts followed, and
+	 * their progress written onto the calls they hang under
+	 * (`ToolEntry.subagent`). Optional so a fake need not follow any.
+	 */
+	showSubagents?(): Unsubscribe;
+	/**
+	 * The transcript of the subagent shown under a call, followed while it is
+	 * held, or null when there is none to follow (#147). Optional so a fake
+	 * need not have any.
+	 */
+	subagentTranscript?(callId: string): SubagentTranscript | null;
+	/**
+	 * Holds one more page of the session's turns (#152): the transcript is
+	 * read again from its start beside the tail, and once it has caught up the
+	 * state is swapped for one with the earlier turns, as a `reset` change with
+	 * `earlier` set. What is not held is `earlierTurnCount(state)`. Optional so
+	 * a fake need not load any.
+	 */
+	loadEarlier?(): void;
+	/** Whether a {@link loadEarlier} is reading. Optional, like it. */
+	readonly loadingEarlier?: boolean;
 	on(listener: (change: SessionChange) => void): Unsubscribe;
 }
 
@@ -144,14 +233,86 @@ export interface SessionModelOptions {
 	 * machine's.
 	 */
 	home?: string;
+	/**
+	 * Transcripts a model stopped following, with how many lines it had read
+	 * of each (#135), shared by the registry's models. The agent that wrote
+	 * them went away, or the session moved on, so if one is followed again —
+	 * Claude resumed on it — what was running in its first lines is lost.
+	 */
+	ended?: Map<string, number>;
+	/**
+	 * The format an agent's sessions are read with, or null for an agent this
+	 * build reads none of. The agent seam's registry when not given
+	 * (`../agents/format.ts`); a test gives its own.
+	 */
+	formats?: (agent: string) => AgentFormat | null;
+	/**
+	 * How long subagents stay followed after the last view showing them went
+	 * (#147), so a tab switched away and back does not read them again.
+	 */
+	subagentGraceMs?: number;
+	/** The timers subagents are followed with; the real ones when left out. */
+	subagentTimers?: SubagentTimers;
+	/**
+	 * How much of a session one page holds (#152): {@link DEFAULT_PAGE} when
+	 * left out. A model holds one page, and one more per {@link
+	 * SessionModel.loadEarlier}.
+	 */
+	page?: TurnPage;
 }
+
+/**
+ * A read of the transcript from its start, beside the tail, holding one more
+ * page (#152). It folds what the tail folds; once it has read as far, it
+ * takes the tail's place.
+ */
+interface EarlierLoad {
+	stream: TranscriptStream | null;
+	state: ConversationState;
+	/** Lines it has folded. */
+	lines: number;
+	/** The unended line after them, as it last said. */
+	tail: string;
+	/** Lines it folded that the tail had not yet when it caught up, for the plan reader. */
+	ahead: string[];
+	/** Whether it has read as far as the tail. */
+	caughtUp: boolean;
+	/** Whether it has taken the tail's place, and what it delivers is the tail's. */
+	adopted: boolean;
+}
+
+/** How long subagents stay followed once no view shows them. */
+const SUBAGENT_GRACE_MS = 10_000;
 
 /** One pane's transcript, reduced, kept current. */
 export class SessionModel implements SessionModelView {
 	readonly endpointId: string;
 	readonly paneId: string;
 	private readonly options: SessionModelOptions;
-	private transcript: TranscriptState = emptyTranscript();
+	/** The format of the session being shown: the pane's agent's (ADR-0010). */
+	/**
+	 * Undefined until a pane has been read; null for a pane whose agent has
+	 * no format (ADR-0010).
+	 */
+	private currentFormat: AgentFormat | null | undefined = undefined;
+	/**
+	 * What the runtime itself said of the session when the model last read the
+	 * pane (a follow or a status transition), put over the format's reading.
+	 */
+	private infoOverlay: SessionInfo | undefined = undefined;
+	/**
+	 * The transcript as its ended lines say, folded in place (#138). Everything
+	 * the model decides — reports, subagents, what is lost, the plan — reads
+	 * this; only the view reads {@link state}, which may preview over it.
+	 */
+	private transcript: ConversationState = emptyConversation();
+	/**
+	 * The last line of the file being shown as the tail last saw it, written
+	 * but not yet ended by its newline; '' when the file ends in one (#138).
+	 */
+	private tailLine = '';
+	/** {@link tailLine} folded over a fork of {@link transcript}, or null while it shows nothing new. */
+	private preview: ReduceResult | null = null;
 	private readonly listeners = new Set<(change: SessionChange) => void>();
 	private currentPath: string | null = null;
 	private session = '';
@@ -188,6 +349,43 @@ export class SessionModel implements SessionModelView {
 	private generation = 0;
 	/** Calls whose report is being read, so a second batch does not read it twice. */
 	private readingReports = new Set<string>();
+	/** Lines of the current file reduced so far (#135). */
+	private linesRead = 0;
+	/** The one read of the transcript in flight for images (#144); null between reads. */
+	private imageRead: { path: string; generation: number; text: Promise<string | null> } | null = null;
+	/**
+	 * Lines at the start of the current file that an agent now gone wrote, 0
+	 * when none are known to be (#135): what was running in them is lost.
+	 */
+	private lostBefore = 0;
+	/** Whether the runtime says the agent stopped while its session stays (#135). */
+	private stopped = false;
+	/**
+	 * Where the session keeps its plan, from the lines read so far (#148), for
+	 * an agent whose format has a plan file; null for any other.
+	 */
+	private planReader: PlanReader | null = null;
+	/** The plan file's text while it is wanted and has been read, else null. */
+	private planText: string | null = null;
+	/**
+	 * Which plan file read is current: the file generation and the plan file's
+	 * path, or empty while no plan is wanted. A read whose key is no longer
+	 * this one is dropped, and a block that ends empties it, so the next block
+	 * reads the file again (a rejected plan comes back revised).
+	 */
+	private planKey = '';
+	/** The subagents of the file being shown, while any are followed (#147). */
+	private follower: SubagentFollower | null = null;
+	/** Views that show the session now (#147). */
+	private viewers = 0;
+	/** Whether subagents are followed: a view shows them, or did a moment ago. */
+	private showingSubagents = false;
+	/** The wait before subagents stop being followed, once no view shows them. */
+	private subagentGrace: unknown = null;
+	/** How many pages of the session are held (#152); back to one for every new file. */
+	private pages = 1;
+	/** The read that loads earlier turns, while one runs (#152). */
+	private earlierLoad: EarlierLoad | null = null;
 
 	constructor(options: SessionModelOptions) {
 		this.options = options;
@@ -218,9 +416,27 @@ export class SessionModel implements SessionModelView {
 		this.disconnected();
 	}
 
-	/** The reduced transcript as it stands. Never mutated in place. */
-	get state(): TranscriptState {
-		return this.transcript;
+	/**
+	 * The reduced transcript as the view should show it: what the ended lines
+	 * say, with the line still being written previewed over it when that line
+	 * is a whole record (#138). Folded in place, so read it when a change is
+	 * emitted rather than keeping it.
+	 */
+	get state(): ConversationState {
+		return this.preview?.state ?? this.transcript;
+	}
+
+	/**
+	 * The format the session is read with: undefined while no pane has been
+	 * read (the agent is not known yet), null for an agent with no format.
+	 */
+	get format(): AgentFormat | null | undefined {
+		return this.currentFormat;
+	}
+
+	/** What the records read so far say of the session, the runtime's own word put over it per field. */
+	get sessionInfo(): SessionInfo {
+		return mergeSessionInfo(this.currentFormat?.sessionInfo(this.transcript) ?? {}, this.infoOverlay);
 	}
 
 	/** The file being shown, or null while the pane has no session yet. */
@@ -259,6 +475,10 @@ export class SessionModel implements SessionModelView {
 		return this.pending;
 	}
 
+	get plan(): string | null {
+		return this.planText;
+	}
+
 	get connected(): boolean {
 		return this.watcher !== null;
 	}
@@ -279,17 +499,149 @@ export class SessionModel implements SessionModelView {
 		return true;
 	}
 
+	/**
+	 * The bytes of an image a prompt carried (#144), read from the transcript
+	 * when a view shows it, never kept here: the state holds where each image
+	 * is, not what it is. The reads a draw starts at once share one read of
+	 * the file, which is dropped as soon as they have their images. Null when
+	 * the session moved on meanwhile or the image is not there.
+	 */
+	async readImage(image: ImageEntry): Promise<ImageBytes | null> {
+		const path = this.currentPath;
+		const source = this.streamSource ?? this.source;
+		if (!image.record || !path || !source) return null;
+		const generation = this.generation;
+		let read = this.imageRead;
+		if (!read || read.path !== path || read.generation !== generation) {
+			const text = source.read(path).catch(() => null);
+			read = { path, generation, text };
+			this.imageRead = read;
+			const started = read;
+			void text.then(() => {
+				if (this.imageRead === started) this.imageRead = null;
+			});
+		}
+		const text = await read.text;
+		if (generation !== this.generation || !text) return null;
+		return this.currentFormat?.readImage(text, image) ?? null;
+	}
+
+	showSubagents(): Unsubscribe {
+		this.viewers++;
+		this.setShowingSubagents(true);
+		let live = true;
+		return () => {
+			if (!live) return;
+			live = false;
+			this.viewers--;
+			if (this.viewers > 0) return;
+			const grace = this.options.subagentGraceMs ?? SUBAGENT_GRACE_MS;
+			if (grace <= 0) {
+				this.setShowingSubagents(false);
+				return;
+			}
+			this.clearSubagentGrace();
+			this.subagentGrace = this.subagentTimers().set(() => {
+				this.subagentGrace = null;
+				if (this.viewers === 0) this.setShowingSubagents(false);
+			}, grace);
+		};
+	}
+
+	subagentTranscript(callId: string): SubagentTranscript | null {
+		return this.subagentFollower()?.open(callId) ?? null;
+	}
+
+	get loadingEarlier(): boolean {
+		return this.earlierLoad !== null;
+	}
+
+	/**
+	 * Holds one more page of the session (#152). Nothing the tail holds is
+	 * thrown away meanwhile: the file is read again beside it, through the same
+	 * source, in the source's own pieces, and the state is swapped once that
+	 * read has folded as many lines as the tail has. Both read the same lines
+	 * in the same order, and a window drops turns at the line that fills it,
+	 * so the two agree on everything but how much is held.
+	 */
+	loadEarlier(): void {
+		if (this.earlierLoad || !this.stream || !this.streamSource || !this.currentPath) return;
+		if (earlierTurnCount(this.transcript) === 0) return;
+		this.pages++;
+		this.startEarlier();
+		// Said once, however the read went: loading, or loaded at once.
+		if (this.earlierLoad) this.emit({ changedTurnIds: [], reset: false });
+	}
+
+	/** Opens the read that holds {@link pages} pages, beside the tail (#152). */
+	private startEarlier(): void {
+		const source = this.streamSource;
+		const path = this.currentPath;
+		if (!source || !path) return;
+		const load: EarlierLoad = {
+			stream: null,
+			state: this.emptyState(),
+			lines: 0,
+			tail: '',
+			ahead: [],
+			caughtUp: false,
+			adopted: false,
+		};
+		this.earlierLoad = load;
+		const stream = source.open(
+			path,
+			(lines, restart, tail) => {
+				// Once it has caught up, it is the tail.
+				if (load.adopted) this.onLines(lines, restart === true, tail ?? '');
+				else this.onEarlierLines(load, lines, restart === true, tail ?? '');
+			},
+			{
+				onProblem: (problem) => {
+					if (load.adopted) this.onProblem(problem);
+					else if (problem !== null && this.earlierLoad === load) this.cancelEarlier(true);
+				},
+			},
+		);
+		// A source may deliver while it opens, and a restart may have ended the read.
+		if (this.earlierLoad !== load) {
+			stream.close();
+			return;
+		}
+		load.stream = stream;
+		if (load.caughtUp) this.finishEarlier(load);
+	}
+
 	/** Subscribes to state changes. Safe to call twice; unsubscribe is idempotent. */
 	on(listener: (change: SessionChange) => void): Unsubscribe {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
 
+	/**
+	 * Drops the tail and its problem and follows the pane again from scratch:
+	 * the source and the watcher as they are now, the file from its start
+	 * (#146). A tail with limits of its own (herdr-core) also looks again on
+	 * its own poll; this is the reader not wanting to wait for it.
+	 */
+	retryRead(): void {
+		// Not connected: nothing would reopen it, and a local tail that still
+		// follows would be lost for nothing.
+		if (!this.watcher) return;
+		const hadProblem = this.problem !== null;
+		this.closeStream();
+		this.rebind();
+		// A source that is gone reopens nothing and says nothing; the problem
+		// line it cleared is still news to the view.
+		if (hadProblem && !this.stream) this.emit({ changedTurnIds: [], reset: false });
+	}
+
 	/** Closes the tail and drops every subscriber, here and in the runtime. */
 	dispose(): void {
 		this.unbind();
 		this.closeStream();
+		this.clearSubagentGrace();
 		this.listeners.clear();
+		this.planKey = '';
 	}
 
 	/** Subscribes to this runtime's watcher as it is now, dropping any older one. */
@@ -304,6 +656,20 @@ export class SessionModel implements SessionModelView {
 			watcher.onStatus((paneId, status, kind) => this.onStatusChanged(paneId, status, kind)),
 			watcher.onMembership((paneId) => this.onPaneMembership(paneId)),
 		);
+		const offInfo = watcher.onSessionInfo?.((paneId) => this.onSessionInfo(paneId));
+		if (offInfo) this.bound.push(offInfo);
+	}
+
+	/**
+	 * The runtime's own word on the session moved with nothing else (#160):
+	 * the views read {@link sessionInfo} again on the emit.
+	 */
+	private onSessionInfo(paneId: string): void {
+		if (paneId !== this.paneId) return;
+		const overlay = this.watcher?.snapshot(paneId)?.sessionInfo;
+		if (overlay === this.infoOverlay) return;
+		this.infoOverlay = overlay;
+		this.emit({ changedTurnIds: [], reset: false });
 	}
 
 	private unbind(): void {
@@ -312,6 +678,9 @@ export class SessionModel implements SessionModelView {
 	}
 
 	private closeStream(): void {
+		this.cancelEarlier(false);
+		// The subagents were read through the same source.
+		this.dropSubagents();
 		this.stream?.close();
 		this.stream = null;
 		this.streamSource = null;
@@ -331,6 +700,7 @@ export class SessionModel implements SessionModelView {
 		this.block = null;
 		this.pending = null;
 		this.blockClaim = null;
+		this.refreshPlan();
 		// Said every time, cheaply: the view's status line reads `connected`.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -362,13 +732,20 @@ export class SessionModel implements SessionModelView {
 	private onStatusChanged(paneId: string, status: AgentStatus, kind?: BlockKind): void {
 		if (paneId !== this.paneId) return;
 		const block = status === 'blocked' ? (kind ?? null) : null;
-		const request = status === 'blocked' ? (this.watcher?.snapshot(paneId)?.request ?? null) : null;
-		if (status === this.status && block === this.block && request === this.pending) return;
+		const snapshot = this.watcher?.snapshot(paneId);
+		const request = status === 'blocked' ? (snapshot?.request ?? null) : null;
+		const stopped = snapshot?.stopped === true;
+		this.infoOverlay = snapshot?.sessionInfo;
+		if (status === this.status && block === this.block && request === this.pending && stopped === this.stopped) {
+			return;
+		}
 		this.status = status;
 		this.block = block;
 		this.pending = request;
 		// The block is over, so the next one is a block of its own to answer.
 		if (status !== 'blocked') this.blockClaim = null;
+		this.refreshPlan();
+		if (this.setStopped(stopped)) return;
 		// No turn changed; the view redraws what it shows between blocks.
 		this.emit({ changedTurnIds: [], reset: false });
 	}
@@ -390,26 +767,57 @@ export class SessionModel implements SessionModelView {
 		this.pending = request;
 		this.session = pane?.agentSession ?? '';
 		this.reportedPath = pane?.transcriptPath ?? '';
+		this.infoOverlay = pane?.sessionInfo;
 		this.status = status;
 		this.block = block;
 		if (status !== 'blocked') this.blockClaim = null;
-		const path = pane?.agentSession
-			? pane.transcriptPath ||
-				transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
-			: null;
+		// Before the file changes too: a plan wanted for this file is read now,
+		// and one that no longer is goes with the status that ended it.
+		this.refreshPlan();
+		// The pane's agent picks the format its session is read with; a runtime
+		// that does not say runs the catalog's default agent, as it always did.
+		// An agent with no format has nothing here to read (ADR-0010).
+		const format = pane ? this.formatOf(pane.agent || DEFAULT_AGENT_KIND) : this.currentFormat;
+		const path =
+			pane?.agentSession && format
+				? pane.transcriptPath ||
+					format.transcriptPath({ cwd: pane.cwd, agentSession: pane.agentSession, home: this.options.home })
+				: null;
 		const source = this.source;
 		// `streamSource` is set exactly while a tail is open, so this is "no
 		// session then and now", or "the same file on a tail from the same
 		// source" — including no tail at all while there is no source to read.
-		if (path === this.currentPath && (path === null || this.streamSource === source)) {
+		if (
+			path === this.currentPath &&
+			format === this.currentFormat &&
+			(path === null || this.streamSource === source)
+		) {
 			// The same session, so nothing to reload. A status read here rather
 			// than off a transition, as after a rebind, is still news to the view.
+			if (this.setStopped(pane?.stopped === true)) return;
 			if (statusMoved) this.emit({ changedTurnIds: [], reset: false });
 			return;
 		}
+		// The session shown is over for this pane: its agent went away or moved
+		// to another file. If Claude comes back to it, what ran here is lost (#135).
+		// Only the pane itself says so. A pane the scope does not hold — a
+		// reconnect's scope before it has primed, or a pane that left and will
+		// rejoin — says nothing about its agent, and its work is not lost.
+		if (pane && this.currentPath && path !== this.currentPath && this.linesRead > 0) {
+			this.options.ended?.set(this.currentPath, this.linesRead);
+		}
 		this.closeStream();
 		this.currentPath = path;
+		if (format !== this.currentFormat) {
+			this.currentFormat = format;
+			this.planReader = format?.plan?.() ?? null;
+		}
 		this.restart();
+		this.stopped = pane?.stopped === true;
+		if (path) {
+			this.lostBefore = this.options.ended?.get(path) ?? 0;
+			this.options.ended?.delete(path);
+		}
 		// Said now, not when the new file's first lines land: a tail delivers
 		// those asynchronously, and the session that is gone must not still be on
 		// screen in between.
@@ -419,7 +827,7 @@ export class SessionModel implements SessionModelView {
 		// there is no gap between reading the history and following it.
 		// A closed tail delivers nothing (`TranscriptStream`), so whatever this
 		// hears is the file being shown.
-		this.stream = source.open(path, (lines, restart) => this.onLines(lines, restart === true), {
+		this.stream = source.open(path, (lines, restart, tail) => this.onLines(lines, restart === true, tail ?? ''), {
 			onProblem: (problem) => this.onProblem(problem),
 		});
 		this.streamSource = source;
@@ -434,91 +842,425 @@ export class SessionModel implements SessionModelView {
 
 	/** Empties everything read so far, for another file or the same one replaced. */
 	private restart(): void {
-		this.transcript = emptyTranscript();
+		// Another file, or the same one replaced, is read from one page again.
+		this.cancelEarlier(false);
+		this.pages = 1;
+		this.transcript = this.emptyState();
+		this.tailLine = '';
+		this.preview = null;
 		// Nothing of the new file has been read, whatever was read of the old one.
 		this.delivered = false;
 		// Another file is another block, whatever the status still says.
 		this.blockClaim = null;
 		this.generation++;
 		this.readingReports.clear();
+		this.linesRead = 0;
+		this.lostBefore = 0;
+		this.planReader?.reset();
+		this.planText = null;
+		this.planKey = '';
+		this.dropSubagents();
 	}
 
 	/**
 	 * A batch of whole lines from the tail. `restart` is the tail saying the
 	 * file was replaced or truncated under it: what was read before is void, and
-	 * these lines are the file again from its start.
+	 * these lines are the file again from its start. `tail` is the line after
+	 * them, written but not ended yet, which the view previews (#138).
 	 */
-	private onLines(lines: string[], restart: boolean): void {
+	private onLines(lines: string[], restart: boolean, tail: string): void {
 		if (restart) this.restart();
 		this.delivered = true;
-		const { state, changedTurnIds } = reduce(this.transcript, lines);
+		this.tailLine = tail;
+		const { state, changedTurnIds, removedTurnIds } = this.reduceLines(lines);
 		this.transcript = state;
-		this.emit({ changedTurnIds: restart ? [] : changedTurnIds, reset: restart });
+		this.planReader?.feed(lines);
+		// The block may have come before the lines that say it is plan mode.
+		this.refreshPlan();
+		if (restart) {
+			this.repreview();
+			this.emit({ changedTurnIds: [], reset: true });
+		} else this.emitTurns(changedTurnIds, removedTurnIds);
 		this.readReports(changedTurnIds);
+		this.syncSubagents();
+	}
+
+	/**
+	 * Says which turns moved, after previewing the unended line again over
+	 * what the transcript says now (#138): the turns the old preview showed
+	 * are drawn again from the transcript, or from the new preview, and a turn
+	 * only the old preview held is removed. A preview is never what the model
+	 * decides on, so nothing here reads reports or follows subagents.
+	 */
+	private emitTurns(changedTurnIds: readonly string[], removedTurnIds: readonly string[] = []): void {
+		const shown = this.repreview();
+		const turns = this.state.turns;
+		const holds = (id: string): boolean => {
+			for (let i = turns.length - 1; i >= 0; i--) if (turns[i]?.id === id) return true;
+			return false;
+		};
+		const changed = [...new Set([...changedTurnIds, ...shown])].filter(holds);
+		const removed = [...new Set([...removedTurnIds, ...shown])].filter((id) => !holds(id));
+		if (removed.length) this.emit({ changedTurnIds: changed, removedTurnIds: removed, reset: false });
+		else this.emit({ changedTurnIds: changed, reset: false });
+	}
+
+	/**
+	 * Folds the unended line over a fork of the transcript as it stands now,
+	 * and returns the ids of the turns the old preview and the new one touched:
+	 * what the view must draw again to stay true to both.
+	 */
+	private repreview(): string[] {
+		const before = this.preview?.changedTurnIds ?? [];
+		const parser = this.currentFormat?.parser;
+		this.preview = parser && this.tailLine ? previewTail(parser, this.transcript, this.tailLine) : null;
+		return [...before, ...(this.preview?.changedTurnIds ?? [])];
+	}
+
+	/**
+	 * Reduces a batch, marking lost what an agent now gone left running (#135):
+	 * everything while the runtime says it stopped, and in a file Claude
+	 * resumed, what was running when the lines its earlier run wrote ran out.
+	 */
+	private reduceLines(lines: string[]): ReduceResult {
+		const before = this.linesRead;
+		this.linesRead += lines.length;
+		return this.foldLines(this.transcript, before, lines);
+	}
+
+	/**
+	 * Folds a batch into `state`, which has folded `before` lines of the file
+	 * so far: the tail's state, or a read loading earlier turns (#152). The
+	 * same lines fold the same into either.
+	 */
+	private foldLines(state: ConversationState, before: number, lines: string[]): ReduceResult {
+		const parser = this.currentFormat?.parser;
+		// No format, no path, no tail: nothing reaches here, but nothing is read either.
+		if (!parser) return { state, changedTurnIds: [], removedTurnIds: [] };
+		const reduce = (into: ConversationState, batch: string[]): ReduceResult => parser.reduce(into, batch);
+		// Kept for the file, not spent once crossed: a read from the start
+		// crosses it again (#152), and past it the cut is never in a batch.
+		const cut = this.lostBefore - before;
+		let result: ReduceResult;
+		if (cut > 0 && cut <= lines.length) {
+			const earlier = reduce(state, lines.slice(0, cut));
+			const lost = markLost(earlier.state);
+			const later = reduce(lost.state, lines.slice(cut));
+			const changed = new Set([...earlier.changedTurnIds, ...lost.changedTurnIds, ...later.changedTurnIds]);
+			const kept = new Set(later.state.turns.map((turn) => turn.id));
+			result = {
+				state: later.state,
+				changedTurnIds: [...changed].filter((id) => kept.has(id)),
+				removedTurnIds: [...earlier.removedTurnIds, ...later.removedTurnIds].filter((id) => !kept.has(id)),
+			};
+		} else result = reduce(state, lines);
+		if (!this.stopped) return result;
+		const lost = markLost(result.state);
+		const changed = new Set([...result.changedTurnIds, ...lost.changedTurnIds]);
+		return { ...result, state: lost.state, changedTurnIds: [...changed] };
+	}
+
+	/** An empty state of the session's format, holding {@link pages} pages (#152). */
+	private emptyState(): ConversationState {
+		const state = this.currentFormat?.parser.empty() ?? emptyConversation();
+		state.window = turnWindow(this.pages, this.options.page ?? DEFAULT_PAGE);
+		return state;
+	}
+
+	/**
+	 * A batch of the read loading earlier turns (#152). It folds as the tail
+	 * does, and has caught up once it has folded as many lines: the tail's
+	 * place is then its own. A file replaced under it is the tail's to start
+	 * again on, and with it this read.
+	 */
+	private onEarlierLines(load: EarlierLoad, lines: string[], restart: boolean, tail: string): void {
+		if (this.earlierLoad !== load) return;
+		if (restart) {
+			this.cancelEarlier(true);
+			return;
+		}
+		const before = load.lines;
+		load.lines += lines.length;
+		load.tail = tail;
+		load.state = this.foldLines(load.state, before, lines).state;
+		if (load.caughtUp || load.lines < this.linesRead) return;
+		load.caughtUp = true;
+		load.ahead = lines.slice(lines.length - (load.lines - this.linesRead));
+		if (load.stream) this.finishEarlier(load);
+	}
+
+	/**
+	 * The read holding more has caught up with the tail (#152): it becomes the
+	 * tail, and its state the session's. What the model wrote onto the calls
+	 * it held, reports read and subagents followed, is carried over; the
+	 * turns it did not hold have their reports read now.
+	 */
+	private finishEarlier(load: EarlierLoad): void {
+		if (this.earlierLoad !== load || !load.stream) return;
+		this.earlierLoad = null;
+		const old = this.transcript;
+		const state = load.state;
+		// A rewind past the turns held drops the earlier ones it went back over
+		// for good, and only a read holding everything before it brings them
+		// back (#131): one more page can hold no more than one did.
+		if (state.turns.length <= old.turns.length && Number.isFinite(this.pages)) {
+			load.stream.close();
+			this.pages = Infinity;
+			this.startEarlier();
+			return;
+		}
+		load.adopted = true;
+		const carried = new Map<string, ToolEntry>();
+		for (const turn of old.turns) {
+			for (const entry of turn.entries) if (entry.kind === 'tool') carried.set(entry.id, entry);
+		}
+		for (const turn of state.turns) {
+			for (const entry of turn.entries) {
+				const was = entry.kind === 'tool' ? carried.get(entry.id) : undefined;
+				if (entry.kind !== 'tool' || !was) continue;
+				if (was.report !== null && entry.report === null) entry.report = was.report;
+				if (was.subagent) entry.subagent = was.subagent;
+			}
+		}
+		// A report read for a call no longer held is read again if it comes back.
+		for (const id of [...this.readingReports]) if (!carried.has(id)) this.readingReports.delete(id);
+		this.stream?.close();
+		this.stream = load.stream;
+		this.transcript = state;
+		this.linesRead = load.lines;
+		this.tailLine = load.tail;
+		this.preview = null;
+		this.planReader?.feed(load.ahead);
+		this.refreshPlan();
+		this.repreview();
+		this.emit({ changedTurnIds: [], reset: true, earlier: true });
+		this.readReports(state.turns.map((turn) => turn.id));
+		this.syncSubagents();
+	}
+
+	/**
+	 * Stops a read loading earlier turns, if one runs. `giveBack` is for one
+	 * that failed: the page it was to hold is not held, and the view hears so.
+	 */
+	private cancelEarlier(giveBack: boolean): void {
+		const load = this.earlierLoad;
+		if (!load) return;
+		this.earlierLoad = null;
+		load.stream?.close();
+		if (!giveBack) return;
+		this.pages = Math.max(1, this.pages - 1);
+		this.emit({ changedTurnIds: [], reset: false });
+	}
+
+	/**
+	 * Takes the runtime's word on whether the agent stopped (#135). A stop
+	 * marks lost what it left running, and says so as a change; true when it
+	 * emitted one.
+	 */
+	private setStopped(stopped: boolean): boolean {
+		if (stopped === this.stopped) return false;
+		this.stopped = stopped;
+		if (!stopped) return false;
+		const { state, changedTurnIds } = markLost(this.transcript);
+		this.transcript = state;
+		this.emitTurns(changedTurnIds);
+		return true;
 	}
 
 	/**
 	 * Starts the read for every finished background subagent in the turns that
 	 * just moved (#96).
 	 *
-	 * The reducer stays pure, so this is where the file is opened: a report is
+	 * The parser does no I/O, so this is where the file is opened: a report is
 	 * not in the transcript at all, only the notification that names the file it
 	 * was written to. Each call is read once, and the answer comes back as an
 	 * ordinary changed turn.
 	 */
 	private readReports(changedTurnIds: readonly string[]): void {
-		if (!changedTurnIds.length) return;
+		const reports = this.currentFormat?.reports;
+		const transcript = this.currentPath;
+		if (!changedTurnIds.length || !reports || !transcript) return;
 		for (const turn of this.transcript.turns) {
 			if (!changedTurnIds.includes(turn.id)) continue;
 			for (const entry of turn.entries) {
 				if (entry.kind !== 'tool' || entry.report !== null) continue;
-				// Only a subagent has a report; a background command's output file
-				// is its stdout, which the tool group already accounts for.
-				if (!entry.notification || toolKind(entry.name) !== 'agent') continue;
-				if (this.readingReports.has(entry.id)) continue;
+				// The format says which calls have a report and where it is.
+				const paths = reports.paths(entry, transcript);
+				if (!paths.length || this.readingReports.has(entry.id)) continue;
 				this.readingReports.add(entry.id);
-				void this.readReport(entry.id, entry.notification);
+				void this.readReport(entry, paths);
 			}
 		}
 	}
 
+	private subagentTimers(): SubagentTimers {
+		return (
+			this.options.subagentTimers ?? {
+				set: (callback, ms) => setTimer(callback, ms),
+				clear: (handle) => clearTimer(handle as ReturnType<typeof setTimer>),
+			}
+		);
+	}
+
+	private clearSubagentGrace(): void {
+		if (this.subagentGrace !== null) this.subagentTimers().clear(this.subagentGrace);
+		this.subagentGrace = null;
+	}
+
+	/** Starts or stops following the subagents a view shows (#147). */
+	private setShowingSubagents(showing: boolean): void {
+		if (showing) this.clearSubagentGrace();
+		if (showing === this.showingSubagents) return;
+		this.showingSubagents = showing;
+		this.syncSubagents();
+	}
+
+	/**
+	 * The follower of the file being shown, made on first need: a format that
+	 * names subagents, a file and the source its tail reads.
+	 */
+	private subagentFollower(): SubagentFollower | null {
+		if (this.follower) return this.follower;
+		const format = this.currentFormat;
+		const source = this.streamSource;
+		if (!format?.reports?.subagents || !this.currentPath || !source) return null;
+		this.follower = new SubagentFollower({
+			source,
+			format,
+			onChange: () => this.applySubagents(),
+			...(this.options.subagentTimers ? { timers: this.options.subagentTimers } : {}),
+		});
+		this.syncSubagents();
+		return this.follower;
+	}
+
+	/**
+	 * Tells the follower which subagents the records name now and whether a
+	 * view shows them (#147). Nothing is made for a session no view shows.
+	 */
+	private syncSubagents(): void {
+		const reports = this.currentFormat?.reports;
+		const path = this.currentPath;
+		if (!this.follower && !this.showingSubagents) return;
+		const follower = this.follower ?? this.subagentFollower();
+		if (!follower || !reports?.subagents || !path) return;
+		follower.sync(reports.subagents(this.transcript.turns, path), this.showingSubagents);
+		this.applySubagents();
+	}
+
+	/** Stops following every subagent; their progress goes with the file it was read for. */
+	private dropSubagents(): void {
+		const follower = this.follower;
+		if (!follower) return;
+		this.follower = null;
+		follower.dispose();
+		this.applySubagents();
+	}
+
+	/**
+	 * Writes each followed subagent's progress onto the call it hangs under,
+	 * and takes it off a call none is followed under any more, as an ordinary
+	 * changed turn (#147).
+	 */
+	private applySubagents(): void {
+		const updates: [string, ReturnType<SubagentFollower['progress']>][] = [];
+		for (const turn of this.transcript.turns) {
+			for (const entry of turn.entries) {
+				if (entry.kind !== 'tool') continue;
+				const progress = this.follower?.progress(entry.id);
+				if (progress !== entry.subagent) updates.push([entry.id, progress]);
+			}
+		}
+		if (!updates.length) return;
+		const changed = new Set<string>();
+		for (const [callId, progress] of updates) {
+			const result = attachSubagentProgress(this.transcript, callId, progress);
+			this.transcript = result.state;
+			for (const id of result.changedTurnIds) changed.add(id);
+		}
+		if (changed.size) this.emitTurns([...changed]);
+	}
+
 	/** Reads one report and feeds it back, unless the session moved on meanwhile. */
-	private async readReport(toolUseId: string, notification: TaskNotification): Promise<void> {
+	private async readReport(call: ToolEntry, paths: readonly string[]): Promise<void> {
+		const toolUseId = call.id;
 		const generation = this.generation;
-		const report = await this.subagentReport(notification);
+		const report = await this.subagentReport(paths);
 		// The session rotated while the file was being read: that transcript is
 		// gone and so is the turn this belonged to (ADR-0003).
 		if (generation !== this.generation || !report) return;
 		const { state, changedTurnIds } = attachSubagentReport(this.transcript, toolUseId, report);
 		if (!changedTurnIds.length) return;
 		this.transcript = state;
-		this.emit({ changedTurnIds, reset: false });
+		this.emitTurns(changedTurnIds);
 	}
 
 	/**
-	 * A subagent's report: the last thing it said in the file its notification
-	 * named, falling back to its transcript beside the session's own file, which
-	 * is where Claude Code also keeps it (`docs/architecture.md`). Read through
-	 * the source the tail came from, which is the transcript's own host.
+	 * A background call's report: the first of the files its format named
+	 * that holds one, read the format's way (Claude's: the file its
+	 * notification named, then its transcript beside the session's own,
+	 * `docs/architecture.md`). Read through the source the tail came from,
+	 * which is the transcript's own host.
 	 */
-	private async subagentReport(notification: TaskNotification): Promise<string> {
+	private async subagentReport(paths: readonly string[]): Promise<string> {
 		const source = this.streamSource ?? this.source;
-		if (!source) return '';
-		for (const path of [notification.outputFile, this.subagentPath(notification.taskId)]) {
-			if (!path) continue;
+		const reports = this.currentFormat?.reports;
+		if (!source || !reports) return '';
+		for (const path of paths) {
 			const text = await source.read(path);
 			if (!text) continue;
-			const report = lastAssistantText(text.split('\n'));
+			const report = reports.read(text.split('\n'));
 			if (report) return report;
 		}
 		return '';
 	}
 
-	/** `<session>/subagents/agent-<task id>.jsonl`, beside the session's transcript. */
-	private subagentPath(taskId: string): string {
-		const path = this.currentPath;
-		if (!path || !taskId) return '';
-		return `${path.replace(/\.jsonl$/, '')}/subagents/agent-${taskId}.jsonl`;
+	/**
+	 * The plan file this pane's block wants read, as `<generation>\n<path>`, or
+	 * empty when it wants none (#148): blocked in plan mode on no request of
+	 * the runtime's own (the `claude` kind's carries its plan), and on no block
+	 * the runtime named as something other than a permission. Read through the
+	 * source the tail came from, so a remote runtime's plan is read on its own
+	 * machine, and only where its transcript already is.
+	 */
+	private wantedPlan(): string {
+		if (this.status !== 'blocked' || this.pending) return '';
+		if (this.block !== null && this.block !== 'permission') return '';
+		const plan = this.planReader;
+		if (!plan?.planMode || !this.currentPath || !(this.streamSource ?? this.source)) return '';
+		const path = plan.file(this.currentPath);
+		return path ? `${this.generation}\n${path}` : '';
+	}
+
+	/**
+	 * Starts reading the plan file when the block wants one it has not asked
+	 * for, and drops the plan it held when it no longer wants that one. Says
+	 * nothing itself: a plan that went goes with a change the caller emits, and
+	 * one that was read is emitted when it lands.
+	 */
+	private refreshPlan(): void {
+		const key = this.wantedPlan();
+		if (key === this.planKey) return;
+		this.planKey = key;
+		this.planText = null;
+		if (key) void this.readPlan(key);
+	}
+
+	private async readPlan(key: string): Promise<void> {
+		const source = this.streamSource ?? this.source;
+		const path = key.slice(key.indexOf('\n') + 1);
+		const text = source ? await source.read(path).catch(() => null) : null;
+		// The block ended, the slug changed or the file did, meanwhile.
+		if (key !== this.planKey) return;
+		const plan = text?.trim() ? text : null;
+		if (plan === this.planText) return;
+		this.planText = plan;
+		this.emit({ changedTurnIds: [], reset: false });
+	}
+
+	/** The format for `agent`, from the registry unless the options gave another. */
+	private formatOf(agent: string): AgentFormat | null {
+		return (this.options.formats ?? agentFormat)(agent);
 	}
 
 	private emit(change: SessionChange): void {
@@ -539,6 +1281,14 @@ export interface SessionModelRegistryOptions {
 	/** Where that runtime's transcripts are read, or null while they cannot be. */
 	source(endpointId: string): TranscriptSource | null;
 	home?: string;
+	/** The formats agents are read with; the registry in `../agents/format.ts` when not given. */
+	formats?: (agent: string) => AgentFormat | null;
+	/** See {@link SessionModelOptions.subagentGraceMs}. */
+	subagentGraceMs?: number;
+	/** See {@link SessionModelOptions.subagentTimers}. */
+	subagentTimers?: SubagentTimers;
+	/** See {@link SessionModelOptions.page}. */
+	page?: TurnPage;
 }
 
 /** The registry key of a pane on a runtime; a newline is in neither id. */
@@ -557,6 +1307,8 @@ function modelKey(endpointId: string, paneId: string): string {
  */
 export class SessionModelRegistry implements SessionModels {
 	private readonly models = new Map<string, { model: SessionModel; holders: number }>();
+	/** What every model stopped following, and how far it had read (#135). */
+	private readonly ended = new Map<string, number>();
 
 	constructor(private readonly options: SessionModelRegistryOptions) {}
 
@@ -581,6 +1333,11 @@ export class SessionModelRegistry implements SessionModels {
 					watcher: () => this.options.watcher(endpointId),
 					source: () => this.options.source(endpointId),
 					home: this.options.home,
+					ended: this.ended,
+					...(this.options.formats ? { formats: this.options.formats } : {}),
+					subagentGraceMs: this.options.subagentGraceMs,
+					subagentTimers: this.options.subagentTimers,
+					...(this.options.page ? { page: this.options.page } : {}),
 				}),
 				holders: 0,
 			};

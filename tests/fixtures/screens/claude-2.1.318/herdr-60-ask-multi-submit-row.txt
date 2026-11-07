@@ -1,0 +1,40 @@
+  today?' with header 'Drink' and options 'Tea with milk
+  and a little honey' (description 'A mild black tea,
+  served with milk and a spoon of honey on the side'),
+  'Coffee', 'Water'. After my answer, reply with my answer
+  verbatim. Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which of these hot drinks would you like me to
+     prepare for the long afternoon meeting today? (Tea with
+     milk and a little honey / Coffee / Water)
+
+✻ Worked for 1s · done 5:54 PM
+
+❯ Use the AskUserQuestion tool now to ask me exactly one
+  multi-select question (multiSelect true): 'Which fruits
+  would you like in the salad?' with header 'Fruit' and
+  options 'Green apples from the orchard behind the old
+  stone farmhouse' (description 'Crisp'), 'Banana',
+  'Cherry'. After my answer, reply with my answer verbatim.
+  Do nothing else.
+────────────────────────────────────────────────────────────
+←  ☒ Fruit  ✔ Submit  →
+
+Which fruits would you like in the salad?
+
+  1. [✔] Green apples from the orchard behind the old stone
+         farmhouse
+         Crisp
+  2. [ ] Banana
+         Banana
+  3. [✔] Cherry
+         Cherry
+  4. [✔] Mango, Ripe 2, and a handful of wild strawberries
+         from the garden
+❯    Submit
+────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in
+nvim · Esc to cancel

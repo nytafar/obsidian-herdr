@@ -19,6 +19,8 @@ export interface ConfirmOptions {
 	body: string;
 	/** Text on the confirming button. Sentence case. */
 	confirm: string;
+	/** Text on the other button, when the question has its own words for it; `Cancel` otherwise. */
+	cancel?: string;
 	/** Draw the confirming button as a warning, for something that destroys. */
 	warning?: boolean;
 }
@@ -49,7 +51,7 @@ export class ConfirmModal extends Modal {
 		this.contentEl.createEl('p', { text: options.body });
 		new Setting(this.contentEl)
 			.addButton((button) => {
-				button.setButtonText('Cancel').onClick(() => this.close());
+				button.setButtonText(options.cancel ?? 'Cancel').onClick(() => this.close());
 			})
 			.addButton((button) => {
 				button.setButtonText(options.confirm).onClick(() => {

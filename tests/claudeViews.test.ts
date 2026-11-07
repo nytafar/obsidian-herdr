@@ -15,11 +15,13 @@ import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus } from '../src/herdr/types.gen';
 import type { PendingRequest, WaitingAnswer } from '../src/native/pendingRequest';
 import { PromptBox } from '../src/native/promptBox';
-import { emptyTranscript, type TranscriptState } from '../src/native/reducer';
+import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import type { BlockKind, SessionChange, SessionHandleOf, SessionModels, SessionModelView } from '../src/native/sessionModel';
-import { effectivePaneView, NativePaneSurface, paneViewAvailability } from '../src/native/surface';
-import { requestCard, waitingCard } from '../src/native/waitingCard';
+import { NativePaneSurface } from '../src/native/surface';
+import { effectivePaneView, paneViewAvailability } from '../src/native/paneSurface';
+import { isTypedAnswerKey, optionName, questionAnswer, requestCard, waitingCard } from '../src/native/waitingCard';
 import { buildRows, toRow } from '../src/views/rowModel';
+import { answerFailureText, SENDING_TEXT } from '../src/native/waitingCardView';
 
 const VAULT = '/home/lasse/hvelv';
 
@@ -140,7 +142,11 @@ const PLAN: PendingRequest = { ...WRITE, id: 'req-3', kind: 'plan', toolName: 'E
 describe('requestCard', () => {
 	it('is never the startup card, so nothing is answered unasked', () => {
 		expect(requestCard(WRITE, VAULT)).toMatchObject({ kind: 'permission', title: 'Claude wants to use Write', body: 'notes/hello.txt', reported: true });
-		expect(requestCard(QUESTION, VAULT)).toMatchObject({ kind: 'question', body: 'Which colour do you prefer?', options: ['Red', 'Blue'] });
+		expect(requestCard(QUESTION, VAULT)).toMatchObject({ kind: 'question', body: 'Which colour do you prefer?', options: [
+				{ label: 'Red', description: '' },
+				{ label: 'Blue', description: '' },
+			],
+		});
 		expect(requestCard(PLAN, VAULT)).toMatchObject({ kind: 'plan', body: '1. Do it.' });
 		// The request wins over a guess from the transcript.
 		expect(waitingCard({ request: WRITE, hasTranscript: false, turns: [], vaultPath: VAULT }).kind).toBe('permission');
@@ -175,7 +181,7 @@ class FakeModel implements SessionModelView {
 	}
 }
 
-async function surfaceOn(model: FakeModel) {
+async function surfaceOn(model: FakeModel, respond?: (answer: WaitingAnswer) => Promise<void>) {
 	const { el, host } = hostEl();
 	const answers: { paneId: string; requestId: string; answer: WaitingAnswer }[] = [];
 	const interrupts: string[] = [];
@@ -198,6 +204,7 @@ async function surfaceOn(model: FakeModel) {
 		responder: {
 			respond: async (paneId, requestId, answer) => {
 				answers.push({ paneId, requestId, answer });
+				await respond?.(answer);
 			},
 		},
 		notify: (message) => notices.push(message),
@@ -214,8 +221,13 @@ function buttons(el: FakeElement): FakeElement[] {
 	return el.find('herdr-native-waiting').findAll('herdr-native-waiting-action');
 }
 
+/** A button's name: an option's label without its tag and description, else its text. */
+function nameOf(button: FakeElement): string {
+	return button.findAll('herdr-native-waiting-choice-label')[0]?.textContent ?? button.textContent;
+}
+
 function press(el: FakeElement, label: string): void {
-	const button = buttons(el).find((entry) => entry.textContent === label);
+	const button = buttons(el).find((entry) => nameOf(entry) === label);
 	if (!button) throw new Error(`no button ${label}: ${buttons(el).map((entry) => entry.textContent).join(', ')}`);
 	button.dispatch('click');
 }
@@ -283,7 +295,7 @@ describe('the waiting card answers the runtime’s request', () => {
 		const model = new FakeModel();
 		const { el, answers } = await surfaceOn(model);
 		model.block(QUESTION);
-		expect(buttons(el).map((entry) => entry.textContent)).toEqual(['Red', 'Blue', 'Dismiss']);
+		expect(buttons(el).map(nameOf)).toEqual(['Red', 'Blue', 'Send', 'Dismiss']);
 		press(el, 'Blue');
 		model.block(null);
 		model.block(PLAN);
@@ -316,6 +328,312 @@ describe('the waiting card answers the runtime’s request', () => {
 		expect(answers.map((entry) => entry.answer)).toEqual([
 			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Red, Blue', 'Size?': 'L' } },
 		]);
+	});
+});
+
+/** A question card with descriptions and Claude's own recommendation (#141). */
+const DESCRIBED: PendingRequest = {
+	...QUESTION,
+	id: 'req-4',
+	questions: [
+		{
+			question: 'Which store?',
+			header: 'Store',
+			options: [
+				{ label: 'Redis (Recommended)', description: 'In memory, fast.' },
+				{ label: 'Postgres', description: '' },
+			],
+			multiSelect: false,
+		},
+	],
+};
+
+function typedField(el: FakeElement, index = 0): FakeElement {
+	const field = el.findAll('herdr-native-waiting-other-input')[index];
+	if (!field) throw new Error('no typed answer field');
+	return field;
+}
+
+function type(field: FakeElement, text: string): void {
+	field.value = text;
+	field.dispatch('input');
+}
+
+describe('a question answered in the user’s own words (#141)', () => {
+	beforeEach(() => MarkdownRenderer.reset());
+
+	it('shows each description under its option and the recommendation as a tag, and sends the label as written', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const [redis, postgres] = el.findAll('herdr-native-waiting-choice');
+		expect(redis?.find('herdr-native-waiting-choice-label').textContent).toBe('Redis');
+		expect(redis?.find('herdr-native-waiting-tag').textContent).toBe('Recommended');
+		expect(redis?.find('herdr-native-waiting-choice-description').textContent).toBe('In memory, fast.');
+		expect(redis?.attrs.title).toBeUndefined();
+		expect(postgres?.findAll('herdr-native-waiting-tag')).toEqual([]);
+		expect(postgres?.findAll('herdr-native-waiting-choice-description')).toEqual([]);
+		press(el, 'Redis');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'Redis (Recommended)' } },
+		]);
+	});
+
+	it('sends a typed answer to one question by Send, which waits for text', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const send = buttons(el).find((entry) => entry.textContent === 'Send');
+		expect(send?.disabled).toBe(true);
+		type(typedField(el), '  SQLite, on disk  ');
+		expect(send?.disabled).toBe(false);
+		press(el, 'Send');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'SQLite, on disk' } },
+		]);
+	});
+
+	it('sends a typed answer by Enter, but not an Enter an input method is composing with', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const field = typedField(el);
+		field.dispatch('keydown', { key: 'Enter' });
+		type(field, '日本');
+		field.dispatch('keydown', { key: 'Enter', isComposing: true });
+		field.dispatch('keydown', { key: 'Enter', keyCode: 229 });
+		await settle();
+		expect(answers).toEqual([]);
+		const enter = field.dispatch('keydown', { key: 'Enter' });
+		await settle();
+		expect(enter.defaultPrevented).toBe(true);
+		expect(answers.map((entry) => entry.answer)).toEqual([{ type: 'answer', answers: { 'Which store?': '日本' } }]);
+	});
+
+	it('adds a typed answer to a multiple choice, and lets it replace a single one in a form', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block({
+			...QUESTION,
+			questions: [
+				{ ...QUESTION.questions[0]!, multiSelect: true },
+				{ question: 'Size?', header: '', options: [{ label: 'S', description: '' }, { label: 'L', description: '' }], multiSelect: false },
+			],
+		});
+		const submit = (): FakeElement | undefined => buttons(el).find((entry) => entry.textContent === 'Send answers');
+		press(el, 'Blue');
+		type(typedField(el, 0), 'Green');
+		expect(submit()?.disabled).toBe(true);
+		press(el, 'S');
+		expect(submit()?.disabled).toBe(false);
+		// A typed answer to a single choice takes the option's place …
+		type(typedField(el, 1), 'Medium');
+		expect(el.findAll('herdr-native-waiting-choice').filter((entry) => entry.hasClass('is-selected')).map(nameOf)).toEqual(['Blue']);
+		// … and Enter in a form sends the whole form once it is complete.
+		typedField(el, 1).dispatch('keydown', { key: 'Enter' });
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Blue, Green', 'Size?': 'Medium' } },
+		]);
+	});
+
+	it('clears a single choice’s typed answer when an option is picked instead', async () => {
+		const model = new FakeModel();
+		const { el, answers } = await surfaceOn(model);
+		model.block({
+			...QUESTION,
+			questions: [
+				QUESTION.questions[0]!,
+				{ question: 'Size?', header: '', options: [{ label: 'S', description: '' }], multiSelect: false },
+			],
+		});
+		type(typedField(el, 0), 'Green');
+		press(el, 'Red');
+		expect(typedField(el, 0).value).toBe('');
+		press(el, 'S');
+		press(el, 'Send answers');
+		await settle();
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which colour do you prefer?': 'Red', 'Size?': 'S' } },
+		]);
+	});
+});
+
+/** A promise the test settles by hand: the runtime taking its time over an answer. */
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+	let resolve: () => void = () => {};
+	let reject: (error: Error) => void = () => {};
+	const promise = new Promise<void>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+function cardStatus(el: FakeElement): FakeElement {
+	return el.find('herdr-native-waiting').find('herdr-native-waiting-status');
+}
+
+describe('the waiting card while it sends, when it fails, folded, and to a screen reader (#142)', () => {
+	beforeEach(() => MarkdownRenderer.reset());
+
+	it('says it is sending, from a live region there from the first draw, with the options busy', async () => {
+		const model = new FakeModel();
+		const pending = deferred();
+		const { el } = await surfaceOn(model, () => pending.promise);
+		model.block(DESCRIBED);
+		const status = cardStatus(el);
+		expect(status.attrs.role).toBe('status');
+		expect(status.attrs['aria-live']).toBe('polite');
+		expect(status.textContent).toBe('');
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(true);
+		const choices = el.find('herdr-native-waiting-choices');
+		expect(choices.attrs['aria-busy']).toBe('false');
+		// Busy on the options alone: never on the card, whose status must be read.
+		expect(el.find('herdr-native-waiting').attrs['aria-busy']).toBeUndefined();
+
+		press(el, 'Postgres');
+		expect(cardStatus(el)).toBe(status);
+		expect(status.textContent).toBe(SENDING_TEXT);
+		expect(status.hasClass('herdr-native-visually-hidden')).toBe(false);
+		expect(choices.attrs['aria-busy']).toBe('true');
+		expect(buttons(el).every((entry) => entry.disabled)).toBe(true);
+		expect(typedField(el).disabled).toBe(true);
+
+		pending.resolve();
+		await settle();
+		expect(status.textContent).toBe('Answer sent.');
+		expect(choices.attrs['aria-busy']).toBe('false');
+	});
+
+	it('says a failure in place, keeps what was typed, and takes the answer again', async () => {
+		const model = new FakeModel();
+		let fail = true;
+		const { el, notices, answers } = await surfaceOn(model, async () => {
+			if (fail) throw new Error('the agent is not running');
+		});
+		model.block(DESCRIBED);
+		type(typedField(el), 'SQLite');
+		press(el, 'Send');
+		await settle();
+		const error = el.find('herdr-native-waiting-error');
+		expect(error.attrs.role).toBe('alert');
+		expect(error.textContent).toBe(answerFailureText(new Error('the agent is not running'), true));
+		expect(error.textContent).toContain('the agent is not running');
+		expect(notices).toEqual([]);
+		expect(cardStatus(el).textContent).toBe('');
+		// Usable again, with the typed answer still there and Send ready for it.
+		expect(typedField(el).value).toBe('SQLite');
+		expect(typedField(el).disabled).toBe(false);
+		expect(buttons(el).every((entry) => !entry.disabled)).toBe(true);
+
+		fail = false;
+		press(el, 'Send');
+		await settle();
+		expect(el.findAll('herdr-native-waiting-error')).toEqual([]);
+		expect(answers.map((entry) => entry.answer)).toEqual([
+			{ type: 'answer', answers: { 'Which store?': 'SQLite' } },
+			{ type: 'answer', answers: { 'Which store?': 'SQLite' } },
+		]);
+	});
+
+	it('says so when the request went or changed before the answer arrived', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model, async () => {
+			// The runtime moved on while the answer was on its way.
+			model.request = null;
+			throw new Error('that request is no longer waiting');
+		});
+		model.block(WRITE);
+		press(el, 'Allow');
+		await settle();
+		expect(el.find('herdr-native-waiting-error').textContent).toBe(answerFailureText(new Error('x'), false));
+	});
+
+	it('folds to its title bar and opens again, and the next request opens unfolded', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.block(PLAN);
+		const fold = el.find('herdr-native-waiting-fold');
+		expect(fold.attrs['aria-expanded']).toBe('true');
+		expect(fold.attrs['aria-label']).toBe('Collapse the card');
+		fold.dispatch('click');
+		const card = el.find('herdr-native-waiting');
+		expect(card.hasClass('is-folded')).toBe(true);
+		expect(card.find('herdr-native-waiting-content').hasClass('herdr-is-hidden')).toBe(true);
+		expect(fold.attrs['aria-expanded']).toBe('false');
+		expect(fold.attrs['aria-label']).toBe('Expand the card');
+		// The bar still says what is waiting, and the status stays outside the fold.
+		expect(card.find('herdr-native-waiting-title').textContent).toBe('Claude is ready to code');
+		expect(card.find('herdr-native-waiting-status').parent).toBe(card);
+		fold.dispatch('click');
+		expect(card.hasClass('is-folded')).toBe(false);
+		expect(card.find('herdr-native-waiting-content').hasClass('herdr-is-hidden')).toBe(false);
+
+		fold.dispatch('click');
+		model.block(null);
+		model.block(WRITE);
+		expect(el.find('herdr-native-waiting').hasClass('is-folded')).toBe(false);
+	});
+
+	it('keeps a folded card folded while a block without a request is drawn again', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.agentStatus = 'blocked';
+		model.blockKind = 'question';
+		model.emit();
+		el.find('herdr-native-waiting-fold').dispatch('click');
+		model.emit();
+		expect(el.find('herdr-native-waiting').hasClass('is-folded')).toBe(true);
+	});
+
+	it('names the card, and says which toggles are on; an option that answers at once is no toggle', async () => {
+		const model = new FakeModel();
+		const { el } = await surfaceOn(model);
+		model.block(DESCRIBED);
+		const card = el.find('herdr-native-waiting');
+		expect(card.attrs.role).toBe('region');
+		expect(card.attrs['aria-label']).toBe('Claude asked a question');
+		expect(el.findAll('herdr-native-waiting-choice').map((entry) => entry.attrs['aria-pressed'])).toEqual([
+			undefined,
+			undefined,
+		]);
+		model.block(null);
+		model.block({ ...QUESTION, id: 'req-5', questions: [{ ...QUESTION.questions[0]!, multiSelect: true }] });
+		const pressed = (): (string | undefined)[] => el.findAll('herdr-native-waiting-choice').map((entry) => entry.attrs['aria-pressed']);
+		expect(pressed()).toEqual(['false', 'false']);
+		press(el, 'Blue');
+		expect(pressed()).toEqual(['false', 'true']);
+		expect(el.find('herdr-native-waiting-choices').attrs).toMatchObject({ role: 'group', 'aria-label': 'Which colour do you prefer?' });
+	});
+});
+
+describe('the question card’s pure parts (#141)', () => {
+	it('reads Claude’s recommendation off the label, and never draws one blank', () => {
+		expect(optionName('Redis (Recommended)')).toEqual({ text: 'Redis', recommended: true });
+		expect(optionName('Redis (recommended) ')).toEqual({ text: 'Redis', recommended: true });
+		expect(optionName('Redis')).toEqual({ text: 'Redis', recommended: false });
+		expect(optionName('(Recommended)')).toEqual({ text: '(Recommended)', recommended: false });
+		expect(optionName('Recommended')).toEqual({ text: 'Recommended', recommended: false });
+	});
+
+	it('joins the picks in Claude’s order, then the typed answer', () => {
+		const offered = [
+			{ label: 'Red', description: '' },
+			{ label: 'Blue', description: '' },
+		];
+		expect(questionAnswer(offered, new Set(['Blue', 'Red']), ' Green ')).toBe('Red, Blue, Green');
+		expect(questionAnswer(offered, new Set(), '   ')).toBe('');
+		expect(questionAnswer(offered, new Set(['Gone']), '')).toBe('');
+	});
+
+	it('takes Enter as a send unless an input method holds it', () => {
+		expect(isTypedAnswerKey({ key: 'Enter' })).toBe(true);
+		expect(isTypedAnswerKey({ key: 'Enter', isComposing: true })).toBe(false);
+		expect(isTypedAnswerKey({ key: 'Enter', keyCode: 229 })).toBe(false);
+		expect(isTypedAnswerKey({ key: 'a' })).toBe(false);
 	});
 });
 

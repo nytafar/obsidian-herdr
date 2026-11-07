@@ -1,65 +1,46 @@
 /**
- * The pane surface seam (issue #92, ADR-0002).
+ * The native surface (issues #92, #93, ADR-0002): a pane's agent session as
+ * Obsidian Markdown, the second adapter of the pane surface seam
+ * (`./paneSurface.ts`).
  *
- * A terminal tab shows a pane through exactly one **pane surface**: something
- * that takes a host element and a pane identity, gives them back, goes hidden
- * and applies a setting. There are two adapters. The terminal lifecycle
- * (`../views/paneTerminal.ts`) is one as it stands — its public methods are
- * this interface, so nothing there changed for native mode — and
- * {@link NativePaneSurface} below is the other.
+ * This file is composition. Each job has a module of its own:
  *
- * Which one a tab mounts is its view's decision (`./renderMode.ts`, #104),
- * and {@link PaneSurfaceHolder} performs the swap: detach the old surface,
- * then build and attach the new one. The terminal view owns the holder and
- * feeds it a factory, which is the seam `tests/paneSurface.test.ts` fakes.
+ * - `./turnRenderer.ts` draws the turns and keeps the heading anchors (#118);
+ * - `./scrollFollower.ts` follows the end of the session (#106);
+ * - `./waitingCardView.ts` draws the waiting card and answers it (#99);
+ * - `./sessionLines.ts` holds the empty line and the status line;
+ * - `./viewLinks.ts` opens and previews the links in the view (#114);
+ * - `./promptBox.ts` is the prompt box under the transcript (#97);
+ * - `./queueRows.ts` draws the queued prompts above it (#159), held in the
+ *   plugin's `./promptQueue.ts`;
+ * - `./sessionBar.ts` is the model, effort and mode pickers and the context
+ *   readout under the prompt box (#161), whose click shows the context
+ *   breakdown (#171).
  *
- * A pane whose transcripts cannot be reached from here keeps a terminal
- * surface (ADR-0002): everything the native view reads is a path on the
- * transcript's host, and herdr over SSH has no adapter for that, so {@link
- * paneViewAvailability} reports native as unavailable there and {@link
- * effectivePaneView} falls back. Which runtimes can is the kind's to say
- * (`nativeViewBlock` in `../runtime/kind.ts`).
+ * What stays here is the session model binding — which turns a change names,
+ * when everything is drawn again — and the strip under the view.
  */
 
-import {
-	Component,
-	Keymap,
-	MarkdownRenderer,
-	Notice,
-	type App,
-	type HoverParent,
-	type HoverPopover,
-	type WorkspaceLeaf,
-} from 'obsidian';
-import type { PaneIdentity, StatusLine, TerminalEffect } from '../views/paneTerminal';
-import { type PaneView } from './renderMode';
-import type { TextEntry, ThinkingEntry, ToolEntry, Turn } from './reducer';
-import {
-	changedPath,
-	changeLine,
-	changeStateClass,
-	sourceText,
-	subagentReport,
-	toolDetail,
-	toolGroupSummary,
-	turnItems,
-	vaultNoteLink,
-	type ToolGroupPresentation,
-	type TurnItem,
-} from './toolCalls';
-import type { AgentStatus } from '../herdr/types.gen';
+import { Component, MarkdownRenderer, Notice, type App, type HoverParent, type HoverPopover, type WorkspaceLeaf } from 'obsidian';
+import type { PaneIdentity, StatusLine } from '../views/paneTerminal';
+import type { PaneSurface } from './paneSurface';
+import { subagentLabel, TodoIndex, turnActivity, type LatestTodo, type ToolGroupPresentation } from './toolCalls';
+import { TodoChip } from './todoList';
+import { earlierTurnCount, type ToolEntry, type Turn } from './conversation';
 import { PromptBox, type PromptInputAttachment } from './promptBox';
+import type { PaneQueue, PromptQueueSource } from './promptQueue';
+import { QueueRows } from './queueRows';
 import type { KeySender, PromptSender } from './promptSender';
-import { waitingCard, type WaitingCardModel } from './waitingCard';
-import {
-	projectGrantText,
-	type PendingQuestion,
-	type PendingRequest,
-	type WaitingAnswer,
-	type WaitingResponder,
-} from './pendingRequest';
-import { HOVER_LINK_SOURCE, fillUriLink, linkVaultUris, openLinkBeside } from './noteLinks';
-import { findObsidianUris, resolveObsidianUri, vaultLookup } from './obsidianUri';
+import { SessionBar } from './sessionBar';
+import type { ComposerLook } from './composerLook';
+import { onPaneGateChange } from './paneGate';
+import type { SessionSettingsSender, SettingQuestion } from './sessionSettings';
+import { ConfirmModal } from '../views/modals';
+import type { ContextUsageReader } from './contextBreakdown';
+import type { WaitingResponder } from './pendingRequest';
+import type { ScreenAnswering } from './screenAnswerers';
+import { linkVaultUris } from './noteLinks';
+import { resolveObsidianUri, vaultLookup } from './obsidianUri';
 import { READABLE_WIDTH_CLASS, readableLineWidth, watchReadableLineWidth } from './readableWidth';
 import type {
 	SessionChange,
@@ -67,198 +48,17 @@ import type {
 	SessionModels,
 	SessionModelView,
 } from './sessionModel';
-
-/**
- * What a terminal tab drives, whichever way the pane is shown. Every method is
- * the terminal lifecycle's, with the same meaning, so `PaneTerminal` satisfies
- * this without a wrapper and without a change of its own.
- */
-export interface PaneSurface {
-	/** The view opened, or the tab switched to this surface: take the element. */
-	attach(hostEl: HTMLElement): Promise<void>;
-	/** The view closed, or the tab switched away: give everything back. */
-	detach(): Promise<void>;
-	/** The leaf was revealed or has been hidden past the grace period (#15). */
-	setVisible(visible: boolean): Promise<void>;
-	/** The tab was pointed at another pane, endpoint or attach mode. */
-	setIdentity(identity: PaneIdentity): Promise<void>;
-	/** One named effect of a settings change (#84); most surfaces ignore most. */
-	apply(effect: TerminalEffect): Promise<void>;
-}
-
-/** The two adapters a view can be drawn by. */
-export type PaneSurfaceKind = 'terminal' | 'native';
-
-/**
- * Which adapter shows a pane in this view. The two vocabularies coincide
- * today — a view is exactly the surface that draws it — but they are separate
- * seams: the view is what the user chose and what the tab stores, the kind is
- * what {@link PaneSurfaceHolder} mounts.
- */
-export function surfaceKindFor(view: PaneView): PaneSurfaceKind {
-	return view === 'native' ? 'native' : 'terminal';
-}
-
-/** Why the native view is not offered on a remote endpoint (ADR-0002). */
-export const NATIVE_REMOTE_REASON = 'local panes only';
-
-/** Whether a view can be chosen here, and why not when it cannot. */
-export interface PaneViewAvailability {
-	available: boolean;
-	/** Shown beside the unavailable view in the menu; null when it is available. */
-	reason: string | null;
-}
-
-/**
- * Where a pane lives, as far as the native view cares: on another machine
- * whose transcripts cannot be reached, and whether its runtime's kind rules
- * the view out by itself (ADR-0004).
- */
-export interface PaneWhere {
-	/**
-	 * On another machine, with no way to read its transcripts from here. A
-	 * remote runtime whose kind reads them over its connection is not `remote`
-	 * in this sense.
-	 */
-	remote: boolean;
-	/**
-	 * Why the native view cannot be offered here, or null/absent when only the
-	 * target decides: the kind's reason (a kind with no agent session), or the
-	 * pane's own (an hc terminal with no Claude session label, ADR-0006).
-	 */
-	kindReason?: string | null;
-	/**
-	 * Why the terminal view cannot be offered for the pane's kind, or
-	 * null/absent when it can: the `claude` kind has no terminal in this
-	 * version (ADR-0007's D2), so its tabs show the native view.
-	 */
-	terminalReason?: string | null;
-}
-
-/**
- * Whether a pane on this endpoint can be shown in this view. Only the native
- * view is ever unavailable: on a runtime whose kind has no agent session to
- * follow, and on a remote endpoint, where the transcript it reads is a path on
- * the pane's own host and the SSH adapters are not built yet (ADR-0002,
- * ADR-0003). The kind's reason comes first, since it holds on any target.
- */
-export function paneViewAvailability(view: PaneView, where: PaneWhere): PaneViewAvailability {
-	if (view === 'terminal' && where.terminalReason) {
-		return { available: false, reason: where.terminalReason };
-	}
-	if (view === 'native' && where.kindReason) {
-		return { available: false, reason: where.kindReason };
-	}
-	if (view === 'native' && where.remote) {
-		return { available: false, reason: NATIVE_REMOTE_REASON };
-	}
-	return { available: true, reason: null };
-}
-
-/**
- * The view a tab actually shows: its own once it has chosen one, else the
- * global default — and never native on a remote endpoint, which falls back to
- * a terminal. Only what is *shown* falls back; the tab keeps the preference it
- * stored, so moving the same tab to a local pane shows native again (#104).
- */
-export function effectivePaneView(input: {
-	/** The tab's stored view, or null while it follows the default. */
-	stored: PaneView | null;
-	/** The global default view, normalized. */
-	fallback: PaneView;
-	remote: boolean;
-	kindReason?: string | null;
-	terminalReason?: string | null;
-}): PaneView {
-	const view = input.stored ?? input.fallback;
-	if (paneViewAvailability(view, input).available) return view;
-	// A kind with no terminal shows the native view whenever it can.
-	if (view === 'terminal' && paneViewAvailability('native', input).available) return 'native';
-	return 'terminal';
-}
-
-/**
- * The one surface a tab has mounted, and the swap from one to the next.
- *
- * Kept deliberately dumb: the view decides *which* kind (that is
- * {@link effectiveRenderMode} plus {@link surfaceKindFor}) and this performs
- * it, in the one order that is safe — the old surface gives its pane back
- * before the new one asks for it. Asking for the kind already mounted does
- * nothing at all, so a settings change that moves between two terminal engines
- * still reaches the terminal lifecycle as an ordinary `engine` effect rather
- * than as a swap.
- */
-export class PaneSurfaceHolder {
-	private surface: PaneSurface | null = null;
-	private mounted: PaneSurfaceKind | null = null;
-	/**
-	 * Which request the holder is serving. Every `show` takes the next number
-	 * and gives up if another `show` or a `release` has taken one since: a
-	 * detach can take a while, and what the tab wanted when it started is not
-	 * necessarily what it wants when the detach comes back.
-	 */
-	private request = 0;
-	/** The detach in flight, so the next mount waits for it rather than racing it. */
-	private detaching: Promise<void> | null = null;
-
-	constructor(private readonly create: (kind: PaneSurfaceKind) => PaneSurface) {}
-
-	/** The mounted surface, or null before the first `show` and after `release`. */
-	get current(): PaneSurface | null {
-		return this.surface;
-	}
-
-	/** Which kind is mounted, or null when none is. */
-	get kind(): PaneSurfaceKind | null {
-		return this.mounted;
-	}
-
-	/**
-	 * Makes `kind` the mounted surface on `hostEl`, building and attaching it if
-	 * it is not the one already there. Returns the surface, or null when the
-	 * request was overtaken while the old surface was detaching — by the view
-	 * closing, or by another view — in which case nothing is mounted and
-	 * nothing was built.
-	 */
-	async show(kind: PaneSurfaceKind, hostEl: HTMLElement): Promise<PaneSurface | null> {
-		const current = this.surface;
-		if (current && this.mounted === kind) return current;
-		const request = ++this.request;
-		await this.detachCurrent();
-		// A surface attached now would outlive the view that asked for it: its
-		// model subscription and its tail would stay behind `onClose` (#92, #94).
-		if (request !== this.request) return null;
-		const surface = this.create(kind);
-		this.surface = surface;
-		this.mounted = kind;
-		await surface.attach(hostEl);
-		return surface;
-	}
-
-	/** Detaches the mounted surface and forgets it. Idempotent; used by `onClose`. */
-	async release(): Promise<void> {
-		this.request++;
-		await this.detachCurrent();
-	}
-
-	/**
-	 * Gives the mounted surface back, and waits for a detach already in flight
-	 * when there is no surface left to give: the old one must be gone before the
-	 * next is attached, however many switches overlapped.
-	 */
-	private async detachCurrent(): Promise<void> {
-		const surface = this.surface;
-		if (surface) {
-			this.surface = null;
-			this.mounted = null;
-			const detaching = surface.detach().finally(() => {
-				if (this.detaching === detaching) this.detaching = null;
-			});
-			this.detaching = detaching;
-		}
-		await this.detaching;
-	}
-}
+import { FoldMemory } from './foldMemory';
+import { ScrollFollower } from './scrollFollower';
+import { TurnRenderer, type ShownImage } from './turnRenderer';
+import { ImageModal } from './imageModal';
+import { SubagentModal } from './subagentModal';
+import type { SubagentTranscript } from './subagents';
+import { WaitingCardView } from './waitingCardView';
+import { SessionLines } from './sessionLines';
+import { registerViewLinks } from './viewLinks';
+import { ConversationFindModal, highlightMatch, locateMatch, type FindHit } from './conversationFind';
+import { EarlierTurnsBar } from './earlierTurns';
 
 /** What {@link NativePaneSurface} needs from the view around it. */
 export interface NativePaneSurfaceOptions {
@@ -271,6 +71,11 @@ export interface NativePaneSurfaceOptions {
 	models: SessionModels;
 	/** How a typed prompt reaches the pane's agent (#97, `./promptSender.ts`). */
 	sender: PromptSender;
+	/**
+	 * The plugin's queues (#159): a prompt typed while the agent works is held
+	 * in its pane's, and outlives this view. Left out, prompts go at once.
+	 */
+	queues?: PromptQueueSource;
 	/** How the waiting card's "Trust this folder" reaches the agent (#99). */
 	keySender: KeySender;
 	/**
@@ -279,6 +84,32 @@ export interface NativePaneSurfaceOptions {
 	 * such a card is described like any other block.
 	 */
 	responder?: WaitingResponder;
+	/**
+	 * How the waiting card reads the pane's dialog off its screen and answers
+	 * it with keys (ADR-0009): herdr and herdr-core, read per block. Null, or
+	 * left out, for a kind with no screen (the `claude` kind answers through
+	 * {@link responder}).
+	 */
+	screen?: () => ScreenAnswering | null;
+	/**
+	 * How the session bar's pickers change the model, effort and mode (#161),
+	 * read per draw: the tab's runtime may change under it. Null, or left
+	 * out, for a kind that cannot change them yet; the pickers then show the
+	 * values, disabled, with the reason.
+	 */
+	sessionSettings?: () => SessionSettingsSender | null;
+	/**
+	 * Puts a question the agent asks on the way to a setting change to the
+	 * user ("Switch model?", #169). Defaults to a confirm modal with the
+	 * agent's own words.
+	 */
+	confirmSetting?: (question: SettingQuestion) => Promise<boolean>;
+	/**
+	 * How the context readout's breakdown is asked for without writing to the
+	 * conversation (#171), read per click. Null, or left out, for a kind whose
+	 * agent is asked through the prompt (the format's `contextCommand`).
+	 */
+	contextUsage?: () => ContextUsageReader | null;
 	/** How a failure reaches the user. Defaults to an Obsidian notice. */
 	notify?: (message: string) => void;
 	/**
@@ -307,6 +138,12 @@ export interface NativePaneSurfaceOptions {
 	 */
 	presentation: () => ToolGroupPresentation;
 	/**
+	 * The prompt box style and the context readout form (#173), read on attach
+	 * and on every {@link NativePaneSurface.refresh}, so a change of setting
+	 * reaches an open view. Left out, the defaults.
+	 */
+	composer?: () => ComposerLook;
+	/**
 	 * The vault's absolute path, for stripping it off the files the agent
 	 * changed. Empty for a vault with no filesystem adapter, which simply leaves
 	 * every path outside the vault.
@@ -330,137 +167,26 @@ export interface NativePaneSurfaceOptions {
 	 * else the vault root. Defaults to the vault root.
 	 */
 	linkSourcePath?: () => string;
+	/**
+	 * Shows a prompt's image full size (#144). Defaults to a modal; a test
+	 * passes its own.
+	 */
+	openImage?: (image: ShownImage) => void;
+	/**
+	 * Shows a subagent's transcript, held for as long as it is shown (#147).
+	 * Defaults to a modal; a test passes its own.
+	 */
+	openSubagent?: (title: string, transcript: SubagentTranscript) => void;
 }
 
 /**
- * What the view says the agent is doing, or an empty string when it should say
- * nothing at all.
- *
- * herdr's five states, not anything read out of the transcript: a turn that has
- * stopped and a turn that is thinking look the same in the file, and the status
- * is the only thing that tells them apart (ADR-0003). `blocked` gets a line of
- * its own until the waiting card exists; `idle`, `done` and `unknown` get
- * nothing, because a finished session should read as prose and nothing else.
- */
-export function workingLine(status: AgentStatus): string {
-	if (status === 'working') return 'Working…';
-	if (status === 'blocked') return 'Waiting for you.';
-	return '';
-}
-
-/** What a failed trust answer says, with herdr's message in the tail (#99). */
-export function trustFailureMessage(error: unknown): string {
-	const reason = error instanceof Error ? error.message : String(error);
-	return `Gjetr: could not trust this folder (${reason})`;
-}
-
-/**
- * How far from the bottom still counts as the bottom (#106).
- *
- * A couple of lines' worth. Sub-pixel rounding, a fractional device pixel ratio
- * and a wheel notch that overshoots by a hair all leave a reader who never
- * meant to move a few pixels short of the end, and none of them should stop the
- * view from following.
- */
-export const BOTTOM_SLACK_PX = 24;
-
-/** Whether a scroll container is showing its end, within {@link BOTTOM_SLACK_PX}. */
-export function isAtBottom(geometry: {
-	scrollTop: number;
-	scrollHeight: number;
-	clientHeight: number;
-}): boolean {
-	const furthest = geometry.scrollHeight - geometry.clientHeight;
-	return furthest - geometry.scrollTop <= BOTTOM_SLACK_PX;
-}
-
-/**
- * One piece of a human prompt: literal text, a wikilink to a note, or an
- * `obsidian://` URI (#114), which is resolved when it is drawn.
- */
-export type PromptSegment =
-	| { kind: 'text'; text: string }
-	| { kind: 'link'; target: string; label: string }
-	| { kind: 'uri'; uri: string };
-
-/**
- * A human prompt split into text, wikilinks and `obsidian://` URIs.
- *
- * Human prompts are shown as the human typed them — plain, pre-wrapped text,
- * not Markdown — with the one exception that a link is a link, because a
- * prompt in this vault is usually half references (native-view-design.md).
- */
-export function promptSegments(prompt: string): PromptSegment[] {
-	const segments: PromptSegment[] = [];
-	const pattern = /\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]/g;
-	let at = 0;
-	for (let match = pattern.exec(prompt); match; match = pattern.exec(prompt)) {
-		if (match.index > at) segments.push(...textSegments(prompt.slice(at, match.index)));
-		const target = (match[1] ?? '').trim();
-		const alias = match[2]?.trim();
-		segments.push({ kind: 'link', target, label: alias || target });
-		at = match.index + match[0].length;
-	}
-	if (at < prompt.length) segments.push(...textSegments(prompt.slice(at)));
-	return segments;
-}
-
-/** A run of prompt text between wikilinks, with its `obsidian://` URIs split out. */
-function textSegments(text: string): PromptSegment[] {
-	const segments: PromptSegment[] = [];
-	let at = 0;
-	for (const match of findObsidianUris(text)) {
-		if (match.start > at) segments.push({ kind: 'text', text: text.slice(at, match.start) });
-		segments.push({ kind: 'uri', uri: match.uri });
-		at = match.end;
-	}
-	if (at < text.length) segments.push({ kind: 'text', text: text.slice(at) });
-	return segments;
-}
-
-/** The link an event inside the view landed on, if it landed on one (#114). */
-function linkAt(target: EventTarget | null): HTMLElement | null {
-	const el = target as HTMLElement | null;
-	if (typeof el?.closest !== 'function') return null;
-	return el.closest<HTMLElement>('a.internal-link');
-}
-
-/**
- * The heading elements a rendered block can hold, as one selector (#118).
- * Obsidian's renderer builds ordinary `h1`-`h6` elements, so this is the whole
- * of what "a heading in the prose" means here.
- */
-const HEADING_TAGS = 'h1, h2, h3, h4, h5, h6';
-
-/**
- * What one turn's draw collects for the heading anchors (#118): the elements
- * its assistant prose was rendered into, in document order, and the renders
- * that have to land before those elements hold anything.
- *
- * Prose only. A thought, a subagent report and a tool detail are Markdown too,
- * but the reducer's `turnHeadings` reads `text` entries alone, and a heading
- * counted here that the reducer never saw would shift every index after it.
- */
-interface TurnDraw {
-	proseEls: HTMLElement[];
-	renders: Promise<void>[];
-}
-
-/**
- * The native surface (issues #92, #93): a pane's agent session as Obsidian
- * Markdown.
+ * The native surface: binds the pane's session model and composes the
+ * modules that draw it.
  *
  * It owns no content of its own. The session model (`./sessionModel.ts`) holds
- * the reduced transcript and says which turns moved; this draws those turns and
- * nothing else, which is what keeps a long history cheap to keep up to date.
- *
- * What renders how (native-view-design.md): assistant prose through
- * `MarkdownRenderer`, one element per block, so the vault's own wikilinks,
- * callouts and embeds come out as they do anywhere else; human prompts as plain
- * pre-wrapped text with their wikilinks linkified; a turn's consecutive tool
- * calls as one collapsed tool group with the vault changes and the sources it
- * made kept outside it (#95); thinking as a collapsed "Thought"; a steer where
- * it entered the turn.
+ * the reduced transcript and says which turns moved; this has those turns
+ * drawn and nothing else, which is what keeps a long history cheap to keep up
+ * to date.
  *
  * Guidelines: no `innerHTML`, no inline styles (everything is in `styles.css`),
  * `this.app` comes in from the view rather than the global, and every DOM
@@ -474,67 +200,78 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	private readonly options: NativePaneSurfaceOptions;
 	/** The element this surface added to the host; removed again on detach. */
 	private rootEl: HTMLElement | null = null;
-	private turnsEl: HTMLElement | null = null;
-	/**
-	 * The wrapper the turns are drawn into, inside the scroll container: the
-	 * reading view's sizer, which is what the readable line width applies to
-	 * (#117, `./readableWidth.ts`).
-	 */
-	private sizerEl: HTMLElement | null = null;
-	private emptyEl: HTMLElement | null = null;
-	/** What the agent is doing, shown between blocks; null when it is nothing. */
-	private statusEl: HTMLElement | null = null;
 	/** The model this surface holds, or null while it is detached or has no pane. */
 	private handle: SessionHandleOf<SessionModelView> | null = null;
 	private unsubscribe: (() => void) | null = null;
-	/** One element per turn id, in the order the turns arrived. */
-	private readonly turnEls = new Map<string, HTMLElement>();
-	/** One component per turn: its listeners and its rendered Markdown. */
-	private readonly turnComponents = new Map<string, Component>();
-	/**
-	 * The heading elements of each turn's prose, in the order the reducer counts
-	 * them, once that turn's Markdown has rendered (#118). Empty until it has.
-	 */
-	private readonly turnHeadingEls = new Map<string, HTMLElement[]>();
-	/**
-	 * Which draw owns each turn's headings. A turn is redrawn while Claude
-	 * writes, so a render that lands after the draw it belonged to was replaced
-	 * must mark nothing: its elements are already out of the document.
-	 */
-	private readonly headingDraws = new Map<string, symbol>();
+	/** The turns, drawn into the reading view's sizer; null while detached. */
+	private turns: TurnRenderer | null = null;
+	/** The scroll of the turns element (#106); null while detached. */
+	private follower: ScrollFollower | null = null;
+	/** The empty line and the status line; null while detached. */
+	private lines: SessionLines | null = null;
+	/** The current to-do list under the turns (#143); null while detached. */
+	private todo: TodoChip | null = null;
+	/** The waiting card (#99), kept across attaches for its answer guards. */
+	private readonly waiting: WaitingCardView;
 	/** The prompt box under the transcript (#97); null while detached. */
 	private promptBox: PromptBox | null = null;
-	/** The surface's own listeners: the scroll on the turns element (#106). */
+	/** The queued prompts above the prompt box (#159); null while detached. */
+	private queueRows: QueueRows | null = null;
+	/** The pane's queue while bound, and how to stop listening to it. */
+	private queue: PaneQueue | null = null;
+	private queueOff: (() => void) | null = null;
+	/** The session bar under the prompt box (#161); null while detached. */
+	private sessionBar: SessionBar | null = null;
+	/** Stops listening to the pane gate (`./paneGate.ts`); null while detached. */
+	private gateOff: (() => void) | null = null;
+	/** What the model does not hold, above the first turn (#152); null while detached. */
+	private earlierBar: EarlierTurnsBar | null = null;
+	/** The surface's own listeners: the scroll, the links, the line width. */
 	private readonly component = new Component();
 	/**
-	 * Whether the view is following the end of the session. True on open and
-	 * after a rotation, off the moment the reader scrolls up, on again when they
-	 * come back to the bottom (#106).
+	 * What the reader opened and closed in the turns (#127). Here, not in the
+	 * turn renderer: that is rebuilt on every attach and its turns on every
+	 * full draw, and a reader's choice must outlive both. Not in the session
+	 * model either, which every tab on the pane shares.
 	 */
-	private following = true;
-	/** Watches the turns element and the turn being written; null where there is none. */
-	private resizeObserver: ResizeObserver | null = null;
-	/** The turn the observer is watching, so only one ever is. */
-	private observedTurnEl: HTMLElement | null = null;
-	/** The Markdown renders of the current draw, which finish after it does. */
-	private renders: Promise<void>[] = [];
-	/** The waiting card (#99); null whenever the agent is not blocked. */
-	private waitingEl: HTMLElement | null = null;
-	/** The card's listeners, unloaded whenever it is drawn again or goes. */
-	private waitingComponent: Component | null = null;
-	/** Whether this surface has already answered the block it is in (#99). */
-	private trustSent = false;
-	/**
-	 * The runtime request the card on screen answers, so a redraw for anything
-	 * else keeps the card — and what was chosen or typed on it — as it is.
-	 */
-	private waitingRequest: PendingRequest | null = null;
-	/** The request an answer has been sent for, so a second press sends nothing. */
-	private answeredRequest = '';
+	private readonly folds = new FoldMemory();
+	/** The turn last drawn as the latest, which settles when another arrives (#128). */
+	private activeTurnId: string | null = null;
+	/** Each turn's own to-do list, read once per change of that turn (#143). */
+	private readonly todos = new TodoIndex();
+	/** The session's newest to-do list as last drawn: its update is the open one. */
+	private latestTodo: LatestTodo | null = null;
+	/** Takes the last find's highlight off (#145); null when nothing is marked. */
+	private clearFindMark: (() => void) | null = null;
+	/** Whether the tab is shown; a hidden one follows no subagent (#147). */
+	private visible = true;
+	/** Lets go of the session's subagents, while this shows them (#147). */
+	private subagentHold: (() => void) | null = null;
 
 	constructor(options: NativePaneSurfaceOptions) {
 		this.options = options;
 		this.identity = options.identity;
+		this.waiting = new WaitingCardView({
+			model: () => this.model,
+			paneId: () => this.identity.paneId,
+			keySender: options.keySender,
+			responder: options.responder,
+			screen: options.screen,
+			// A misfire's "Show in the conversation" (ADR-0009 §4).
+			revealTurn: (turnId) => {
+				const turnEl = this.turns?.turnEl(turnId);
+				if (turnEl) this.follower?.scrollTo(turnEl);
+			},
+			autoTrustFolders: options.autoTrustFolders,
+			openInTerminal: () => this.options.openInTerminal(),
+			vaultPath: options.vaultPath,
+			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
+			setPromptHidden: (hidden) => this.promptBox?.setHidden(hidden),
+			// herdr calls Claude's picker `blocked` while the session bar drives
+			// it, and a moment after: no card is read or drawn for it (#169).
+			screenHeld: () => this.options.sessionSettings?.()?.screenHeld?.(this.identity.paneId) ?? false,
+			notify: (message) => this.notify(message),
+		});
 	}
 
 	async attach(hostEl: HTMLElement): Promise<void> {
@@ -556,58 +293,126 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// The turns are the view's one scroll container (#103), so everything that
 		// acts on the scroll — following here, the TOC's jumps (#100), the
 		// `content-visibility` estimates (#101) — acts on this element.
-		const turns = root.createDiv({ cls: 'herdr-native-turns' });
+		const turnsEl = root.createDiv({ cls: 'herdr-native-turns' });
 		// Inside it, the wrapper the reading view builds (#117): the scroll
 		// container keeps the full width of the tab, so the scrollbar stays at
 		// its edge, and this is the element `--file-line-width` narrows.
-		this.sizerEl = turns.createDiv({
+		const sizerEl = turnsEl.createDiv({
 			cls: ['herdr-native-sizer', 'markdown-preview-sizer', 'markdown-preview-section'],
 		});
-		this.turnsEl = turns;
+		const follower = new ScrollFollower(turnsEl, root);
+		this.follower = follower;
+		this.turns = new TurnRenderer(sizerEl, {
+			presentation: this.options.presentation,
+			vaultPath: this.options.vaultPath,
+			renderMarkdown: (markdown, el, component) => this.renderMarkdown(markdown, el, component),
+			resolveUri: (uri) => this.resolveUri(uri),
+			folds: this.folds,
+			latestTodoId: () => this.latestTodo?.entryId ?? null,
+			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
+			onTurnCreated: (turnEl) => follower.watchTurn(turnEl),
+			// A prompt's images, read from the transcript as they come into view
+			// and shown full size on a click (#144).
+			readImage: (image) => this.model?.readImage?.(image) ?? Promise.resolve(null),
+			// What each call is shown as is the session's format's (ADR-0010).
+			toolTable: () => this.model?.format,
+			openImage: (image) =>
+				this.options.openImage ? this.options.openImage(image) : new ImageModal(this.options.app, image).open(),
+			openSubagent: (call) => this.openSubagent(call),
+		});
+		this.todo = new TodoChip(root);
+		this.lines = new SessionLines(root, {
+			component: this.component,
+			onRetry: () => this.model?.retryRead?.(),
+		});
 		this.rootEl = root;
 		this.component.load();
+		// First in the sizer, before any turn is drawn, and never cleared with them.
+		this.earlierBar = new EarlierTurnsBar(sizerEl, {
+			component: this.component,
+			onLoad: () => this.model?.loadEarlier?.(),
+			cls: 'herdr-native-earlier-view',
+		});
 		// The setting is the vault's, and it may move under an open view (#117).
 		this.applyReadableWidth();
 		this.component.register(
 			watchReadableLineWidth(this.options.app, () => this.applyReadableWidth()),
 		);
-		// The only thing a scroll does: say whether the view is still following.
-		// Nothing is drawn, measured or unmounted here, because this runs on
-		// every frame of a flick through a long session (#101).
-		this.component.registerDomEvent(turns, 'scroll', () => {
-			this.following = isAtBottom(turns);
+		follower.attach(this.component);
+		registerViewLinks(this.component, root, {
+			app: this.options.app,
+			sourcePath: () => this.sourcePath(),
+			leaf: this.options.leaf,
+			noteSplitBefore: this.options.noteSplitBefore,
+			hoverParent: this,
+			notify: (message) => this.notify(message),
 		});
-		// Every link in the view, prose and prompts alike, through one handler
-		// (#114): Obsidian's renderer wires no clicks of its own here.
-		this.component.registerDomEvent(root, 'click', (event) => this.onLinkClick(event, 0));
-		this.component.registerDomEvent(root, 'auxclick', (event) => this.onLinkClick(event, 1));
-		this.component.registerDomEvent(root, 'mouseover', (event) => this.onLinkHover(event));
-		this.watchForGrowth(turns);
+		// Above the box, and above the waiting card when that stands in for it.
+		this.queueRows = new QueueRows(root, {
+			queue: () => this.queue,
+			status: () => this.model?.agentStatus ?? 'unknown',
+			heldByAgent: () => this.model?.state.pendingQueue ?? [],
+			onEdit: (row) => this.promptBox?.restore(row.text, row.images),
+		});
 		this.promptBox = new PromptBox({
 			paneId: () => this.identity.paneId,
 			sender: this.options.sender,
+			queue: () => this.queue,
 			onInput: this.options.onPromptInput,
+			notify: (message) => this.notify(message),
 		});
 		this.promptBox.mount(root);
+		// In the box's toolbar strip (#173), which stays under the waiting card
+		// while that stands in for the box, so the bar stays, disabled (#161).
+		this.sessionBar = new SessionBar({
+			paneId: () => this.identity.paneId,
+			sender: () => this.heldWhilePicking(this.options.sessionSettings?.() ?? null),
+			contextUsage: () => this.options.contextUsage?.() ?? null,
+			// `/context` on herdr and herdr-core: the prompt's own path (#171),
+			// behind the pane gate like every prompt (review of #169).
+			sendCommand: (paneId, text) => this.options.sender.send(paneId, text),
+			sendBlocked: (paneId) => this.options.sender.blocked?.(paneId) ?? null,
+			notify: (message) => this.notify(message),
+			// Claude's own words on both buttons (#169).
+			confirm: (question) =>
+				this.options.confirmSetting
+					? this.options.confirmSetting(question)
+					: new ConfirmModal(this.options.app, {
+							title: question.title,
+							body: question.body,
+							confirm: question.confirm,
+							cancel: question.cancel,
+						}).ask(),
+		});
+		this.sessionBar.mount(this.promptBox.barSlot ?? root);
+		this.applyComposer();
+		// The pane gate opened or shut (review of #169): what may be sent, and
+		// whether the waiting card may read the screen, follow it.
+		this.gateOff?.();
+		this.gateOff = onPaneGateChange(() => this.updateStatus());
 		this.bind();
 	}
 
 	async detach(): Promise<void> {
+		this.gateOff?.();
+		this.gateOff = null;
 		this.unbind();
-		this.clearWaiting();
+		this.waiting.detach();
 		this.promptBox?.destroy();
 		this.promptBox = null;
-		this.resizeObserver?.disconnect();
-		this.resizeObserver = null;
-		this.observedTurnEl = null;
+		this.queueRows?.destroy();
+		this.queueRows = null;
+		this.sessionBar?.destroy();
+		this.sessionBar = null;
+		this.follower?.dispose();
+		this.follower = null;
 		this.component.unload();
-		this.renders = [];
 		this.rootEl?.remove();
 		this.rootEl = null;
-		this.turnsEl = null;
-		this.sizerEl = null;
-		this.emptyEl = null;
-		this.statusEl = null;
+		this.turns = null;
+		this.lines = null;
+		this.todo = null;
+		this.earlierBar = null;
 	}
 
 	/**
@@ -620,7 +425,50 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * tab whose reader had scrolled up is left exactly where they left it (#106).
 	 */
 	async setVisible(visible: boolean): Promise<void> {
-		if (visible) this.pinToBottom();
+		this.visible = visible;
+		this.holdSubagents();
+		if (visible) this.follower?.pin();
+	}
+
+	/**
+	 * Says to the model that this shows its subagents while the tab is
+	 * attached and shown, and stops saying so otherwise (#147): a hidden tab
+	 * keeps its model, not the subagents' tails.
+	 */
+	private holdSubagents(): void {
+		const model = this.handle?.model;
+		const wanted = !!model && this.visible && this.rootEl !== null;
+		if (wanted && !this.subagentHold) this.subagentHold = model?.showSubagents?.() ?? null;
+		else if (!wanted && this.subagentHold) {
+			this.subagentHold();
+			this.subagentHold = null;
+		}
+	}
+
+	/** Opens the transcript of the subagent working under `call` (#147). */
+	private openSubagent(call: ToolEntry): void {
+		const transcript = this.model?.subagentTranscript?.(call.id) ?? null;
+		if (!transcript) {
+			this.notify('This subagent’s transcript cannot be read from here.');
+			return;
+		}
+		const title = `Subagent: ${subagentLabel(call)}`;
+		if (this.options.openSubagent) {
+			this.options.openSubagent(title, transcript);
+			return;
+		}
+		new SubagentModal(this.options.app, title, transcript, {
+			presentation: this.options.presentation,
+			vaultPath: this.options.vaultPath,
+			// Not the view's renderer: nothing here moves the view's scroll.
+			renderMarkdown: (markdown, el, component) =>
+				MarkdownRenderer.render(this.options.app, markdown, el, this.sourcePath(), component).then(() =>
+					linkVaultUris(el, (uri) => this.resolveUri(uri)),
+				),
+			resolveUri: (uri) => this.resolveUri(uri),
+			toolTable: () => this.model?.format,
+			copier: { write: (text) => navigator.clipboard.writeText(text), notify: (message) => this.notify(message) },
+		}).open();
 	}
 
 	async setIdentity(identity: PaneIdentity): Promise<void> {
@@ -635,6 +483,7 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 		// Another pane is another session: let the old model go and start over.
 		// The new one is pinned to the identity's runtime, never the published one.
 		this.unbind();
+		this.folds.clear();
 		this.bind();
 	}
 
@@ -647,7 +496,16 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	refresh(): void {
 		if (!this.rootEl) return;
+		this.applyComposer();
 		this.renderAll();
+	}
+
+	/** The prompt box's style and the readout's form, from the settings (#173). */
+	private applyComposer(): void {
+		const look = this.options.composer?.();
+		if (!look) return;
+		this.promptBox?.setStyle(look.boxStyle);
+		this.sessionBar?.setReadoutStyle(look.readout);
 	}
 
 	/**
@@ -657,33 +515,90 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 * share a session model, but a rotation can empty one before the other.
 	 */
 	scrollToTurn(turnId: string): void {
-		const turnEl = this.turnEls.get(turnId);
+		const turnEl = this.turns?.turnEl(turnId);
 		if (!turnEl) return;
-		this.following = false;
-		turnEl.scrollIntoView({ block: 'start' });
+		this.follower?.scrollTo(turnEl);
 	}
 
 	/**
 	 * Brings one heading of a turn's prose into view, which is what a click on a
 	 * heading in the table of contents does (#118).
 	 *
-	 * The index is the heading's place in {@link Turn.headings}, which the
-	 * reducer computes by regex, and the elements are what Obsidian's renderer
-	 * produced. They pair by position and only while there are as many of one as
-	 * of the other: a heading the regex saw inside an indented code block, or
-	 * one it missed, makes every index after it a lie. When they disagree, or
-	 * the index names no heading, the turn is what a click can still promise.
+	 * The index is the heading's place in `Turn.headings`, which the parser
+	 * computes by regex, and the elements are what Obsidian's renderer
+	 * produced; when they disagree, or the index names no heading, the turn is
+	 * what a click can still promise (`TurnRenderer.headingEl`).
 	 */
 	scrollToHeading(turnId: string, index: number): void {
-		const els = this.turnHeadingEls.get(turnId) ?? [];
 		const turn = this.model?.state.turns.find((candidate) => candidate.id === turnId);
-		const headingEl = els.length === turn?.headings.length ? els[index] : undefined;
+		const headingEl = this.turns?.headingEl(turnId, index, turn?.headings.length);
 		if (!headingEl) {
 			this.scrollToTurn(turnId);
 			return;
 		}
-		this.following = false;
-		headingEl.scrollIntoView({ block: 'start' });
+		this.follower?.scrollTo(headingEl);
+	}
+
+	/**
+	 * Puts the cursor in the prompt box (#145), and says whether there was one
+	 * to take it: hidden behind the waiting card, or not mounted, it cannot.
+	 */
+	focusPrompt(): boolean {
+		return this.promptBox?.focus() ?? false;
+	}
+
+	/** Whether {@link focusPrompt} would take, for the command's check. */
+	canFocusPrompt(): boolean {
+		return this.promptBox?.canFocus() ?? false;
+	}
+
+	/** Brings the next or the previous turn into view (#145). */
+	stepTurn(direction: 1 | -1): void {
+		const turns = this.turns;
+		const follower = this.follower;
+		if (!turns || !follower) return;
+		const turnEls: HTMLElement[] = [];
+		for (const turn of this.model?.state.turns ?? []) {
+			const el = turns.turnEl(turn.id);
+			if (el) turnEls.push(el);
+		}
+		follower.stepTurn(turnEls, direction);
+	}
+
+	/**
+	 * Opens the find picker over this session (#145); a pick brings its turn
+	 * into view with the match highlighted until the next find.
+	 */
+	findInConversation(): void {
+		if (!this.rootEl) return;
+		const state = this.model?.state;
+		new ConversationFindModal(
+			this.options.app,
+			() => this.model?.state.turns ?? [],
+			(hit, query) => this.revealMatch(hit, query),
+			// What it cannot search, and where its turns count from (#152).
+			state ? earlierTurnCount(state) : 0,
+		).open();
+	}
+
+	/** Scrolls to a find's match and marks it, or to its turn when the drawing lacks it. */
+	private revealMatch(hit: FindHit, query: string): void {
+		this.clearFind();
+		const turnEl = this.turns?.turnEl(hit.turnId);
+		if (!turnEl || !this.follower) return;
+		const match = locateMatch(turnEl, query, hit.occurrence);
+		if (!match) {
+			this.follower.scrollTo(turnEl);
+			return;
+		}
+		this.clearFindMark = highlightMatch(match);
+		this.follower.scrollTo(match.node.parentElement ?? turnEl, 'center');
+	}
+
+	/** Takes the last find's mark off, if there is one. */
+	private clearFind(): void {
+		this.clearFindMark?.();
+		this.clearFindMark = null;
 	}
 
 	/**
@@ -696,17 +611,27 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	private bind(): void {
 		if (!this.rootEl) return;
-		this.following = true;
+		this.follower?.follow();
 		if (this.identity.paneId) {
 			this.handle = this.options.models.acquire(this.identity.endpointId, this.identity.paneId);
 			this.unsubscribe = this.handle.model.on((change) => this.applyChange(change));
+			const queue = this.options.queues?.queue(this.identity.endpointId, this.identity.paneId) ?? null;
+			this.queue = queue;
+			this.queueOff = queue?.on(() => this.queueRows?.render()) ?? null;
 		}
+		this.holdSubagents();
 		this.renderAll();
 		this.report();
 	}
 
 	/** Gives the model back. Safe to call when nothing is held. */
 	private unbind(): void {
+		// The rows stay in the plugin's queue; only this view stops drawing them.
+		this.queueOff?.();
+		this.queueOff = null;
+		this.queue = null;
+		this.subagentHold?.();
+		this.subagentHold = null;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.handle?.release();
@@ -721,19 +646,55 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	/** Draws a change: a reset redraws everything, else only the turns named. */
 	private applyChange(change: SessionChange): void {
 		if (!this.rootEl) return;
-		if (change.reset) {
+		if (change.reset && change.earlier) {
+			// The same session with earlier turns loaded (#152): drawn above the
+			// turn the reader had first, which stays where they saw it.
+			const anchorId = this.turns?.firstTurnId() ?? null;
+			const anchorEl = anchorId ? this.turns?.turnEl(anchorId) : undefined;
+			const offset = anchorEl ? (this.follower?.offsetOf(anchorEl) ?? 0) : 0;
+			this.renderAll();
+			const nowEl = anchorId ? this.turns?.turnEl(anchorId) : undefined;
+			if (nowEl) this.follower?.keepAt(nowEl, offset);
+		} else if (change.reset) {
 			// Another session (`/clear`, `--resume`): its latest turn is what to
 			// show, whatever the reader was reading in the one that is gone.
-			this.following = true;
+			this.follower?.follow();
 			this.renderAll();
 		} else {
 			const turns = this.model?.state.turns ?? [];
-			for (const id of change.changedTurnIds) {
-				const turn = turns.find((candidate) => candidate.id === id);
-				if (turn) this.renderTurn(turn);
+			// What a rewind left behind goes first (#131): a turn the new branch
+			// opens is drawn after the ones that stay.
+			for (const id of change.removedTurnIds ?? []) {
+				this.turns?.remove(id);
+				this.todos.forget(id);
 			}
+			// The latest turn too, whatever moved: its tool groups say whether the
+			// agent is working or waiting in them (#128), and the status moves
+			// without a line. And the turn that was latest, which has settled.
+			const ids = new Set(change.changedTurnIds);
+			const latest = turns.at(-1)?.id;
+			if (latest) ids.add(latest);
+			if (this.activeTurnId && this.activeTurnId !== latest) ids.add(this.activeTurnId);
+			// The turn whose to-do update was open and the one whose is now, when
+			// the newest list moved (#143): either may be a turn nothing else names.
+			const todo = this.todos.latest(turns, this.model?.format);
+			if (todo?.entryId !== this.latestTodo?.entryId) {
+				if (this.latestTodo) ids.add(this.latestTodo.turnId);
+				if (todo) ids.add(todo.turnId);
+			}
+			this.latestTodo = todo;
+			for (const id of ids) {
+				const turn = turns.find((candidate) => candidate.id === id);
+				if (turn) this.renderTurn(turn, turn.id === latest);
+			}
+			this.activeTurnId = latest ?? null;
+			this.todo?.update(todo?.items ?? null);
 			this.updateEmpty();
-			this.settleScroll();
+			this.updateEarlier();
+			// Written while the reader is away from the end: the jump button
+			// says so (#149). A status change alone writes nothing.
+			if (change.changedTurnIds.length > 0) this.follower?.arrived();
+			this.follower?.settle();
 		}
 		this.updateStatus();
 		this.report();
@@ -741,24 +702,43 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 
 	private renderAll(): void {
 		this.clearTurns();
-		for (const turn of this.model?.state.turns ?? []) this.renderTurn(turn);
+		const turns = this.model?.state.turns ?? [];
+		// What the reader opened in turns the model no longer has — gone with a
+		// rotation, or dropped while this tab was detached and heard nothing —
+		// is never asked for again (#127).
+		this.folds.retain(turns.map((turn) => turn.id));
+		this.todos.clear();
+		this.latestTodo = this.todos.latest(turns, this.model?.format);
+		turns.forEach((turn, index) => this.renderTurn(turn, index === turns.length - 1));
+		this.activeTurnId = turns.at(-1)?.id ?? null;
+		this.todo?.update(this.latestTodo?.items ?? null);
 		this.updateEmpty();
+		this.updateEarlier();
 		this.updateStatus();
-		this.settleScroll();
+		this.follower?.settle();
 	}
 
-	/** Drops every turn element and the components that went with them. */
+	/** How many earlier turns the model does not hold, and whether they are loading (#152). */
+	private updateEarlier(): void {
+		const model = this.model;
+		this.earlierBar?.update(model ? earlierTurnCount(model.state) : 0, model?.loadingEarlier ?? false);
+	}
+
+	/**
+	 * Draws one turn. Only the session's latest turn shows what the agent is
+	 * doing (#128): herdr's status is the pane's, and every turn before the
+	 * latest has finished, whatever its calls still say.
+	 */
+	private renderTurn(turn: Turn, latest: boolean): void {
+		const activity = latest ? turnActivity(this.model?.agentStatus ?? 'unknown') : null;
+		this.turns?.render(turn, activity);
+	}
+
+	/** Drops every turn element and stops watching the one being written. */
 	private clearTurns(): void {
-		for (const component of this.turnComponents.values()) component.unload();
-		this.turnComponents.clear();
-		this.turnEls.clear();
-		this.turnHeadingEls.clear();
-		this.headingDraws.clear();
-		if (this.observedTurnEl) {
-			this.resizeObserver?.unobserve(this.observedTurnEl);
-			this.observedTurnEl = null;
-		}
-		this.sizerEl?.empty();
+		this.clearFind();
+		this.turns?.clear();
+		this.follower?.forgetTurn();
 	}
 
 	/**
@@ -769,249 +749,6 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	private applyReadableWidth(): void {
 		this.rootEl?.toggleClass(READABLE_WIDTH_CLASS, readableLineWidth(this.options.app));
-	}
-
-	/**
-	 * Draws one turn into its own element, which is created on first sight and
-	 * reused afterwards: a turn that grows while Claude writes keeps its place
-	 * in the view, and the turns around it are not touched.
-	 */
-	private renderTurn(turn: Turn): void {
-		const sizerEl = this.sizerEl;
-		if (!sizerEl) return;
-		let turnEl = this.turnEls.get(turn.id);
-		if (!turnEl) {
-			turnEl = sizerEl.createDiv({ cls: 'herdr-native-turn' });
-			this.turnEls.set(turn.id, turnEl);
-			// The turn Claude is writing is the one that grows under the view.
-			this.watchForGrowth(turnEl, this.observedTurnEl);
-		}
-		turnEl.empty();
-		this.turnComponents.get(turn.id)?.unload();
-		const component = new Component();
-		component.load();
-		this.turnComponents.set(turn.id, component);
-
-		if (turn.prompt) {
-			this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-prompt' }), turn.prompt);
-		}
-		// What to draw, and in which order, is `turnItems` (#95): the tool calls
-		// folded into groups with the vault changes and sources left outside.
-		const draw: TurnDraw = { proseEls: [], renders: [] };
-		for (const item of turnItems(turn.entries, this.options.presentation())) {
-			this.renderItem(turnEl, item, component, draw);
-		}
-		this.markHeadings(turn, draw);
-	}
-
-	private renderItem(
-		turnEl: HTMLElement,
-		item: TurnItem,
-		component: Component,
-		draw: TurnDraw,
-	): void {
-		switch (item.kind) {
-			case 'text':
-				this.renderText(turnEl, item.entry, component, draw);
-				return;
-			case 'thinking':
-				this.renderThinking(turnEl, item.entry, component);
-				return;
-			case 'group':
-				this.renderToolGroup(turnEl, item.tools);
-				return;
-			case 'change':
-				this.renderVaultChange(turnEl, item.entry);
-				return;
-			case 'source':
-				this.renderSource(turnEl, item.entry);
-				return;
-			case 'report':
-				this.renderSubagentReport(turnEl, item.entry, component);
-				return;
-			case 'steer':
-				// A steer is shown where it entered the running turn (CONTEXT.md).
-				this.renderPrompt(turnEl.createDiv({ cls: 'herdr-native-steer' }), item.entry.text);
-				return;
-		}
-	}
-
-	/**
-	 * Assistant prose, through Obsidian's own renderer. The block is the draw's,
-	 * because the headings inside it are the ones the table of contents lists
-	 * (#118) and nothing else in a turn counts.
-	 */
-	private renderText(
-		turnEl: HTMLElement,
-		entry: TextEntry,
-		component: Component,
-		draw: TurnDraw,
-	): void {
-		const blockEl = turnEl.createDiv({ cls: 'herdr-native-block' });
-		draw.proseEls.push(blockEl);
-		draw.renders.push(this.renderMarkdown(entry.text, blockEl, component));
-	}
-
-	/**
-	 * Writes the anchors a heading click aims at (#118), once the draw's
-	 * Markdown has rendered: the turn's id and the heading's place in the turn,
-	 * on every `h1`-`h6` of its prose in document order.
-	 *
-	 * Obsidian's rendered output carries nothing of this plugin's, and the
-	 * render is async, so this is the only moment the elements exist and are
-	 * still the ones on screen. A turn redrawn since takes the mark over, which
-	 * is what the draw token guards: `renderTurn` empties the element, so a
-	 * render that lands late would otherwise mark elements nobody can see.
-	 */
-	private markHeadings(turn: Turn, draw: TurnDraw): void {
-		const token = Symbol('draw');
-		this.headingDraws.set(turn.id, token);
-		this.turnHeadingEls.delete(turn.id);
-		const mark = (): void => {
-			if (this.headingDraws.get(turn.id) !== token) return;
-			const found: HTMLElement[] = [];
-			for (const proseEl of draw.proseEls) {
-				found.push(...Array.from(proseEl.querySelectorAll<HTMLElement>(HEADING_TAGS)));
-			}
-			found.forEach((headingEl, index) => {
-				headingEl.setAttr('data-herdr-turn', turn.id);
-				headingEl.setAttr('data-herdr-heading', String(index));
-			});
-			this.turnHeadingEls.set(turn.id, found);
-		};
-		if (draw.renders.length === 0) {
-			mark();
-			return;
-		}
-		void Promise.allSettled(draw.renders).then(mark);
-	}
-
-	/**
-	 * A thought, collapsed (#95). A `details` rather than a click handler: the
-	 * browser owns the open state, so a turn redrawn while Claude writes does not
-	 * fight the reader, and nothing has to be torn down.
-	 *
-	 * A block with no text is an encrypted thought this build cannot read, and
-	 * renders nothing rather than an empty disclosure.
-	 */
-	private renderThinking(
-		turnEl: HTMLElement,
-		entry: ThinkingEntry,
-		component: Component,
-	): void {
-		if (!entry.text.trim()) return;
-		const details = turnEl.createEl('details', { cls: 'herdr-native-thinking' });
-		details.createEl('summary', { cls: 'herdr-native-thinking-summary', text: 'Thought' });
-		const bodyEl = details.createDiv({ cls: 'herdr-native-thought' });
-		// The promise is the draw's business, and a thought is not in it: only
-		// prose is paired with the reducer's headings (#118).
-		void this.renderMarkdown(entry.text, bodyEl, component);
-	}
-
-	/** The tool group: one summary line that expands to a row per call. */
-	private renderToolGroup(turnEl: HTMLElement, tools: readonly ToolEntry[]): void {
-		const details = turnEl.createEl('details', { cls: 'herdr-native-tools' });
-		details.createEl('summary', {
-			cls: 'herdr-native-tools-summary',
-			text: toolGroupSummary(tools),
-		});
-		const vaultPath = this.options.vaultPath();
-		for (const entry of tools) {
-			const detail = toolDetail(entry, vaultPath);
-			details.createDiv({
-				cls: 'herdr-native-tool',
-				text: detail ? `${entry.name} ${detail}` : entry.name,
-			});
-		}
-	}
-
-	/**
-	 * A file the agent wrote or edited, at the point in the turn where it did.
-	 * Inside the vault it is a link to the note, so a reader can go and read it;
-	 * outside there is nothing to strip and nothing to open, so the path shows
-	 * as it was. No diff either way (native-view-design.md).
-	 *
-	 * What the line says follows the call's status (#91): a change that was
-	 * refused, or that nothing has answered yet, must not read as one that
-	 * landed.
-	 */
-	private renderVaultChange(turnEl: HTMLElement, entry: ToolEntry): void {
-		const path = changedPath(entry);
-		if (!path) return;
-		const el = turnEl.createDiv({ cls: 'herdr-native-change' });
-		const state = changeStateClass(entry.status);
-		if (state) el.addClass(state);
-		const { lead, trail } = changeLine(entry.status);
-		el.appendText(lead);
-		const link = vaultNoteLink(path, this.options.vaultPath());
-		if (link) this.renderPrompt(el, `[[${link}]]`);
-		else el.appendText(path);
-		if (trail) el.appendText(trail);
-	}
-
-	/**
-	 * What a subagent reported, as prose (#96): the turn's own text and the text
-	 * of the agent it sent out read the same way, which is the point of showing
-	 * it at all. The call that launched it stays folded in the tool group.
-	 */
-	private renderSubagentReport(
-		turnEl: HTMLElement,
-		entry: ToolEntry,
-		component: Component,
-	): void {
-		const report = subagentReport(entry);
-		if (!report) return;
-		const blockEl = turnEl.createDiv({ cls: 'herdr-native-report' });
-		// Not prose either, as far as the headings go (#118).
-		void this.renderMarkdown(report, blockEl, component);
-	}
-
-	/**
-	 * A web search or a fetch: where the turn's facts came from.
-	 *
-	 * A fetch is the one page it asked for. A search is the query it ran and the
-	 * pages it came back with, which live in the result rather than the input
-	 * (#95, `./toolCalls.ts`); a search that returned none shows its query alone.
-	 * External links are Obsidian's to open, so they get no handler of ours.
-	 */
-	private renderSource(turnEl: HTMLElement, entry: ToolEntry): void {
-		const { label, url, links } = sourceText(entry);
-		const el = turnEl.createDiv({ cls: 'herdr-native-source' });
-		if (url) {
-			el.createEl('a', { cls: 'external-link', text: label, href: url });
-			return;
-		}
-		el.createDiv({ cls: 'herdr-native-source-query', text: label });
-		for (const link of links) {
-			el.createEl('a', {
-				cls: ['herdr-native-source-link', 'external-link'],
-				text: link.title,
-				href: link.url,
-			});
-		}
-	}
-
-	/**
-	 * A human prompt: text as typed, wikilinks and `obsidian://` URIs as links.
-	 * A click on one is the view's delegated handler's ({@link onLinkClick}).
-	 */
-	private renderPrompt(el: HTMLElement, prompt: string): void {
-		for (const segment of promptSegments(prompt)) {
-			if (segment.kind === 'text') {
-				el.appendText(segment.text);
-				continue;
-			}
-			if (segment.kind === 'uri') {
-				fillUriLink(el.createEl('a'), segment.uri, this.resolveUri(segment.uri));
-				continue;
-			}
-			el.createEl('a', {
-				cls: 'internal-link',
-				text: segment.label,
-				href: segment.target,
-				attr: { 'data-href': segment.target },
-			});
-		}
 	}
 
 	/** The vault path an `obsidian://` URI opens in this vault, or null (#114). */
@@ -1025,54 +762,13 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	}
 
 	/**
-	 * A click on a link: beside the view on a plain click, where Obsidian would
-	 * on a mod-click, a new tab on a middle click (#114). Never the operating
-	 * system's protocol handler, and never this view's own leaf.
-	 *
-	 * A click something inside the link already handled — an embed's own
-	 * reading view wires its links — is left to it.
-	 */
-	private onLinkClick(event: MouseEvent, button: number): void {
-		if (event.defaultPrevented || (event.button ?? 0) !== button) return;
-		const linkEl = linkAt(event.target);
-		const linktext = linkEl?.getAttribute('data-href') ?? linkEl?.getAttribute('href');
-		if (!linktext) return;
-		event.preventDefault();
-		openLinkBeside(this.options.app, {
-			linktext,
-			sourcePath: this.sourcePath(),
-			ownLeaf: this.options.leaf?.() ?? null,
-			newLeaf: button === 1 ? 'tab' : Keymap.isModEvent(event),
-			splitBefore: this.options.noteSplitBefore?.() ?? false,
-		}).catch((error: unknown) => {
-			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Gjetr: could not open ${linktext} (${reason})`);
-		});
-	}
-
-	/** A hover over a link: Obsidian's page preview, as in a note (#114). */
-	private onLinkHover(event: MouseEvent): void {
-		const linkEl = linkAt(event.target);
-		const linktext = linkEl?.getAttribute('data-href');
-		if (!linkEl || !linktext) return;
-		this.options.app.workspace.trigger('hover-link', {
-			event,
-			source: HOVER_LINK_SOURCE,
-			hoverParent: this,
-			targetEl: linkEl,
-			linktext,
-			sourcePath: this.sourcePath(),
-		});
-	}
-
-	/**
 	 * Markdown through Obsidian's own renderer, so the vault's links, callouts
 	 * and embeds come out exactly as they do in a note. It resolves relative
 	 * links against `sourcePath`; a transcript is not a note in the vault, so
 	 * that is the vault root.
 	 *
 	 * The render is async, so the draw is finished long before the view has its
-	 * real height: the promise is kept, and {@link settleScroll} pins the view
+	 * real height: the promise goes to the scroll follower, which pins the view
 	 * once every render of this draw has landed (#106).
 	 */
 	private renderMarkdown(
@@ -1087,393 +783,73 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			this.sourcePath(),
 			component,
 		).then(() => linkVaultUris(el, (uri) => this.resolveUri(uri)));
-		this.renders.push(rendering);
+		this.follower?.track(rendering);
 		return rendering;
 	}
 
-	/**
-	 * Puts the view back on the end of the session, twice: now, and once the
-	 * Markdown of this draw has rendered.
-	 *
-	 * A single `scrollTop = scrollHeight` after a draw lands short — the
-	 * renderer has not run yet, and `content-visibility` makes the height an
-	 * estimate besides (#101) — so the pin that counts is the later one. What
-	 * lands later still, an image or an embed, is the resize observer's.
-	 */
-	private settleScroll(): void {
-		this.pinToBottom();
-		const renders = this.renders;
-		if (renders.length === 0) return;
-		this.renders = [];
-		void Promise.allSettled(renders).then(() => this.pinToBottom());
-	}
-
-	/** The end of the session, while the view is following it and still mounted. */
-	private pinToBottom(): void {
-		const turnsEl = this.turnsEl;
-		if (!turnsEl || !this.following) return;
-		turnsEl.scrollTop = turnsEl.scrollHeight;
-	}
-
-	/**
-	 * Watches an element for the height it gains after it was drawn, and gives
-	 * up the one it was watching before.
-	 *
-	 * Two elements at a time and no more: the turns element, which changes when
-	 * the leaf or the prompt box does, and the turn being written, which is the
-	 * one growing under a reader who is at the bottom. Watching every turn would
-	 * fire on every `content-visibility` change as the reader scrolls, which is
-	 * exactly the per-turn work a long session cannot afford (#101).
-	 *
-	 * Guarded for an environment with no `ResizeObserver` at all: the tests run
-	 * under node, where there is none, and the view must still mount.
-	 */
-	private watchForGrowth(el: HTMLElement, instead?: HTMLElement | null): void {
-		if (typeof ResizeObserver === 'undefined') return;
-		if (!this.resizeObserver) {
-			this.resizeObserver = new ResizeObserver(() => this.pinToBottom());
-		}
-		if (instead) this.resizeObserver.unobserve(instead);
-		if (el !== this.turnsEl) this.observedTurnEl = el;
-		this.resizeObserver.observe(el);
-	}
-
-	/**
-	 * The line shown when there is nothing to show, and nothing when there is;
-	 * or, above whatever is shown, why the transcript cannot be read (a
-	 * runtime's own limit), which an empty view would otherwise hide.
-	 */
+	/** The empty line, or why the transcript cannot be read. */
 	private updateEmpty(): void {
-		const root = this.rootEl;
-		if (!root) return;
-		const problem = this.model?.readProblem ?? null;
-		if (this.turnEls.size > 0 && !problem) {
-			this.emptyEl?.remove();
-			this.emptyEl = null;
-			return;
-		}
-		const text = problem ?? (this.model?.path ? 'No turns in this session yet.' : 'No session yet.');
-		if (!this.emptyEl) {
-			this.emptyEl = root.createDiv({ cls: ['herdr-native-empty', 'herdr-native-sizer'] });
-		}
-		this.emptyEl.setText(text);
+		this.lines?.updateEmpty({
+			hasTurns: (this.turns?.size ?? 0) > 0,
+			readProblem: this.model?.readProblem ?? null,
+			hasPath: Boolean(this.model?.path),
+		});
 	}
 
 	/**
-	 * What the agent is doing between blocks (#94). herdr's `agent_status`, not
-	 * anything guessed from the transcript: a turn that has stopped writing and
-	 * a turn that is thinking look identical in the file.
+	 * What the agent is doing (#94), and everything that follows from it: what
+	 * the prompt box may do (#97), and whether the waiting card takes its place
+	 * (#99).
 	 */
 	private updateStatus(): void {
 		const root = this.rootEl;
 		if (!root) return;
 		const status = this.model?.agentStatus ?? 'unknown';
-		// What the box may do is the same status this line reports (#97), and
-		// `blocked` is where the waiting card takes its place (#99).
 		this.promptBox?.setStatus(status);
-		this.updateWaiting(status);
-		const text = workingLine(status);
-		if (!text) {
-			this.statusEl?.remove();
-			this.statusEl = null;
-			return;
-		}
-		if (!this.statusEl) {
-			this.statusEl = root.createDiv({ cls: ['herdr-native-status', 'herdr-native-sizer'] });
-		}
-		this.statusEl.setText(text);
+		this.promptBox?.refresh();
+		this.queueRows?.render();
+		this.waiting.update(root, status);
+		this.lines?.updateStatus(status);
+		this.updateSessionBar(status);
 	}
 
 	/**
-	 * The waiting card (#99), which is what a `blocked` agent gets instead of
-	 * the prompt box: only `blocked` refuses a prompt, and the card is the way
-	 * past it. The box is hidden rather than dropped, so the draft in it
-	 * survives the block.
+	 * The session bar's sender with the pane's queue held while a pick runs
+	 * (#159): Claude's pickers pass through `blocked` and back (#169), and no
+	 * queued row may be typed into one.
 	 */
-	private updateWaiting(status: AgentStatus): void {
-		const root = this.rootEl;
-		if (!root) return;
-		if (status !== 'blocked') {
-			this.clearWaiting();
-			// The block is over: the next one is an answer of its own.
-			this.trustSent = false;
-			this.promptBox?.setHidden(false);
-			return;
-		}
-		const request = this.options.responder ? (this.model?.request ?? null) : null;
-		// The same request still waiting: the card on screen is already it.
-		if (request && request === this.waitingRequest && this.waitingEl) {
-			this.promptBox?.setHidden(true);
-			return;
-		}
-		const card = waitingCard({
-			request,
-			// The runtime's own word on the block when it has one (ADR-0006);
-			// else no transcript at all reads as the workspace trust prompt, as a
-			// freshly started Claude writes no file until its first turn
-			// (ADR-0003) — a guess the view shows but never answers by itself.
-			blockKind: this.model?.blockKind ?? null,
-			hasTranscript: this.model?.path != null,
-			turns: this.model?.state.turns ?? [],
-			vaultPath: this.options.vaultPath(),
-		});
-		this.renderWaiting(root, card);
-		this.promptBox?.setHidden(true);
-		this.autoTrust(card);
-	}
-
-	/** Drops the card and its listeners. Safe to call when there is none. */
-	private clearWaiting(): void {
-		this.waitingRequest = null;
-		this.waitingComponent?.unload();
-		this.waitingComponent = null;
-		this.waitingEl?.remove();
-		this.waitingEl = null;
-	}
-
-	/**
-	 * Draws the card: what the block is, and the one or two things to do about
-	 * it.
-	 *
-	 * **The startup prompt is the one block with a button of its own.** A
-	 * permission is Claude's to decide, through its permission mode, and a
-	 * question and a plan are the user's; all three get "Open in terminal"
-	 * alone. The workspace trust prompt is what stands between a fresh Claude
-	 * in a new directory and a session that can be used from this view at all,
-	 * so it gets "Trust this folder". Measured 2026-09-15
-	 * (`docs/architecture.md`, "What a bare Enter selects on each of Claude's
-	 * blocking dialogs"): the cursor sits on the first option, which here is
-	 * "No, exit", so the keys are `Down Enter` and never a bare Enter.
-	 */
-	private renderWaiting(root: HTMLElement, card: WaitingCardModel): void {
-		this.clearWaiting();
-		const component = new Component();
-		component.load();
-		this.waitingComponent = component;
-		const el = root.createDiv({ cls: ['herdr-native-waiting', 'herdr-native-sizer'] });
-		this.waitingEl = el;
-		el.createDiv({ cls: 'herdr-native-waiting-title', text: card.title });
-		if (card.request && this.options.responder) {
-			this.waitingRequest = card.request;
-			this.renderRequest(el, card, card.request, component);
-			return;
-		}
-		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
-		for (const option of card.options) {
-			el.createDiv({ cls: 'herdr-native-waiting-option', text: option });
-		}
-		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		// The startup kind is the trust prompt the runtime reported, or, where
-		// the runtime says nothing of kinds, "no transcript at all", which is
-		// what a Claude sitting at its trust prompt looks like: it has written no
-		// file yet (ADR-0003). Every other kind is a session past this prompt,
-		// or a block the runtime named as something else (`auth` included).
-		if (card.kind === 'startup') {
-			const trustEl = actions.createEl('button', {
-				cls: ['herdr-native-waiting-action', 'herdr-native-waiting-trust', 'mod-cta'],
-				text: 'Trust this folder',
-			});
-			component.registerDomEvent(trustEl, 'click', () => {
-				void this.trust();
-			});
-		}
-		const terminalEl = actions.createEl('button', {
-			cls: ['herdr-native-waiting-action', 'herdr-native-waiting-terminal'],
-			text: 'Open in terminal',
-		});
-		component.registerDomEvent(terminalEl, 'click', () => this.options.openInTerminal());
-	}
-
-	/**
-	 * Answers the trust prompt when the setting says to, once (#99). The kind is
-	 * checked here as well as where the button is drawn, because this is the
-	 * path with nobody looking at it: every other block stays on screen,
-	 * whatever the setting says.
-	 *
-	 * **Only a trust prompt the runtime identified.** A startup card guessed
-	 * from "no transcript yet" is also what an auth prompt, or any dialog
-	 * before the session exists, looks like, and `Down Enter` there picks
-	 * whatever its second option is. The guess keeps its button, which the
-	 * user presses having been told to check; nothing presses it for them.
-	 */
-	private autoTrust(card: WaitingCardModel): void {
-		if (card.kind !== 'startup' || !card.reported) return;
-		if (!this.options.autoTrustFolders()) return;
-		// One answer per block for the pane, not one per view: the claim is the
-		// model's, which is the thing two tabs on one pane share (ADR-0003). It
-		// is also what makes this once per block at all, since the card is drawn
-		// again for every change that lands under it. The startup block names no
-		// call, so the claim it is made under is the empty one.
-		if (this.model?.claimBlock(card.toolUseId) !== true) return;
-		void this.trust();
-	}
-
-	/**
-	 * Trust: `Down Enter` in the pane's agent, which moves off the trust
-	 * prompt's first option — "No, exit", which would quit Claude — onto the one
-	 * that trusts the folder (`docs/architecture.md`, measured 2026-09-15).
-	 * Only ever called for the startup block.
-	 *
-	 * One answer per block, whoever asks and however often. A second press —
-	 * two clicks before the status moves, or a click on a card the setting has
-	 * already answered — would land on whatever Claude showed next. The guard is
-	 * dropped when the agent leaves `blocked`.
-	 */
-	private async trust(): Promise<void> {
-		if (this.trustSent) return;
-		this.trustSent = true;
-		try {
-			await this.options.keySender.sendKeys(this.identity.paneId, ['Down', 'Enter']);
-		} catch (error) {
-			this.notify(trustFailureMessage(error));
-		}
-	}
-
-	/**
-	 * The card for a request the runtime is waiting on (ADR-0007), with the
-	 * answers it can take. Nothing here is pressed for the user: every answer
-	 * is a click, and none times out (the agent stays blocked until one comes).
-	 *
-	 * - **Permission:** Allow, Deny, and — only when Claude suggested them —
-	 *   "Allow for this session" and "Always allow in this project", each with
-	 *   what it grants on the line under it, the project one naming the
-	 *   settings file it writes.
-	 * - **Question:** the options as buttons; one single-choice question is
-	 *   answered by its button, several (or a multiple choice) by "Send
-	 *   answers" once each has one. "Dismiss" declines.
-	 * - **Plan:** the plan as Markdown, "Approve plan", and "Reject" with the
-	 *   feedback typed above it.
-	 */
-	private renderRequest(
-		el: HTMLElement,
-		card: WaitingCardModel,
-		request: PendingRequest,
-		component: Component,
-	): void {
-		const buttons: HTMLButtonElement[] = [];
-		// A stopping agent has denied the request already: shown, not answerable.
-		const stopping = request.stopping === true;
-		if (stopping) {
-			el.createDiv({ cls: 'herdr-native-waiting-stopping', text: 'The agent is stopping, so this request is being denied.' });
-		}
-		const send = (answer: WaitingAnswer): void => {
-			void this.answer(request, answer, buttons);
-		};
-		const button = (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => {
-			const buttonEl = parent.createEl('button', { cls: ['herdr-native-waiting-action', ...cls], text });
-			buttonEl.disabled = stopping;
-			buttons.push(buttonEl);
-			component.registerDomEvent(buttonEl, 'click', () => {
-				const chosen = answer();
-				if (chosen) send(chosen);
-			});
-			return buttonEl;
-		};
-		if (request.kind === 'plan') {
-			const planEl = el.createDiv({ cls: 'herdr-native-waiting-plan' });
-			void this.renderMarkdown(request.plan || 'Claude did not include a plan.', planEl, component);
-			const feedbackEl = el.createEl('textarea', {
-				cls: 'herdr-native-waiting-feedback',
-				attr: { rows: '2', placeholder: 'What should change, if you reject it', 'aria-label': 'Plan feedback' },
-			});
-			const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-			button(actions, 'Approve plan', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'approve-plan' }));
-			button(actions, 'Reject', ['herdr-native-waiting-deny'], () => ({
-				type: 'reject-plan',
-				feedback: feedbackEl.value,
-			}));
-			return;
-		}
-		if (request.kind === 'question') {
-			this.renderQuestions(el, request.questions, button);
-			return;
-		}
-		if (card.body) el.createDiv({ cls: 'herdr-native-waiting-body', text: card.body });
-		if (request.reason) el.createDiv({ cls: 'herdr-native-waiting-reason', text: request.reason });
-		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		button(actions, 'Allow', ['mod-cta', 'herdr-native-waiting-allow'], () => ({ type: 'allow' }));
-		button(actions, 'Deny', ['herdr-native-waiting-deny'], () => ({ type: 'deny' }));
-		if (request.session) {
-			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
-			button(grant, 'Allow for this session', ['herdr-native-waiting-session'], () => ({ type: 'allow-session' }));
-			grant.createSpan({ cls: 'herdr-native-waiting-grant-text', text: request.session.lines.join('; ') });
-		}
-		if (request.project) {
-			const grant = el.createDiv({ cls: 'herdr-native-waiting-grant' });
-			button(grant, 'Always allow in this project', ['herdr-native-waiting-project'], () => ({
-				type: 'allow-project',
-			}));
-			grant.createSpan({
-				cls: 'herdr-native-waiting-grant-text',
-				text: projectGrantText(request.project),
-			});
-		}
-	}
-
-	/** The questions of an `AskUserQuestion`, and how they are answered. */
-	private renderQuestions(
-		el: HTMLElement,
-		questions: readonly PendingQuestion[],
-		button: (parent: HTMLElement, text: string, cls: string[], answer: () => WaitingAnswer | null) => HTMLButtonElement,
-	): void {
-		const single = questions.length === 1 && questions[0]?.multiSelect !== true;
-		const chosen = new Map<string, Set<string>>();
-		let submit: HTMLButtonElement | null = null;
-		const complete = (): boolean => questions.every((question) => (chosen.get(question.question)?.size ?? 0) > 0);
-		for (const question of questions) {
-			const block = el.createDiv({ cls: 'herdr-native-waiting-question' });
-			if (question.header) block.createDiv({ cls: 'herdr-native-waiting-header', text: question.header });
-			block.createDiv({ cls: 'herdr-native-waiting-body', text: question.question });
-			const options = block.createDiv({ cls: 'herdr-native-waiting-actions' });
-			for (const option of question.options) {
-				const optionEl = button(options, option.label, ['herdr-native-waiting-choice'], () => {
-					if (single) return { type: 'answer', answers: { [question.question]: option.label } };
-					const picked = chosen.get(question.question) ?? new Set<string>();
-					if (!question.multiSelect) picked.clear();
-					if (picked.has(option.label)) picked.delete(option.label);
-					else picked.add(option.label);
-					chosen.set(question.question, picked);
-					for (const sibling of Array.from(options.children)) {
-						sibling.toggleClass('is-selected', picked.has(sibling.textContent ?? ''));
-					}
-					if (submit) submit.disabled = !complete();
-					return null;
-				});
-				if (option.description) optionEl.setAttr('title', option.description);
-			}
-		}
-		const actions = el.createDiv({ cls: 'herdr-native-waiting-actions' });
-		if (!single) {
-			submit = button(actions, 'Send answers', ['mod-cta', 'herdr-native-waiting-allow'], () => {
-				if (!complete()) return null;
-				const answers: Record<string, string> = {};
-				for (const question of questions) {
-					answers[question.question] = [...(chosen.get(question.question) ?? [])].join(', ');
+	private heldWhilePicking(sender: SessionSettingsSender | null): SessionSettingsSender | null {
+		const queue = this.queue;
+		if (!sender || !queue) return sender;
+		const held = <A extends unknown[]>(run: (...args: A) => Promise<void>) =>
+			async (...args: A): Promise<void> => {
+				const resume = queue.suspend();
+				try {
+					await run(...args);
+				} finally {
+					resume();
 				}
-				return { type: 'answer', answers };
-			});
-			submit.disabled = submit.disabled || !complete();
-		}
-		button(actions, 'Dismiss', ['herdr-native-waiting-deny'], () => ({ type: 'dismiss' }));
+			};
+		return {
+			...sender,
+			setModel: held(sender.setModel.bind(sender)),
+			setEffort: held(sender.setEffort.bind(sender)),
+			setMode: held(sender.setMode.bind(sender)),
+		};
 	}
 
 	/**
-	 * Sends one answer to the request on the card, once: the buttons go
-	 * disabled until the runtime has it, and come back only if it failed.
+	 * The session bar, in place (#161): every change reaches it, a reply's
+	 * usage, a `/model` line and a compaction alike, and none redraws it.
 	 */
-	private async answer(request: PendingRequest, answer: WaitingAnswer, buttons: HTMLButtonElement[]): Promise<void> {
-		const responder = this.options.responder;
-		if (!responder || request.stopping || this.answeredRequest === request.id) return;
-		this.answeredRequest = request.id;
-		for (const buttonEl of buttons) buttonEl.disabled = true;
-		try {
-			await responder.respond(this.identity.paneId, request.id, answer);
-		} catch (error) {
-			this.answeredRequest = '';
-			for (const buttonEl of buttons) buttonEl.disabled = false;
-			const reason = error instanceof Error ? error.message : String(error);
-			this.notify(`Gjetr: could not answer Claude (${reason})`);
-		}
+	private updateSessionBar(status = this.model?.agentStatus ?? 'unknown'): void {
+		const model = this.model;
+		this.sessionBar?.update({
+			info: model?.sessionInfo ?? {},
+			status,
+			connected: model?.connected ?? false,
+			format: model?.format,
+		});
 	}
 
 	/** How a failure reaches the user; a Notice, as a failed send is (#97). */

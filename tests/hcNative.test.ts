@@ -20,7 +20,7 @@ import {
 } from '../src/hc/sessionWatcher';
 import { HC_TRANSCRIPT_UNREADABLE, HcTranscriptSource } from '../src/hc/transcriptSource';
 import { HcCommandCatalog } from '../src/hc/commandCatalog';
-import { BUILTIN_CATALOG_SOURCE } from '../src/native/commandCatalog';
+import { BUILTIN_CATALOG_SOURCE } from '../src/agents/claude/commands';
 import type { HcTerminal } from '../src/hc/model';
 import type { HcEvent } from '../src/hc/streams';
 import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
@@ -29,7 +29,7 @@ import { newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { SESSION_LABEL_KEY } from '../src/sessionHook/label';
 import { LocalTranscriptSource } from '../src/native/transcriptSource';
 import { SessionModelRegistry } from '../src/native/sessionModel';
-import { paneViewAvailability } from '../src/native/surface';
+import { paneViewAvailability } from '../src/native/paneSurface';
 import { fakeSpawner, fileLines, RpcError, settle, type FakeCore } from './fixtures/fakeHc';
 
 /** Timers fired by hand, by their delay. */
@@ -201,6 +201,17 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		expect(watcher.snapshot('t1')).toMatchObject({ agentStatus: 'blocked', blockKind: 'question' });
 	});
 
+	it('passes Claude’s words for what it waits on while blocked, for the screen answer’s check (#166)', () => {
+		const { scope, send } = scopeWith(terminal('t1', { labels: label('s-1', 4242, PATH_1) }));
+		const watcher = hcSessionWatcher(scope);
+		const status = (state: string, msg?: string): void =>
+			send('status', 't1', { status: { state, app: 'claude-code', kind: 'permission', ...(msg ? { msg } : {}) }, records: {}, reported: true });
+		status('blocked', 'approve Bash: touch one.txt');
+		expect(watcher.snapshot('t1')?.blockMessage).toBe('approve Bash: touch one.txt');
+		status('working', 'thinking');
+		expect(watcher.snapshot('t1')?.blockMessage).toBeUndefined();
+	});
+
 	it('names the install command for a Claude without a label, and says when that changes', () => {
 		const { scope, send } = scopeWith(terminal('t1'), terminal('t2', { foreground: { name: 'bash', argv: [], cwd: CWD, pid: 7 }, status: null }));
 		const watcher = hcSessionWatcher(scope);
@@ -220,6 +231,37 @@ describe('the herdr-core session watcher (ADR-0006)', () => {
 		// A fresh snapshot (a redial, or `missed`) re-reads every terminal.
 		scope.reset(50, [terminal('t1')]);
 		expect(moved.slice(1).sort()).toEqual(['t1', 't2']);
+	});
+
+	it('names another agent than Claude, and leaves a terminal with no agent as it was (#155)', () => {
+		const CODEX = 'this pane runs Codex, and the native view reads only Claude';
+		const codexForeground = { name: 'codex', argv: ['codex'], cwd: CWD, pid: 900 };
+		const { scope, send } = scopeWith(
+			// The Codex TUI as hc sees it: a native process named codex, no status app.
+			terminal('t1', { foreground: codexForeground, status: null }),
+			// Started by the plugin as Codex through a wrapper: only the label says so.
+			terminal('t2', { foreground: { name: 'wrap', argv: ['wrap'], cwd: CWD, pid: 901 }, status: null, labels: { 'obsidian-herdr.agent': 'codex' } }),
+			terminal('t3', { foreground: { name: 'bash', argv: ['bash'], cwd: CWD, pid: 7 }, status: null }),
+		);
+		const watcher = hcSessionWatcher(scope);
+		expect(watcher.unavailable?.('t1')).toBe(CODEX);
+		expect(watcher.unavailable?.('t2')).toBe(CODEX);
+		expect(paneViewAvailability('native', { remote: false, kindReason: watcher.unavailable?.('t1') ?? null })).toEqual({
+			available: false,
+			reason: CODEX,
+		});
+		// No agent yet: the same answer as before #155.
+		expect(watcher.unavailable?.('t3')).toBe(NATIVE_NO_CLAUDE_REASON);
+
+		// Codex reporting itself by status app, and then Claude taking over.
+		const moved: string[] = [];
+		watcher.onAvailability?.((paneId) => moved.push(paneId));
+		send('status', 't3', { status: { state: 'idle', app: 'codex' }, records: {}, reported: true });
+		expect(watcher.unavailable?.('t3')).toBe(CODEX);
+		send('status', 't1', { status: { state: 'idle', app: 'claude-code' }, records: {}, reported: true });
+		send('foreground', 't1', { name: 'claude', argv: ['claude'], cwd: CWD, pid: 4242 });
+		expect(watcher.unavailable?.('t1')).toBe(NATIVE_NO_LABEL_REASON);
+		expect(moved).toEqual(['t3', 't1']);
 	});
 
 	it('marks a terminal read in a native view seen, under herdr-app’s rules', async () => {
@@ -353,7 +395,10 @@ function line(n: number, pad = ''): string {
 }
 
 describe('the herdr-core transcript source over file.read', () => {
-	function openTail(files: Map<string, string>, options: { maxBytes?: number; pageLines?: number; terminals?: Partial<HcTerminal>[] } = {}) {
+	function openTail(
+		files: Map<string, string>,
+		options: { maxBytes?: number; pageLines?: number; terminals?: Partial<HcTerminal>[]; budgetBytes?: number; pollMs?: number } = {},
+	) {
 		const { timers, fire, delays } = manualTimers();
 		const { reader, calls } = filesReader(files, options.maxBytes);
 		const { scope, state } = sourceScope(options.terminals);
@@ -362,6 +407,8 @@ describe('the herdr-core transcript source over file.read', () => {
 		const problems: (string | null)[] = [];
 		const stream = source.open(PATH_1, (lines, restart) => batches.push({ lines, restart: restart === true }), {
 			onProblem: (problem) => problems.push(problem),
+			...(options.budgetBytes ? { budgetBytes: options.budgetBytes } : {}),
+			...(options.pollMs ? { pollMs: options.pollMs } : {}),
 		});
 		const delivered = (): string[] => batches.flatMap((batch) => batch.lines);
 		return { source, stream, batches, delivered, fire, delays, calls, state, problems };
@@ -412,6 +459,28 @@ describe('the herdr-core transcript source over file.read', () => {
 		tail.fire(15_000);
 		await settle();
 		expect(tail.delivered()).toEqual([line(1)]);
+		tail.stream.close();
+	});
+
+	it('reads a file followed on the side within its budget, at its own pace (#147)', async () => {
+		const lines = Array.from({ length: 20 }, (_, i) => line(i + 1, 'x'.repeat(40)));
+		const files = new Map([[PATH_1, `${lines.join('\n')}\n`]]);
+		// Pages of three lines, and a budget of about five lines a look.
+		const tail = openTail(files, { pageLines: 3, budgetBytes: 300, pollMs: 1000 });
+		await settle();
+		// Two pages, then the budget is spent: the rest waits for the next look.
+		expect(tail.delivered()).toEqual(lines.slice(0, 6));
+		// Its own poll, whatever any terminal says.
+		expect(tail.delays()).toEqual([1000]);
+		tail.fire(1000);
+		await settle();
+		// The anchor, read again to check the file, comes out of the page.
+		expect(tail.delivered()).toEqual(lines.slice(0, 11));
+		for (let look = 0; look < 3; look++) {
+			tail.fire(1000);
+			await settle();
+		}
+		expect(tail.delivered()).toEqual(lines);
 		tail.stream.close();
 	});
 
@@ -625,11 +694,17 @@ describe('herdr-core’s native adapter and gate', () => {
 		// The `/` list follows the same rule (#98): this machine's files for a
 		// local runtime, the remote's over its connection, the built-ins only
 		// without one, and never this machine's for a remote.
-		expect(native.commandCatalog?.(local, null)).toBeNull();
-		expect(native.commandCatalog?.(remote, null)).toBe(BUILTIN_CATALOG_SOURCE);
-		const catalog = native.commandCatalog?.(remote, connection);
+		expect(native.commandCatalog?.(local, null, 'claude')).toBeNull();
+		expect(native.commandCatalog?.(remote, null, 'claude')).toBe(BUILTIN_CATALOG_SOURCE);
+		const catalog = native.commandCatalog?.(remote, connection, 'claude');
 		expect(catalog).toBeInstanceOf(HcCommandCatalog);
-		expect(native.commandCatalog?.(remote, connection)).toBe(catalog);
+		expect(native.commandCatalog?.(remote, connection, 'claude')).toBe(catalog);
+		// The reader over the connection is Claude's (ADR-0010): an agent
+		// without a format there gets no list, never Claude's.
+		const other = native.commandCatalog?.(remote, connection, 'codex');
+		expect(other).not.toBeInstanceOf(HcCommandCatalog);
+		expect(other?.catalog('/srv')).toEqual([]);
+		expect(native.commandCatalog?.(local, connection, 'codex')).toBeNull();
 		expect(paneViewAvailability('native', nativeViewBlock(kind, remote)).available).toBe(true);
 		expect(paneViewAvailability('native', nativeViewBlock(kind, local)).available).toBe(true);
 		coordinator.dispose();
@@ -802,5 +877,25 @@ describe('a native session model on an SSH herdr-core runtime, over a fake hc co
 		await vi.waitFor(() => expect(handle.model.state.turns).toHaveLength(2));
 		handle.release();
 		rig.coordinator.dispose();
+	});
+});
+
+describe('the herdr-core session watcher: a glance (#167 review)', () => {
+	it('says what runs now: Claude in the foreground before its session, nothing once a shell is back', () => {
+		// Claude at its trust prompt: no status yet, no label.
+		const { scope, send } = scopeWith(terminal('t1', { status: null, reported: false }));
+		const watcher = hcSessionWatcher(scope);
+		expect(watcher.glance?.('t1')).toEqual({
+			paneId: 't1',
+			cwd: CWD,
+			agent: 'claude',
+			agentSession: '',
+			agentStatus: 'unknown',
+		});
+		// Claude exits to the shell; the status hc kept still names it.
+		send('status', 't1', { status: { state: 'idle', app: 'claude-code' }, reported: true });
+		send('foreground', 't1', { name: 'bash', argv: ['bash'], cwd: CWD, pid: 100 });
+		expect(watcher.glance?.('t1')).toMatchObject({ agent: null, agentSession: '' });
+		expect(watcher.glance?.('t9')).toBeNull();
 	});
 });

@@ -1,84 +1,24 @@
 /**
  * The transcript source (issue #93, ADR-0003, ADR-0006).
  *
- * Deliberately dumb: where the file is, how to read it whole, and — from issue
- * #94 — how to follow it. Nothing here knows what a line means (that is
- * `./reducer.ts`) or which session is current (that is `./sessionModel.ts`).
- * The interface is "tail and read a path", which is the whole of what a
- * runtime kind supplies for a target whose transcripts are not on this
- * machine (herdr-core's `file.read` over its connection, ADR-0006).
- *
- * The path is Claude Code's own layout, `~/.claude/projects/<encoded
- * cwd>/<agent session>.jsonl`, with the encoding read off Claude Code 2.1.266
- * and checked against every project folder on this machine: every character
- * that is not a letter or a digit becomes a dash, and a name longer than 200
- * characters is cut to 200 with a hash of the whole path appended.
+ * Deliberately dumb: how to read a file whole and — from issue #94 — how to
+ * follow it. Nothing here knows what a line means (that is the agent's parser,
+ * `../agents/format.ts`), where an agent keeps its session (also the agent's
+ * format) or which session is current (that is `./sessionModel.ts`). The
+ * interface is "tail and read a path", which is the whole of what a runtime
+ * kind supplies for a target whose transcripts are not on this machine
+ * (herdr-core's `file.read` over its connection, ADR-0006).
  */
 
 import { watch, type FSWatcher, type Stats } from 'node:fs';
-import { open, readFile, type FileHandle } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { open, readdir, readFile, type FileHandle } from 'node:fs/promises';
 import { clearTimer, setTimer } from '../timers';
-
-/** Claude Code's cap on a project folder name before it hashes the rest. */
-const MAX_PROJECT_DIR = 200;
-
-/**
- * Claude Code's string hash: `h = h * 31 + c`, wrapped to int32. Only used for
- * the tail of an over-long project folder name.
- */
-function pathHash(path: string): number {
-	let hash = 0;
-	for (let i = 0; i < path.length; i++) hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
-	return hash;
-}
-
-/**
- * The folder under `~/.claude/projects` that holds the transcripts of sessions
- * started in `cwd`.
- */
-export function encodeProjectDir(cwd: string): string {
-	const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-	if (encoded.length <= MAX_PROJECT_DIR) return encoded;
-	return `${encoded.slice(0, MAX_PROJECT_DIR)}-${Math.abs(pathHash(cwd)).toString(36)}`;
-}
-
-export interface TranscriptLocation {
-	/** The pane's working directory, as herdr reports it. */
-	cwd: string;
-	/** herdr's `agent_session` value; empty until the first prompt. */
-	agentSession: string;
-	/** Home directory of the host the transcript lives on. Defaults to this one. */
-	home?: string;
-}
-
-/**
- * Where a pane's current transcript is, or null when there is not one yet: a
- * freshly started Claude has no `agent_session` and no file until its first
- * turn begins (docs/architecture.md).
- */
-export function transcriptPath(location: TranscriptLocation): string | null {
-	if (!location.cwd || !location.agentSession) return null;
-	const home = location.home ?? homedir();
-	return `${home}/.claude/projects/${encodeProjectDir(location.cwd)}/${location.agentSession}.jsonl`;
-}
-
-/**
- * Where Claude Code keeps a session's transcript, given its configuration
- * folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the cwd as Claude itself
- * sees it, which is the real path: a session started in a symlinked folder is
- * filed under the folder the link points to (measured 2026-11-06).
- */
-export function claudeTranscriptFile(configDir: string, realCwd: string, sessionId: string): string {
-	return join(configDir, 'projects', encodeProjectDir(realCwd), `${sessionId}.jsonl`);
-}
 
 /**
  * Reading a transcript, on whatever host it lives. Two calls: `read` for a file
  * wanted once (a subagent's report), and `open` to follow one that is still
  * being written. Following is all this does — deciding *which* file to follow,
- * and what the lines mean, belongs to the session model and the reducer.
+ * and what the lines mean, belongs to the session model and the parser.
  *
  * A runtime kind supplies one per target (`RuntimeKindAdapter.native`): herdr
  * and a local herdr-core read this machine's files ({@link
@@ -88,6 +28,13 @@ export interface TranscriptSource {
 	/** The whole file, or null when it does not exist or cannot be read. */
 	read(path: string): Promise<string | null>;
 	/**
+	 * The names in a folder, or null when it cannot be listed (#147): how a
+	 * subagent whose records do not name it yet is found. Optional: a source
+	 * that cannot list (herdr-core over SSH, whose `file.read` is all it has)
+	 * leaves such a subagent unfollowed until its records name it.
+	 */
+	list?(folder: string): Promise<string[] | null>;
+	/**
 	 * Follows `path`, delivering whole lines: what the file already holds first,
 	 * then every line appended to it, in order. A trailing partial line is held
 	 * until its newline arrives. The file need not exist yet.
@@ -95,12 +42,19 @@ export interface TranscriptSource {
 	 * `restart` is true when the file was replaced or truncated under the tail:
 	 * every line delivered before is void, and the batch it comes with (which
 	 * may be empty) is the file again from its start.
+	 *
+	 * `tail` is that held partial line as it stands at the end of the file
+	 * (#138), for a preview and never as a line: it is delivered again, as a
+	 * line, once its newline arrives. A source says it only when it changed, so
+	 * a batch with no lines may come for the tail alone; '' or left out is the
+	 * file ending in a newline. A source that cannot see the partial line (one
+	 * that reads whole lines only) never says it.
 	 */
 	open(path: string, onLines: TranscriptLines, options?: TailOptions): TranscriptStream;
 }
 
 /** What a tail delivers to; see {@link TranscriptSource.open}. */
-export type TranscriptLines = (lines: string[], restart?: boolean) => void;
+export type TranscriptLines = (lines: string[], restart?: boolean, tail?: string) => void;
 
 /** A tail in progress. Closing is idempotent and delivers nothing afterwards. */
 export interface TranscriptStream {
@@ -114,6 +68,13 @@ export interface TailOptions {
 	pollMs?: number;
 	/** The most bytes one read takes; a longer file is read in pieces this size. */
 	chunkBytes?: number;
+	/**
+	 * The most bytes one look at the file reads (#147), for a file followed on
+	 * the side (a subagent's transcript): what is left waits for the next look,
+	 * a change or the poll, rather than being read in one go. No budget when
+	 * left out: the session's own transcript is read to its end every time.
+	 */
+	budgetBytes?: number;
 	/**
 	 * Why the tail cannot read the file although it is there, in words for
 	 * the view, or null once it can again. Only a source with limits of its
@@ -157,6 +118,15 @@ export class LocalTranscriptSource implements TranscriptSource {
 		}
 	}
 
+	async list(folder: string): Promise<string[] | null> {
+		try {
+			return await readdir(folder);
+		} catch {
+			// Not there yet: Claude makes the folder with its first subagent.
+			return null;
+		}
+	}
+
 	open(path: string, onLines: TranscriptLines, options: TailOptions = {}): TranscriptStream {
 		return new LocalTranscriptTail(path, onLines, options);
 	}
@@ -191,6 +161,8 @@ class LocalTranscriptTail implements TranscriptStream {
 	private identity: string | null = null;
 	/** The next delivery is the file from its start again; see `TranscriptLines`. */
 	private restartPending = false;
+	/** The unended last line as last delivered, '' for none (#138). */
+	private shownTail = '';
 	private watcher: FSWatcher | null = null;
 	private debounce: ReturnType<typeof setTimer> | null = null;
 	private poll: ReturnType<typeof setTimer> | null = null;
@@ -202,6 +174,8 @@ class LocalTranscriptTail implements TranscriptStream {
 	private readonly debounceMs: number;
 	private readonly pollMs: number;
 	private readonly chunkBytes: number;
+	/** The most bytes one pump reads, or Infinity for no budget. */
+	private readonly budgetBytes: number;
 
 	constructor(
 		private readonly path: string,
@@ -211,6 +185,7 @@ class LocalTranscriptTail implements TranscriptStream {
 		this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 		this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
 		this.chunkBytes = Math.max(1, options.chunkBytes ?? DEFAULT_CHUNK_BYTES);
+		this.budgetBytes = options.budgetBytes ? Math.max(1, options.budgetBytes) : Infinity;
 		this.watch();
 		this.schedulePoll();
 		// The file as it stands, before anything is appended to it.
@@ -304,17 +279,20 @@ class LocalTranscriptTail implements TranscriptStream {
 			handle = await open(this.path, 'r');
 			const stats = await handle.stat();
 			if (await this.replaced(handle, stats)) this.restart();
-			while (!this.closed && this.offset < stats.size) {
-				const chunk = Buffer.alloc(Math.min(this.chunkBytes, stats.size - this.offset));
+			// What this look may still read: the rest waits for the next one.
+			let budget = this.budgetBytes;
+			while (!this.closed && this.offset < stats.size && budget > 0) {
+				const chunk = Buffer.alloc(Math.min(this.chunkBytes, stats.size - this.offset, budget));
 				const { bytesRead } = await handle.read(chunk, 0, chunk.length, this.offset);
 				if (bytesRead === 0) break;
 				const read = chunk.subarray(0, bytesRead);
+				budget -= bytesRead;
 				if (this.head.length < HEAD_BYTES && this.offset === this.head.length) {
 					this.head = Buffer.concat([this.head, read.subarray(0, HEAD_BYTES - this.head.length)]);
 				}
 				this.offset += bytesRead;
 				this.pending = this.pending.length ? Buffer.concat([this.pending, read]) : read;
-				this.deliver();
+				this.deliver(this.offset >= stats.size);
 			}
 			// A replacement with no whole line in it yet is still news: what the
 			// old file said is gone either way.
@@ -356,18 +334,33 @@ class LocalTranscriptTail implements TranscriptStream {
 		this.pending = Buffer.alloc(0);
 		this.head = Buffer.alloc(0);
 		this.restartPending = true;
+		this.shownTail = '';
 	}
 
-	/** Splits off every complete line, keeping the unfinished tail for next time. */
-	private deliver(): void {
+	/**
+	 * Splits off every complete line, keeping the unfinished tail for next time.
+	 * `atEnd` is the read having reached the end of the file, where that tail
+	 * is the file's last line and is said too, when it changed (#138). Short of
+	 * the end it is the middle of the file, and nothing is previewed: a line
+	 * delivered here may be the very one a preview showed.
+	 */
+	private deliver(atEnd: boolean): void {
 		const lastNewline = this.pending.lastIndexOf(0x0a);
-		if (lastNewline === -1) return;
-		const complete = this.pending.subarray(0, lastNewline).toString('utf8');
-		this.pending = this.pending.subarray(lastNewline + 1);
-		const lines = complete.split('\n').filter((line) => line !== '');
-		if ((!lines.length && !this.restartPending) || this.closed) return;
+		let lines: string[] = [];
+		if (lastNewline !== -1) {
+			const complete = this.pending.subarray(0, lastNewline).toString('utf8');
+			this.pending = this.pending.subarray(lastNewline + 1);
+			lines = complete.split('\n').filter((line) => line !== '');
+		}
+		// A partial character at the end decodes to a replacement, which no JSON
+		// record ends in; the preview waits for the rest.
+		const tail = atEnd ? this.pending.toString('utf8') : '';
+		const tailMoved = tail !== this.shownTail;
+		if ((!lines.length && !this.restartPending && !tailMoved) || this.closed) return;
 		const restart = this.restartPending;
 		this.restartPending = false;
-		this.onLines(lines, restart);
+		this.shownTail = tail;
+		if (tail || tailMoved) this.onLines(lines, restart, tail);
+		else this.onLines(lines, restart);
 	}
 }

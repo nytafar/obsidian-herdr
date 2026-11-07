@@ -55,8 +55,9 @@ type Unicode11Module = typeof import('@xterm/addon-unicode11');
 let addonModule: Promise<Unicode11Module> | undefined;
 
 /**
- * Loads the addon once per window, in step with the lazy loads in `xtermJs.ts`:
- * a vault that never opens an xterm.js terminal never evaluates it.
+ * Loads the addon once per window, in step with the lazy loads in `xtermJs.ts`.
+ * The module itself is evaluated at load all the same: the waiting card reads
+ * its width table to count a screen line's cells (`src/native/cellWidth.ts`).
  */
 async function loadAddon(): Promise<Unicode11Module> {
 	addonModule ??= import('@xterm/addon-unicode11');

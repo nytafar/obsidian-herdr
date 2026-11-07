@@ -45,7 +45,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GHOSTTY_WASM = path.join(ROOT, 'node_modules/ghostty-web/dist/ghostty-vt.wasm');
 
 /**
- * `main.js` on 2026-11-06, with the `claude` kind's terminal view and shell
+ * `main.js` on 2026-11-06 with the native-view parity work of #153: the
+ * session bar and its context breakdown (#161, #171), a subagent followed
+ * while it works (#147), the screen answers, find, images, the TOC and the
+ * rest, which had grown the bundle past the last baseline. Before
+ * that, the 876,395-byte bundle with the `claude` kind's terminal view and shell
  * tabs (ADR-0007's D2: the `script(1)` pty and its fd-3 watchdog, the shared
  * pty and replay buffer, OSC 7501, the view switch; about 30 KB minified) on
  * top of the 846,466-byte `claude` runtime kind (ADR-0007's D1: the
@@ -59,7 +63,7 @@ const GHOSTTY_WASM = path.join(ROOT, 'node_modules/ghostty-web/dist/ghostty-vt.w
  * after #63 (Brotli-compressing the inlined ghostty wasm) landed: the bundle we
  * actually intend to ship, not the pre-#63 one (issue #64).
  */
-const MAIN_JS_BASELINE_BYTES = 876_395;
+const MAIN_JS_BASELINE_BYTES = 1_026_967;
 
 /**
  * About 15% above the baseline, rounded. Leaves room for ordinary feature
@@ -67,7 +71,7 @@ const MAIN_JS_BASELINE_BYTES = 876_395;
  * accidental second copy of something already embedded, or a base64 fallback
  * creeping back in.
  */
-const MAIN_JS_CEILING_BYTES = 1_008_000;
+const MAIN_JS_CEILING_BYTES = 1_182_000;
 
 /** The base64 of the wasm magic number `\0asm\1\0\0\0`, i.e. an unencoded wasm. */
 const WASM_BASE64_HEAD = 'AGFzbQEAAAA';

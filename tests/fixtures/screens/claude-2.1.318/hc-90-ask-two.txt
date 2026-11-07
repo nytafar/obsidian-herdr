@@ -1,0 +1,45 @@
+  of these hot drinks would you like me to prepare for the long afternoon meeting with
+  the whole design team today?' with header 'Drink' and options 'Tea with milk and a
+  little honey' (description 'A mild black tea, served with milk and a spoon of honey on
+  the side, in the large mug'), 'Coffee', 'Water'. After my answer, reply with my answer
+  verbatim. Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which of these hot drinks would you like me to prepare for the long afternoon
+     meeting with the whole design team today? (Tea with milk and a little honey / Coffee
+     / Water)
+
+✻ Sautéed for 1s · done 6:03 PM
+
+❯ Use the AskUserQuestion tool now to ask me exactly one multi-select question
+  (multiSelect true): 'Which fruits would you like in the salad?' with header 'Fruit' and
+  options 'Green apples from the orchard behind the old stone farmhouse at the end of
+  the lane' (description 'Crisp'), 'Banana', 'Cherry'. After my answer, reply with my
+  answer verbatim. Do nothing else.
+
+● User declined to answer questions
+  ⎿  · Which fruits would you like in the salad? (Green apples from the orchard behind the
+     old stone farmhouse at the end of the lane / Banana / Cherry)
+
+✻ Baked for 1s · done 6:03 PM
+
+❯ Use the AskUserQuestion tool now to ask me two single-choice questions in one call:
+  first 'Which cup size would you like for the coffee you are ordering this morning at
+  the station kiosk?' with header 'Size' and options Small, Large; second 'Which lid?'
+  with header 'Lid' and options Yes, No. After my answers, reply with them verbatim. Do
+  nothing else.
+──────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Size  ☐ Lid  ✔ Submit  →
+
+│ Which cup size would you like for the coffee you are ordering this morning at the
+│ station kiosk?
+
+❯ 1. Small
+     Small
+  2. Large
+     Large
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

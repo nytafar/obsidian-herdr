@@ -514,8 +514,10 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * open-at-bottom and following (#106), the TOC's jumps (#100) and the
  * `content-visibility` estimates (#101). The prompt box is an ordinary flex
  * sibling at the bottom rather than a sticky child, so no transcript can show
- * through beside or beneath it. `container-type` makes the root the box the
- * prompt box's cap is half of.
+ * through beside or beneath it. `container` makes the root the box the
+ * prompt box's cap is half of, and the box the narrow layout below measures
+ * (#146): a sidebar is narrow on a desktop too, so the view's own width
+ * decides, never the window's.
  *
  * No padding under the box: #103 asks for it flush with the view's bottom
  * edge, and the root's bottom padding was the last strip of background between
@@ -523,7 +525,7 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * read against.
  */
 .herdr-native-view {
-	container-type: size;
+	container: herdr-native / size;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -537,7 +539,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * and the status line come and go — so the order is stated here instead of
  * being the order they were appended in (#97).
  */
-.herdr-native-empty {
+.herdr-native-empty,
+.herdr-native-read-failure {
 	order: 1;
 }
 
@@ -584,6 +587,70 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	order: 3;
 }
 
+/*
+ * The jump back to the end (#149): a row of no height straight under the
+ * transcript, so the button floats over the transcript's bottom edge without
+ * taking room from it or changing what scrolls. Same order as the turns, and
+ * appended after them, so it is the next thing down.
+ */
+.herdr-native-jump-row {
+	flex: 0 0 0;
+	height: 0;
+	order: 2;
+	position: relative;
+}
+
+.herdr-native-jump {
+	align-items: center;
+	bottom: var(--size-4-2);
+	box-shadow: var(--shadow-s);
+	display: flex;
+	gap: var(--size-4-1);
+	inset-inline-end: var(--size-4-2);
+	position: absolute;
+	transition: opacity 120ms ease-out;
+	z-index: 1;
+}
+
+.herdr-native-jump.is-new {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.herdr-native-view .herdr-native-jump.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-jump-icon {
+	display: flex;
+}
+
+/*
+ * Find in the conversation (#145): the match a pick jumps to, through the CSS
+ * Custom Highlight API so the rendered Markdown is not touched, and the class
+ * that stands in for it where that API is missing. The theme's own search
+ * highlight colour.
+ */
+::highlight(herdr-native-find) {
+	background-color: var(--text-highlight-bg);
+	color: var(--text-normal);
+}
+
+.herdr-native-find-hit {
+	background-color: var(--text-highlight-bg);
+}
+
+/* One row of the find picker: the snippet with its match marked, and where it is. */
+.herdr-native-find-snippet {
+	color: var(--text-normal);
+	overflow-wrap: anywhere;
+}
+
+.herdr-native-find-where {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
 .herdr-native-prompt-box {
 	flex: 0 0 auto;
 	order: 4;
@@ -599,12 +666,382 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	order: 4;
 }
 
-.herdr-native-prompt-box.herdr-is-hidden {
+/*
+ * While the waiting card stands in for the box (#173), the box folds to its
+ * toolbar strip and goes under the card: the pickers and the readout stay in
+ * sight (#161); the text area, its images, the hint, Stop and Send do not.
+ * Hidden, not removed, so the draft survives the block.
+ */
+.herdr-native-prompt-box.herdr-is-standing-in {
+	order: 5;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-images,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-input,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-hint,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-controls {
 	display: none;
+}
+
+/* Folded, the strip reads as the slim row it was before #173. */
+.herdr-native-prompt-box.herdr-is-standing-in::before {
+	display: none;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-card {
+	background: transparent;
+	border-color: transparent;
+	box-shadow: none;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-toolbar {
+	background: transparent;
+	border-top: none;
+	padding-inline: 0;
+}
+
+/*
+ * Queued prompts (#159): rows above the prompt box, and above the waiting
+ * card while that stands in for it. Same order, created before both, so they
+ * come first. The plugin's rows have Send now, Edit and Discard; what Claude
+ * holds itself is muted, with none.
+ */
+.herdr-native-queue {
+	display: flex;
+	flex: 0 0 auto;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	order: 4;
+	padding-top: var(--size-4-2);
+}
+
+.herdr-native-queue.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-queue-row {
+	align-items: center;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+}
+
+.herdr-native-queue-row.herdr-is-agent-held {
+	border-style: dashed;
+	color: var(--text-muted);
+}
+
+.herdr-native-queue-row.herdr-is-failed {
+	border-color: var(--text-error);
+}
+
+.herdr-native-queue-body {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-queue-text {
+	max-height: 4.5em;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+}
+
+.herdr-native-queue-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.herdr-native-queue-row.herdr-is-failed .herdr-native-queue-note {
+	color: var(--text-error);
+}
+
+.herdr-native-queue-actions {
+	display: flex;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+}
+
+/*
+ * The session bar (#161): in the prompt box's toolbar strip (#173), and
+ * still there under the waiting card while that stands in for the box, so
+ * the values stay in sight. The pickers are buttons with the value and a
+ * chevron; the context readout sits at the far end, before Stop and Send.
+ */
+.herdr-native-session-bar {
+	align-items: center;
+	color: var(--text-muted);
+	display: flex;
+	flex: 1 1 auto;
+	font-size: var(--font-ui-smaller);
+	gap: var(--size-4-2);
+	min-width: 0;
+}
+
+.herdr-native-session-pickers {
+	display: flex;
+	flex: 1 1 auto;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+
+/*
+ * Flat, as text. `button.` because Obsidian fills every button through
+ * `button:not(.clickable-icon)`, which outranks a single class (#173).
+ */
+button.herdr-native-session-picker {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	gap: var(--size-2-2);
+	height: auto;
+	padding: var(--size-2-1) var(--size-4-1);
+	white-space: nowrap;
+}
+
+.herdr-native-session-picker:not(:disabled):hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-native-session-picker:disabled {
+	cursor: default;
+	opacity: 0.7;
+}
+
+/* The short value is for a narrow view only (below). */
+.herdr-native-session-short {
+	display: none;
+}
+
+.herdr-native-session-chevron {
+	font-size: 0.8em;
+}
+
+/* A button (#171): a click shows the context breakdown, so it reads as text. */
+button.herdr-native-session-context {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	height: auto;
+	padding: var(--size-2-1) var(--size-4-1);
+	white-space: nowrap;
+}
+
+.herdr-native-session-context:not(:disabled):hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.herdr-native-session-context:disabled {
+	cursor: default;
+}
+
+/* Nothing known yet, or tokens with no window: no separator, no percentage. */
+.herdr-native-session-context.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-session-context:not(.herdr-has-window) .herdr-native-session-sep,
+.herdr-native-session-context:not(.herdr-has-window) .herdr-native-session-percent {
+	display: none;
+}
+
+/* From 80% of the window (finding `native-view-header` §1). */
+.herdr-native-session-context.herdr-is-warning {
+	color: var(--text-warning);
+}
+
+/*
+ * The gauge (#173): a ring and the percentage, the counts in the tooltip.
+ * The ring is in the markup in both forms; the detail form hides it. With
+ * no known window the gauge shows the token count, as the detail form does.
+ */
+.herdr-native-session-ring {
+	display: none;
+	flex: 0 0 auto;
+	height: var(--icon-s);
+	transform: rotate(-90deg);
+	width: var(--icon-s);
+}
+
+/* In the ring's own 16-unit box, so it scales with the icon size. */
+.herdr-native-session-ring circle {
+	fill: none;
+	stroke-width: 2.5;
+}
+
+.herdr-native-session-ring-track {
+	stroke: var(--background-modifier-border);
+}
+
+.herdr-native-session-ring-arc {
+	stroke: currentColor;
+}
+
+.herdr-native-session-context.herdr-is-gauge {
+	align-items: center;
+	display: inline-flex;
+	gap: var(--size-2-2);
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-ring {
+	display: block;
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-tokens,
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-sep {
+	display: none;
+}
+
+/*
+ * Why nothing goes into the pane (review of #169): a change is driving one of
+ * Claude's pickers, or one may still be open in the terminal. Its own line
+ * under the pickers, in the warning colour, only while it says something.
+ */
+.herdr-native-session-bar:has(.herdr-native-session-note:not(.herdr-is-hidden)) {
+	flex-wrap: wrap;
+}
+
+.herdr-native-session-note {
+	color: var(--text-warning);
+	flex: 1 0 100%;
+	order: 1;
+}
+
+.herdr-native-session-note.herdr-is-hidden {
+	display: none;
+}
+
+/*
+ * The context breakdown (#171): a popover over the bar's far end, the
+ * agent's categories as a table. The bar is its anchor; the table takes the
+ * reading view's own table styles from the `markdown-rendered` ancestor.
+ */
+.herdr-native-session-bar {
+	position: relative;
+}
+
+.herdr-native-context-popover {
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	bottom: 100%;
+	box-shadow: var(--shadow-s);
+	color: var(--text-normal);
+	max-height: 60vh;
+	max-width: min(100%, 28em);
+	overflow-y: auto;
+	padding: var(--size-4-2) var(--size-4-3);
+	position: absolute;
+	right: 0;
+	z-index: var(--layer-popover);
+}
+
+.herdr-native-context-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: space-between;
+}
+
+.herdr-native-context-title {
+	font-variant-numeric: tabular-nums;
+	font-weight: var(--font-semibold);
+}
+
+.herdr-native-context-table {
+	font-size: var(--font-ui-small);
+	margin-block: var(--size-4-2) 0;
+	width: 100%;
+}
+
+/* Above `.markdown-rendered td`, which aligns every cell to the start. */
+.herdr-native-context-table .herdr-native-context-number {
+	font-variant-numeric: tabular-nums;
+	text-align: end;
 }
 
 .herdr-native-empty {
 	color: var(--text-muted);
+}
+
+/*
+ * A transcript the view cannot read (#146): one line saying so with Try again
+ * beside it, the runtime's own words behind Details. Built once and hidden
+ * while the transcript reads, so it is scoped to the view to outrank the
+ * readable-width sizer it also carries.
+ */
+.herdr-native-read-failure {
+	color: var(--text-muted);
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-native-view .herdr-native-read-failure.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-read-failure-line {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-read-failure-text {
+	color: var(--text-error);
+}
+
+.herdr-native-read-details {
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-1);
+}
+
+.herdr-native-read-details > summary {
+	cursor: var(--cursor);
+}
+
+.herdr-native-read-detail {
+	overflow-wrap: anywhere;
+	padding-top: var(--size-4-1);
+}
+
+/*
+ * The turns a long session's model does not hold (#152): one line above the
+ * first turn in the view, and above the first row in the table of contents,
+ * with the button that loads another page. Scoped to the view and the TOC to
+ * outrank the readable-width sizer it sits in.
+ */
+.herdr-native-earlier {
+	align-items: center;
+	color: var(--text-muted);
+	display: flex;
+	flex-wrap: wrap;
+	font-size: var(--font-ui-small);
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-4);
+}
+
+.herdr-toc .herdr-native-earlier {
+	margin-bottom: 0;
+	padding: var(--size-4-2);
+}
+
+.herdr-native-view .herdr-native-earlier.herdr-is-hidden,
+.herdr-toc .herdr-native-earlier.herdr-is-hidden {
+	display: none;
 }
 
 /*
@@ -623,6 +1060,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	contain-intrinsic-size: auto 200px;
 	content-visibility: auto;
 	margin-bottom: var(--size-4-6);
+	/* A long path or URL wraps rather than widening the view (#146). */
+	overflow-wrap: break-word;
 }
 
 /*
@@ -646,6 +1085,190 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/*
+ * Copy actions (#140): a prompt's button at its top right, over the text's
+ * end, and the reply's two under the turn. Shown while the pointer or focus
+ * is on the prompt or the turn, so a long transcript is not a column of
+ * icons; invisible means unclickable too. The reply's row keeps its height
+ * while hidden, so the reveal moves nothing.
+ */
+.herdr-native-prompt,
+.herdr-native-steer {
+	position: relative;
+}
+
+.herdr-native-copy-prompt {
+	background-color: var(--background-primary);
+	inset-inline-end: 0;
+	position: absolute;
+	top: 0;
+}
+
+.herdr-native-reply-actions {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-1);
+}
+
+.herdr-native-copy {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.herdr-native-prompt:hover .herdr-native-copy,
+.herdr-native-prompt:focus-within .herdr-native-copy,
+.herdr-native-steer:hover .herdr-native-copy,
+.herdr-native-steer:focus-within .herdr-native-copy,
+.herdr-native-turn:hover > .herdr-native-reply-actions .herdr-native-copy,
+.herdr-native-reply-actions:focus-within .herdr-native-copy,
+.herdr-native-copy.is-copied,
+.herdr-native-copy.is-failed {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.herdr-native-copy.is-copied {
+	color: var(--text-success);
+}
+
+.herdr-native-copy.is-failed {
+	color: var(--text-error);
+}
+
+/* A pointer that cannot hover would never see the reveal. */
+@media (hover: none) {
+	.herdr-native-copy {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+/* The runtime's own notice (#133): not the agent speaking, so muted and small. */
+.herdr-native-notice {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+	margin: var(--size-4-2) 0;
+	white-space: pre-wrap;
+}
+
+/*
+ * When a prompt was sent and how long the agent worked on it (#139): one short
+ * faint line over the prompt, the full date and time on hover.
+ */
+.herdr-native-turn-meta {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	margin-bottom: var(--size-2-1);
+}
+
+/*
+ * Work the agent took up again on its own after answering (#139): a divider
+ * inside the turn. The label and the time share a line and wrap as a pair in
+ * a narrow sidebar; the cause's words keep to one line.
+ */
+.herdr-native-resume {
+	border-top: 1px dashed var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-3) 0 var(--size-4-2);
+	padding-top: var(--size-4-1);
+}
+
+.herdr-native-resume-head {
+	column-gap: var(--size-4-2);
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+}
+
+.herdr-native-resume-head > .herdr-native-turn-meta {
+	margin-bottom: 0;
+}
+
+.herdr-native-resume-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* A bash-mode command and its output (#133), set as the terminal showed it. */
+.herdr-native-shell {
+	border-left: 3px solid var(--interactive-accent);
+	margin-bottom: var(--size-4-3);
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-shell-command {
+	font-family: var(--font-monospace);
+	white-space: pre-wrap;
+}
+
+.herdr-native-shell-output {
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-1) 0 0;
+	max-height: 20em;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
+.herdr-native-shell-output.is-error {
+	color: var(--text-error);
+}
+
+/* A picture sent with the prompt, as a placeholder under it (#129). */
+/*
+ * A prompt's image (#144): its label until the thumbnail is read, then the
+ * thumbnail, which opens full size on a click. A button, so it takes the
+ * keyboard; its own chrome is dropped so it reads as the picture.
+ */
+.herdr-native-image {
+	background: none;
+	border: none;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: zoom-in;
+	display: inline-flex;
+	font-size: var(--font-ui-small);
+	height: auto;
+	margin: calc(-1 * var(--size-4-2)) var(--size-4-2) var(--size-4-3) 0;
+	padding: 0 0 0 calc(var(--size-4-3) + 3px);
+	vertical-align: top;
+}
+
+.herdr-native-image:disabled {
+	cursor: default;
+}
+
+.herdr-native-image-thumb {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: block;
+	max-height: 160px;
+	max-width: min(240px, 100%);
+	object-fit: contain;
+}
+
+.herdr-native-image:focus-visible .herdr-native-image-thumb {
+	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* The full-size view: the picture scaled down to fit, never up. */
+.herdr-image-modal {
+	width: auto;
+	max-width: 90vw;
+}
+
+.herdr-image-modal-img {
+	display: block;
+	max-height: 80vh;
+	max-width: 100%;
+	margin: 0 auto;
+}
+
 /* What the agent is doing between blocks, from herdr's status (#94). */
 .herdr-native-status {
 	color: var(--text-muted);
@@ -655,23 +1278,30 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
- * The prompt box (#97, #103): the box and its button on one row at the bottom
- * of the view, with the transcript scrolling in its own container above. It is
- * the last flex child rather than a sticky one, so there is no gap under it for
- * anything to show through.
+ * The prompt box (#97, #103, #173): one box at the bottom of the view, the
+ * text area and then a toolbar strip with the session bar, Stop and Send,
+ * with the transcript scrolling in its own container above. It is the last
+ * flex child rather than a sticky one, so there is no gap under it for
+ * anything to show through. The markup is the same in every style; the
+ * style setting is one class on the box (`herdr-prompt-style-*`).
  */
 .herdr-native-prompt-box {
-	background-color: var(--background-primary);
-	border-top: 1px solid var(--background-modifier-border);
 	margin-top: var(--size-4-3);
-	padding-top: var(--size-4-2);
+	padding-bottom: var(--size-4-2);
+	position: relative;
 }
 
-/* The chat row: the text area takes the width, the button sits at its end. */
-.herdr-native-prompt-row {
-	align-items: flex-end;
+.herdr-native-prompt-card {
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
 	display: flex;
-	gap: var(--size-4-2);
+	flex-direction: column;
+	transition: border-color 0.12s;
+}
+
+.herdr-native-prompt-card:focus-within {
+	border-color: var(--background-modifier-border-focus);
 }
 
 /*
@@ -680,16 +1310,44 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * where it is unsupported the `rows` attribute sizes the box and `resize`
  * still gives the user the drag. The cap is half the container's height, the
  * container being `.herdr-native-view`; outside one, `cqh` falls back to the
- * viewport, as the spec defines.
+ * viewport, as the spec defines. The box draws the border, so the text area
+ * draws none.
  */
 .herdr-native-prompt-input {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 	field-sizing: content;
-	/* Zero basis: the row's width is the text area's, whatever the button needs. */
-	flex: 1 1 0;
 	font-family: var(--font-text);
 	max-height: 50cqh;
 	min-height: 3em;
+	/* A text area's own minimum is its `cols`, wider than a narrow sidebar (#146). */
+	min-width: 0;
+	padding: var(--size-4-3);
 	resize: vertical;
+	width: 100%;
+}
+
+.herdr-native-prompt-input:focus,
+.herdr-native-prompt-input:focus-visible,
+.herdr-native-prompt-input:hover {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+}
+
+/* The strip: the session bar takes the width, Stop and Send sit at its end. */
+.herdr-native-prompt-toolbar {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-1) var(--size-4-1) var(--size-4-2);
+}
+
+.herdr-native-prompt-bar-slot {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .herdr-native-prompt-controls {
@@ -697,8 +1355,83 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: flex;
 	flex: 0 0 auto;
 	gap: var(--size-4-2);
-	/* The button sits on the text area's last line, not above it. */
+}
+
+.herdr-native-prompt-send,
+.herdr-native-prompt-stop {
+	gap: var(--size-2-2);
+	height: var(--input-height);
+}
+
+/* Words in the divided and joined styles; the floating one shows the icon. */
+.herdr-native-prompt-icon {
+	display: none;
+}
+
+.herdr-native-prompt-icon svg {
+	height: var(--icon-s);
+	width: var(--icon-s);
+}
+
+/* Divided (default): the strip has its own background and a rule above it. */
+.herdr-prompt-style-divided .herdr-native-prompt-toolbar {
+	background-color: var(--background-secondary);
+	border-bottom-left-radius: var(--radius-m);
+	border-bottom-right-radius: var(--radius-m);
+	border-top: var(--border-width) solid var(--background-modifier-border);
+}
+
+/* Joined: one surface in the form-field colour; the strip is its last row. */
+.herdr-prompt-style-joined .herdr-native-prompt-card {
+	background-color: var(--background-modifier-form-field);
+}
+
+.herdr-prompt-style-joined .herdr-native-prompt-input {
 	padding-bottom: var(--size-4-1);
+}
+
+/*
+ * Floating: raised over the transcript with the theme's shadow, a fade above
+ * it, and Stop and Send as icon buttons with the theme's own button radius.
+ */
+.herdr-prompt-style-floating::before {
+	background: linear-gradient(to bottom, transparent, var(--background-primary));
+	bottom: 100%;
+	content: "";
+	height: var(--size-4-8);
+	left: 0;
+	pointer-events: none;
+	position: absolute;
+	right: 0;
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-card {
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-s);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-input {
+	padding: var(--size-4-3) var(--size-4-4) var(--size-2-2);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-toolbar {
+	padding: var(--size-2-2) var(--size-4-2) var(--size-4-2);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-send,
+.herdr-prompt-style-floating .herdr-native-prompt-stop {
+	border-radius: var(--button-radius);
+	justify-content: center;
+	padding: 0;
+	width: var(--input-height);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-icon {
+	display: flex;
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-label {
+	display: none;
 }
 
 /*
@@ -719,6 +1452,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	font-weight: var(--font-semibold);
 }
 
+/*
+ * The title bar, with the fold button at its end (#142). Folded, the card is
+ * this bar alone, one line, so a long plan stops covering a narrow pane.
+ */
+.herdr-native-waiting-head {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-head .herdr-native-waiting-title {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.herdr-native-waiting.is-folded .herdr-native-waiting-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-waiting-fold {
+	flex: 0 0 auto;
+}
+
+.herdr-native-waiting-content.herdr-is-hidden {
+	display: none;
+}
+
+/* "Sending your answer…", and why an answer did not get through (#142). */
+.herdr-native-waiting-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
+/*
+ * A live region with nothing to say: clipped out of sight, never
+ * `display: none`, so a screen reader still has it when its words come (#142).
+ * Scoped to the view so it outranks the readable-width sizer it also carries.
+ */
+.herdr-native-view .herdr-native-visually-hidden {
+	block-size: 1px;
+	clip-path: inset(50%);
+	inline-size: 1px;
+	margin: 0;
+	overflow: hidden;
+	padding: 0;
+	position: absolute;
+	white-space: nowrap;
+}
+
 /* The question, the plan or the tool's detail line, as it was written. */
 .herdr-native-waiting-body {
 	color: var(--text-muted);
@@ -728,9 +1519,27 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	white-space: pre-wrap;
 }
 
+/*
+ * What a herdr or herdr-core dialog shows, as the terminal drew it (ADR-0009):
+ * a command, a file's content, or a plan whose file says something else.
+ */
+.herdr-native-waiting-screen {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+	max-height: 16em;
+	overflow: auto;
+	padding: var(--size-4-2);
+	white-space: pre-wrap;
+}
+
 /* One answer `AskUserQuestion` offered; the terminal is where they are picked. */
 .herdr-native-waiting-option {
 	color: var(--text-muted);
+	display: flex;
+	flex-direction: column;
 	font-size: var(--font-ui-small);
 	margin-top: var(--size-4-1);
 	padding-left: var(--size-4-3);
@@ -785,6 +1594,72 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	color: var(--text-on-accent);
 }
 
+/*
+ * A question's options (#141): one per row, as wide as the card, the label on
+ * its first line and Claude's description under it, so neither depends on a
+ * tooltip. A button's own fixed height and centring would cut the second line.
+ */
+.herdr-native-waiting-choices {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice {
+	align-items: flex-start;
+	display: flex;
+	flex-direction: column;
+	height: auto;
+	padding-block: var(--size-4-1);
+	text-align: start;
+	white-space: normal;
+}
+
+.herdr-native-waiting-choice-line {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-waiting-choice-description {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.herdr-native-waiting-choice.is-selected .herdr-native-waiting-choice-description {
+	color: inherit;
+}
+
+/* Claude's own pick, which it marks "(Recommended)" in the label. */
+.herdr-native-waiting-tag {
+	border: 1px solid currentcolor;
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-smaller);
+	padding-inline: var(--size-4-1);
+}
+
+/* The dialog's "Other": the user's own answer, and Send beside it for a single question. */
+.herdr-native-waiting-other {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.herdr-native-waiting-other-input {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* Where a question the view cannot answer is answered. */
+.herdr-native-waiting-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: var(--size-4-2);
+}
+
 .herdr-native-waiting-grant {
 	align-items: center;
 	display: flex;
@@ -804,11 +1679,52 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: none;
 }
 
-/* Why the box is disabled, when the view does not say it already. */
+/* Images waiting to go with the next prompt (#144), above the text area, in the box. */
+.herdr-native-prompt-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	padding: var(--size-4-3) var(--size-4-3) 0;
+}
+
+.herdr-native-prompt-images.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-prompt-image {
+	position: relative;
+}
+
+.herdr-native-prompt-image-thumb {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	display: block;
+	height: 56px;
+	max-width: 112px;
+	object-fit: cover;
+}
+
+.herdr-native-prompt-image-remove {
+	font-size: var(--font-ui-smaller);
+	height: auto;
+	line-height: 1;
+	padding: 2px 5px;
+	position: absolute;
+	right: 2px;
+	top: 2px;
+}
+
+/* A file dragged over the box may be dropped on it. */
+.herdr-native-prompt-box.herdr-is-drop-target {
+	outline: 2px dashed var(--interactive-accent);
+	outline-offset: 2px;
+}
+
+/* Why the box is disabled, when the view does not say it already: above the strip. */
 .herdr-native-prompt-hint {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
-	padding-top: var(--size-4-1);
+	padding: 0 var(--size-4-3) var(--size-4-1);
 }
 
 /*
@@ -829,8 +1745,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 /*
  * The tool group (#95): one summary line that expands to a row per call. A
- * `details` element, so the browser owns the open state and a turn redrawn
- * while Claude writes does not close what the reader opened.
+ * `details` element, whose open state the turn renderer keeps by the group's
+ * name across redraws (#127).
  */
 .herdr-native-tools,
 .herdr-native-thinking {
@@ -845,6 +1761,157 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	cursor: var(--cursor);
 }
 
+/*
+ * The group's header (#128): where it stands, the counts, the failures. The
+ * summary keeps its own display so the disclosure marker stays; the line in
+ * it is the flex row, as wide as what is left beside the marker. The counts
+ * give way first and are cut with an ellipsis; the title and the failures
+ * never shrink, so a narrow sidebar still says that a call failed.
+ */
+.herdr-native-tools-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-tools-title,
+.herdr-native-tools-separator,
+.herdr-native-tools-failed {
+	flex: 0 0 auto;
+}
+
+.herdr-native-tools-counts {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.herdr-native-tools.is-live .herdr-native-tools-title {
+	color: var(--text-muted);
+}
+
+.herdr-native-tools.is-waiting .herdr-native-tools-title {
+	color: var(--text-accent);
+}
+
+.herdr-native-tools-failed,
+.herdr-native-tool.is-error {
+	color: var(--text-error);
+}
+
+/* Left running when the agent went away (#135): struck, not red. */
+.herdr-native-tool.is-lost {
+	color: var(--text-faint);
+	text-decoration: line-through;
+}
+
+/*
+ * The agent's to-do list (#143): an update where the turn made it, and the
+ * chip with the current list between the turns and the prompt box. One row per
+ * item; the glyph says its state to the eye and a hidden span to a screen
+ * reader.
+ */
+.herdr-native-todo {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+}
+
+.herdr-native-todo-summary {
+	color: var(--text-faint);
+	cursor: var(--cursor);
+}
+
+.herdr-native-checklist {
+	list-style: none;
+	margin: var(--size-4-1) 0 0;
+	padding-left: var(--size-4-4);
+}
+
+.herdr-native-checklist-item {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.herdr-native-checklist-glyph {
+	flex: 0 0 1em;
+	text-align: center;
+}
+
+.herdr-native-checklist-item.is-completed {
+	color: var(--text-faint);
+}
+
+.herdr-native-checklist-item.is-completed .herdr-native-checklist-text {
+	text-decoration: line-through;
+}
+
+.herdr-native-checklist-item.is-in-progress {
+	color: var(--text-normal);
+}
+
+.herdr-native-checklist-item.is-in-progress .herdr-native-checklist-glyph {
+	color: var(--text-accent);
+}
+
+.herdr-native-sr-only {
+	clip-path: inset(50%);
+	height: 1px;
+	overflow: hidden;
+	position: absolute;
+	white-space: nowrap;
+	width: 1px;
+}
+
+.herdr-native-plan {
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+	order: 3;
+	padding: var(--size-4-1) 0;
+}
+
+.herdr-native-plan.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-plan-summary {
+	cursor: var(--cursor);
+}
+
+.herdr-native-plan-line {
+	display: inline-flex;
+	gap: var(--size-2-2);
+	max-width: calc(100% - 1.5em);
+	min-width: 0;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.herdr-native-plan-title,
+.herdr-native-plan-separator,
+.herdr-native-plan-progress {
+	flex: 0 0 auto;
+}
+
+.herdr-native-plan-current {
+	color: var(--text-normal);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Opened, the list scrolls inside the strip rather than pushing the turns away. */
+.herdr-native-plan-body {
+	max-height: 30vh;
+	overflow-y: auto;
+}
+
 .herdr-native-tool {
 	color: var(--text-muted);
 	font-family: var(--font-monospace);
@@ -852,6 +1919,40 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	padding-left: var(--size-4-4);
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/*
+ * A compaction (#130): a slim rule across the turn with its label in the
+ * middle, folded over the summary the agent continued from.
+ */
+.herdr-native-compaction {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-4) 0;
+}
+
+.herdr-native-compaction-summary {
+	align-items: center;
+	cursor: var(--cursor);
+	display: flex;
+	gap: var(--size-4-2);
+	list-style: none;
+}
+
+.herdr-native-compaction-summary::-webkit-details-marker {
+	display: none;
+}
+
+.herdr-native-compaction-summary::before,
+.herdr-native-compaction-summary::after {
+	border-top: 1px solid var(--background-modifier-border);
+	content: '';
+	flex: 1 1 0;
+}
+
+.herdr-native-compaction-body {
+	color: var(--text-muted);
+	margin-top: var(--size-4-2);
 }
 
 /* A thought, once the reader opens it: prose, like the rest of the turn. */
@@ -870,6 +1971,64 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	border-left: 2px solid var(--background-modifier-border);
 	margin: var(--size-4-2) 0;
 	padding-left: var(--size-4-3);
+}
+
+/*
+ * A subagent at work (#147): what it is and what it did last, under the group
+ * that holds its call, marked as live the way a working group is.
+ */
+.herdr-native-subagent {
+	border-left: 2px solid var(--interactive-accent);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: var(--size-4-2) 0;
+	min-width: 0;
+	padding-left: var(--size-4-3);
+}
+
+.herdr-native-subagent-head {
+	column-gap: var(--size-4-2);
+	display: flex;
+	flex-wrap: wrap;
+}
+
+.herdr-native-subagent-title {
+	color: var(--text-normal);
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.herdr-native-subagent-activity {
+	font-family: var(--font-monospace);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.herdr-native-subagent-open {
+	font-size: var(--font-ui-smaller);
+	margin-top: var(--size-4-1);
+}
+
+/* Its transcript, opened on request: the turns scroll, the status stays. */
+.herdr-subagent-modal {
+	max-width: 90vw;
+	width: var(--file-line-width);
+}
+
+.herdr-subagent-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: var(--size-4-2);
+}
+
+.herdr-subagent-status.is-live {
+	color: var(--text-accent);
+}
+
+.herdr-subagent-turns {
+	max-height: 70vh;
+	overflow-y: auto;
 }
 
 /*
@@ -902,6 +2061,106 @@ svg.svg-icon[class*='herdr-kind-'] text {
 
 .herdr-native-change.is-error {
 	color: var(--text-error);
+}
+
+/*
+ * A narrow view (#146). The native view is often a sidebar, which is narrow on
+ * a desktop too, so these are container queries on the view, never media
+ * queries on the window. The view's own padding stays (a container cannot
+ * query itself). Nothing may scroll sideways at 280px: the indents inside a
+ * turn give back their width, a table and a code block scroll inside
+ * themselves, a text area gives up its `cols` minimum, and at the narrowest the
+ * prompt box's buttons go under the text area instead of beside it.
+ */
+@container herdr-native (max-width: 480px) {
+	.herdr-native-prompt,
+	.herdr-native-steer,
+	.herdr-native-thought,
+	.herdr-native-report,
+	.herdr-native-subagent {
+		padding-left: var(--size-4-2);
+	}
+
+	.herdr-native-tool {
+		padding-left: var(--size-4-2);
+	}
+
+	.herdr-native-waiting {
+		padding: var(--size-4-2);
+	}
+
+	.herdr-native-turn table {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
+	}
+
+	.herdr-native-turn pre {
+		max-width: 100%;
+		overflow-x: auto;
+	}
+}
+
+@container herdr-native (max-width: 360px) {
+	/* The strip wraps: Stop and Send go under the pickers, at the end. */
+	.herdr-native-prompt-toolbar {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	/* The session bar collapses to `Opus`, `◐`, the mode's short word, and `2%`. */
+	.herdr-native-session-value {
+		display: none;
+	}
+
+	.herdr-native-session-short {
+		display: inline;
+	}
+
+	.herdr-native-session-context.herdr-has-window .herdr-native-session-tokens,
+	.herdr-native-session-context.herdr-has-window .herdr-native-session-sep {
+		display: none;
+	}
+
+	/* A queued row's buttons go under its text. */
+	.herdr-native-queue-row {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	.herdr-native-queue-body {
+		flex-basis: 100%;
+	}
+}
+
+/*
+ * A pointer that cannot aim finely — a finger, a pen (#146): the native view's
+ * disclosures and buttons get room enough to be hit.
+ */
+@media (pointer: coarse) {
+	.herdr-native-tools-summary,
+	.herdr-native-thinking-summary,
+	.herdr-native-read-details > summary {
+		padding-block: var(--size-4-2);
+	}
+
+	.herdr-native-waiting-choice {
+		padding-block: var(--size-4-2);
+	}
+}
+
+/*
+ * Reduced motion (#146): nothing in the native view slides or fades for a
+ * reader who asked the system for less. A theme's smooth scrolling on the
+ * transcript is turned off too, which also keeps following's pins instant.
+ */
+@media (prefers-reduced-motion: reduce) {
+	.herdr-native-view,
+	.herdr-native-view * {
+		animation: none;
+		scroll-behavior: auto;
+		transition: none;
+	}
 }
 
 /* File explorer folder hover button (issue #30) ---------------------------- */

@@ -23,7 +23,11 @@ there. See the [remote guide](docs/runtimes.md#the-vault-must-exist-on-both-mach
   watch read-only, beside the note you are working on.
 - **Native view**: a Claude Code session as Obsidian Markdown, with wikilinks,
   callouts and your theme, tool calls folded into one line per turn, the notes
-  it changed as links, and a prompt box with `/` and `@` completion.
+  it changed as links, and its to-do list and subagents as they run. Answer
+  its questions, permissions and plans from a card in the view. The prompt box
+  has `/` and `@` completion, images, queued prompts you can send now, edit or
+  discard, and model, effort and permission mode pickers with the context
+  used beside them.
 - **Agent list** in the sidebar: the vault's agents with their status and
   current task, live.
 - **Starting agents**: the **+** in the list starts your default agent, and a
@@ -50,11 +54,14 @@ key-based login that does not prompt.
 
 ## Install
 
-Until the plugin is in the community list, install it with
-[BRAT](https://github.com/TfTHacker/obsidian42-brat): add
-`nytafar/obsidian-herdr` as a beta plugin, then enable **Gjetr** under Community
-plugins. The plugin id was `herdr` through 0.5; settings saved under that id
-carry over on the first load as `gjetr`.
+Gjetr is in Obsidian's community plugins: open **Settings → Community
+plugins → Browse**, search for **Gjetr**, then install and enable it, or start
+from [its page in the directory](https://community.obsidian.md/plugins/gjetr).
+Obsidian keeps it updated from there. The plugin id was `herdr` through 0.5;
+settings saved under that id carry over on the first load as `gjetr`.
+
+For builds before they reach the directory, add `nytafar/obsidian-herdr` to
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) as a beta plugin.
 
 Or let your coding agent do it, BRAT included
 ([docs/agent-install.md](docs/agent-install.md)):

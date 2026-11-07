@@ -8,7 +8,9 @@
  * banner at start, `system:init` only once a prompt arrives, `can_use_tool`
  * control requests for the prompts below, `control_cancel_request` and the
  * interrupt's own response, `conversation_reset` and a fresh init on
- * `/clear`, and `result` lines with `is_error` the way the CLI sends them.
+ * `/clear`, `result` lines with `is_error` the way the CLI sends them, and
+ * the session settings' answers (`set_model`, `apply_flag_settings`,
+ * `set_permission_mode`, #162) and `get_context_usage`'s breakdown (#171).
  *
  * A prompt picks the behaviour by keyword:
  *   WRITE  a Write permission (suggestion: setMode acceptEdits, session)
@@ -16,6 +18,12 @@
  *   ASK    an AskUserQuestion
  *   PLAN   an ExitPlanMode
  *   SLOW   a turn that runs until it is interrupted
+ *   STEER  a tool call that runs until the next message arrives, which is
+ *          absorbed into this turn at the tool's end: one `result` answers
+ *          both (`user_message_uuids` names them), as Claude 2.1.318 does
+ *   DROPPED a message cancelled while queued (`command_lifecycle`
+ *          `cancelled`), as when another client withdraws it; it never runs
+ *          and gets no result, and a STEER turn waiting for it ends alone
  *   FAIL   `result` success with `is_error` (not logged in)
  *   HOOK   a control request of a subtype nobody declared (`hook_callback`)
  *   /clear rotates the session id
@@ -31,6 +39,12 @@
  * has a transcript exits 1 with "Session ID … is already in use.", and
  * `--resume` of one with none says "No conversation found …" on stderr and
  * in an error `result`, then exits 1, both before reading stdin.
+ *
+ * A user message sent with a `uuid` gets `command_lifecycle` `queued`, then
+ * `started` when its turn takes it, and after its turn's `result` (which
+ * lists it in `user_message_uuids`) `completed`, or `cancelled` when the
+ * turn failed or was interrupted: the order and shapes of the finding
+ * `queued-prompts`. One without a uuid gets none of these.
  *
  * Env: FAKE_CLAUDE_LOG=<file> appends `{"argv":…,"cwd":…}` once and every
  * stdin line it reads, one JSON per line, for the tests to read back.
@@ -52,7 +66,13 @@ const flag = (name) => {
 	return index >= 0 ? argv[index + 1] : undefined;
 };
 let session = flag('--session-id') ?? flag('--resume') ?? randomUUID();
-const permissionMode = flag('--permission-mode') ?? 'default';
+/** The session's mode and model, which `set_permission_mode` and `set_model` change (#162). */
+let permissionMode = flag('--permission-mode') ?? 'default';
+let model = 'claude-haiku-5-5';
+/** What `set_permission_mode` takes on 2.1.318, as its refusal lists them. */
+const MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'];
+/** The aliases `set_model` takes here, to the id it answers with. */
+const MODELS = { opus: 'claude-opus-5-5', sonnet: 'claude-sonnet-5-5', haiku: 'claude-haiku-5-5' };
 
 const configDir =
 	process.env.CLAUDE_CONFIG_DIR || (process.env.FAKE_CLAUDE_HOME ? `${process.env.FAKE_CLAUDE_HOME}/.claude` : '');
@@ -67,7 +87,18 @@ let running = null;
 let ended = false;
 let busy = false;
 let requestSeq = 0;
+/** Messages waiting for a turn: `{ text, uuid }`, uuid null when sent without one. */
 const queue = [];
+/** The uuids of the messages the running turn has taken, in order. */
+let members = [];
+/** The running turn's result was an error. */
+let failed = false;
+/** A STEER turn waiting at its tool call for the next message: called with it. */
+let steering = null;
+
+const lifecycle = (uuid, state) => {
+	if (uuid) send({ type: 'command_lifecycle', command_uuid: uuid, state, uuid: randomUUID() });
+};
 
 function writeTranscript(prompt) {
 	if (!configDir) return;
@@ -80,26 +111,36 @@ function writeTranscript(prompt) {
 }
 
 function result(fields = {}) {
-	send({
+	const named = members.filter(Boolean);
+	const answered = named.length ? { user_message_uuid: named[named.length - 1], user_message_uuids: named } : {};
+	const line = {
 		type: 'result',
 		subtype: 'success',
 		is_error: false,
 		result: 'ok',
 		num_turns: 1,
 		credential_expires_at: '2026-12-02T18:07:48.095Z',
+		modelUsage: { [model]: { inputTokens: 3, contextWindow: 1000000 } },
+		...answered,
 		...fields,
-	});
+	};
+	failed = line.is_error === true;
+	send(line);
 }
 
 function finishTurn() {
+	for (const uuid of members) lifecycle(uuid, failed ? 'cancelled' : 'completed');
+	members = [];
+	failed = false;
 	busy = false;
 	running = null;
 	pending = null;
+	steering = null;
 	next();
 }
 
 function init() {
-	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, slash_commands: ['clear', 'compact'] });
+	send({ type: 'system', subtype: 'init', cwd: process.cwd(), permissionMode, model, slash_commands: ['clear', 'compact'] });
 }
 
 function ask(tool, input, extra = {}) {
@@ -119,8 +160,10 @@ function ask(tool, input, extra = {}) {
 	});
 }
 
-function startTurn(text) {
+function startTurn({ text, uuid }) {
 	busy = true;
+	members = [uuid];
+	lifecycle(uuid, 'started');
 	if (text === '/clear') {
 		const old = session;
 		send({ type: 'conversation_reset', new_conversation_id: randomUUID(), trigger: 'clear', session_id: old });
@@ -194,14 +237,42 @@ function startTurn(text) {
 			clearInterval(timer);
 			send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'one one' }] } });
 			send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
-			send({
-				type: 'result',
+			result({
 				subtype: 'error_during_execution',
 				is_error: true,
+				result: undefined,
+				num_turns: undefined,
+				credential_expires_at: undefined,
 				stop_reason: null,
 				terminal_reason: 'aborted_streaming',
 				errors: ['[ede_diagnostic] result_type=user'],
 			});
+			finishTurn();
+		};
+		return;
+	}
+	if (text.includes('STEER')) {
+		send({
+			type: 'assistant',
+			message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_steer', name: 'Bash', input: { command: 'sleep 30' } }] },
+		});
+		steering = (message) => {
+			steering = null;
+			send({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: '', tool_use_id: 'toolu_steer' }] } });
+			if (message) {
+				// Taken in at the tool boundary: the steer.
+				queue.splice(queue.indexOf(message), 1);
+				lifecycle(message.uuid, 'started');
+				members.push(message.uuid);
+			}
+			running = null;
+			send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } });
+			result();
+			finishTurn();
+		};
+		running = () => {
+			steering = null;
+			result({ subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', result: undefined });
 			finishTurn();
 		};
 		return;
@@ -229,9 +300,9 @@ function startTurn(text) {
 
 function next() {
 	if (busy) return;
-	const text = queue.shift();
-	if (text !== undefined) {
-		startTurn(text);
+	const message = queue.shift();
+	if (message !== undefined) {
+		startTurn(message);
 		return;
 	}
 	if (ended) setTimeout(() => process.exit(0), 20);
@@ -273,6 +344,65 @@ function control(message) {
 		}
 		send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { still_queued: [] } } });
 		running?.();
+		return;
+	}
+	// The session settings (#162), with the answers and refusals measured on
+	// 2.1.318: `set_model` names the id, an unknown one is `not_found`;
+	// `apply_flag_settings` answers bare, whatever the level;
+	// `set_permission_mode` names the mode and says so in `system:status`,
+	// an unknown one is `invalid_mode`.
+	const ok = (response) =>
+		send({
+			type: 'control_response',
+			response: { subtype: 'success', request_id: message.request_id, ...(response ? { response } : {}) },
+		});
+	const refuse = (error, code, extra = {}) =>
+		send({ type: 'control_response', response: { subtype: 'error', request_id: message.request_id, error, error_code: code, ...extra } });
+	if (request.subtype === 'set_model') {
+		const id = MODELS[request.model];
+		if (!id) {
+			refuse(`Model '${request.model}' not found`, 'not_found', { model });
+			return;
+		}
+		model = id;
+		ok({ model });
+		return;
+	}
+	if (request.subtype === 'apply_flag_settings') {
+		ok();
+		return;
+	}
+	// The breakdown as 2.1.318 answered it to a `claude -p` with no prompt
+	// (#171), trimmed: the grid, the tools, skills and file paths dropped.
+	if (request.subtype === 'get_context_usage') {
+		ok({
+			categories: [
+				{ id: 'system_prompt', name: 'System prompt', tokens: 2256, color: 'promptBorder', kind: 'used' },
+				{ id: 'messages', name: 'Messages', tokens: 107, color: 'purple_FOR_SUBAGENTS_ONLY', kind: 'used' },
+				{ id: 'autocompact_buffer', name: 'Autocompact buffer', tokens: 33000, color: 'inactive', kind: 'buffer' },
+				{ id: 'free_space', name: 'Free space', tokens: 952351, color: 'promptBorder', kind: 'free' },
+			],
+			totalTokens: 14649,
+			maxTokens: 1000000,
+			rawMaxTokens: 1000000,
+			autocompactSource: 'model-default',
+			percentage: 1,
+			gridRows: [],
+			model,
+			memoryFiles: [{ path: '/home/someone/.claude/CLAUDE.md', type: 'User', tokens: 630 }],
+			isAutoCompactEnabled: true,
+			apiUsage: null,
+		});
+		return;
+	}
+	if (request.subtype === 'set_permission_mode') {
+		if (!MODES.includes(request.mode)) {
+			refuse(`Cannot set permission mode: must be one of ${MODES.join(', ')}`, 'invalid_mode');
+			return;
+		}
+		permissionMode = request.mode;
+		ok({ mode: permissionMode });
+		send({ type: 'system', subtype: 'status', status: null, permissionMode });
 		return;
 	}
 	send({
@@ -323,7 +453,19 @@ function start() {
 			}
 			record({ stdin: message });
 			if (message.type === 'user') {
-				queue.push(typeof message.message?.content === 'string' ? message.message.content : '');
+				const queued = {
+					text: typeof message.message?.content === 'string' ? message.message.content : '',
+					uuid: typeof message.uuid === 'string' ? message.uuid : null,
+				};
+				queue.push(queued);
+				lifecycle(queued.uuid, 'queued');
+				if (busy && queued.text.includes('DROPPED')) {
+					queue.splice(queue.indexOf(queued), 1);
+					lifecycle(queued.uuid, 'cancelled');
+					steering?.(null);
+				} else if (steering) {
+					steering(queued);
+				}
 				next();
 			} else if (message.type === 'control_response') {
 				answer(message.response ?? {});

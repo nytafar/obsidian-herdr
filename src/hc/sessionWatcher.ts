@@ -39,13 +39,18 @@ import type { PaneState } from '../herdr/scope';
 import type { AgentStatus } from '../herdr/types.gen';
 import type {
 	BlockKind,
+	PaneGlance,
 	PaneSnapshot,
 	SessionWatcher,
 	Unsubscribe,
 } from '../native/sessionWatcher';
-import { agentKindOf, hcAgentStatus, type HcTerminal } from './model';
+import { nativeAgentReason } from '../native/agentSupport';
+import { agentKindOf, foregroundAgent, hcAgentStatus, type HcTerminal } from './model';
 import type { IngestListener } from './scope';
 import { SeenTracker } from './seen';
+
+/** The agent whose hook writes the session label (ADR-0006). */
+const SESSION_LABEL_AGENT = 'claude';
 
 /** The palette command that installs the hook (`main.ts`). */
 export const SESSION_HOOK_COMMAND_NAME = 'Install or remove the Claude session hook';
@@ -117,11 +122,16 @@ export function nativeStatus(terminal: HcTerminal): { status: AgentStatus; block
 /**
  * Why a terminal cannot be shown natively, or null when it can or is not
  * known (not connected yet, or gone): only a terminal the core reported says
- * anything, so a tab never leaves the native view for want of a snapshot.
+ * anything, so a tab never leaves the native view for want of a snapshot. A
+ * terminal running another agent names it (#155); one running none says it
+ * has no Claude session, as before.
  */
 export function nativeUnavailable(terminal: HcTerminal | undefined): string | null {
 	if (!terminal || acceptedSession(terminal)) return null;
-	if (agentKindOf(terminal) !== 'claude') return NATIVE_NO_CLAUDE_REASON;
+	const agent = agentKindOf(terminal);
+	const otherAgent = nativeAgentReason('herdr-core', agent);
+	if (otherAgent) return otherAgent;
+	if (agent !== 'claude') return NATIVE_NO_CLAUDE_REASON;
 	const label = sessionLabelOf(terminal.labels);
 	if (!label) return NATIVE_NO_LABEL_REASON;
 	const pid = terminal.foreground?.pid;
@@ -238,9 +248,32 @@ export function hcSessionWatcher(scope: HcWatchScope, options: HcSessionWatcherO
 				paneId,
 				cwd: row.cwd,
 				agentSession: session?.sessionId ?? '',
-				...(session ? { transcriptPath: session.transcriptPath } : {}),
+				// The label is the Claude hook's (ADR-0006), so the session it names
+				// is Claude's, whatever the foreground program is called.
+				...(session ? { agent: SESSION_LABEL_AGENT, transcriptPath: session.transcriptPath } : {}),
 				agentStatus: status,
 				...(blockKind ? { blockKind } : {}),
+				// Claude's words for what it waits on (ADR-0009 §1), while blocked.
+				...(status === 'blocked' && terminal?.status?.msg ? { blockMessage: terminal.status.msg } : {}),
+			};
+		},
+		glance(paneId: string): PaneGlance | null {
+			const row = scope.get(paneId);
+			if (!row) return null;
+			const terminal = scope.terminal(paneId);
+			const session = acceptedSession(terminal);
+			const { status } = terminal ? nativeStatus(terminal) : { status: row.agentStatus };
+			// What runs now: a session is Claude's; else the foreground program,
+			// which is a shell again once the agent exits, whatever status hc
+			// last kept; else the row's kind.
+			const now = terminal ? foregroundAgent(terminal) : undefined;
+			return {
+				paneId,
+				cwd: row.cwd,
+				agent: session ? SESSION_LABEL_AGENT : now === undefined ? row.agent : now,
+				agentSession: session?.sessionId ?? '',
+				agentStatus: status,
+				...(status === 'blocked' && terminal?.status?.msg ? { blockMessage: terminal.status.msg } : {}),
 			};
 		},
 		onSession(handler): Unsubscribe {

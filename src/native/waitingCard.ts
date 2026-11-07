@@ -7,11 +7,13 @@
  * decides the one thing in the native view that presses a key in someone's
  * session, namely whether the workspace trust prompt is what is on screen.
  *
- * **Only the trust prompt is answered from here.** Tool permissions are
+ * **Only the trust prompt is answered unasked.** Tool permissions are
  * Claude's own, decided by its permission mode, and a plugin that pressed
  * "Yes" for them would be answering a question it was never asked; questions
- * and plan approval are the user's. Those three kinds exist so the card can
- * say what the block is, and the terminal is where they are answered.
+ * and plan approval are the user's. This model says what the block is; on
+ * herdr and herdr-core the card then reads the dialog off the screen and
+ * offers the user's own answers as keys (ADR-0009, `./screenCard.ts`), and
+ * elsewhere the terminal is where they are answered.
  *
  * **The runtime's word first.** A runtime that reports what kind of block it
  * is (herdr-core's `permission`, `question` and `auth`, ADR-0006) is believed,
@@ -27,6 +29,12 @@
  * surface answers it through the kind's responder. That is a different thing
  * from pressing keys in a terminal: the runtime asked, and it says what for.
  *
+ * **The agent's word on its calls.** Which dangling call is a question or a
+ * plan, and what it asks, is the agent format's (`AgentFormat.pendingCall`,
+ * ADR-0010): Claude blocks on `AskUserQuestion` and `ExitPlanMode`, another
+ * agent on a call whose input says why it needs approval. The card names the
+ * agent by its format.
+ *
  * **A guess is never answered unasked.** The card says whether its kind was
  * {@link WaitingCardModel.reported} by the runtime. A startup guessed from "no
  * transcript yet" is also what an auth prompt, or any other dialog before the
@@ -34,17 +42,14 @@
  * answered automatically; a guessed one still gets the button.
  */
 
-import type { PendingRequest } from './pendingRequest';
-import type { ToolEntry, Turn } from './reducer';
+import type { PendingQuestionOption, PendingRequest } from './pendingRequest';
+import type { ToolEntry, Turn } from './conversation';
 import type { BlockKind } from './sessionWatcher';
 import { toolDetail } from './toolCalls';
+import type { AgentFormat } from '../agents/format';
+import { defaultAgentFormat } from '../agents/catalog';
 
-/** The tool a question blocks under; its answers are the dialog's options. */
-const ASK_USER_QUESTION = 'AskUserQuestion';
-/** The tool plan approval blocks under; its `plan` is what the dialog shows. */
-const EXIT_PLAN_MODE = 'ExitPlanMode';
-
-/** The blocks a Claude session can be sitting in, as the card tells them apart. */
+/** The blocks a session can be sitting in, as the card tells them apart. */
 export type WaitingKind = 'startup' | 'question' | 'plan' | 'permission' | 'auth';
 
 /** What the card says, and which block it says it about. */
@@ -54,8 +59,11 @@ export interface WaitingCardModel {
 	title: string;
 	/** The question, the plan or the tool's one-line detail; empty for none. */
 	body: string;
-	/** The answers `AskUserQuestion` offered; empty for every other kind. */
-	options: string[];
+	/**
+	 * The answers `AskUserQuestion` offered, each with the description Claude
+	 * gave it (empty for none); empty for every other kind.
+	 */
+	options: PendingQuestionOption[];
 	/**
 	 * The dangling `tool_use` this block is about, empty when none dangles — as
 	 * it always is at startup, which is the one kind that gets answered. It is
@@ -101,11 +109,25 @@ export function danglingToolUse(turns: readonly Turn[]): ToolEntry | null {
 	return null;
 }
 
+/**
+ * The format a card reads with. Two cases kept apart (ADR-0010): undefined is
+ * a caller that names no agent, read as the default agent's, as before agents
+ * had formats; null is an agent with no format, which has nothing to read.
+ */
+function formatOf(format: AgentFormat | null | undefined): AgentFormat | null {
+	return format === undefined ? defaultAgentFormat() : format;
+}
+
+/** What the card calls the agent: its format's name, else "The agent". */
+function nameOf(format: AgentFormat | null | undefined): string {
+	return formatOf(format)?.name ?? 'The agent';
+}
+
 /** The startup card: the workspace trust prompt, the one block the view answers. */
-function startupCard(reported: boolean): WaitingCardModel {
+function startupCard(reported: boolean, agent: string): WaitingCardModel {
 	return {
 		kind: 'startup',
-		title: 'Claude is asking whether to trust this folder',
+		title: `${agent} is asking whether to trust this folder`,
 		body: reported
 			? 'Trusting it here answers the prompt; the terminal answers it too.'
 			: 'No session has started yet, which is how the trust prompt looks. Open the terminal to be sure; trusting it here answers that prompt.',
@@ -118,16 +140,22 @@ function startupCard(reported: boolean): WaitingCardModel {
 
 /**
  * The card for a request the runtime is waiting on (ADR-0007). Never the
- * startup kind, so nothing here is ever answered without a press.
+ * startup kind, so nothing here is ever answered without a press. `format`
+ * is the agent's that asked; absent, the default agent's.
  */
-export function requestCard(request: PendingRequest, vaultPath: string): WaitingCardModel {
+export function requestCard(
+	request: PendingRequest,
+	vaultPath: string,
+	format?: AgentFormat | null,
+): WaitingCardModel {
+	const agent = nameOf(format);
 	if (request.kind === 'question') {
 		const first = request.questions[0];
 		return {
 			kind: 'question',
-			title: 'Claude asked a question',
+			title: `${agent} asked a question`,
 			body: first?.question ?? '',
-			options: first?.options.map((option) => option.label) ?? [],
+			options: first?.options.map((option) => ({ ...option })) ?? [],
 			toolUseId: request.toolUseId,
 			reported: true,
 			request,
@@ -136,7 +164,7 @@ export function requestCard(request: PendingRequest, vaultPath: string): Waiting
 	if (request.kind === 'plan') {
 		return {
 			kind: 'plan',
-			title: 'Claude is ready to code',
+			title: `${agent} is ready to code`,
 			body: request.plan,
 			options: [],
 			toolUseId: request.toolUseId,
@@ -156,7 +184,7 @@ export function requestCard(request: PendingRequest, vaultPath: string): Waiting
 	};
 	return {
 		kind: 'permission',
-		title: `Claude wants to use ${request.toolName}`,
+		title: `${agent} wants to use ${request.toolName}`,
 		body: toolDetail(entry, vaultPath),
 		options: [],
 		toolUseId: request.toolUseId,
@@ -170,9 +198,10 @@ export function requestCard(request: PendingRequest, vaultPath: string): Waiting
  *
  * `blockKind` is what the runtime reported, null when it reports none.
  * `hasTranscript` is the session model's path: without a reported kind, a
- * pane whose Claude has not written a file yet is taken to be blocked at
+ * pane whose agent has not written a file yet is taken to be blocked at
  * startup on the workspace trust prompt, which is the one block that exists
- * before any transcript does.
+ * before any transcript does. What a dangling call asks is the agent's
+ * format's to read (`AgentFormat.pendingCall`).
  */
 export function waitingCard(input: {
 	blockKind?: BlockKind | null;
@@ -182,14 +211,28 @@ export function waitingCard(input: {
 	vaultPath: string;
 	/** The runtime's own pending request, which wins over everything else. */
 	request?: PendingRequest | null;
+	/**
+	 * The plan from the agent's plan file, while the session is in plan mode
+	 * (#148); null or absent otherwise. Claude's `ExitPlanMode` reaches the
+	 * transcript only with its answer, so a block in plan mode with no call
+	 * dangling is taken to be plan approval when there is a plan to show.
+	 */
+	plan?: string | null;
+	/**
+	 * The format of the pane's agent: absent is the default agent's, null an
+	 * agent with no format (no name, no call to read).
+	 */
+	format?: AgentFormat | null;
 }): WaitingCardModel {
-	if (input.request) return requestCard(input.request, input.vaultPath);
+	const format = formatOf(input.format);
+	const agent = nameOf(format);
+	if (input.request) return requestCard(input.request, input.vaultPath, format);
 	const kind = input.blockKind ?? null;
-	if (kind === 'trust') return startupCard(true);
+	if (kind === 'trust') return startupCard(true, agent);
 	if (kind === 'auth') {
 		return {
 			kind: 'auth',
-			title: 'Claude needs you to sign in',
+			title: `${agent} needs you to sign in`,
 			body: 'Signing in happens in the terminal.',
 			options: [],
 			toolUseId: '',
@@ -197,16 +240,16 @@ export function waitingCard(input: {
 			request: null,
 		};
 	}
-	if (kind === null && !input.hasTranscript) return startupCard(false);
+	if (kind === null && !input.hasTranscript) return startupCard(false, agent);
 	const reported = kind !== null;
 	const tool = danglingToolUse(input.turns);
-	if (tool?.name === ASK_USER_QUESTION && kind !== 'permission') {
-		const { question, options } = firstQuestion(tool);
+	const asked = tool ? (format?.pendingCall(tool) ?? null) : null;
+	if (tool && asked?.kind === 'question' && kind !== 'permission') {
 		return {
 			kind: 'question',
-			title: 'Claude asked a question',
-			body: question,
-			options,
+			title: `${agent} asked a question`,
+			body: asked.question,
+			options: asked.options,
 			toolUseId: tool.id,
 			reported,
 			request: null,
@@ -217,7 +260,7 @@ export function waitingCard(input: {
 		// the runtime says it is one, and the terminal shows what it asks.
 		return {
 			kind: 'question',
-			title: 'Claude asked a question',
+			title: `${agent} asked a question`,
 			body: '',
 			options: [],
 			toolUseId: tool?.id ?? '',
@@ -225,13 +268,29 @@ export function waitingCard(input: {
 			request: null,
 		};
 	}
-	if (tool?.name === EXIT_PLAN_MODE) {
+	const planFile = input.plan?.trim() ?? '';
+	if (tool && asked?.kind === 'plan') {
 		return {
 			kind: 'plan',
-			title: 'Claude is ready to code',
-			body: textField(tool, 'plan'),
+			title: `${agent} is ready to code`,
+			body: asked.plan || planFile,
 			options: [],
 			toolUseId: tool.id,
+			reported,
+			request: null,
+		};
+	}
+	if (!tool && planFile) {
+		// Plan approval as Claude writes it now: no call dangles, and the plan is
+		// the file it wrote before asking (#148). A question asked in plan mode
+		// looks the same to a runtime that names no kind (herdr); the card says
+		// where either is answered.
+		return {
+			kind: 'plan',
+			title: `${agent} is ready to code`,
+			body: planFile,
+			options: [],
+			toolUseId: '',
 			reported,
 			request: null,
 		};
@@ -239,10 +298,11 @@ export function waitingCard(input: {
 	if (tool) {
 		return {
 			kind: 'permission',
-			title: `Claude wants to use ${tool.name}`,
-			// The tool group's own one-line detail (#95), so a call reads the same
+			title: `${agent} wants to use ${tool.name}`,
+			// The reason the agent gave in the call, where it writes one; else the
+			// tool group's own one-line detail (#95), so a call reads the same
 			// here as it does in the turn it belongs to.
-			body: toolDetail(tool, input.vaultPath),
+			body: (asked?.kind === 'permission' && asked.reason) || toolDetail(tool, input.vaultPath),
 			options: [],
 			toolUseId: tool.id,
 			reported,
@@ -251,7 +311,7 @@ export function waitingCard(input: {
 	}
 	return {
 		kind: 'permission',
-		title: 'Claude is waiting for permission',
+		title: `${agent} is waiting for permission`,
 		body: '',
 		options: [],
 		toolUseId: '',
@@ -260,35 +320,47 @@ export function waitingCard(input: {
 	};
 }
 
+/** Claude's own mark on the option it recommends: a suffix on the label. */
+const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
+
 /**
- * The question an `AskUserQuestion` call is blocked on, and the answers it
- * offered.
+ * An option's label as the card shows it, and whether Claude recommended it.
  *
- * The **first** question: the input is a list, and a call that asks several
- * shows them one dialog at a time in the terminal, which is where the rest are
- * answered anyway. The card's job is to say what the block is, not to be the
- * dialog.
+ * Claude marks its pick by writing "(Recommended)" after the label, which
+ * the card draws as a tag instead. Only the shown text changes: an answer is
+ * always sent under the label exactly as Claude wrote it, suffix included,
+ * because that is the option it offered. A label that is nothing but the
+ * suffix keeps it, so no option is ever drawn blank.
  */
-function firstQuestion(entry: ToolEntry): { question: string; options: string[] } {
-	const first = firstOf(entry.input.questions);
-	if (!first || typeof first !== 'object') return { question: '', options: [] };
-	const asked: unknown = (first as { question?: unknown }).question;
-	const offered: unknown = (first as { options?: unknown }).options;
-	const options = (Array.isArray(offered) ? (offered as unknown[]) : [])
-		.map((option) =>
-			option && typeof option === 'object' ? (option as { label?: unknown }).label : null,
-		)
-		.filter((label): label is string => typeof label === 'string' && label !== '');
-	return { question: typeof asked === 'string' ? asked.trim() : '', options };
+export function optionName(label: string): { text: string; recommended: boolean } {
+	const text = label.replace(RECOMMENDED_SUFFIX, '');
+	if (text === label || text.trim() === '') return { text: label, recommended: false };
+	return { text, recommended: true };
+}
+/**
+ * Whether a keystroke in a typed answer sends it: Enter, unless an input
+ * method is composing with it. WebKit can deliver the Enter that commits an
+ * IME candidate after `compositionend`, as key code 229, so that one is the
+ * input method's too.
+ */
+export function isTypedAnswerKey(event: { key: string; isComposing?: boolean; keyCode?: number }): boolean {
+	return event.key === 'Enter' && event.isComposing !== true && event.keyCode !== 229;
 }
 
-/** The first element of a value that is a list, and null for anything else. */
-function firstOf(value: unknown): unknown {
-	return Array.isArray(value) ? ((value as unknown[])[0] ?? null) : null;
-}
-
-/** One string field of a call's input, trimmed; empty when it is not a string. */
-function textField(entry: ToolEntry, field: string): string {
-	const value = entry.input[field];
-	return typeof value === 'string' ? value.trim() : '';
+/**
+ * One question's answer as it is sent: the options picked, in the order Claude
+ * offered them and under their labels exactly as written, then the user's
+ * typed answer, joined with ", " as Claude's own dialog joins a multiple
+ * choice. For a single choice the card keeps only one of the two. Empty when
+ * nothing is given.
+ */
+export function questionAnswer(
+	offered: readonly PendingQuestionOption[],
+	picked: ReadonlySet<string>,
+	typed: string,
+): string {
+	const parts = offered.map((option) => option.label).filter((label) => picked.has(label));
+	const own = typed.trim();
+	if (own) parts.push(own);
+	return parts.join(', ');
 }

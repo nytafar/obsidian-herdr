@@ -37,6 +37,9 @@ import type {
 } from '../connection';
 import type { KeySender, PromptClient, PromptSender } from '../native/promptSender';
 import type { WaitingResponder } from '../native/pendingRequest';
+import type { ScreenAccess } from '../native/screenAccess';
+import type { SessionSettingsSender } from '../native/sessionSettings';
+import type { ContextUsageReader } from '../native/contextBreakdown';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
@@ -44,6 +47,7 @@ import type { PaneSession } from '../views/paneTerminal';
 import type { RuntimeKind } from '../runtimes';
 import type { TabLabels } from '../tabLabels';
 import type { AgentProbe } from '../agents/catalog';
+import type { AgentFormat } from '../agents/format';
 
 /**
  * What a runtime of a kind can do, as the UI asks it. herdr has all of it;
@@ -136,6 +140,45 @@ export const CLAUDE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze(
 	nativeView: true,
 });
 
+/**
+ * How far a runtime's report of an agent's session can be trusted (#137,
+ * ADR-0010):
+ *
+ * - `trusted` — the session the runtime puts on a pane is that pane's agent's.
+ * - `hint` — the runtime reports one, but it may belong to another pane: herdr
+ *   hears Codex's session from a hook that runs in Codex's shared daemon and
+ *   reports to the pane that started the daemon (finding `agent-codex`), and
+ *   nothing tells such a report from a right one.
+ * - `absent` — the runtime reports no session for that agent at all.
+ *
+ * The native view is offered only on a trusted binding: a hint would show
+ * another pane's conversation as this one's.
+ */
+export type SessionBinding = 'trusted' | 'hint' | 'absent';
+
+/**
+ * Each kind's session bindings, by the agent catalog's ids; an agent not
+ * listed is `absent`, since nothing measured says its sessions can be taken.
+ *
+ * - **herdr** reports Claude's session from Claude's own `SessionStart` hook,
+ *   per pane; Codex's only correctly under `--no-daemon`, which herdr cannot
+ *   tell apart (measured 2026-11-06, `docs/architecture.md`, "A second agent:
+ *   Codex").
+ * - **herdr-core** has the plugin's Claude session hook label (ADR-0006) and
+ *   nothing for any other agent.
+ * - **claude** runs Claude and holds its session itself (ADR-0007).
+ */
+export const AGENT_SESSIONS: Readonly<Record<RuntimeKind, Readonly<Record<string, SessionBinding>>>> = Object.freeze({
+	herdr: Object.freeze({ claude: 'trusted', codex: 'hint' }),
+	'herdr-core': Object.freeze({ claude: 'trusted' }),
+	claude: Object.freeze({ claude: 'trusted' }),
+});
+
+/** How far a runtime of `kind` can be trusted on `agent`'s session. */
+export function sessionBinding(kind: RuntimeKind, agent: string): SessionBinding {
+	return AGENT_SESSIONS[kind]?.[agent] ?? 'absent';
+}
+
 /** Why the native view is not offered for a kind without agent sessions. */
 export const NATIVE_NO_SESSION_REASON = 'no agent session for this runtime kind';
 
@@ -185,13 +228,20 @@ export interface NativeSessionAdapter<
 	 */
 	transcripts(endpoint: Endpoint, connection: Connection<C, S, T> | null): TranscriptSource | null;
 	/**
-	 * Where the prompt box's `/` list is read for this endpoint (#98): the
-	 * machine the agent runs on. Not given, or null, is this machine's files,
-	 * read synchronously; an `rpc` endpoint gives a source over `connection`
-	 * (the same rule as {@link transcripts}), or the built-ins without one,
-	 * never this machine's commands.
+	 * Where the prompt box's `/` list of `agent` (the agent catalog's id) is
+	 * read for this endpoint (#98): the machine the agent runs on. A reader
+	 * is one agent's (ADR-0010): what herdr and herdr-core read today is
+	 * Claude's directory layout, so another agent gets its own format's
+	 * list, never Claude's. Not given, or null, is this machine's catalogue
+	 * of the agent's format, read synchronously; an `rpc` endpoint gives a
+	 * source over `connection` (the same rule as {@link transcripts}), or the
+	 * agent's built-ins without one, never this machine's commands.
 	 */
-	commandCatalog?(endpoint: Endpoint, connection: Connection<C, S, T> | null): CommandCatalogSource | null;
+	commandCatalog?(
+		endpoint: Endpoint,
+		connection: Connection<C, S, T> | null,
+		agent: string,
+	): CommandCatalogSource | null;
 }
 
 /** What every use of a herdr-core runtime said before its kind landed. */
@@ -367,6 +417,29 @@ export interface RuntimeKindAdapter<
 	 * (`PaneSnapshot.request`, ADR-0007) has one.
 	 */
 	responder?(client: () => PromptClient | null): WaitingResponder;
+	/**
+	 * Read a pane's screen, press one key, type text (#164, ADR-0009), over
+	 * the same client: how a dialog in a multiplexer pane is answered. Absent
+	 * for a kind with no screen to answer on (`claude`, whose requests come as
+	 * messages and go through {@link responder}).
+	 */
+	screen?(client: () => PromptClient | null): ScreenAccess;
+	/**
+	 * The session bar's model, effort and mode changes (#161), over the same
+	 * client: control requests on the `claude` kind (#162); on herdr and
+	 * herdr-core the agent's own pickers on its screen (#169, #170), which
+	 * the pane's agent `format` reads (`AgentFormat.screenSettings`), so null
+	 * for an agent whose format reads none. Absent, or null, and the pickers
+	 * show the value, disabled, with the reason.
+	 */
+	sessionSettings?(client: () => PromptClient | null, format: AgentFormat | null): SessionSettingsSender | null;
+	/**
+	 * The context readout's breakdown (#171), asked of the agent without
+	 * writing to the conversation: `get_context_usage` on the `claude` kind.
+	 * Absent where the agent is asked through the prompt instead (herdr and
+	 * herdr-core send the format's `contextCommand`, idle or done only).
+	 */
+	contextUsage?(client: () => PromptClient | null): ContextUsageReader;
 	/**
 	 * The tab labels views on this connection read, built once per connection.
 	 * `alive()` is true while that connection is the published one.

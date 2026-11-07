@@ -4,8 +4,12 @@
  *
  * A **profile** is one agent CLI: an id, a name, an icon, the herdr agent kind
  * it is (what herdr's `agent.start` takes, and what the row's mark shows), the
- * program it runs and its default arguments, which runtime kinds can start
- * it, and whether it has a native view (Claude only, for now). The built-in
+ * program it runs and its default arguments, and which runtime kinds can
+ * start it. Whether an entry has the native view is the agent seam's answer
+ * for its agent on the runtime's kind (`offersNativeView` in `./format.ts`,
+ * ADR-0010), and whether the runtime's transcripts can be reached from here
+ * (`nativeAdapterFor`, which the caller answers): the two the native view
+ * itself is gated on. The built-in
  * profiles are herdr's own agent kinds; a user adds their own in settings (a
  * wrapper, `codex --profile work`, extra flags), and hc's templates join on a
  * herdr-core runtime.
@@ -22,6 +26,7 @@
 
 import { herdrVersionAtLeast } from '../herdr/version';
 import type { RuntimeConfig, RuntimeKind } from '../runtimes';
+import { agentFormat, offersNativeView, type AgentFormat } from './format';
 
 /** One of herdr's agent kinds, as the catalog ships it. */
 export interface BuiltinAgent {
@@ -70,8 +75,16 @@ export const BUILTIN_AGENTS: readonly BuiltinAgent[] = [
 	{ kind: 'maki', name: 'Maki' },
 ];
 
-/** The kind a profile falls back to, and the one a fresh user entry starts as. */
+/**
+ * The kind a profile falls back to, and the one a fresh user entry starts as.
+ * Also the agent a pane runs when its runtime does not say (ADR-0010).
+ */
 export const DEFAULT_AGENT_KIND = 'claude';
+
+/** The default agent's format: what a pane whose runtime names no agent is read with. */
+export function defaultAgentFormat(): AgentFormat | null {
+	return agentFormat(DEFAULT_AGENT_KIND);
+}
 
 /** A user's own entry, as `data.json` stores it under `agentProfiles`. */
 export interface UserAgentProfile {
@@ -101,8 +114,6 @@ export interface AgentProfile {
 	source: 'builtin' | 'user' | 'template';
 	/** The hc template's name, for a `template` entry. */
 	template?: string;
-	/** Whether the plugin has a native view for it: Claude only, for now. */
-	native: boolean;
 }
 
 /**
@@ -161,6 +172,13 @@ export interface CatalogEntry {
 	hidden: boolean;
 	/** The runtime's default: what a left click on + starts. */
 	isDefault: boolean;
+	/**
+	 * Whether a pane it starts on this runtime gets the native view: a format
+	 * for its agent, a session the runtime's kind can vouch for
+	 * (`offersNativeView`, ADR-0010), and transcripts the runtime lets this
+	 * machine read (`BuildCatalogInput.nativeReachable`). Absent reads as false.
+	 */
+	native?: boolean;
 }
 
 /** Arguments a launch line can carry: plain words, nothing a shell reads twice. */
@@ -197,7 +215,6 @@ function builtinProfile(agent: BuiltinAgent): AgentProfile {
 		command: agent.program ?? agent.kind,
 		args: [],
 		source: 'builtin',
-		native: agent.kind === 'claude',
 	};
 }
 
@@ -217,7 +234,6 @@ export function userProfile(user: UserAgentProfile): AgentProfile {
 		command,
 		args: [...user.args],
 		source: 'user',
-		native: user.agent === 'claude',
 	};
 }
 
@@ -231,7 +247,6 @@ export function templateProfile(template: HcTemplate): AgentProfile {
 		args: [],
 		source: 'template',
 		template: template.name,
-		native: false,
 	};
 }
 
@@ -368,6 +383,13 @@ export interface BuildCatalogInput {
 	settings: AgentCatalogSettings;
 	/** The runtime's probe, or null while none ran (not connected, still probing). */
 	probe: AgentProbe | null;
+	/**
+	 * Whether this runtime's transcripts can be read from here at all
+	 * (`nativeAdapterFor` in `../runtime/kind.ts`): false for herdr over SSH.
+	 * The runtime-level half of the native view's gate, which the caller
+	 * answers from the runtime's kind adapter. Not given reads as true.
+	 */
+	nativeReachable?: boolean;
 }
 
 /**
@@ -393,6 +415,7 @@ export interface BuildCatalogInput {
 export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 	const { runtime, settings, probe } = input;
 	const kind = runtime.kind;
+	const reachable = input.nativeReachable !== false;
 	const hidden = new Set(settings.hiddenAgents);
 	const where = machinePhrase(runtime);
 	const probed = probe?.found ?? null;
@@ -405,7 +428,15 @@ export function buildCatalog(input: BuildCatalogInput): CatalogEntry[] {
 	const unverified = probe?.error ? `${UNVERIFIED_PREFIX}${probe.error}` : null;
 	const entries: CatalogEntry[] = [];
 	const push = (profile: AgentProfile, available: boolean, reason: string | null, wasFound: boolean | null): void => {
-		entries.push({ profile, available, reason, found: wasFound, hidden: hidden.has(profile.id), isDefault: false });
+		entries.push({
+			profile,
+			available,
+			reason,
+			found: wasFound,
+			hidden: hidden.has(profile.id),
+			isDefault: false,
+			native: reachable && offersNativeView(kind, profile.agent),
+		});
 	};
 
 	for (const profile of builtinProfiles()) {
