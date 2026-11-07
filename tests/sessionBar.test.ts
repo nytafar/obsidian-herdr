@@ -42,6 +42,7 @@ import {
 	type SettingScope,
 } from '../src/native/sessionSettings';
 import { NativePaneSurface, type NativePaneSurfaceOptions } from '../src/native/surface';
+import type { ComposerLook } from '../src/native/composerLook';
 import {
 	breakdownHeadline,
 	contextBlock,
@@ -188,7 +189,9 @@ describe('the session bar in the native surface (#161)', () => {
 		await surface.attach(host);
 
 		const bar = el.find('herdr-native-session-bar');
-		expect(bar.hasClass('herdr-native-sizer')).toBe(true);
+		// In the prompt box's toolbar strip (#173), which has the sizer.
+		expect(bar.closest('.herdr-native-prompt-toolbar')).not.toBeNull();
+		expect(el.find('herdr-native-prompt-box').hasClass('herdr-native-sizer')).toBe(true);
 		expect(shown(el, 'model')).toBe('—');
 		expect(shown(el, 'effort')).toBe('—');
 		expect(shown(el, 'mode')).toBe('—');
@@ -269,6 +272,32 @@ describe('the session bar in the native surface (#161)', () => {
 		model.overlay = { contextUsed: 100_000, contextWindow: { tokens: 200_000, source: 'runtime' } };
 		model.emit();
 		expect(readout.hasClass('herdr-is-warning')).toBe(false);
+	});
+
+	it('switches the box style and the readout live, as classes on the same elements (#173)', async () => {
+		const model = new FakeModel();
+		model.overlay = { contextUsed: 170_000, contextWindow: { tokens: 200_000, source: 'runtime' } };
+		let look: ComposerLook = { boxStyle: 'divided', readout: 'detail' };
+		const { surface, el, host } = surfaceOn(model, null, { composer: () => look });
+		await surface.attach(host);
+		const box = el.find('herdr-native-prompt-box');
+		const readout = el.find('herdr-native-session-context');
+		const arc = el.find('herdr-native-session-ring-arc');
+		expect(box.hasClass('herdr-prompt-style-divided')).toBe(true);
+		expect(readout.hasClass('herdr-is-gauge')).toBe(false);
+		expect(arc.getAttribute('stroke-dasharray')).toBe('85 100');
+		expect(readout.getAttribute('aria-label')).not.toContain('170k / 200k');
+
+		look = { boxStyle: 'floating', readout: 'gauge' };
+		surface.refresh();
+		expect(el.find('herdr-native-prompt-box')).toBe(box);
+		expect(box.hasClass('herdr-prompt-style-floating')).toBe(true);
+		expect(box.hasClass('herdr-prompt-style-divided')).toBe(false);
+		expect(el.find('herdr-native-session-context')).toBe(readout);
+		expect(readout.hasClass('herdr-is-gauge')).toBe(true);
+		// The warning colour and the breakdown button stay in the gauge.
+		expect(readout.hasClass('herdr-is-warning')).toBe(true);
+		expect(readout.getAttribute('aria-label')).toMatch(/^170k \/ 200k · 85%\. Context: 170,000 of 200,000/);
 	});
 
 	it('disables the pickers with the reason on a runtime with no sender yet', async () => {
@@ -471,9 +500,13 @@ describe('the session bar in the native surface (#161)', () => {
 		model.agentStatus = 'blocked';
 		model.emit();
 
-		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(true);
+		// The box folds to its strip under the card (#173): the bar is still in it.
+		const box = el.find('herdr-native-prompt-box');
+		expect(box.hasClass('herdr-is-standing-in')).toBe(true);
+		expect(box.hasClass('herdr-is-hidden')).toBe(false);
 		const bar = el.find('herdr-native-session-bar');
 		expect(bar.hasClass('herdr-is-hidden')).toBe(false);
+		expect(bar.closest('.herdr-native-prompt-box')).toBe(box);
 		expect(shown(el, 'model')).toBe('Opus 5.5');
 		expect(picker(el, 'model').disabled).toBe(true);
 		expect(picker(el, 'model').getAttribute('aria-label')).toBe(`Model: Opus 5.5. ${BLOCKED_REASON}`);
@@ -536,7 +569,7 @@ describe('the pane gate in the view (review of #169)', () => {
 		reason = null;
 		model.emit();
 		expect(send.disabled).toBe(false);
-		expect(send.getAttribute('aria-label')).toBeNull();
+		expect(send.getAttribute('aria-label')).toBe('Send');
 		expect(readout.disabled).toBe(false);
 		expect(note.hasClass('herdr-is-hidden')).toBe(true);
 		input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
@@ -563,13 +596,13 @@ describe('the pane gate in the view (review of #169)', () => {
 		model.emit();
 		expect(el.findAll('herdr-native-waiting')).toEqual([]);
 		expect(reads).toBe(0);
-		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(false);
+		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-standing-in')).toBe(false);
 
 		held = false;
 		model.emit();
 		expect(el.findAll('herdr-native-waiting')).toHaveLength(1);
 		expect(reads).toBe(1);
-		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(true);
+		expect(el.find('herdr-native-prompt-box').hasClass('herdr-is-standing-in')).toBe(true);
 	});
 });
 
@@ -630,7 +663,7 @@ describe('session settings helpers (#161)', () => {
 	});
 
 	it('shows no percentage without a window, and says where a window came from', () => {
-		expect(contextReadout({})).toEqual({ tokens: '', percent: '', warning: false, title: '' });
+		expect(contextReadout({})).toEqual({ tokens: '', percent: '', warning: false, title: '', share: null });
 		expect(contextReadout({ contextUsed: 22_550 })).toMatchObject({ tokens: '23k', percent: '' });
 		const known = contextReadout({ contextUsed: 22_550, contextWindow: { tokens: 1_000_000, source: 'context-command' } });
 		expect(known).toMatchObject({ tokens: '23k / 1M', percent: '2%', warning: false });

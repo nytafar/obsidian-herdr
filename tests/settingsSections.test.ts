@@ -892,6 +892,8 @@ describe('native view section', () => {
 		expect(settingNames(el)).toEqual([
 			'Native view',
 			'Tool groups',
+			'Prompt box style',
+			'Context readout',
 			'Trust new folders automatically',
 		]);
 		expect(headings(el)).toEqual(['Native view']);
@@ -938,6 +940,42 @@ describe('native view section', () => {
 
 		expect(settings.nativeAutoTrustFolders).toBe(true);
 		expect(calls).toEqual(['save', 'refreshNativeViews']);
+	});
+
+	it('offers the three box styles and the two readouts, divided and detail by default (#173)', () => {
+		const el = settingsContainer();
+		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
+		const style = dropdownOf(el, 'Prompt box style');
+		expect(style.optionValues()).toEqual(['divided', 'joined', 'floating']);
+		expect(style.value).toBe('divided');
+		const readout = dropdownOf(el, 'Context readout');
+		expect(readout.optionValues()).toEqual(['detail', 'gauge']);
+		expect(readout.value).toBe('detail');
+	});
+
+	it('saves the box style and the readout and redraws the open native views (#173)', async () => {
+		const el = settingsContainer();
+		const settings = settingsOf();
+		const { calls, callbacks } = recorder();
+		buildNativeViewSection(el, settings, callbacks);
+
+		await dropdownOf(el, 'Prompt box style').change('floating');
+		await dropdownOf(el, 'Context readout').change('gauge');
+
+		expect(settings.nativePromptBoxStyle).toBe('floating');
+		expect(settings.nativeContextReadout).toBe('gauge');
+		expect(calls).toEqual(['save', 'refreshNativeViews', 'save', 'refreshNativeViews']);
+	});
+
+	it('reads a stored box style or readout it does not know as the default (#173)', () => {
+		const el = settingsContainer();
+		buildNativeViewSection(
+			el,
+			settingsOf({ nativePromptBoxStyle: 'round' as never, nativeContextReadout: 'pie' as never }),
+			recorder().callbacks,
+		);
+		expect(dropdownOf(el, 'Prompt box style').value).toBe('divided');
+		expect(dropdownOf(el, 'Context readout').value).toBe('detail');
 	});
 
 	it('reads a stored value it does not know as the default', () => {

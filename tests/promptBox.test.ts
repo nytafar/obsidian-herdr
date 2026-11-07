@@ -108,11 +108,51 @@ describe('PromptBox: the box itself', () => {
 		expect(input(el).attrs['aria-label']).toBe('Message the agent');
 	});
 
-	it('puts the send button on the same row as the text area (#103)', () => {
+	it('is one box: the text area, then a strip with the bar slot and Send at its end (#173)', () => {
 		const { el } = boxOn('idle', fakeSender());
-		const row = el.find('herdr-native-prompt-row');
-		expect(row.findAll('herdr-native-prompt-input')).toHaveLength(1);
-		expect(row.findAll('herdr-native-prompt-send')).toHaveLength(1);
+		const card = el.find('herdr-native-prompt-card');
+		expect(card.children.map((child) => [...child.classList][0])).toEqual([
+			'herdr-native-prompt-images',
+			'herdr-native-prompt-input',
+			'herdr-native-prompt-toolbar',
+		]);
+		const toolbar = el.find('herdr-native-prompt-toolbar');
+		expect(toolbar.children.map((child) => [...child.classList][0])).toEqual([
+			'herdr-native-prompt-bar-slot',
+			'herdr-native-prompt-controls',
+		]);
+		expect(toolbar.findAll('herdr-native-prompt-send')).toHaveLength(1);
+	});
+
+	it('swaps its style class and nothing else (#173)', () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		const root = el.find('herdr-native-prompt-box');
+		const send = sendButton(el);
+		expect(root.hasClass('herdr-prompt-style-divided')).toBe(true);
+		box.setStyle('joined');
+		expect(root.hasClass('herdr-prompt-style-joined')).toBe(true);
+		expect(root.hasClass('herdr-prompt-style-divided')).toBe(false);
+		expect(el.find('herdr-native-prompt-send')).toBe(send);
+	});
+
+	it('names Send for a screen reader in every status, since the floating style shows only its icon (#173)', () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		expect(sendButton(el).getAttribute('aria-label')).toBe('Send');
+		box.setStatus('working');
+		expect(sendButton(el).getAttribute('aria-label')).toBe('Queue');
+	});
+
+	it('folds to its strip while the waiting card stands in, and keeps the draft (#173)', () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		input(el).value = 'half a thought';
+		box.setHidden(true);
+		const root = el.find('herdr-native-prompt-box');
+		expect(root.hasClass('herdr-is-standing-in')).toBe(true);
+		expect(root.findAll('herdr-native-prompt-bar-slot')).toHaveLength(1);
+		expect(box.canFocus()).toBe(false);
+		box.setHidden(false);
+		expect(box.canFocus()).toBe(true);
+		expect(box.text).toBe('half a thought');
 	});
 
 	it('keeps a manual resize until the box is emptied (#103)', () => {
