@@ -864,11 +864,12 @@ svg.svg-icon[class*='herdr-kind-'] text {
 .herdr-native-session-ring {
 	display: none;
 	flex: 0 0 auto;
-	height: 16px;
+	height: var(--icon-s);
 	transform: rotate(-90deg);
-	width: 16px;
+	width: var(--icon-s);
 }
 
+/* In the ring's own 16-unit box, so it scales with the icon size. */
 .herdr-native-session-ring circle {
 	fill: none;
 	stroke-width: 2.5;

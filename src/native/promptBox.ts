@@ -227,6 +227,17 @@ export function remainingDraft(current: string, sent: string): string {
 	return current.startsWith(sent) ? current.slice(sent.length) : current;
 }
 
+/**
+ * The aria label of Send or Stop (#173), which Obsidian also shows as a
+ * tooltip: the reason a shut button is shut, else the words only when the
+ * floating style shows the icon alone. Null for none, where the button's
+ * own words say it.
+ */
+export function sendButtonLabel(words: string, blocked: string | null, style: PromptBoxStyle): string | null {
+	if (blocked) return blocked;
+	return style === 'floating' ? words : null;
+}
+
 /** What a failed send says, with herdr's own message in the tail. */
 export function sendFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
@@ -298,7 +309,6 @@ export class PromptBox {
 			const stopEl = controls.createEl('button', { cls: 'herdr-native-prompt-stop' });
 			setIcon(stopEl.createSpan({ cls: 'herdr-native-prompt-icon' }), 'square');
 			stopEl.createSpan({ cls: 'herdr-native-prompt-label', text: 'Stop' });
-			stopEl.setAttr('aria-label', 'Stop the running turn');
 			this.stopEl = stopEl;
 			this.component.registerDomEvent(stopEl, 'click', () => {
 				void this.interrupt();
@@ -335,14 +345,17 @@ export class PromptBox {
 		});
 		// A file dragged over the box may be dropped on it. Anything else
 		// dragged (text, a note's link) is the text area's, as always.
+		// Not while the waiting card stands in: only the strip shows then, and
+		// an image dropped on it would go, unseen, with the next prompt.
 		this.component.registerDomEvent(root, 'dragover', (event: DragEvent) => {
-			if (!carriesFiles(event.dataTransfer)) return;
+			if (this.standingIn || !carriesFiles(event.dataTransfer)) return;
 			event.preventDefault();
 			root.addClass('herdr-is-drop-target');
 		});
 		this.component.registerDomEvent(root, 'dragleave', () => root.removeClass('herdr-is-drop-target'));
 		this.component.registerDomEvent(root, 'drop', (event: DragEvent) => {
 			root.removeClass('herdr-is-drop-target');
+			if (this.standingIn) return;
 			const files = transferFiles(event.dataTransfer);
 			if (!files.length) return;
 			// Never the browser's own drop: it would type the file's path.
@@ -394,6 +407,8 @@ export class PromptBox {
 		const root = this.rootEl;
 		if (!root) return;
 		for (const cls of PROMPT_BOX_STYLE_CLASSES) root.toggleClass(cls, cls === promptBoxStyleClass(style));
+		// The floating style shows icons alone, which then need their words.
+		this.render();
 	}
 
 	/** Ends the running turn through the sender; a failure is a notice. */
@@ -423,6 +438,7 @@ export class PromptBox {
 	setHidden(hidden: boolean): void {
 		this.standingIn = hidden;
 		this.rootEl?.toggleClass(STANDING_IN_CLASS, hidden);
+		if (hidden) this.rootEl?.removeClass('herdr-is-drop-target');
 	}
 
 	/**
@@ -653,13 +669,22 @@ export class PromptBox {
 		if (!root) return;
 		const state = promptBoxState(this.status);
 		// Only a running turn has anything to stop.
-		this.stopEl?.toggleClass('herdr-is-hidden', this.status !== 'working');
+		const stopEl = this.stopEl;
+		if (stopEl) {
+			stopEl.toggleClass('herdr-is-hidden', this.status !== 'working');
+			const label = sendButtonLabel('Stop the running turn', null, this.boxStyle);
+			if (label) stopEl.setAttr('aria-label', label);
+			else stopEl.removeAttribute('aria-label');
+		}
 		if (this.buttonEl) {
 			const blocked = this.blocked();
 			this.buttonLabelEl?.setText(state.label);
 			this.buttonEl.disabled = !state.enabled || this.sending || blocked !== null;
-			// Always a label: the floating style shows the icon alone (#173).
-			this.buttonEl.setAttr('aria-label', blocked ?? state.label);
+			// A label only where the button does not show its words already:
+			// the floating style's icon alone (#173), or a reason it is shut.
+			const label = sendButtonLabel(state.label, blocked, this.boxStyle);
+			if (label) this.buttonEl.setAttr('aria-label', label);
+			else this.buttonEl.removeAttribute('aria-label');
 		}
 		// A blocked agent can still be typed at, so only "no agent" locks the
 		// text itself.

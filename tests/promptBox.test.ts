@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
-import { PromptBox, promptBoxState } from '../src/native/promptBox';
+import { PromptBox, promptBoxState, sendButtonLabel } from '../src/native/promptBox';
 import { NativePaneSurface } from '../src/native/surface';
 import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import type { PromptSender } from '../src/native/promptSender';
@@ -135,11 +135,39 @@ describe('PromptBox: the box itself', () => {
 		expect(el.find('herdr-native-prompt-send')).toBe(send);
 	});
 
-	it('names Send for a screen reader in every status, since the floating style shows only its icon (#173)', () => {
+	it('labels Send and Stop only where they show no words, or with why Send is shut (#173)', () => {
+		expect(sendButtonLabel('Send', null, 'divided')).toBeNull();
+		expect(sendButtonLabel('Send', null, 'joined')).toBeNull();
+		expect(sendButtonLabel('Queue', null, 'floating')).toBe('Queue');
+		expect(sendButtonLabel('Send', 'A change is on its way.', 'divided')).toBe('A change is on its way.');
+
 		const { box, el } = boxOn('idle', fakeSender());
+		expect(sendButton(el).getAttribute('aria-label')).toBeNull();
+		box.setStyle('floating');
 		expect(sendButton(el).getAttribute('aria-label')).toBe('Send');
 		box.setStatus('working');
 		expect(sendButton(el).getAttribute('aria-label')).toBe('Queue');
+		box.setStyle('joined');
+		expect(sendButton(el).getAttribute('aria-label')).toBeNull();
+	});
+
+	it('takes no dropped image while the waiting card stands in (#173)', async () => {
+		const { box, el, notices } = boxOn('idle', fakeSender());
+		const root = el.find('herdr-native-prompt-box');
+		const file = { name: 'a.png', type: 'image/png', size: 4, arrayBuffer: async () => new ArrayBuffer(4) };
+		const drag = { dataTransfer: { types: ['Files'], files: [file] } };
+		// Shown, the box is a drop target.
+		expect(root.dispatch('dragover', drag).defaultPrevented).toBe(true);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(true);
+
+		box.setHidden(true);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(false);
+		expect(root.dispatch('dragover', drag).defaultPrevented).toBe(false);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(false);
+		expect(root.dispatch('drop', drag).defaultPrevented).toBe(false);
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		expect(box.attachedImages).toEqual([]);
+		expect(notices).toEqual([]);
 	});
 
 	it('folds to its strip while the waiting card stands in, and keeps the draft (#173)', () => {

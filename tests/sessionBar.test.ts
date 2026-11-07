@@ -569,7 +569,7 @@ describe('the pane gate in the view (review of #169)', () => {
 		reason = null;
 		model.emit();
 		expect(send.disabled).toBe(false);
-		expect(send.getAttribute('aria-label')).toBe('Send');
+		expect(send.getAttribute('aria-label')).toBeNull();
 		expect(readout.disabled).toBe(false);
 		expect(note.hasClass('herdr-is-hidden')).toBe(true);
 		input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
