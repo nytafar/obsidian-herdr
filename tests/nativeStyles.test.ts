@@ -34,7 +34,7 @@ describe('styles.css: the native view', () => {
 
 	it('lays out a narrow view by the view’s width, not the window’s', () => {
 		const narrow = blocks(/@container herdr-native \(max-width: \d+px\)/).join('\n');
-		expect(narrow).toContain('.herdr-native-prompt-row');
+		expect(narrow).toContain('.herdr-native-prompt-toolbar');
 		expect(narrow).toContain('.herdr-native-turn table');
 		// The session bar collapses to short values (#161).
 		expect(narrow).toContain('.herdr-native-session-short');

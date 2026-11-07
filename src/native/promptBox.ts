@@ -57,11 +57,25 @@
  * (`imagesUnavailable`): where they cannot, a paste or drop of one says why
  * in a notice and attaches nothing.
  *
+ * **One box** (#173): the text area, then a toolbar strip in the same box
+ * with the session bar (mounted by the surface into {@link PromptBox.barSlot}),
+ * Stop and Send. The box style setting is a class on the root
+ * (`./composerLook.ts`); the markup is the same in every style. While the
+ * waiting card stands in for the box ({@link PromptBox.setHidden}) the box
+ * folds to that strip, under the card, so the pickers and the readout stay
+ * in sight and the draft stays in the hidden text area.
+ *
  * Guidelines: no `innerHTML`, no inline styles (`styles.css` has the classes),
  * every listener goes through a `Component` that is unloaded on `destroy`.
  */
 
-import { Component, Notice } from 'obsidian';
+import { Component, Notice, setIcon } from 'obsidian';
+import {
+	DEFAULT_PROMPT_BOX_STYLE,
+	PROMPT_BOX_STYLE_CLASSES,
+	promptBoxStyleClass,
+	type PromptBoxStyle,
+} from './composerLook';
 import { imagesUnavailable, type PromptSender } from './promptSender';
 import { imageFileProblem, MAX_PROMPT_IMAGES, type PromptImage } from './promptImages';
 import type { PaneQueue } from './promptQueue';
@@ -76,6 +90,9 @@ export interface PromptBoxState {
 	/** Why not, when the reason is not on screen already. Empty for none. */
 	hint: string;
 }
+
+/** The class the box takes while the waiting card stands in for it (#99, #173). */
+export const STANDING_IN_CLASS = 'herdr-is-standing-in';
 
 /** Said when there is no agent to prompt. */
 export const NO_AGENT_HINT = 'No agent in this pane.';
@@ -210,6 +227,17 @@ export function remainingDraft(current: string, sent: string): string {
 	return current.startsWith(sent) ? current.slice(sent.length) : current;
 }
 
+/**
+ * The aria label of Send or Stop (#173), which Obsidian also shows as a
+ * tooltip: the reason a shut button is shut, else the words only when the
+ * floating style shows the icon alone. Null for none, where the button's
+ * own words say it.
+ */
+export function sendButtonLabel(words: string, blocked: string | null, style: PromptBoxStyle): string | null {
+	if (blocked) return blocked;
+	return style === 'floating' ? words : null;
+}
+
 /** What a failed send says, with herdr's own message in the tail. */
 export function sendFailureMessage(error: unknown): string {
 	const reason = error instanceof Error ? error.message : String(error);
@@ -223,9 +251,18 @@ export class PromptBox {
 	private rootEl: HTMLElement | null = null;
 	private inputEl: HTMLTextAreaElement | null = null;
 	private buttonEl: HTMLButtonElement | null = null;
+	/** The send button's words, beside its icon (#173). */
+	private buttonLabelEl: HTMLElement | null = null;
 	/** Stop, for a sender that can interrupt (ADR-0007); null otherwise. */
 	private stopEl: HTMLButtonElement | null = null;
 	private hintEl: HTMLElement | null = null;
+	/** The toolbar strip under the text area (#173); the hint goes above it. */
+	private toolbarEl: HTMLElement | null = null;
+	/** Where the session bar goes in the strip, before Stop and Send (#173). */
+	private barSlotEl: HTMLElement | null = null;
+	/** True while the waiting card stands in for the box. */
+	private standingIn = false;
+	private boxStyle: PromptBoxStyle = DEFAULT_PROMPT_BOX_STYLE;
 	/** What `onInput` hung on the text area; null when nothing did. */
 	private attachment: PromptInputHandle | null = null;
 	/** Images waiting to go with the next prompt (#144), in the order added. */
@@ -247,32 +284,39 @@ export class PromptBox {
 		this.component.load();
 		// `herdr-native-sizer`: the box sits at the width of the prose above it
 		// when the vault asks for a readable line width (#117).
-		const root = parentEl.createDiv({ cls: ['herdr-native-prompt-box', 'herdr-native-sizer'] });
+		const root = parentEl.createDiv({
+			cls: ['herdr-native-prompt-box', 'herdr-native-sizer', promptBoxStyleClass(this.boxStyle)],
+		});
+		// One box (#173): what is typed, then the strip, inside one border.
+		const card = root.createDiv({ cls: 'herdr-native-prompt-card' });
 		// Images waiting to be sent (#144), above the text they go with.
-		this.imagesEl = root.createDiv({ cls: ['herdr-native-prompt-images', 'herdr-is-hidden'] });
-		// The text area and the button share a row, the way a chat input does
-		// (#103); the hint, when there is one, comes under them.
-		const row = root.createDiv({ cls: 'herdr-native-prompt-row' });
-		const inputEl = row.createEl('textarea', {
+		this.imagesEl = card.createDiv({ cls: ['herdr-native-prompt-images', 'herdr-is-hidden'] });
+		const inputEl = card.createEl('textarea', {
 			cls: 'herdr-native-prompt-input',
 			// The placeholder is gone once something is typed; the label is not.
 			// `rows` is what sizes the box where `field-sizing` is not supported.
 			attr: { rows: '2', placeholder: 'Message the agent…', 'aria-label': 'Message the agent' },
 		});
-		const controls = row.createDiv({ cls: 'herdr-native-prompt-controls' });
+		// The strip: the session bar's slot, then Stop and Send at its end.
+		const toolbar = card.createDiv({ cls: 'herdr-native-prompt-toolbar' });
+		this.toolbarEl = toolbar;
+		this.barSlotEl = toolbar.createDiv({ cls: 'herdr-native-prompt-bar-slot' });
+		const controls = toolbar.createDiv({ cls: 'herdr-native-prompt-controls' });
 		this.hintEl = null;
-		const buttonEl = controls.createEl('button', {
-			cls: 'herdr-native-prompt-send',
-			text: 'Send',
-		});
+		// An icon and words: the floating style shows the icon alone, and the
+		// aria label says what it does.
 		if (this.options.sender.interrupt) {
-			const stopEl = controls.createEl('button', { cls: 'herdr-native-prompt-stop', text: 'Stop' });
-			stopEl.setAttr('aria-label', 'Stop the running turn');
+			const stopEl = controls.createEl('button', { cls: 'herdr-native-prompt-stop' });
+			setIcon(stopEl.createSpan({ cls: 'herdr-native-prompt-icon' }), 'square');
+			stopEl.createSpan({ cls: 'herdr-native-prompt-label', text: 'Stop' });
 			this.stopEl = stopEl;
 			this.component.registerDomEvent(stopEl, 'click', () => {
 				void this.interrupt();
 			});
 		}
+		const buttonEl = controls.createEl('button', { cls: ['herdr-native-prompt-send', 'mod-cta'] });
+		setIcon(buttonEl.createSpan({ cls: 'herdr-native-prompt-icon' }), 'arrow-up');
+		this.buttonLabelEl = buttonEl.createSpan({ cls: 'herdr-native-prompt-label', text: 'Send' });
 		this.rootEl = root;
 		this.inputEl = inputEl;
 		this.buttonEl = buttonEl;
@@ -301,14 +345,17 @@ export class PromptBox {
 		});
 		// A file dragged over the box may be dropped on it. Anything else
 		// dragged (text, a note's link) is the text area's, as always.
+		// Not while the waiting card stands in: only the strip shows then, and
+		// an image dropped on it would go, unseen, with the next prompt.
 		this.component.registerDomEvent(root, 'dragover', (event: DragEvent) => {
-			if (!carriesFiles(event.dataTransfer)) return;
+			if (this.standingIn || !carriesFiles(event.dataTransfer)) return;
 			event.preventDefault();
 			root.addClass('herdr-is-drop-target');
 		});
 		this.component.registerDomEvent(root, 'dragleave', () => root.removeClass('herdr-is-drop-target'));
 		this.component.registerDomEvent(root, 'drop', (event: DragEvent) => {
 			root.removeClass('herdr-is-drop-target');
+			if (this.standingIn) return;
 			const files = transferFiles(event.dataTransfer);
 			if (!files.length) return;
 			// Never the browser's own drop: it would type the file's path.
@@ -339,8 +386,29 @@ export class PromptBox {
 		this.rootEl = null;
 		this.inputEl = null;
 		this.buttonEl = null;
+		this.buttonLabelEl = null;
 		this.stopEl = null;
 		this.hintEl = null;
+		this.toolbarEl = null;
+		this.barSlotEl = null;
+	}
+
+	/**
+	 * Where the session bar goes (#173): the toolbar strip's start, before
+	 * Stop and Send. Null until mounted.
+	 */
+	get barSlot(): HTMLElement | null {
+		return this.barSlotEl;
+	}
+
+	/** The box style setting changed (#173): one class swapped, nothing drawn again. */
+	setStyle(style: PromptBoxStyle): void {
+		this.boxStyle = style;
+		const root = this.rootEl;
+		if (!root) return;
+		for (const cls of PROMPT_BOX_STYLE_CLASSES) root.toggleClass(cls, cls === promptBoxStyleClass(style));
+		// The floating style shows icons alone, which then need their words.
+		this.render();
 	}
 
 	/** Ends the running turn through the sender; a failure is a notice. */
@@ -356,15 +424,21 @@ export class PromptBox {
 	}
 
 	/**
-	 * Takes the box off screen while the waiting card stands in its place (#99),
-	 * and brings it back when the block is over.
+	 * Takes the text area off screen while the waiting card stands in its
+	 * place (#99), and brings it back when the block is over.
+	 *
+	 * What stays is the toolbar strip, under the card (#173): the session
+	 * bar's pickers and readout are in it, and they stay in sight while the
+	 * agent asks something (#161). Stop and Send go with the text area.
 	 *
 	 * A class rather than a removal, and never an inline style (Obsidian
 	 * guidelines): the draft in the box is the only copy of what the user wrote,
 	 * so it has to survive a block it was typed through.
 	 */
 	setHidden(hidden: boolean): void {
-		this.rootEl?.toggleClass('herdr-is-hidden', hidden);
+		this.standingIn = hidden;
+		this.rootEl?.toggleClass(STANDING_IN_CLASS, hidden);
+		if (hidden) this.rootEl?.removeClass('herdr-is-drop-target');
 	}
 
 	/**
@@ -381,7 +455,7 @@ export class PromptBox {
 	/** Whether {@link focus} would take; see there. */
 	canFocus(): boolean {
 		const inputEl = this.inputEl;
-		return Boolean(inputEl && !inputEl.disabled && !this.rootEl?.hasClass('herdr-is-hidden'));
+		return Boolean(inputEl && !inputEl.disabled && this.rootEl && !this.standingIn);
 	}
 
 	/** herdr's view of the agent changed; the button follows it. */
@@ -595,12 +669,21 @@ export class PromptBox {
 		if (!root) return;
 		const state = promptBoxState(this.status);
 		// Only a running turn has anything to stop.
-		this.stopEl?.toggleClass('herdr-is-hidden', this.status !== 'working');
+		const stopEl = this.stopEl;
+		if (stopEl) {
+			stopEl.toggleClass('herdr-is-hidden', this.status !== 'working');
+			const label = sendButtonLabel('Stop the running turn', null, this.boxStyle);
+			if (label) stopEl.setAttr('aria-label', label);
+			else stopEl.removeAttribute('aria-label');
+		}
 		if (this.buttonEl) {
 			const blocked = this.blocked();
-			this.buttonEl.setText(state.label);
+			this.buttonLabelEl?.setText(state.label);
 			this.buttonEl.disabled = !state.enabled || this.sending || blocked !== null;
-			if (blocked) this.buttonEl.setAttr('aria-label', blocked);
+			// A label only where the button does not show its words already:
+			// the floating style's icon alone (#173), or a reason it is shut.
+			const label = sendButtonLabel(state.label, blocked, this.boxStyle);
+			if (label) this.buttonEl.setAttr('aria-label', label);
 			else this.buttonEl.removeAttribute('aria-label');
 		}
 		// A blocked agent can still be typed at, so only "no agent" locks the
@@ -611,7 +694,12 @@ export class PromptBox {
 			this.hintEl = null;
 			return;
 		}
-		if (!this.hintEl) this.hintEl = root.createDiv({ cls: 'herdr-native-prompt-hint' });
+		if (!this.hintEl) {
+			// In the box, between the text area and the strip.
+			const hintEl = root.createDiv({ cls: 'herdr-native-prompt-hint' });
+			this.toolbarEl?.parentElement?.insertBefore(hintEl, this.toolbarEl);
+			this.hintEl = hintEl;
+		}
 		this.hintEl.setText(state.hint);
 	}
 }

@@ -1,7 +1,7 @@
 /**
- * The session bar (issue #161; finding `native-view-header` §2): one slim
- * row under the prompt box with the model, effort and permission mode
- * pickers on the left and the context readout on the right.
+ * The session bar (issue #161; finding `native-view-header` §2): the model,
+ * effort and permission mode pickers on the left and the context readout on
+ * the right, in the prompt box's toolbar strip since #173.
  *
  * ```
  *  [Opus 5.5 ▾]  [◐ medium ▾]  [Manual ▾]                23k / 1M · 2%
@@ -26,9 +26,14 @@
  * report the transcript then gives (`SessionInfo.contextReport`), which the
  * parser keeps out of the turns (`./contextBreakdown.ts`).
  *
- * Its own element, not the prompt box's: the waiting card hides the prompt
- * box (#99) and the bar stays, disabled, because the values are still worth
- * seeing while the agent asks something.
+ * Its own component, mounted into the strip the prompt box keeps for it
+ * (`PromptBox.barSlot`): while the waiting card stands in for the box (#99)
+ * the box folds down to that strip, so the bar stays in sight, disabled,
+ * because the values are still worth seeing while the agent asks something.
+ *
+ * The readout carries both of its forms (#173, `./composerLook.ts`): the
+ * `46k / 200k · 23%` text and a ring drawn as an SVG arc, and the readout
+ * setting only says which one shows, through a class.
  *
  * Guidelines: no `innerHTML`, no inline styles (`styles.css`), every listener
  * on a `Component` unloaded on `destroy`.
@@ -46,6 +51,13 @@ import {
 	type ContextUsageReader,
 } from './contextBreakdown';
 import type { SessionInfo } from './conversation';
+import {
+	contextReadoutLabel,
+	DEFAULT_CONTEXT_READOUT_STYLE,
+	GAUGE_CLASS,
+	gaugeDash,
+	type ContextReadoutStyle,
+} from './composerLook';
 import {
 	contextReadout,
 	effortText,
@@ -148,6 +160,10 @@ export class SessionBar {
 	private readoutEl: HTMLButtonElement | null = null;
 	private tokensEl: HTMLElement | null = null;
 	private percentEl: HTMLElement | null = null;
+	/** The gauge's arc, an SVG circle whose dash is the share used (#173). */
+	private arcEl: SVGCircleElement | null = null;
+	/** How the readout reads (#173), from the setting. */
+	private readoutStyle: ContextReadoutStyle = DEFAULT_CONTEXT_READOUT_STYLE;
 	/** Why nothing may be typed into the pane now, when something stops it. */
 	private noteEl: HTMLElement | null = null;
 	/** True from a click on the readout until the breakdown came or failed. */
@@ -173,8 +189,8 @@ export class SessionBar {
 	/** Builds the row inside `parentEl`. Called once, from the surface's attach. */
 	mount(parentEl: HTMLElement): void {
 		this.component.load();
-		// `herdr-native-sizer`: at the prompt box's width under a readable line width (#117).
-		const root = parentEl.createDiv({ cls: ['herdr-native-session-bar', 'herdr-native-sizer'] });
+		// Inside the prompt box's strip (#173), which has the readable width already.
+		const root = parentEl.createDiv({ cls: 'herdr-native-session-bar' });
 		const pickersEl = root.createDiv({ cls: 'herdr-native-session-pickers' });
 		for (const setting of ['model', 'effort', 'mode'] as const) {
 			const buttonEl = pickersEl.createEl('button', {
@@ -188,6 +204,19 @@ export class SessionBar {
 			this.component.registerDomEvent(buttonEl, 'click', (event: MouseEvent) => this.open(picker, event));
 		}
 		const readoutEl = root.createEl('button', { cls: 'herdr-native-session-context' });
+		// The gauge (#173): a track and an arc over it, the arc's length the
+		// share used. `pathLength` makes the dash a percentage, so the arc is
+		// one attribute and never a style. Hidden in the detail form.
+		const ringEl = readoutEl.createSvg('svg', {
+			cls: 'herdr-native-session-ring',
+			attr: { viewBox: '0 0 16 16', 'aria-hidden': 'true' },
+		});
+		const circle = { cx: '8', cy: '8', r: '6', pathLength: '100' };
+		ringEl.createSvg('circle', { cls: 'herdr-native-session-ring-track', attr: circle });
+		this.arcEl = ringEl.createSvg('circle', {
+			cls: 'herdr-native-session-ring-arc',
+			attr: { ...circle, 'stroke-dasharray': gaugeDash(null) },
+		});
 		this.tokensEl = readoutEl.createSpan({ cls: 'herdr-native-session-tokens' });
 		readoutEl.createSpan({ cls: 'herdr-native-session-sep', text: ' · ' });
 		this.percentEl = readoutEl.createSpan({ cls: 'herdr-native-session-percent' });
@@ -213,7 +242,15 @@ export class SessionBar {
 		this.readoutEl = null;
 		this.tokensEl = null;
 		this.percentEl = null;
+		this.arcEl = null;
 		this.noteEl = null;
+	}
+
+	/** The readout setting changed (#173): a class, nothing drawn again. */
+	setReadoutStyle(style: ContextReadoutStyle): void {
+		if (style === this.readoutStyle) return;
+		this.readoutStyle = style;
+		this.draw();
 	}
 
 	/** The session moved: rewrites what changed in place. */
@@ -318,9 +355,15 @@ export class SessionBar {
 			readoutEl.toggleClass('herdr-is-hidden', readout.tokens === '');
 			readoutEl.toggleClass('herdr-has-window', readout.percent !== '');
 			readoutEl.toggleClass('herdr-is-warning', readout.warning);
+			readoutEl.toggleClass(GAUGE_CLASS, this.readoutStyle === 'gauge');
+			const dash = gaugeDash(readout.share);
+			if (this.arcEl && this.arcEl.getAttribute('stroke-dasharray') !== dash) {
+				this.arcEl.setAttr('stroke-dasharray', dash);
+			}
 			const reason = this.contextBlock();
 			readoutEl.disabled = reason !== null || this.contextBusy;
-			const label = reason ? `${readout.title}. ${reason}` : readout.title;
+			const title = contextReadoutLabel(readout, this.readoutStyle);
+			const label = reason ? `${title}. ${reason}` : title;
 			if (readoutEl.getAttribute('aria-label') !== label) readoutEl.setAttr('aria-label', label);
 		}
 	}

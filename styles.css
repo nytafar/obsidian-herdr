@@ -666,8 +666,38 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	order: 4;
 }
 
-.herdr-native-prompt-box.herdr-is-hidden {
+/*
+ * While the waiting card stands in for the box (#173), the box folds to its
+ * toolbar strip and goes under the card: the pickers and the readout stay in
+ * sight (#161); the text area, its images, the hint, Stop and Send do not.
+ * Hidden, not removed, so the draft survives the block.
+ */
+.herdr-native-prompt-box.herdr-is-standing-in {
+	order: 5;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-images,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-input,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-hint,
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-controls {
 	display: none;
+}
+
+/* Folded, the strip reads as the slim row it was before #173. */
+.herdr-native-prompt-box.herdr-is-standing-in::before {
+	display: none;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-card {
+	background: transparent;
+	border-color: transparent;
+	box-shadow: none;
+}
+
+.herdr-native-prompt-box.herdr-is-standing-in .herdr-native-prompt-toolbar {
+	background: transparent;
+	border-top: none;
+	padding-inline: 0;
 }
 
 /*
@@ -736,20 +766,19 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
- * The session bar (#161): one slim row under the prompt box, and under the
- * waiting card while that hides the box, so the values stay in sight. The
- * pickers are buttons with the value and a chevron; the context readout sits
- * at the far end.
+ * The session bar (#161): in the prompt box's toolbar strip (#173), and
+ * still there under the waiting card while that stands in for the box, so
+ * the values stay in sight. The pickers are buttons with the value and a
+ * chevron; the context readout sits at the far end, before Stop and Send.
  */
 .herdr-native-session-bar {
 	align-items: center;
 	color: var(--text-muted);
 	display: flex;
-	flex: 0 0 auto;
+	flex: 1 1 auto;
 	font-size: var(--font-ui-smaller);
 	gap: var(--size-4-2);
-	order: 5;
-	padding-block: var(--size-4-1);
+	min-width: 0;
 }
 
 .herdr-native-session-pickers {
@@ -825,6 +854,52 @@ svg.svg-icon[class*='herdr-kind-'] text {
 /* From 80% of the window (finding `native-view-header` §1). */
 .herdr-native-session-context.herdr-is-warning {
 	color: var(--text-warning);
+}
+
+/*
+ * The gauge (#173): a ring and the percentage, the counts in the tooltip.
+ * The ring is in the markup in both forms; the detail form hides it. With
+ * no known window the gauge shows the token count, as the detail form does.
+ */
+.herdr-native-session-ring {
+	display: none;
+	flex: 0 0 auto;
+	height: var(--icon-s);
+	transform: rotate(-90deg);
+	width: var(--icon-s);
+}
+
+/* In the ring's own 16-unit box, so it scales with the icon size. */
+.herdr-native-session-ring circle {
+	fill: none;
+	stroke-width: 2.5;
+}
+
+.herdr-native-session-ring-track {
+	stroke: var(--background-modifier-border);
+}
+
+.herdr-native-session-ring-arc {
+	stroke: currentColor;
+}
+
+.herdr-native-session-context.herdr-is-gauge {
+	align-items: center;
+	display: inline-flex;
+	gap: var(--size-2-2);
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-is-hidden {
+	display: none;
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-ring {
+	display: block;
+}
+
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-tokens,
+.herdr-native-session-context.herdr-is-gauge.herdr-has-window .herdr-native-session-sep {
+	display: none;
 }
 
 /*
@@ -1199,23 +1274,30 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /*
- * The prompt box (#97, #103): the box and its button on one row at the bottom
- * of the view, with the transcript scrolling in its own container above. It is
- * the last flex child rather than a sticky one, so there is no gap under it for
- * anything to show through.
+ * The prompt box (#97, #103, #173): one box at the bottom of the view, the
+ * text area and then a toolbar strip with the session bar, Stop and Send,
+ * with the transcript scrolling in its own container above. It is the last
+ * flex child rather than a sticky one, so there is no gap under it for
+ * anything to show through. The markup is the same in every style; the
+ * style setting is one class on the box (`herdr-prompt-style-*`).
  */
 .herdr-native-prompt-box {
-	background-color: var(--background-primary);
-	border-top: 1px solid var(--background-modifier-border);
 	margin-top: var(--size-4-3);
-	padding-top: var(--size-4-2);
+	padding-bottom: var(--size-4-2);
+	position: relative;
 }
 
-/* The chat row: the text area takes the width, the button sits at its end. */
-.herdr-native-prompt-row {
-	align-items: flex-end;
+.herdr-native-prompt-card {
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
 	display: flex;
-	gap: var(--size-4-2);
+	flex-direction: column;
+	transition: border-color 0.12s;
+}
+
+.herdr-native-prompt-card:focus-within {
+	border-color: var(--background-modifier-border-focus);
 }
 
 /*
@@ -1224,18 +1306,44 @@ svg.svg-icon[class*='herdr-kind-'] text {
  * where it is unsupported the `rows` attribute sizes the box and `resize`
  * still gives the user the drag. The cap is half the container's height, the
  * container being `.herdr-native-view`; outside one, `cqh` falls back to the
- * viewport, as the spec defines.
+ * viewport, as the spec defines. The box draws the border, so the text area
+ * draws none.
  */
 .herdr-native-prompt-input {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 	field-sizing: content;
-	/* Zero basis: the row's width is the text area's, whatever the button needs. */
-	flex: 1 1 0;
-	/* A text area's own minimum is its `cols`, wider than a narrow sidebar (#146). */
-	min-width: 0;
 	font-family: var(--font-text);
 	max-height: 50cqh;
 	min-height: 3em;
+	/* A text area's own minimum is its `cols`, wider than a narrow sidebar (#146). */
+	min-width: 0;
+	padding: var(--size-4-3);
 	resize: vertical;
+	width: 100%;
+}
+
+.herdr-native-prompt-input:focus,
+.herdr-native-prompt-input:focus-visible,
+.herdr-native-prompt-input:hover {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+}
+
+/* The strip: the session bar takes the width, Stop and Send sit at its end. */
+.herdr-native-prompt-toolbar {
+	align-items: center;
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-1) var(--size-4-1) var(--size-4-2);
+}
+
+.herdr-native-prompt-bar-slot {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .herdr-native-prompt-controls {
@@ -1243,8 +1351,83 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: flex;
 	flex: 0 0 auto;
 	gap: var(--size-4-2);
-	/* The button sits on the text area's last line, not above it. */
+}
+
+.herdr-native-prompt-send,
+.herdr-native-prompt-stop {
+	gap: var(--size-2-2);
+	height: var(--input-height);
+}
+
+/* Words in the divided and joined styles; the floating one shows the icon. */
+.herdr-native-prompt-icon {
+	display: none;
+}
+
+.herdr-native-prompt-icon svg {
+	height: var(--icon-s);
+	width: var(--icon-s);
+}
+
+/* Divided (default): the strip has its own background and a rule above it. */
+.herdr-prompt-style-divided .herdr-native-prompt-toolbar {
+	background-color: var(--background-secondary);
+	border-bottom-left-radius: var(--radius-m);
+	border-bottom-right-radius: var(--radius-m);
+	border-top: var(--border-width) solid var(--background-modifier-border);
+}
+
+/* Joined: one surface in the form-field colour; the strip is its last row. */
+.herdr-prompt-style-joined .herdr-native-prompt-card {
+	background-color: var(--background-modifier-form-field);
+}
+
+.herdr-prompt-style-joined .herdr-native-prompt-input {
 	padding-bottom: var(--size-4-1);
+}
+
+/*
+ * Floating: raised over the transcript with the theme's shadow, a fade above
+ * it, and Stop and Send as icon buttons with the theme's own button radius.
+ */
+.herdr-prompt-style-floating::before {
+	background: linear-gradient(to bottom, transparent, var(--background-primary));
+	bottom: 100%;
+	content: "";
+	height: var(--size-4-8);
+	left: 0;
+	pointer-events: none;
+	position: absolute;
+	right: 0;
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-card {
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-s);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-input {
+	padding: var(--size-4-3) var(--size-4-4) var(--size-2-2);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-toolbar {
+	padding: var(--size-2-2) var(--size-4-2) var(--size-4-2);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-send,
+.herdr-prompt-style-floating .herdr-native-prompt-stop {
+	border-radius: var(--button-radius);
+	justify-content: center;
+	padding: 0;
+	width: var(--input-height);
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-icon {
+	display: flex;
+}
+
+.herdr-prompt-style-floating .herdr-native-prompt-label {
+	display: none;
 }
 
 /*
@@ -1492,12 +1675,12 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	display: none;
 }
 
-/* Images waiting to go with the next prompt (#144), above the text area. */
+/* Images waiting to go with the next prompt (#144), above the text area, in the box. */
 .herdr-native-prompt-images {
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--size-4-2);
-	padding-bottom: var(--size-4-2);
+	padding: var(--size-4-3) var(--size-4-3) 0;
 }
 
 .herdr-native-prompt-images.herdr-is-hidden {
@@ -1533,11 +1716,11 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	outline-offset: 2px;
 }
 
-/* Why the box is disabled, when the view does not say it already. */
+/* Why the box is disabled, when the view does not say it already: above the strip. */
 .herdr-native-prompt-hint {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
-	padding-top: var(--size-4-1);
+	padding: 0 var(--size-4-3) var(--size-4-1);
 }
 
 /*
@@ -1915,7 +2098,8 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 @container herdr-native (max-width: 360px) {
-	.herdr-native-prompt-row {
+	/* The strip wraps: Stop and Send go under the pickers, at the end. */
+	.herdr-native-prompt-toolbar {
 		flex-wrap: wrap;
 		justify-content: flex-end;
 	}
@@ -1932,10 +2116,6 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	.herdr-native-session-context.herdr-has-window .herdr-native-session-tokens,
 	.herdr-native-session-context.herdr-has-window .herdr-native-session-sep {
 		display: none;
-	}
-
-	.herdr-native-prompt-input {
-		flex-basis: 100%;
 	}
 
 	/* A queued row's buttons go under its text. */

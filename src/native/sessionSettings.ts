@@ -223,6 +223,8 @@ export interface ContextReadout {
 	warning: boolean;
 	/** The tooltip: the exact numbers and who stated the window. */
 	title: string;
+	/** The share of the window used, 0 to 1 and over; null without a window. */
+	share: number | null;
 }
 
 /** Where a window came from, for the tooltip. */
@@ -241,11 +243,11 @@ export const CONTEXT_WARNING_SHARE = 0.8;
  */
 export function contextReadout(info: SessionInfo): ContextReadout {
 	const used = info.contextUsed;
-	if (used === undefined) return { tokens: '', percent: '', warning: false, title: '' };
+	if (used === undefined) return { tokens: '', percent: '', warning: false, title: '', share: null };
 	const window = info.contextWindow;
 	const exact = used.toLocaleString('en-US');
 	if (!window || window.tokens <= 0) {
-		return { tokens: formatTokens(used), percent: '', warning: false, title: `Context: ${exact} tokens` };
+		return { tokens: formatTokens(used), percent: '', warning: false, title: `Context: ${exact} tokens`, share: null };
 	}
 	const share = used / window.tokens;
 	return {
@@ -253,6 +255,7 @@ export function contextReadout(info: SessionInfo): ContextReadout {
 		percent: `${Math.round(share * 100)}%`,
 		warning: share >= CONTEXT_WARNING_SHARE,
 		title: `Context: ${exact} of ${window.tokens.toLocaleString('en-US')} tokens, the window ${WINDOW_SOURCES[window.source]}`,
+		share,
 	};
 }
 

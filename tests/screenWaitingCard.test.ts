@@ -478,7 +478,7 @@ describe('screen card: a view detached and attached again (#166 review)', () => 
 		await s.surface.attach(again.host);
 		await ready(again.el, 'Claude wants to use Bash');
 		expect(s.el.findAll('herdr-native-waiting')).toHaveLength(0);
-		expect(again.el.find('herdr-native-prompt-box').hasClass('herdr-is-hidden')).toBe(true);
+		expect(again.el.find('herdr-native-prompt-box').hasClass('herdr-is-standing-in')).toBe(true);
 	});
 
 	it('cancels the reads it was waiting to make: none runs once the view is gone', async () => {

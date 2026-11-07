@@ -144,6 +144,7 @@ import { imagesUnavailable } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
 import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
+import { normalizeContextReadoutStyle, normalizePromptBoxStyle } from '../native/composerLook';
 import { linkSourcePath } from '../native/noteLinks';
 
 /** How often a tab looks for its pane's trust prompt while the agent has no session (#167). */
@@ -1003,6 +1004,10 @@ export class TerminalView extends ItemView {
 			// Both read fresh on every draw, so a setting change and a vault the
 			// user moved reach a view that is already open (#95).
 			presentation: () => normalizeToolGroupPresentation(this.plugin.settings.nativeToolGroups),
+			composer: () => ({
+				boxStyle: normalizePromptBoxStyle(this.plugin.settings.nativePromptBoxStyle),
+				readout: normalizeContextReadoutStyle(this.plugin.settings.nativeContextReadout),
+			}),
 			vaultPath: () => this.plugin.vaultPath(),
 			// Links open beside this leaf, never in it (#114), on the side
 			// opposite the one a terminal is placed on beside its note.

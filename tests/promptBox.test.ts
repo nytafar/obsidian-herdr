@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { hostEl, type FakeElement } from './fixtures/dom';
-import { PromptBox, promptBoxState } from '../src/native/promptBox';
+import { PromptBox, promptBoxState, sendButtonLabel } from '../src/native/promptBox';
 import { NativePaneSurface } from '../src/native/surface';
 import { emptyTranscript, type TranscriptState } from '../src/agents/claude/transcript';
 import type { PromptSender } from '../src/native/promptSender';
@@ -108,11 +108,79 @@ describe('PromptBox: the box itself', () => {
 		expect(input(el).attrs['aria-label']).toBe('Message the agent');
 	});
 
-	it('puts the send button on the same row as the text area (#103)', () => {
+	it('is one box: the text area, then a strip with the bar slot and Send at its end (#173)', () => {
 		const { el } = boxOn('idle', fakeSender());
-		const row = el.find('herdr-native-prompt-row');
-		expect(row.findAll('herdr-native-prompt-input')).toHaveLength(1);
-		expect(row.findAll('herdr-native-prompt-send')).toHaveLength(1);
+		const card = el.find('herdr-native-prompt-card');
+		expect(card.children.map((child) => [...child.classList][0])).toEqual([
+			'herdr-native-prompt-images',
+			'herdr-native-prompt-input',
+			'herdr-native-prompt-toolbar',
+		]);
+		const toolbar = el.find('herdr-native-prompt-toolbar');
+		expect(toolbar.children.map((child) => [...child.classList][0])).toEqual([
+			'herdr-native-prompt-bar-slot',
+			'herdr-native-prompt-controls',
+		]);
+		expect(toolbar.findAll('herdr-native-prompt-send')).toHaveLength(1);
+	});
+
+	it('swaps its style class and nothing else (#173)', () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		const root = el.find('herdr-native-prompt-box');
+		const send = sendButton(el);
+		expect(root.hasClass('herdr-prompt-style-divided')).toBe(true);
+		box.setStyle('joined');
+		expect(root.hasClass('herdr-prompt-style-joined')).toBe(true);
+		expect(root.hasClass('herdr-prompt-style-divided')).toBe(false);
+		expect(el.find('herdr-native-prompt-send')).toBe(send);
+	});
+
+	it('labels Send and Stop only where they show no words, or with why Send is shut (#173)', () => {
+		expect(sendButtonLabel('Send', null, 'divided')).toBeNull();
+		expect(sendButtonLabel('Send', null, 'joined')).toBeNull();
+		expect(sendButtonLabel('Queue', null, 'floating')).toBe('Queue');
+		expect(sendButtonLabel('Send', 'A change is on its way.', 'divided')).toBe('A change is on its way.');
+
+		const { box, el } = boxOn('idle', fakeSender());
+		expect(sendButton(el).getAttribute('aria-label')).toBeNull();
+		box.setStyle('floating');
+		expect(sendButton(el).getAttribute('aria-label')).toBe('Send');
+		box.setStatus('working');
+		expect(sendButton(el).getAttribute('aria-label')).toBe('Queue');
+		box.setStyle('joined');
+		expect(sendButton(el).getAttribute('aria-label')).toBeNull();
+	});
+
+	it('takes no dropped image while the waiting card stands in (#173)', async () => {
+		const { box, el, notices } = boxOn('idle', fakeSender());
+		const root = el.find('herdr-native-prompt-box');
+		const file = { name: 'a.png', type: 'image/png', size: 4, arrayBuffer: async () => new ArrayBuffer(4) };
+		const drag = { dataTransfer: { types: ['Files'], files: [file] } };
+		// Shown, the box is a drop target.
+		expect(root.dispatch('dragover', drag).defaultPrevented).toBe(true);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(true);
+
+		box.setHidden(true);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(false);
+		expect(root.dispatch('dragover', drag).defaultPrevented).toBe(false);
+		expect(root.hasClass('herdr-is-drop-target')).toBe(false);
+		expect(root.dispatch('drop', drag).defaultPrevented).toBe(false);
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		expect(box.attachedImages).toEqual([]);
+		expect(notices).toEqual([]);
+	});
+
+	it('folds to its strip while the waiting card stands in, and keeps the draft (#173)', () => {
+		const { box, el } = boxOn('idle', fakeSender());
+		input(el).value = 'half a thought';
+		box.setHidden(true);
+		const root = el.find('herdr-native-prompt-box');
+		expect(root.hasClass('herdr-is-standing-in')).toBe(true);
+		expect(root.findAll('herdr-native-prompt-bar-slot')).toHaveLength(1);
+		expect(box.canFocus()).toBe(false);
+		box.setHidden(false);
+		expect(box.canFocus()).toBe(true);
+		expect(box.text).toBe('half a thought');
 	});
 
 	it('keeps a manual resize until the box is emptied (#103)', () => {

@@ -102,6 +102,11 @@ export class FakeElement {
 		return child;
 	}
 
+	/** Obsidian's SVG twin of `createEl`: the same shape here, a tag and attributes (#173). */
+	createSvg(tag: string, info?: FakeElementInfo | string): FakeElement {
+		return this.createEl(tag, info);
+	}
+
 	addClass(...classes: string[]): void {
 		for (const cls of classes) this.classList.add(cls);
 	}

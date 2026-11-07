@@ -32,6 +32,7 @@ import type { PaneQueue, PromptQueueSource } from './promptQueue';
 import { QueueRows } from './queueRows';
 import type { KeySender, PromptSender } from './promptSender';
 import { SessionBar } from './sessionBar';
+import type { ComposerLook } from './composerLook';
 import { onPaneGateChange } from './paneGate';
 import type { SessionSettingsSender, SettingQuestion } from './sessionSettings';
 import { ConfirmModal } from '../views/modals';
@@ -136,6 +137,12 @@ export interface NativePaneSurfaceOptions {
 	 * NativePaneSurface.refresh}.
 	 */
 	presentation: () => ToolGroupPresentation;
+	/**
+	 * The prompt box style and the context readout form (#173), read on attach
+	 * and on every {@link NativePaneSurface.refresh}, so a change of setting
+	 * reaches an open view. Left out, the defaults.
+	 */
+	composer?: () => ComposerLook;
 	/**
 	 * The vault's absolute path, for stripping it off the files the agent
 	 * changed. Empty for a vault with no filesystem adapter, which simply leaves
@@ -355,8 +362,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 			notify: (message) => this.notify(message),
 		});
 		this.promptBox.mount(root);
-		// Its own row, not the box's: the waiting card hides the box and the
-		// bar stays, disabled (#161).
+		// In the box's toolbar strip (#173), which stays under the waiting card
+		// while that stands in for the box, so the bar stays, disabled (#161).
 		this.sessionBar = new SessionBar({
 			paneId: () => this.identity.paneId,
 			sender: () => this.heldWhilePicking(this.options.sessionSettings?.() ?? null),
@@ -377,7 +384,8 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 							cancel: question.cancel,
 						}).ask(),
 		});
-		this.sessionBar.mount(root);
+		this.sessionBar.mount(this.promptBox.barSlot ?? root);
+		this.applyComposer();
 		// The pane gate opened or shut (review of #169): what may be sent, and
 		// whether the waiting card may read the screen, follow it.
 		this.gateOff?.();
@@ -488,7 +496,16 @@ export class NativePaneSurface implements PaneSurface, HoverParent {
 	 */
 	refresh(): void {
 		if (!this.rootEl) return;
+		this.applyComposer();
 		this.renderAll();
+	}
+
+	/** The prompt box's style and the readout's form, from the settings (#173). */
+	private applyComposer(): void {
+		const look = this.options.composer?.();
+		if (!look) return;
+		this.promptBox?.setStyle(look.boxStyle);
+		this.sessionBar?.setReadoutStyle(look.readout);
 	}
 
 	/**

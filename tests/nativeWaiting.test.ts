@@ -469,14 +469,14 @@ describe('waiting card: what it presses (#99)', () => {
 		const model = new FakeModel();
 		const { el } = await surfaceOn(model);
 		const box = el.find('herdr-native-prompt-box');
-		expect(box.hasClass('herdr-is-hidden')).toBe(false);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(false);
 
 		model.setStatus('blocked');
-		expect(box.hasClass('herdr-is-hidden')).toBe(true);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(true);
 
 		model.setStatus('working');
 		expect(card(el)).toBeNull();
-		expect(box.hasClass('herdr-is-hidden')).toBe(false);
+		expect(box.hasClass('herdr-is-standing-in')).toBe(false);
 	});
 });
 
