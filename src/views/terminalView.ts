@@ -997,9 +997,9 @@ export class TerminalView extends ItemView {
 					},
 				});
 				// Closed with the box: a popover open on a mode switch or a closed
-				// tab must not outlive the text area it belongs to. `isOpen` is
+				// tab must not outlive the text area it belongs to. `isShowing` is
 				// how the box knows the enter is the popover's, not a send (#103).
-				return { close: () => suggest.close(), isOpen: () => suggest.isOpen() };
+				return { close: () => suggest.close(), isShowing: () => suggest.isShowing() };
 			},
 			// Both read fresh on every draw, so a setting change and a vault the
 			// user moved reach a view that is already open (#95).

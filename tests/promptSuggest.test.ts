@@ -32,13 +32,13 @@ function suggestOn(): PromptSuggest {
 describe('PromptSuggest: whether the popover is open', () => {
 	it('is closed until Obsidian opens it, and closed again after', () => {
 		const suggest = suggestOn();
-		expect(suggest.isOpen()).toBe(false);
+		expect(suggest.isShowing()).toBe(false);
 
 		suggest.open();
-		expect(suggest.isOpen()).toBe(true);
+		expect(suggest.isShowing()).toBe(true);
 
 		suggest.close();
-		expect(suggest.isOpen()).toBe(false);
+		expect(suggest.isShowing()).toBe(false);
 	});
 
 	it('is closed once a suggestion has been taken', () => {
@@ -49,7 +49,7 @@ describe('PromptSuggest: whether the popover is open', () => {
 		// that the popover is gone and the next enter is the prompt box's.
 		suggest.selectSuggestion({ kind: 'file', file: { path: 'a.md' } as never });
 
-		expect(suggest.isOpen()).toBe(false);
+		expect(suggest.isShowing()).toBe(false);
 	});
 });
 

@@ -206,12 +206,22 @@ export class ItemView extends View {
  * it needs — a document, a scope, a focused field — no test here has.
  */
 export class PopoverSuggest<T> {
+	/**
+	 * Obsidian's own suggest sets a plain `isOpen` field on every instance as it
+	 * is created, so a subclass method of that name is hidden by it and calling
+	 * it throws "isOpen is not a function". Kept here so a test catches that.
+	 */
+	isOpen = false;
 	constructor(
 		public app: unknown,
 		public scope?: unknown,
 	) {}
-	open(): void {}
-	close(): void {}
+	open(): void {
+		this.isOpen = true;
+	}
+	close(): void {
+		this.isOpen = false;
+	}
 	selectSuggestion(_value: T): void {}
 }
 

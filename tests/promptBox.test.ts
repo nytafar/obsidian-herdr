@@ -361,7 +361,7 @@ describe('PromptBox: sending', () => {
 		const box = new PromptBox({
 			paneId: () => 'w4:p1',
 			sender,
-			onInput: () => ({ close: () => {}, isOpen: () => open }),
+			onInput: () => ({ close: () => {}, isShowing: () => open }),
 		});
 		box.mount(host);
 		box.setStatus('idle');

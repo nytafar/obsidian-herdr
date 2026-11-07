@@ -24,7 +24,7 @@
  * picked — so the prompt box has to know when it is, or Enter-to-send (#103)
  * would send a half-typed `/comm` instead of completing it. Obsidian opens and
  * closes the popover through {@link PopoverSuggest.open} and `close`, so
- * {@link PromptSuggest.isOpen} follows those two calls and nothing else.
+ * {@link PromptSuggest.isShowing} follows those two calls and nothing else.
  *
  * Only that is unit tested (`tests/promptSuggest.test.ts`): what the rest
  * decides is the trigger and the text it writes back, and both are pure
@@ -146,7 +146,7 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	private localCatalog: { format: AgentFormat; source: CommandCatalogSource } | null = null;
 	/** The trigger the offered suggestions were built for. */
 	private trigger: PromptTrigger | null = null;
-	/** Whether the popover is showing; see {@link PromptSuggest.isOpen}. */
+	/** Whether the popover is showing; see {@link PromptSuggest.isShowing}. */
 	private showing = false;
 
 	constructor(inputEl: HTMLTextAreaElement, options: PromptSuggestOptions) {
@@ -162,8 +162,12 @@ export class PromptSuggest extends AbstractInputSuggest<PromptSuggestion> {
 	 * Whether the popover is showing, which is the one thing the prompt box asks
 	 * of the suggest: the enter picks a suggestion while it is, and sends the
 	 * prompt only when it is not (#103).
+	 *
+	 * Not `isOpen`: Obsidian's suggest sets a plain `isOpen` field on every
+	 * instance as it is created, which hides a method of that name, and the
+	 * prompt box's Enter handler then threw "isOpen is not a function".
 	 */
-	isOpen(): boolean {
+	isShowing(): boolean {
 		return this.showing;
 	}
 

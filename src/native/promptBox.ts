@@ -190,7 +190,7 @@ export interface PromptInputHandle {
 	/** Called when the box goes, so an open popover goes with it. */
 	close: () => void;
 	/** True while a popover is showing over the box and owns the enter key. */
-	isOpen?: () => boolean;
+	isShowing?: () => boolean;
 }
 
 /** A handle, or the bare teardown a caller that draws nothing returns. */
@@ -326,7 +326,7 @@ export class PromptBox {
 		this.component.registerDomEvent(inputEl, 'keydown', (event: KeyboardEvent) => {
 			// The popover owns the enter while it is open: it picks a suggestion
 			// with it (#98), and the prompt is not finished yet.
-			if (this.attachment?.isOpen?.()) return;
+			if (this.attachment?.isShowing?.()) return;
 			if (!isSendKey(event)) return;
 			event.preventDefault();
 			void this.send();
