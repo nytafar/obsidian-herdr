@@ -50,4 +50,14 @@ describe('styles.css: the native view', () => {
 		expect(reduced).toMatch(/transition: none/);
 		expect(reduced).toMatch(/scroll-behavior: auto/);
 	});
+
+	it('keeps the session pickers and readout flat over Obsidian\'s button fill', () => {
+		// Obsidian styles `button:not(.clickable-icon)` (one element, one class);
+		// a lone class loses to it, and the pickers gained a fill and a shadow.
+		for (const cls of ['herdr-native-session-picker', 'herdr-native-session-context']) {
+			const [body] = blocks(new RegExp(`\\nbutton\\.${cls} \\{`));
+			expect(body, cls).toMatch(/background: transparent;/);
+			expect(body, cls).toMatch(/box-shadow: none;/);
+		}
+	});
 });

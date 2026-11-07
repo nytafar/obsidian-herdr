@@ -789,7 +789,11 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	min-width: 0;
 }
 
-.herdr-native-session-picker {
+/*
+ * Flat, as text. `button.` because Obsidian fills every button through
+ * `button:not(.clickable-icon)`, which outranks a single class (#173).
+ */
+button.herdr-native-session-picker {
 	background: transparent;
 	box-shadow: none;
 	color: var(--text-muted);
@@ -820,7 +824,7 @@ svg.svg-icon[class*='herdr-kind-'] text {
 }
 
 /* A button (#171): a click shows the context breakdown, so it reads as text. */
-.herdr-native-session-context {
+button.herdr-native-session-context {
 	background: transparent;
 	box-shadow: none;
 	color: var(--text-muted);
