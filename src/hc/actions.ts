@@ -7,6 +7,9 @@
  *   agent shows in herdr-app too ([[herdr-core-api]] §5; herdr-app
  *   `docs/labels.md`); and, except for a template, the plugin's own
  *   `obsidian-herdr.agent=<kind>`, the list's fallback kind (`LABEL_AGENT`).
+ *   herdr-app adopts such a terminal into a new tab with no name; the tab is
+ *   then named after the folder (#176) through the `herdr-app` document,
+ *   the one place tab names live ({@link withTabName}).
  * - Close: `terminal.kill`, then `terminal.rm`.
  * - Pin: the shared `herdr.pinned` label.
  * - Prompt: `terminal.send`; keys: `terminal.keys`.
@@ -42,7 +45,22 @@ import {
 import { imageExtension, imagePaste, type PromptImage } from '../native/promptImages';
 import { checkScreenKey, checkScreenText, type ScreenAccess, type ScreenKey } from '../native/screenAccess';
 import { HcError } from './connection';
-import { LABEL_AGENT, LABEL_PINNED, LABEL_SEEN, LABEL_SPACE, parseTerminal } from './model';
+import {
+	HERDR_APP_DOC,
+	LABEL_AGENT,
+	LABEL_PINNED,
+	LABEL_SEEN,
+	LABEL_SPACE,
+	parseTerminal,
+	withTabName,
+} from './model';
+
+/** How long a started agent's tab is waited for to be named (#176). */
+export const TAB_NAME_WAIT_MS = 10_000;
+/** herdr-app reconciles on its 500 ms listing; polled at the same pace. */
+const TAB_NAME_POLL_MS = 500;
+/** `doc.set` conflicts taken before the name is given up. */
+const TAB_NAME_CONFLICTS = 3;
 
 /** How long `terminal.rm` is retried while a killed terminal is still `live`. */
 export const RM_RETRY_MS = 2000;
@@ -120,6 +138,9 @@ export class HcActions implements RuntimeActions {
 		private readonly scope: () => HcActionScope | null,
 	) {}
 
+	/** The last tab naming started, for tests; it never rejects. */
+	tabNamed: Promise<void> = Promise.resolve();
+
 	newTabHere(): Promise<null> {
 		return Promise.resolve(this.unsupported('new tabs'));
 	}
@@ -183,6 +204,8 @@ export class HcActions implements RuntimeActions {
 				const paneId = parseTerminal(result)?.address ?? '';
 				if (!paneId) throw new Error('herdr-core answered without a terminal address');
 				this.host.notice(`Gjetr: started ${agentLabel(agent)} agent "${name}" in ${label}`);
+				// Only a terminal with a space is put in a tab by herdr-app.
+				if (space) this.tabNamed = this.nameAdoptedTab(send, paneId, label);
 				if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
 				return { paneId, name, kind };
 			} catch (error) {
@@ -250,6 +273,40 @@ export class HcActions implements RuntimeActions {
 		} catch (error) {
 			this.host.notice(`Gjetr: could not ${pinned ? 'pin' : 'unpin'} the agent. ${describe(error)}`);
 			return false;
+		}
+	}
+
+	/**
+	 * Names the tab herdr-app adopts `address` into after its folder (#176),
+	 * once it is there: the `herdr-app` document is read until a tab holds the
+	 * terminal, then written back with that tab's name, at the version read.
+	 * A tab already named is left alone, a conflict reads again, and anything
+	 * else (no herdr-app running, a core without documents) gives up quietly:
+	 * the agent runs either way, in a tab called by its number.
+	 */
+	private async nameAdoptedTab(send: Requester, address: string, name: string): Promise<void> {
+		const deadline = this.host.now() + TAB_NAME_WAIT_MS;
+		let conflicts = 0;
+		while (this.host.now() < deadline) {
+			let doc: { value?: unknown; version?: unknown } | null;
+			try {
+				doc = await send<{ value?: unknown; version?: unknown } | null>('doc.get', { name: HERDR_APP_DOC });
+			} catch {
+				return;
+			}
+			const version = doc?.version;
+			const named = typeof version === 'number' ? withTabName(doc?.value, address, name) : null;
+			if (named === 'named') return;
+			if (named) {
+				try {
+					await send('doc.set', { name: HERDR_APP_DOC, value: named, version });
+					return;
+				} catch (error) {
+					if (error instanceof HcError && error.kind === 'conflict' && ++conflicts < TAB_NAME_CONFLICTS) continue;
+					return;
+				}
+			}
+			await this.host.sleep(TAB_NAME_POLL_MS);
 		}
 	}
 

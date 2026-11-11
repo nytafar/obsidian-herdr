@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HcClient, remoteConnectCommand, sshConnectArgv, STALL_MS, type HcTimers } from '../src/hc/client';
-import { HcActions, agentLaunchLine, hcKeyName, hcKeySender, hcPromptSender, hcTerminalName } from '../src/hc/actions';
+import { HcActions, agentLaunchLine, hcKeyName, hcKeySender, hcPromptSender, hcTerminalName, TAB_NAME_WAIT_MS } from '../src/hc/actions';
 import { HcScope } from '../src/hc/scope';
 import { ConnectionCoordinator, endpointOf } from '../src/connection';
 import { createHerdrCoreKind, hcStatusLines, loadSpaces } from '../src/runtime/herdrCoreKind';
@@ -392,7 +392,7 @@ describe('herdr-core actions', () => {
 		const { host, calls, notices, opened } = actionHost(() => ({ address: 't12', name: 'notes-2' }));
 		const actions = new HcActions(host, () => ({ space: { id: 'sp1', name: 'hvelv' } }));
 		const started = await actions.startAgentHere('/home/lasse/hvelv/notes');
-		expect(calls).toEqual([
+		expect(calls.filter((call) => call.method === 'terminal.run')).toEqual([
 			{
 				method: 'terminal.run',
 				params: {
@@ -422,6 +422,88 @@ describe('herdr-core actions', () => {
 		await actions.startAgentHere('/home/lasse/hvelv/inbox');
 		expect(calls.map((call) => call.params.name)).toEqual(['inbox', 'inbox-2']);
 		expect(calls[0]?.params.labels).toEqual({ 'herdr.seen': '0', 'obsidian-herdr.agent': 'claude' });
+	});
+
+	describe('names the tab herdr-app adopts the agent into after its folder (#176)', () => {
+		const tab = (id: string, name: string, terminal: string) => ({
+			id,
+			name,
+			extra: { kept: true },
+			root: { id, type: 'row', children: [{ id: `p-${id}`, type: 'block', content: { terminal } }] },
+		});
+		const docWith = (...tabs: ReturnType<typeof tab>[]) => ({
+			spaces: [{ id: 'sp1', name: 'hvelv', folder: '/v', tabs }],
+			other: 'kept',
+		});
+
+		it('waits for the adoption, then writes the name at the version read', async () => {
+			let reads = 0;
+			const { host, calls } = actionHost((method) => {
+				if (method === 'terminal.run') return { address: 't12' };
+				if (method === 'doc.get') {
+					reads++;
+					// Not adopted on the first read.
+					return reads === 1
+						? { value: docWith(tab('tb1', 'main', 't1')), version: 7 }
+						: { value: docWith(tab('tb1', 'main', 't1'), tab('tb2', '', 't12')), version: 8 };
+				}
+				return { version: 9 };
+			});
+			const actions = new HcActions(host, () => ({ space: { id: 'sp1', name: 'hvelv' } }));
+			await actions.startAgentHere('/home/lasse/hvelv/notes');
+			await actions.tabNamed;
+
+			const set = calls.filter((call) => call.method === 'doc.set');
+			expect(set).toHaveLength(1);
+			expect(set[0]?.params).toEqual({
+				name: 'herdr-app',
+				version: 8,
+				value: docWith(tab('tb1', 'main', 't1'), tab('tb2', 'notes', 't12')),
+			});
+		});
+
+		it('never renames a tab that has a name', async () => {
+			const { host, calls } = actionHost((method) =>
+				method === 'terminal.run' ? { address: 't12' } : { value: docWith(tab('tb2', 'mine', 't12')), version: 3 },
+			);
+			const actions = new HcActions(host, () => ({ space: { id: 'sp1', name: 'hvelv' } }));
+			await actions.startAgentHere('/home/lasse/hvelv/notes');
+			await actions.tabNamed;
+			expect(calls.some((call) => call.method === 'doc.set')).toBe(false);
+		});
+
+		it('reads again after a conflict', async () => {
+			const { HcError } = await import('../src/hc/connection');
+			let sets = 0;
+			let version = 4;
+			const { host, calls } = actionHost((method) => {
+				if (method === 'terminal.run') return { address: 't12' };
+				if (method === 'doc.get') return { value: docWith(tab('tb2', '', 't12')), version: version++ };
+				if (++sets === 1) throw new HcError('doc.set', { code: -32000, message: 'stale', data: { kind: 'conflict' } });
+				return { version: 99 };
+			});
+			const actions = new HcActions(host, () => ({ space: { id: 'sp1', name: 'hvelv' } }));
+			await actions.startAgentHere('/home/lasse/hvelv/notes');
+			await actions.tabNamed;
+			expect(calls.filter((call) => call.method === 'doc.set').map((call) => call.params.version)).toEqual([4, 5]);
+		});
+
+		it('gives up when no tab ever holds the agent, and touches nothing in cwd mode', async () => {
+			const { host, calls } = actionHost((method) =>
+				method === 'terminal.run' ? { address: 't12' } : { value: docWith(), version: 1 },
+			);
+			const actions = new HcActions(host, () => ({ space: { id: 'sp1', name: 'hvelv' } }));
+			await actions.startAgentHere('/home/lasse/hvelv/notes');
+			await actions.tabNamed;
+			expect(calls.some((call) => call.method === 'doc.set')).toBe(false);
+			expect(calls.filter((call) => call.method === 'doc.get').length).toBeLessThanOrEqual(TAB_NAME_WAIT_MS / 100 + 1);
+
+			const cwd = actionHost(() => ({ address: 't13' }));
+			const cwdActions = new HcActions(cwd.host, () => ({ space: null }));
+			await cwdActions.startAgentHere('/home/lasse/hvelv/inbox');
+			await cwdActions.tabNamed;
+			expect(cwd.calls.map((call) => call.method)).toEqual(['terminal.run']);
+		});
 	});
 
 	it('closes with terminal.kill then terminal.rm, and drops the row', async () => {

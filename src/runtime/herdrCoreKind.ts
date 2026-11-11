@@ -40,7 +40,7 @@ import { gatePromptSender } from '../native/paneGate';
 import { HcClient, sshConnectArgv, type HcTimers } from '../hc/client';
 import { HcError, type HcMismatch, type HcSpawn } from '../hc/connection';
 import { HcTerminalSession } from '../hc/terminalSession';
-import { LABEL_SEEN, parseSpaces } from '../hc/model';
+import { HERDR_APP_DOC, LABEL_SEEN, parseSpaces } from '../hc/model';
 import { HcScope } from '../hc/scope';
 import { HcTabLabels } from '../hc/tabLabels';
 import { hcSessionWatcher } from '../hc/sessionWatcher';
@@ -53,8 +53,7 @@ import type { SessionWatcher } from '../native/sessionWatcher';
 import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
 import { HERDR_CORE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
 
-/** The document herdr-app keeps its spaces in. */
-export const HERDR_APP_DOC = 'herdr-app';
+export { HERDR_APP_DOC };
 
 export interface HerdrCoreKindHost {
 	/** Colon-separated PATH additions from the settings, read per attempt. */

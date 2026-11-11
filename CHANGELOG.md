@@ -3,6 +3,23 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## 0.8.0 — 2026-11-11
+
+### Added
+
+- **Tabs named after their folder on herdr-core**: an agent started from a
+  folder gets a tab named after that folder in Herdr, as on herdr. A tab that
+  already has a name keeps it.
+
+### Fixed
+
+- **Native view after the terminal**: a tab that had shown the terminal
+  (ghostty-web) before switching to the native view could not be typed in or
+  scrolled. The terminal engine no longer leaves its listeners behind.
+- **Wheel in full-screen agents on herdr-core and Claude run by Obsidian**:
+  the wheel scrolls the agent's own view (Claude Code's `"tui":
+  "fullscreen"`, for one) instead of stepping through its prompt history.
+
 ## 0.7.0 — 2026-11-07
 
 The native view catches up with Claude Code's own: answer it, steer it and
