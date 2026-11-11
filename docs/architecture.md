@@ -1352,7 +1352,7 @@ What the framework does, read from Obsidian 1.14.5's `app.js`:
   alias on a row that is always shown (the runtime's Kind carries "permission
   mode"; the sharing toggle carries "panes per herdr tab").
 
-Against 1.13.4, the `minAppVersion` (read 2026-11-11 from the release's
+Against 1.13.4, the `minAppVersion` first chosen (read 2026-11-11 from the release's
 `obsidian-1.13.4.asar.gz`: gunzip, then `app.js` from the asar archive, whose
 header is a JSON index after a 16-byte prefix): the settings modal has no
 `openPagePath`, and pages are keyed by `name` only, their duplicate check
@@ -1362,7 +1362,8 @@ desktop release with both: its page key is `id ?? name` and it has
 `openPagePath`, as 1.14.5 does. On 1.13.x the tab still loads: the root line
 is plain text, adding leaves the new row in the list, removing leaves the
 "Removed" page, and a runtime or agent CLI page is keyed by its name, so
-two with one name are reported as duplicate pages (not checked live).
+two with one name are reported as duplicate pages (not checked live). So
+`minAppVersion` is 1.14.4 (ADR-0011, amended 2026-11-11).
 
 ## Agent prompts and session identity
 

@@ -1,6 +1,6 @@
 # Settings
 
-All under **Settings → Gjetr**, which needs Obsidian 1.13.4 or later. Sentence
+All under **Settings → Gjetr**, which needs Obsidian 1.14.4 or later. Sentence
 case names match the UI.
 
 Obsidian's settings search finds a setting by its name, its description or
