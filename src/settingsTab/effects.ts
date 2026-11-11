@@ -7,8 +7,8 @@
  *
  * Keys are the stored `data.json` names, dotted where the value is nested
  * (`notifications.blocked.notice`). A runtime page's fields are keyed
- * `runtimes.<id>.<field>` and go to `runtimeKeys.ts` (#178); the agent CLI
- * catalog still writes through its own builder until #179.
+ * `runtimes.<id>.<field>` and go to `runtimeKeys.ts` (#178). The agent CLI
+ * catalog's keys, which name an entry by its id, are `agentCatalog.ts`'s (#179).
  */
 
 import type { HerdrSettings } from '../settings';
