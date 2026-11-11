@@ -13,7 +13,6 @@ import {
 } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
-	HerdrSettingTab,
 	migrateRenderMode,
 	normalizePinnedPanes,
 	normalizeTerminalPlacement,
@@ -24,6 +23,7 @@ import {
 	type ConnectionStatus,
 	type HerdrSettings,
 } from './settings';
+import { HerdrSettingTab } from './settingsTab/tab';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,

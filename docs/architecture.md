@@ -1233,18 +1233,39 @@ window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
 
 ## The settings tab
 
-The tab itself is an assembler. Its section builders — runtimes, connection,
-notifications, agents, file explorer, agent list, terminal, native view — are plain functions
-over a container, the settings object and a bundle of callbacks, listed in
-`SETTINGS_SECTIONS` in `src/settings.ts`; none of them ever sees the plugin. The
-callbacks bundle is the whole of what a control may do besides write into the
-settings: save, save and reconnect, redisplay, refresh the agent list or the
-folder hover buttons, hand one changed setting to the open terminals, or switch,
-open and remove runtimes, or check and review the active herdr-core runtime's
-Claude session hook. Which runtime's form is open is the tab's state, handed
-in through the same bundle. The tab
-builds that bundle from the plugin once and then just runs the list, which is
-what makes a section renderable on a bare container in a test.
+The tab is declarative (Obsidian 1.13's settings API, ADR-0011, issue #156).
+`settingDefinitions` in `src/settingsTab/tab.ts` is the whole tab: the
+connection status block on the root, then one page per area, each from its
+own module in `src/settingsTab/` (runtimes, agents, views, terminal, agent list
+and notifications). A control names a key, the stored `data.json` name, dotted
+when nested (`notifications.blocked.notice`); `getControlValue` and
+`setControlValue` both go to `src/settingsTab/effects.ts`, whose key→effect
+table normalises the value, saves, and then runs the key's one effect:
+reconnect, refresh the agent list or the folder hover buttons, hand the
+setting to the open terminals, or redraw the native views. The table's type is
+total over the keys, and only a terminal setting may have the terminal effect.
+
+The runtime list and the agent CLI catalog are still their imperative
+builders, drawn inside `render` definitions (`src/settingsTab/lists.ts`) with
+the callback bundle they always took, until #178 and #179 make them `list`s.
+Their redraw is the tab's `update()`.
+
+What the framework does, read from Obsidian 1.14.5's `app.js`:
+
+- `getSettingDefinitions()` runs when the tab is added and on `update()`, not
+  on every opening; the result is cached in `settingItems`. Values that change
+  must be read in functions (`visible`, `displayValue`, `render`) or through
+  `getControlValue`, which every render calls.
+- A control's change awaits `setControlValue`, then calls `refreshDomState()`,
+  which re-evaluates every `visible` and `disabled`; nothing else redraws.
+- `update()` re-reads the definitions, re-indexes search and redraws the page
+  that is open, whichever it is. A `render` callback's DOM, focus included, is
+  rebuilt.
+- Pages are found by name along their path, so a page name is its identity.
+  Going back to a page redraws it, so a root `displayValue` function is read
+  fresh without an `update()`.
+- `display()` is only called for a tab whose definitions are empty; with
+  definitions the tab is rendered from them directly.
 
 ## Agent prompts and session identity
 

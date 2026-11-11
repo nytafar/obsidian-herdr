@@ -137,7 +137,7 @@ Each tab shows either the native view or a terminal, and remembers its choice.
   the same, plus the terminal engine.
 - **Gjetr: Switch render mode** in the command palette does it for the active
   tab.
-- **Settings → Gjetr → Default view** sets what a tab shows until it chooses
+- **Settings → Gjetr → Views → Default view** sets what a tab shows until it chooses
   for itself. Native is the default; pick Terminal to make every new tab a
   terminal and switch to native per tab instead.
 

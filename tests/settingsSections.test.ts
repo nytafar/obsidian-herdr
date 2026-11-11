@@ -1,45 +1,28 @@
 /**
- * The settings tab, section by section (issue #85).
+ * The two parts of the settings tab still drawn by their 0.7.1 builders: the
+ * runtime list (until #178) and the agent CLI catalog (until #179). The tab
+ * draws each inside a `render` definition (`settingsTab/lists.ts`); the plain
+ * settings are definitions, covered by `settingsDefinitions.test.ts`.
  *
- * Each section is a plain function over a container, the settings and a bundle
- * of callbacks, so the whole tab is testable without Obsidian: the `Setting`
- * fixture records what a section renders and hands back the change handler of
- * any control. What is asserted per section is the widgets it puts up, what a
- * change writes into the settings, and which callbacks it calls in which order
- * — the difference between save, save-and-reconnect, a redisplay and a refresh
- * is the thing a split like this can quietly get wrong.
+ * A builder is a plain function over a container, the settings and a bundle
+ * of callbacks: the `Setting` fixture records what it renders and hands back
+ * the change handler of any control, and the bundle records which callbacks
+ * run in which order.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
 	ButtonComponent,
-	builtSettings,
 	DropdownComponent,
 	settingNamed,
 	settingNames,
 	settingsContainer,
-	SliderComponent,
 	TextComponent,
-	ToggleComponent,
 } from './fixtures/obsidian';
-import {
-	buildAgentListSection,
-	buildAgentsSection,
-	buildConnectionSection,
-	buildFileExplorerSection,
-	buildNativeViewSection,
-	buildNotificationsSection,
-	buildRuntimesSection,
-	buildTerminalSection,
-	DEFAULT_SETTINGS,
-	MAX_PANES_PER_TAB,
-	MAX_SCROLLBACK_MB,
-	MIN_PANES_PER_TAB,
-	MIN_SCROLLBACK_MB,
-	SETTINGS_SECTIONS,
-	type HerdrSettings,
-	type SettingsCallbacks,
-} from '../src/settings';
+import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
+import { buildRuntimesSection } from '../src/settingsTab/runtimeList';
+import type { ListCallbacks } from '../src/settingsTab/lists';
+import { buildAgentCatalogSettings } from '../src/agents/settingsSection';
 import { defaultLocalRuntime, newRuntime } from '../src/runtimes';
 import type { AgentProbe } from '../src/agents/catalog';
 import { MachineProbes } from '../src/agents/machines';
@@ -52,10 +35,10 @@ function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 /** A callback bundle that records the calls, in order, as strings. */
 function recorder(
 	options: { editing?: string | null; confirm?: boolean; unavailable?: string } = {},
-): { calls: string[]; callbacks: SettingsCallbacks } {
+): { calls: string[]; callbacks: ListCallbacks } {
 	const calls: string[] = [];
 	let editing = options.editing ?? null;
-	const callbacks: SettingsCallbacks = {
+	const callbacks: ListCallbacks = {
 		activateRuntime: async (id) => {
 			calls.push(`activateRuntime:${id}`);
 		},
@@ -85,15 +68,6 @@ function recorder(
 		refreshAgentList: () => {
 			calls.push('refreshAgentList');
 		},
-		refreshFolderHoverButton: () => {
-			calls.push('refreshFolderHoverButton');
-		},
-		applyTerminalSetting: (setting) => {
-			calls.push(`applyTerminalSetting:${setting}`);
-		},
-		refreshNativeViews: () => {
-			calls.push('refreshNativeViews');
-		},
 	};
 	return { calls, callbacks };
 }
@@ -109,43 +83,10 @@ function control<T>(
 	return component;
 }
 
-const toggleOf = (container: unknown, name: string): ToggleComponent =>
-	control(container, name, ToggleComponent, 'toggle');
 const textOf = (container: unknown, name: string): TextComponent =>
 	control(container, name, TextComponent, 'text field');
 const dropdownOf = (container: unknown, name: string): DropdownComponent =>
 	control(container, name, DropdownComponent, 'dropdown');
-const sliderOf = (container: unknown, name: string): SliderComponent =>
-	control(container, name, SliderComponent, 'slider');
-
-/** The name of every heading row, in order. */
-function headings(container: unknown): string[] {
-	return builtSettings(container)
-		.filter((setting) => setting.heading)
-		.map((setting) => setting.name);
-}
-
-describe('connection section', () => {
-	it('keeps the one field every runtime on this machine shares', () => {
-		const el = settingsContainer();
-		buildConnectionSection(el, settingsOf(), recorder().callbacks);
-
-		expect(settingNames(el)).toEqual(['Connection', 'Extra PATH entries']);
-		expect(headings(el)).toEqual(['Connection']);
-	});
-
-	it('saves and reconnects, since spawns read it', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildConnectionSection(el, settings, callbacks);
-
-		await textOf(el, 'Extra PATH entries').change('/opt/bin');
-
-		expect(settings.extraPath).toBe('/opt/bin');
-		expect(calls).toEqual(['saveAndReconnect']);
-	});
-});
 
 /** The remote a pre-registry profile migrated to, beside the local herdr. */
 function twoRuntimes(): HerdrSettings {
@@ -173,12 +114,12 @@ function rowButton(container: unknown, name: string, tooltip: string): ButtonCom
 	return hit;
 }
 
-describe('runtimes section (ADR-0004)', () => {
+describe('runtime list (ADR-0004, until #178)', () => {
 	it('lists every runtime with what it is, and the add button', () => {
 		const el = settingsContainer();
 		buildRuntimesSection(el, twoRuntimes(), recorder().callbacks);
 
-		expect(settingNames(el)).toEqual(['Runtimes', 'Local', 'xl', 'Add runtime']);
+		expect(settingNames(el)).toEqual(['Local', 'xl', 'Add runtime']);
 		expect(settingNamed(el, 'Local').desc).toBe('Herdr on this machine. Active.');
 		expect(settingNamed(el, 'xl').desc).toBe('Herdr over SSH to lasse@xl.');
 		expect(settingNamed(el, 'Local').classes).toContain('herdr-runtime-active');
@@ -259,7 +200,7 @@ describe('runtimes section (ADR-0004)', () => {
 			recorder({ editing: 'ssh:lasse@xl:~/.config/herdr/herdr.sock' }).callbacks,
 		);
 
-		expect(settingNames(el).slice(4)).toEqual([
+		expect(settingNames(el).slice(3)).toEqual([
 			'Edit xl',
 			'Name',
 			'Kind',
@@ -284,7 +225,7 @@ describe('runtimes section (ADR-0004)', () => {
 		const el = settingsContainer();
 		buildRuntimesSection(el, settingsOf(), recorder({ editing: 'local' }).callbacks);
 
-		expect(settingNames(el).slice(3)).toEqual([
+		expect(settingNames(el).slice(2)).toEqual([
 			'Edit Local',
 			'Name',
 			'Kind',
@@ -406,48 +347,13 @@ describe('runtimes section (ADR-0004)', () => {
 	});
 });
 
-describe('notifications section', () => {
-	it('renders the status bar toggle and both transitions', () => {
-		const el = settingsContainer();
-		buildNotificationsSection(el, settingsOf(), recorder().callbacks);
-
-		expect(settingNames(el)).toEqual([
-			'Notifications',
-			'Status bar counts',
-			'Blocked: notice',
-			'Blocked: system notification',
-			'Done: notice',
-			'Done: system notification',
-		]);
-		// The defaults the toggles were built from, per transition.
-		expect(toggleOf(el, 'Done: notice').value).toBe(true);
-		expect(toggleOf(el, 'Done: system notification').value).toBe(false);
-	});
-
-	it('writes into the transition it belongs to and only saves', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildNotificationsSection(el, settings, callbacks);
-
-		await toggleOf(el, 'Blocked: notice').change(false);
-		await toggleOf(el, 'Done: system notification').change(true);
-		await toggleOf(el, 'Status bar counts').change(false);
-
-		expect(settings.notifications.blocked).toEqual({ notice: false, os: true });
-		expect(settings.notifications.done).toEqual({ notice: true, os: true });
-		expect(settings.notifications.statusBar).toBe(false);
-		expect(calls).toEqual(['save', 'save', 'save']);
-	});
-});
-
-describe('agents section', () => {
+describe('agent CLI catalog (until #179)', () => {
 	it('lists the active runtime’s agent CLIs, unverified before a probe, and the add button', () => {
 		const el = settingsContainer();
-		buildAgentsSection(el, settingsOf(), recorder().callbacks);
+		buildAgentCatalogSettings(el, settingsOf(), recorder().callbacks);
 
 		const names = settingNames(el);
-		expect(names.slice(1, 4)).toEqual(['Agent CLIs', 'Claude Code', 'Codex']);
+		expect(names.slice(0, 3)).toEqual(['Agent CLIs', 'Claude Code', 'Codex']);
 		expect(names).toContain('Add agent CLI');
 		expect(settingNamed(el, 'Claude Code').desc).toBe('Runs claude. Not checked yet. Default. Has the native view.');
 		expect(rowButton(el, 'Codex', 'Hide from the menu').icon).toBe('eye');
@@ -465,7 +371,7 @@ describe('agents section', () => {
 			edit: () => undefined,
 		};
 		const el = settingsContainer();
-		buildAgentsSection(el, settings, callbacks);
+		buildAgentCatalogSettings(el, settings, callbacks);
 
 		const names = settingNames(el);
 		expect(names).toContain('Claude Code');
@@ -489,7 +395,7 @@ describe('agents section', () => {
 			edit: () => undefined,
 		};
 		const settings = settingsOf();
-		buildAgentsSection(settingsContainer(), settings, callbacks);
+		buildAgentCatalogSettings(settingsContainer(), settings, callbacks);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(asked).toEqual([settings.activeRuntime]);
@@ -497,7 +403,7 @@ describe('agents section', () => {
 
 		// Nothing new (up to date, or another runtime's connection): no redraw, no loop.
 		landed = false;
-		buildAgentsSection(settingsContainer(), settings, callbacks);
+		buildAgentCatalogSettings(settingsContainer(), settings, callbacks);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(asked).toHaveLength(2);
@@ -534,14 +440,14 @@ describe('agents section', () => {
 			machines: () => probes,
 		};
 		const el = settingsContainer();
-		buildAgentsSection(el, settings, callbacks);
-		buildAgentsSection(settingsContainer(), settings, callbacks);
+		buildAgentCatalogSettings(el, settings, callbacks);
+		buildAgentCatalogSettings(settingsContainer(), settings, callbacks);
 		expect(asked).toEqual(['local', 'lasse@mac', 'xl']);
 		expect(settingNamed(el, 'Codex').desc).toBe('Runs codex. Checking this machine, lasse@mac and xl…');
 
 		// A drawing after the first is the current one: draw it again to follow it.
 		const current = settingsContainer();
-		buildAgentsSection(current, settings, callbacks);
+		buildAgentCatalogSettings(current, settings, callbacks);
 		answers.get('lasse@mac')?.({ found: new Set(['claude', 'codex']) });
 		answers.get('local')?.({ found: new Set(['claude']) });
 		answers.get('xl')?.({ found: null, error: 'ssh xl did not answer' });
@@ -578,12 +484,12 @@ describe('agents section', () => {
 			edit: () => undefined,
 			machines: () => probes,
 		};
-		buildAgentsSection(settingsContainer(), settings, callbacks);
+		buildAgentCatalogSettings(settingsContainer(), settings, callbacks);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
 
 		const el = settingsContainer();
-		buildAgentsSection(el, settings, callbacks);
+		buildAgentCatalogSettings(el, settings, callbacks);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(calls.filter((call) => call === 'redisplay')).toHaveLength(1);
 		const gemini = settingNamed(el, 'Gemini');
@@ -605,7 +511,7 @@ describe('agents section', () => {
 			},
 		};
 		const el = settingsContainer();
-		buildAgentsSection(el, settings, callbacks);
+		buildAgentCatalogSettings(el, settings, callbacks);
 
 		await rowButton(el, 'Codex', 'Hide from the menu').click();
 		expect(settings.hiddenAgents).toEqual(['codex']);
@@ -614,7 +520,7 @@ describe('agents section', () => {
 		expect(calls).toEqual(['save', 'refreshAgentList', 'redisplay', 'save', 'refreshAgentList', `editAgent:${editing}`]);
 
 		const form = settingsContainer();
-		buildAgentsSection(form, settings, callbacks);
+		buildAgentCatalogSettings(form, settings, callbacks);
 		await textOf(form, 'Arguments').change('--model  sonnet');
 		await textOf(form, 'Command').change('~/bin/my-claude');
 		expect(settings.agentProfiles[0]).toMatchObject({ command: '~/bin/my-claude', args: ['--model', 'sonnet'] });
@@ -635,403 +541,4 @@ describe('agents section', () => {
 		expect(settings.defaultAgents).toEqual({});
 	});
 
-	it('hides the panes-per-tab cap unless agents share a tab', () => {
-		const off = settingsContainer();
-		buildAgentsSection(off, settingsOf({ splitIntoFolderTab: false }), recorder().callbacks);
-		expect(settingNames(off)).not.toContain('Panes per herdr tab');
-
-		const on = settingsContainer();
-		buildAgentsSection(on, settingsOf({ splitIntoFolderTab: true }), recorder().callbacks);
-		expect(settingNames(on)).toContain('Panes per herdr tab');
-		expect(sliderOf(on, 'Panes per herdr tab').limits).toEqual({
-			min: MIN_PANES_PER_TAB,
-			max: MAX_PANES_PER_TAB,
-			step: 1,
-		});
-	});
-
-	it('redisplays after saving when tab sharing is turned off, since the cap goes', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf({ splitIntoFolderTab: true });
-		const { calls, callbacks } = recorder();
-		buildAgentsSection(el, settings, callbacks);
-
-		await toggleOf(el, 'Share a herdr tab between agents in the same folder').change(false);
-
-		expect(settings.splitIntoFolderTab).toBe(false);
-		expect(calls).toEqual(['save', 'redisplay']);
-	});
-
-	it('clamps the pane cap and only saves for the plain fields', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf({ splitIntoFolderTab: true });
-		const { calls, callbacks } = recorder();
-		buildAgentsSection(el, settings, callbacks);
-
-		await sliderOf(el, 'Panes per herdr tab').change(99);
-		await textOf(el, 'Agent name pattern').change('{vault}-{n}');
-		await toggleOf(el, 'Open terminal after starting an agent').change(false);
-
-		expect(settings.panesPerTab).toBe(MAX_PANES_PER_TAB);
-		expect(settings.agentNamePattern).toBe('{vault}-{n}');
-		expect(settings.openTerminalAfterStart).toBe(false);
-		expect(calls).toEqual(['save', 'save', 'save']);
-	});
-});
-
-describe('file explorer section', () => {
-	it('saves, then re-injects or removes the hover buttons', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildFileExplorerSection(el, settings, callbacks);
-
-		expect(settingNames(el)).toEqual(['File explorer', 'Folder hover button']);
-		await toggleOf(el, 'Folder hover button').change(false);
-
-		expect(settings.folderHoverButton).toBe(false);
-		// The refresh reads the saved value, so it must run after the save.
-		expect(calls).toEqual(['save', 'refreshFolderHoverButton']);
-	});
-});
-
-describe('agent list section', () => {
-	it('renders the three row settings with herdr’s own option values', () => {
-		const el = settingsContainer();
-		buildAgentListSection(el, settingsOf(), recorder().callbacks);
-
-		expect(settingNames(el)).toEqual(['Agent list', 'Sort', 'Group by', 'Clicking an agent row']);
-		expect(dropdownOf(el, 'Sort').optionValues()).toEqual(['priority', 'alphabetical']);
-		expect(dropdownOf(el, 'Group by').optionValues()).toEqual(['tab', 'folder', 'none']);
-		expect(dropdownOf(el, 'Clicking an agent row').optionValues()).toEqual([
-			'terminal',
-			'focus',
-		]);
-	});
-
-	it('repaints the open lists after saving each of them', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildAgentListSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Sort').change('alphabetical');
-		await dropdownOf(el, 'Group by').change('folder');
-		await dropdownOf(el, 'Clicking an agent row').change('focus');
-
-		expect(settings.agentListSort).toBe('alphabetical');
-		expect(settings.agentListGroupBy).toBe('folder');
-		expect(settings.agentListRowClick).toBe('focus');
-		expect(calls).toEqual([
-			'save',
-			'refreshAgentList',
-			'save',
-			'refreshAgentList',
-			'save',
-			'refreshAgentList',
-		]);
-	});
-});
-
-describe('terminal section', () => {
-	it('renders every terminal setting', () => {
-		const el = settingsContainer();
-		buildTerminalSection(el, settingsOf(), recorder().callbacks);
-
-		expect(settingNames(el)).toEqual([
-			'Terminal',
-			'Attach mode',
-			'Terminal placement',
-			'Terminal tab',
-			'Terminal tab title',
-			'Theme',
-			'Default view',
-			'Terminal engine',
-			'Cursor style',
-			'Blinking cursor',
-			'Font family',
-			'Scrollback memory budget',
-			'Font size',
-		]);
-		expect(sliderOf(el, 'Scrollback memory budget').limits).toEqual({
-			min: MIN_SCROLLBACK_MB,
-			max: MAX_SCROLLBACK_MB,
-			step: 1,
-		});
-	});
-
-	it('only saves the settings an open terminal cannot be told about', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildTerminalSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Attach mode').change('observe');
-		await dropdownOf(el, 'Terminal placement').change('tab');
-		await dropdownOf(el, 'Terminal tab').change('reuse');
-
-		expect(settings.defaultAttachMode).toBe('observe');
-		expect(settings.terminalPlacement).toBe('tab');
-		expect(settings.terminalTab).toBe('reuse');
-		expect(calls).toEqual(['save', 'save', 'save']);
-	});
-
-	it('offers both views as the default for new tabs (#92, #104)', () => {
-		const el = settingsContainer();
-		buildTerminalSection(el, settingsOf(), recorder().callbacks);
-
-		expect(dropdownOf(el, 'Default view').optionValues()).toEqual(['terminal', 'native']);
-		expect(dropdownOf(el, 'Default view').getValue()).toBe('native');
-	});
-
-	it('offers the two terminal engines separately from the view (#104)', () => {
-		const el = settingsContainer();
-		buildTerminalSection(el, settingsOf({ defaultView: 'native' }), recorder().callbacks);
-
-		expect(dropdownOf(el, 'Terminal engine').optionValues()).toEqual(['ghostty-web', 'xterm.js']);
-		// The engine setting reads the same whichever view is the default: it is
-		// what a tab comes back to, not a property of the terminal view.
-		expect(dropdownOf(el, 'Terminal engine').getValue()).toBe('ghostty-web');
-	});
-
-	it('stores the native view and tells open terminals (#92, #104)', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildTerminalSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Default view').change('native');
-
-		expect(settings.defaultView).toBe('native');
-		expect(settings.terminalEngine).toBe(DEFAULT_SETTINGS.terminalEngine);
-		expect(calls).toEqual(['save', 'applyTerminalSetting:defaultView']);
-	});
-
-	it('leaves the default view alone when the engine changes (#104)', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf({ defaultView: 'native' });
-		const { calls, callbacks } = recorder();
-		buildTerminalSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Terminal engine').change('xterm.js');
-
-		expect(settings.defaultView).toBe('native');
-		expect(settings.terminalEngine).toBe('xterm.js');
-		expect(calls).toEqual(['save', 'applyTerminalSetting:terminalEngine']);
-	});
-
-	it('names the setting that moved when an open terminal has to react', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildTerminalSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Theme').change('nord');
-		await dropdownOf(el, 'Terminal engine').change('xterm.js');
-		await toggleOf(el, 'Blinking cursor').change(false);
-		await textOf(el, 'Font family').change('Iosevka');
-		await sliderOf(el, 'Font size').change(14);
-
-		expect(settings.terminalTheme).toBe('nord');
-		expect(settings.terminalEngine).toBe('xterm.js');
-		expect(settings.terminalCursorBlink).toBe(false);
-		expect(settings.terminalFontFamily).toBe('Iosevka');
-		expect(settings.terminalFontSize).toBe(14);
-		// Always the save first: the effect matrix may rebuild a terminal, which
-		// reads the settings back.
-		expect(calls).toEqual([
-			'save',
-			'applyTerminalSetting:terminalTheme',
-			'save',
-			'applyTerminalSetting:terminalEngine',
-			'save',
-			'applyTerminalSetting:terminalCursorBlink',
-			'save',
-			'applyTerminalSetting:terminalFontFamily',
-			'save',
-			'applyTerminalSetting:terminalFontSize',
-		]);
-	});
-
-	it('normalises what a control hands back before storing it', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildTerminalSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Terminal placement').change('nonsense');
-		await dropdownOf(el, 'Theme').change('nonsense');
-		await dropdownOf(el, 'Default view').change('nonsense');
-		await dropdownOf(el, 'Terminal engine').change('nonsense');
-		await sliderOf(el, 'Scrollback memory budget').change(9999);
-
-		expect(settings.terminalPlacement).toBe(DEFAULT_SETTINGS.terminalPlacement);
-		expect(settings.terminalTheme).toBe(DEFAULT_SETTINGS.terminalTheme);
-		expect(settings.defaultView).toBe(DEFAULT_SETTINGS.defaultView);
-		expect(settings.terminalEngine).toBe(DEFAULT_SETTINGS.terminalEngine);
-		expect(settings.terminalScrollbackMb).toBe(MAX_SCROLLBACK_MB);
-		expect(calls).toEqual([
-			'save',
-			'save',
-			'applyTerminalSetting:terminalTheme',
-			'save',
-			'applyTerminalSetting:defaultView',
-			'save',
-			'applyTerminalSetting:terminalEngine',
-			'save',
-			'applyTerminalSetting:terminalScrollbackMb',
-		]);
-	});
-});
-
-describe('native view section', () => {
-	it('offers the two ways of showing a turn\u2019s tool calls', () => {
-		const el = settingsContainer();
-		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
-
-		expect(settingNames(el)).toEqual([
-			'Native view',
-			'Tool groups',
-			'Prompt box style',
-			'Context readout',
-			'Trust new folders automatically',
-		]);
-		expect(headings(el)).toEqual(['Native view']);
-		const dropdown = dropdownOf(el, 'Tool groups');
-		expect(dropdown.optionValues()).toEqual(['highlight', 'collapse']);
-		// Highlighting the notes a turn changed is the default (#95).
-		expect(dropdown.value).toBe('highlight');
-		// Answering the trust prompt by itself is off until it is asked for (#99).
-		expect(toggleOf(el, 'Trust new folders automatically').value).toBe(false);
-	});
-
-	it('says auto-trust starts from the screen on herdr and herdr-core, for the agent’s own folder (#167)', () => {
-		// No runtime reports the trust prompt: herdr says only "blocked", and
-		// herdr-core nothing, so the tab reads the screen for it.
-		const el = settingsContainer();
-		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
-		const desc = settingNamed(el, 'Trust new folders automatically').desc;
-		expect(desc).toContain('on herdr and herdr-core');
-		expect(desc).toContain('the prompt is read on the screen and names the agent\u2019s own folder');
-		expect(desc).toContain('Nothing else is answered for you');
-	});
-
-	it('saves the presentation and redraws the open native views', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildNativeViewSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Tool groups').change('collapse');
-
-		expect(settings.nativeToolGroups).toBe('collapse');
-		expect(calls).toEqual(['save', 'refreshNativeViews']);
-	});
-
-	it('saves auto-trust and redraws the open native views', async () => {
-		// The card on screen is drawn from the setting as it was: without the
-		// redraw the switch only reaches the next card (#99).
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildNativeViewSection(el, settings, callbacks);
-
-		await toggleOf(el, 'Trust new folders automatically').change(true);
-
-		expect(settings.nativeAutoTrustFolders).toBe(true);
-		expect(calls).toEqual(['save', 'refreshNativeViews']);
-	});
-
-	it('offers the three box styles and the two readouts, divided and detail by default (#173)', () => {
-		const el = settingsContainer();
-		buildNativeViewSection(el, settingsOf(), recorder().callbacks);
-		const style = dropdownOf(el, 'Prompt box style');
-		expect(style.optionValues()).toEqual(['divided', 'joined', 'floating']);
-		expect(style.value).toBe('divided');
-		const readout = dropdownOf(el, 'Context readout');
-		expect(readout.optionValues()).toEqual(['detail', 'gauge']);
-		expect(readout.value).toBe('detail');
-	});
-
-	it('saves the box style and the readout and redraws the open native views (#173)', async () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { calls, callbacks } = recorder();
-		buildNativeViewSection(el, settings, callbacks);
-
-		await dropdownOf(el, 'Prompt box style').change('floating');
-		await dropdownOf(el, 'Context readout').change('gauge');
-
-		expect(settings.nativePromptBoxStyle).toBe('floating');
-		expect(settings.nativeContextReadout).toBe('gauge');
-		expect(calls).toEqual(['save', 'refreshNativeViews', 'save', 'refreshNativeViews']);
-	});
-
-	it('reads a stored box style or readout it does not know as the default (#173)', () => {
-		const el = settingsContainer();
-		buildNativeViewSection(
-			el,
-			settingsOf({ nativePromptBoxStyle: 'round' as never, nativeContextReadout: 'pie' as never }),
-			recorder().callbacks,
-		);
-		expect(dropdownOf(el, 'Prompt box style').value).toBe('divided');
-		expect(dropdownOf(el, 'Context readout').value).toBe('detail');
-	});
-
-	it('reads a stored value it does not know as the default', () => {
-		const el = settingsContainer();
-		buildNativeViewSection(
-			el,
-			settingsOf({ nativeToolGroups: 'everything' as never }),
-			recorder().callbacks,
-		);
-
-		expect(dropdownOf(el, 'Tool groups').value).toBe('highlight');
-	});
-});
-
-describe('the tab as a whole', () => {
-	it('renders every section in order on one container', () => {
-		const el = settingsContainer();
-		const settings = settingsOf();
-		const { callbacks } = recorder();
-
-		for (const section of SETTINGS_SECTIONS) section(el, settings, callbacks);
-
-		expect(headings(el)).toEqual([
-			'Runtimes',
-			'Connection',
-			'Notifications',
-			'Agents',
-			'File explorer',
-			'Agent list',
-			'Terminal',
-			'Native view',
-		]);
-		// Every non-heading row carries exactly one control, which is what the
-		// per-section assertions above lean on; a runtime's row is the one
-		// exception, with its use, edit and remove buttons.
-		const runtimeRows = new Set(settings.runtimes.map((runtime) => runtime.name));
-		for (const setting of builtSettings(el)) {
-			const expected = setting.heading ? 0 : runtimeRows.has(setting.name) ? 3 : 1;
-			expect(setting.components).toHaveLength(expected);
-		}
-	});
-
-	it('names every row in sentence case', () => {
-		const el = settingsContainer();
-		for (const section of SETTINGS_SECTIONS) section(el, settingsOf(), recorder().callbacks);
-
-		// Allowed second-and-later words: lower case, or an acronym (ID, PATH).
-		const exceptions = new Set(['ID', 'PATH', 'CLI', 'CLIs']);
-		for (const { name, classes } of builtSettings(el)) {
-			// An agent CLI's row is its product name (Claude Code), not a label.
-			if (classes.includes('herdr-agent-profile')) continue;
-			for (const word of name.split(' ').slice(1)) {
-				const bare = word.replace(/[^A-Za-z]/g, '');
-				if (!bare || exceptions.has(bare)) continue;
-				expect(bare[0], `"${name}" is not sentence case`).toBe(bare[0]?.toLowerCase());
-			}
-		}
-	});
 });

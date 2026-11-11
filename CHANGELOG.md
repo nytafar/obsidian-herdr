@@ -3,6 +3,19 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## Unreleased
+
+### Changed
+
+- **Requires Obsidian 1.13.4 or later.** Older Obsidian keeps 0.7.1, the last
+  release for it.
+- **Settings are searchable**: Obsidian's settings search finds every Gjetr
+  setting by name, "terminal engine" or "status bar counts" for example.
+- **Settings in pages**: the tab opens on the connection status, then one
+  page each for Runtimes, Agents, Views, Terminal, and Agent list and
+  notifications. The entries show the active runtime, the default view and the
+  terminal engine. Every setting keeps its stored value and what it does.
+
 ## 0.7.1 — 2026-11-11
 
 ### Added
