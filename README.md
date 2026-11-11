@@ -12,6 +12,8 @@ and config, and keep running when Obsidian closes.
 No herdr yet? Run Claude Code directly from Obsidian to get up and running
 straight away.
 
+**Get it:** [Gjetr in Obsidian's community plugins](https://community.obsidian.md/plugins/gjetr).
+
 ![A research note open in the centre, with a Claude Code session beside it in the native view showing the sources table it wrote. In the left sidebar, the agent list groups four Claude Code and Codex agents by herdr tab, and the + menu offers Claude Code, Codex, Pi and Copilot.](images/screenshot.webp)
 
 **Remote:** run agents on another machine over SSH, with the vault kept in sync
