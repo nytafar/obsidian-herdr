@@ -5,7 +5,7 @@
  * default agent, in that runtime's form.
  *
  * The decisions are `catalog.ts`'s; this file draws them. The probe is the
- * plugin's (`SettingsCallbacks.agents`), read from its cache: the list draws
+ * plugin's (`ListCallbacks.agents`), read from its cache: the list draws
  * at once with what is known and draws again once a probe lands. Typing in a
  * user entry's form probes nothing; the tab drawing again (Done, Check
  * again, reopening it) brings the probe up to the entries as they are then.
@@ -19,7 +19,8 @@
  */
 
 import { Setting } from 'obsidian';
-import type { HerdrSettings, SettingsCallbacks } from '../settings';
+import type { HerdrSettings } from '../settings';
+import type { ListCallbacks } from '../settingsTab/lists';
 import { activeRuntimeOf, runtimeDisplayName, RUNTIME_KIND_LABELS, type RuntimeConfig } from '../runtimes';
 import { offersNativeView } from './format';
 import {
@@ -96,7 +97,7 @@ export function defaultAgentChoices(catalog: readonly CatalogEntry[]): { id: str
 }
 
 /** The catalog a runtime's settings show: its probe when it is the active one. */
-function catalogFor(runtime: RuntimeConfig, settings: HerdrSettings, callbacks: SettingsCallbacks): CatalogEntry[] {
+function catalogFor(runtime: RuntimeConfig, settings: HerdrSettings, callbacks: ListCallbacks): CatalogEntry[] {
 	return buildCatalog({
 		runtime,
 		settings,
@@ -110,7 +111,7 @@ export function buildDefaultAgentSetting(
 	containerEl: HTMLElement,
 	runtime: RuntimeConfig,
 	settings: HerdrSettings,
-	callbacks: SettingsCallbacks,
+	callbacks: ListCallbacks,
 ): void {
 	const catalog = catalogFor(runtime, settings, callbacks);
 	const stored = settings.defaultAgents[runtime.id] ?? '';
@@ -143,7 +144,7 @@ export function buildDefaultAgentSetting(
 export function buildAgentCatalogSettings(
 	containerEl: HTMLElement,
 	settings: HerdrSettings,
-	callbacks: SettingsCallbacks,
+	callbacks: ListCallbacks,
 ): void {
 	const runtime = activeRuntimeOf(settings);
 	const agents = callbacks.agents;
@@ -339,7 +340,7 @@ export function userProfileProblems(user: UserAgentProfile): string {
 }
 
 /** The fields of one user entry. Typing saves; nothing redraws the field. */
-function buildUserProfileForm(containerEl: HTMLElement, user: UserAgentProfile, callbacks: SettingsCallbacks): void {
+function buildUserProfileForm(containerEl: HTMLElement, user: UserAgentProfile, callbacks: ListCallbacks): void {
 	new Setting(containerEl).setName(`Edit ${userProfile(user).name}`).setHeading();
 	let problems: Setting | null = null;
 	const changed = async (): Promise<void> => {

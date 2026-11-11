@@ -298,7 +298,21 @@ export class Notice {
 
 export class Plugin extends Component {}
 
-export class PluginSettingTab {}
+/**
+ * The declarative tab's base (Obsidian 1.13): the definitions are the
+ * subclass's, and `update()` only counts, since nothing is rendered here.
+ */
+export class PluginSettingTab {
+	updates = 0;
+	constructor(
+		public app: unknown,
+		public plugin: unknown,
+	) {}
+	update(): void {
+		this.updates++;
+	}
+	hide(): void {}
+}
 
 export class TAbstractFile {
 	path = '';
@@ -397,6 +411,14 @@ export class FakeElement {
 	}
 	select(): void {}
 	focus(): void {}
+	/** How many times `empty()` cleared it, for a `render` definition that takes the row over. */
+	emptied = 0;
+	empty(): void {
+		this.emptied++;
+	}
+	addClass(...classes: string[]): void {
+		for (const cls of classes) this.classes.add(cls);
+	}
 	/** Fires every listener registered for `type`, in order. */
 	dispatch(type: string, event: unknown = {}): void {
 		for (const l of this.listeners) if (l.type === type) l.handler(event);
@@ -539,6 +561,11 @@ export class ButtonComponent extends BaseComponent {
 		this.warning = true;
 		return this;
 	}
+	/** Obsidian 1.13's name for the destructive style; recorded as `warning`. */
+	setDestructive(): this {
+		this.warning = true;
+		return this;
+	}
 	onClick(handler: () => unknown): this {
 		this.clickHandler = handler;
 		return this;
@@ -576,6 +603,8 @@ export class Setting {
 	readonly components: SettingComponent[] = [];
 	/** The description element, for code that marks it (`toggleClass`). */
 	readonly descEl = new FakeElement();
+	/** The row itself, which a `render` definition may empty and draw into. */
+	readonly settingEl = new FakeElement();
 
 	constructor(public readonly containerEl: unknown) {
 		const key = containerEl as object;

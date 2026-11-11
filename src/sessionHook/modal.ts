@@ -148,7 +148,7 @@ export class SessionHookModal extends Modal {
 			row.addButton((button) =>
 				button
 					.setButtonText('Remove')
-					.setWarning()
+					.setDestructive()
 					.onClick(() => void this.run('Removed the Claude session hook.', () => applyRemove(this.target.machine, remove))),
 			);
 		}

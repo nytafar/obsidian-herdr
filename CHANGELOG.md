@@ -7,6 +7,14 @@ All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 
 ### Changed
 
+- **Requires Obsidian 1.13.4 or later.** Older Obsidian keeps 0.7.1, the last
+  release for it.
+- **Settings are searchable**: Obsidian's settings search finds every Gjetr
+  setting by name, "terminal engine" or "status bar counts" for example.
+- **Settings in pages**: the tab opens on the connection status, then one
+  page each for Runtimes, Agents, Views, Terminal, and Agent list and
+  notifications. The entries show the active runtime, the default view and the
+  terminal engine. Every setting keeps its stored value and what it does.
 - **The agent list opens when you turn the plugin on**, so a new user finds
   it without the command palette. It opens only then, not on every start, so
   a list you closed stays closed.

@@ -1,17 +1,31 @@
 # Settings
 
-All under **Settings → Gjetr**. Sentence case names match the UI.
+All under **Settings → Gjetr**, which needs Obsidian 1.13.4 or later. Sentence
+case names match the UI, and Obsidian's settings search finds every setting
+below by its name.
+
+The tab opens on the connection status block, then one entry per page:
+Runtimes, Agents, Views, Terminal, and Agent list and notifications. An entry
+shows the page's main value where it has one: the active runtime, the default
+view, the terminal engine.
+
+## Connection status
+
+| Setting | Meaning |
+|---|---|
+| Connection status | Which runtime is active, which binary was found, which socket or connection answers, the server version and protocol, and which workspace or space matched the vault. Every setup problem shows up here first; [troubleshooting.md](troubleshooting.md) explains the messages. |
 
 ## Runtimes
 
 The herdr, or herdr-core, instances the plugin can connect to, on this machine
 or over SSH, or Claude run by Obsidian on this machine, and which one is
-active. Each runtime has its own binary, socket,
-remote vault path and workspace. See [runtimes.md](runtimes.md) for adding,
-editing, removing and switching, and for every field.
+active. Each runtime has its own binary, socket, remote vault path and
+workspace. See [runtimes.md](runtimes.md) for adding, editing, removing and
+switching, and for every field. The page's entry shows the active runtime.
 
 | Setting | Meaning |
 |---|---|
+| Runtimes | The list of runtimes: one row each, then **Add runtime**. |
 | Runtime row | Name and what it is. The plug makes it active (or reconnects the active one), the pencil opens its form, the bin removes it after asking. The last runtime stays. |
 | Add runtime | A new herdr runtime over SSH, its form open. |
 | Name | What the switcher, the status bar and the list call it. Empty shows a name derived from kind and host. |
@@ -30,57 +44,54 @@ The agent list's toolbar switches runtimes once there are two or more, and
 **Gjetr: Switch runtime** does from the palette. With more than one runtime the
 status bar names the active one.
 
-## Connection
+### Connection
 
 | Setting | Meaning |
 |---|---|
 | Extra PATH entries | Colon-separated directories prepended to `PATH` for every process the plugin spawns, so your agents find their tools. |
 
-## Notifications
-
-| Setting | Meaning |
-|---|---|
-| Status bar counts | `N blocked · M done` for this vault's workspace; click reveals the list. |
-| Blocked: notice / system notification | Raised when an agent stops and wants you. System notifications only while Obsidian is unfocused. Defaults: both on. |
-| Done: notice / system notification | Raised when an agent finishes a turn. Defaults: notice on, system off. |
-
 ## Agents
+
+### Agent CLIs
 
 | Setting | Meaning |
 |---|---|
 | Agent CLIs | The active runtime's agent catalog: the agent CLIs found on its machine, then your own entries. A row says what it runs and which machines of your runtimes have it, "Found on this machine and lasse@mac. Not found on xl.", with "Checking …" until a machine answers; a machine that cannot be checked is named once, under **Agent CLIs**. Machines, not runtimes: every local runtime is this machine, and runtimes on one SSH host are that host. The active runtime's machine reads its connection's check; any other is checked directly (this machine's binary search, or one `ssh` to the host from its remote vault path, the active runtime's where two runtimes on one host differ, else the first one set), once each time the settings open. A built-in agent CLI only another machine has is listed too, greyed: it is not in the active runtime's menu. The eye hides it from the + menu. **Check again** looks again on every machine, after you install one; otherwise each connection checks once. See [runtimes.md](runtimes.md#starting-agents-the--button-and-the-agent-catalog). |
 | Add agent CLI | Your own entry: **Name**, **Agent** (which agent it is: what herdr starts and detects, and the row's mark), **Command** (empty runs the agent's own program; a name or a path, `~/` is the home of the machine it runs on) and **Arguments** (plain words, separated by spaces). **Where it starts** names the runtime kinds that can start it, and why the others cannot. A user entry shows on every runtime, greyed with the reason where it cannot start, and marked "not found" (still startable) where its command was not found. Typing checks nothing; the list checks the entry once you press **Done**. |
+
+### Starting agents
+
+| Setting | Meaning |
+|---|---|
 | Agent name pattern | Name for started agents. `{folder}`, `{vault}` and `{n}` are replaced; `{n}` counts past names already taken anywhere in herdr. |
 | Open terminal after starting an agent | Opens the new agent's terminal tab at once. |
 | Share a herdr tab between agents in the same folder | On: a second agent in a folder splits that folder's herdr tab. Off: every agent gets its own tab, matching how herdr is navigated. |
 | Panes per herdr tab | Shown while sharing is on. How many agents share a tab before the next opens a new one. 1 to 4, default 2. |
 
-## File explorer
+## Views
+
+The page's entry shows the default view.
 
 | Setting | Meaning |
 |---|---|
-| Folder hover button | The herdr button on folder rows (attach, start agent, copy path). It injects into Obsidian's explorer DOM, so it can be switched off if an update breaks it. The right-click menu is unaffected. |
+| Default view | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Gjetr: Switch render mode**. Native is offered for panes of a local herdr, and for herdr-core terminals on this machine or over SSH once the Claude session hook labels them; an SSH herdr runtime shows terminals. Open tabs that never chose follow it. |
 
-## Agent list
-
-| Setting | Meaning |
-|---|---|
-| Sort | Priority (herdr's own: blocked, done, working, idle, unknown, most recent change first among equals) or alphabetical. Also in the list's header menu. |
-| Group by | Herdr tab, working directory, or nothing. Folder grouping keeps a folder's agents together whichever tab herdr put them in. |
-| Clicking an agent row | Opens the terminal (default) or focuses the pane in herdr. The row's hover button does the other one; its tooltip says which. |
-| Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per runtime id, so a pin on one runtime never applies to another. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
-
-## Native view
+### Native view
 
 | Setting | Meaning |
 |---|---|
-| Default view (under Terminal) | What a tab shows until it chooses for itself: the native view (default) or a terminal. Each tab keeps its own choice, switched from its header button, its tab menu or **Gjetr: Switch render mode**. Native is offered for panes of a local herdr, and for herdr-core terminals on this machine or over SSH once the Claude session hook labels them; an SSH herdr runtime shows terminals. |
 | Tool groups | Highlight vault changes and sources (default): the notes the agent changed and the sources it read stay in the text where they happened, the rest of a turn's tool calls fold into one line. Collapse everything: every call goes inside the group. |
-| Trust new folders automatically | Answers Claude's workspace trust prompt from the native view, but only on a runtime that reports the prompt as the trust prompt, and no runtime does today, so the setting currently does nothing. herdr reports no kind of block, and on herdr-core Claude shows the prompt before its session hook has labelled the terminal, so the tab is still a terminal then. Answer the prompt with the waiting card's **Trust this folder** button, or in the terminal. Off by default. Nothing else is answered for you. |
+| Prompt box style | Divided (default): the strip with the pickers and buttons has its own background. Joined: one surface with the text. Floating: the box is raised over the conversation, with icon buttons. Applies to open native views at once. |
+| Context readout | Detail (default): the tokens, the window and the share. Gauge: a small ring with the share, the tokens in its tooltip. Either opens Claude's context breakdown when clicked. |
+| Trust new folders automatically | Answers Claude's workspace trust prompt for an agent open in a tab, on herdr and herdr-core, once the prompt is read on the screen and names the agent's own folder. Nothing else is answered for you: tool permissions, questions and plan approval stay yours, on the waiting card or in the terminal. Off by default. |
 
 See [native-view.md](native-view.md).
 
 ## Terminal
+
+The page's entry shows the terminal engine.
+
+### Opening
 
 | Setting | Meaning |
 |---|---|
@@ -88,6 +99,11 @@ See [native-view.md](native-view.md).
 | Terminal placement | Where a new terminal opens when the active note is inside the agent's folder: split right (default), split left, or a plain tab. Unrelated notes always get a tab. |
 | Terminal tab | Per agent (default): one tab per agent, reopening reveals it. Reuse: one tab, opening another agent switches it. Reuse saves roughly five megabytes per agent. |
 | Terminal tab title | Agent name (default): the name the agent list shows. Herdr tab label: the label of the herdr tab the agent runs in, as in herdr's own tab bar. While "Share a herdr tab" is on and a tab holds two agents, the agent name is appended so the two terminals differ. A label herdr has not reported yet, or a herdr without `tab.list`, falls back to the agent name. Open terminals retitle at once. |
+
+### Look
+
+| Setting | Meaning |
+|---|---|
 | Theme | Follow Obsidian (default), or Ghostty dark, Ghostty light, Solarized dark, Solarized light, Gruvbox dark, Dracula, Nord, One dark. Applies to open terminals at once. On ghostty-web the terminal is rebuilt to repaint it, so colours from before the switch are replayed as plain text; the session is untouched, so nothing is reattached or taken over. |
 | Terminal engine | ghostty-web (default) or xterm.js. Applies to every tab showing a terminal, whatever the default view is. ghostty-web parses faster and handles complex scripts better but keeps its memory until Obsidian restarts; xterm.js gives memory back when a tab closes and stops drawing when hidden. Switch if Obsidian feels heavy with several terminals open. Open terminals are rebuilt on change. |
 | Cursor style | Shape of the terminal cursor: block (default), underline or bar. Applies to open terminals at once, on both engines. |
@@ -98,3 +114,28 @@ See [native-view.md](native-view.md).
 Hidden terminal tabs release their session and their renderer after thirty
 seconds and rebuild when revealed, so only visible terminals pay for memory and
 repaints. A control tab therefore hands control back to herdr while hidden.
+
+## Agent list and notifications
+
+### Agent list
+
+| Setting | Meaning |
+|---|---|
+| Sort | Priority (herdr's own: blocked, done, working, idle, unknown, most recent change first among equals) or alphabetical. Also in the list's header menu. |
+| Group by | Herdr tab, working directory, or nothing. Folder grouping keeps a folder's agents together whichever tab herdr put them in. |
+| Clicking an agent row | Opens the terminal (default) or focuses the pane in herdr. The row's hover button does the other one; its tooltip says which. |
+| Pinned panes | Not in the settings tab. Right-click a row and choose "Pin to top of group"; the pin is stored in `data.json` as `pinnedPanes`, a list of pane ids per runtime id, so a pin on one runtime never applies to another. Pinned rows lead their group whatever the sort, and unpin from the same menu. |
+
+### File explorer
+
+| Setting | Meaning |
+|---|---|
+| Folder hover button | The herdr button on folder rows (attach, start agent, copy path). It injects into Obsidian's explorer DOM, so it can be switched off if an update breaks it. The right-click menu is unaffected. |
+
+### Notifications
+
+| Setting | Meaning |
+|---|---|
+| Status bar counts | `N blocked · M done` for this vault's workspace; click reveals the list. |
+| Blocked: notice, Blocked: system notification | Raised when an agent stops and wants you. System notifications only while Obsidian is unfocused. Defaults: both on. |
+| Done: notice, Done: system notification | Raised when an agent finishes a turn. Defaults: notice on, system off. |

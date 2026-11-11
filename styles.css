@@ -6,6 +6,15 @@
 
 /* Settings tab status block ------------------------------------------------ */
 
+/* A settings row a `render` definition took over and draws rows of its own
+   into: the status block, and the runtime list and agent CLI catalog until
+   they are declarative lists (#178, #179). */
+.setting-item.herdr-settings-block {
+	display: block;
+	padding: 0;
+	border: none;
+}
+
 .herdr-settings-status {
 	margin-bottom: var(--size-4-4);
 }
