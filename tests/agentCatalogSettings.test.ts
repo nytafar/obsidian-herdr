@@ -28,6 +28,7 @@ import {
 	type CatalogKey,
 } from '../src/settingsTab/agentCatalog';
 import { HerdrSettingTab } from '../src/settingsTab/tab';
+import { fakeConnection } from './fixtures/runtimesHost';
 import type HerdrPlugin from '../src/main';
 
 function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
@@ -478,7 +479,7 @@ describe('the tab', () => {
 			agentCatalogs: { cachedProbeFor: () => null, refresh: async () => false },
 			nativeReachable: () => true,
 		};
-		const tab = new HerdrSettingTab({} as never, plugin as unknown as HerdrPlugin, () => undefined);
+		const tab = new HerdrSettingTab({} as never, plugin as unknown as HerdrPlugin, fakeConnection());
 		const updatesOf = (): number => (tab as unknown as { updates: number }).updates;
 
 		expect(tab.getControlValue('agentProfiles.user-a.args')).toBe('--profile work');

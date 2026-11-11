@@ -141,7 +141,7 @@ attached to it whatever you change, the host included.
 
 With more than one runtime the status bar shows the active one's name beside
 the counts; its tooltip always does. Renaming a runtime is display only: the
-status bar and the settings status follow the new name at once, without a
+status bar and the settings' active runtime line follow the new name at once, without a
 reconnect.
 
 Terminals are pinned to the runtime they were opened on: a local terminal keeps
@@ -201,7 +201,7 @@ for Self-hosted LiveSync, coming to other platforms.
   remote host.
 - **Workspace ID**: as for a local runtime, on the remote server.
 
-The status block in settings shows the tunnel state; a dropped link reconnects
+The Status group on the runtime's settings page shows the tunnel state; a dropped link reconnects
 with backoff. The native view is for local panes only on herdr; an SSH herdr
 runtime's tabs show the terminal. (herdr-core reads transcripts over its
 connection, so its SSH runtimes have the native view; see below.)
@@ -260,7 +260,7 @@ socket to set and nothing to forward.
 5. Make it active from the list, the agent list's switcher or **Switch
    runtime**.
 
-The settings status shows the transport, the core's name, version and
+The runtime page's Status group shows the transport, the core's name, version and
 generation, and which space or folder the list is scoped to. A core that
 speaks another protocol generation is reported there and in a notice, and the
 plugin connects anyway. A missing binary or an unreachable host is reported
@@ -387,7 +387,7 @@ this machine and cannot be changed. Two fields:
   a permission waits for you on the native view's waiting card.
 
 Make it active with the plug, or with the switcher, like any other runtime.
-The settings status names the binary, the permission mode and how many agents
+The runtime page's Status group names the binary, the permission mode and how many agents
 run and how many are stopped.
 
 ### What works

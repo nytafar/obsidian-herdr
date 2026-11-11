@@ -10,6 +10,12 @@
  * runtime: use it, its place in the list, remove it. Fields are keyed
  * `runtimes.<id>.<field>` (`runtimeKeys.ts`).
  *
+ * Every fact is shown in one place, next to where it is acted on, and state
+ * lives with what it describes: the root has one line naming the active
+ * runtime and whether it is connected; the active runtime's page opens on
+ * its Status group, the connection's full lines; the list rows mark the
+ * active runtime and the ones with problems.
+ *
  * The definitions are cached by Obsidian until `update()`, so whatever a
  * field changes about a runtime's row (its name, its summary, Active) is
  * read in a getter or a function when the row is drawn, and only the shape
@@ -27,7 +33,13 @@ import {
 	type SettingDefinitionPage,
 	type SettingDefinitionRender,
 } from 'obsidian';
-import type { HerdrSettings } from '../settings';
+import {
+	connectionDetails,
+	connectionSummary,
+	renderStatusLines,
+	type ConnectionStatusSource,
+	type HerdrSettings,
+} from '../settings';
 import {
 	activeRuntimeOf,
 	CLAUDE_PERMISSION_MODE_LABELS,
@@ -81,6 +93,10 @@ export interface RuntimesHost {
 		status(): Promise<{ text: string; warning: boolean } | null>;
 		review(onDone: () => void): void;
 	};
+	/** Whether {@link openPage} can open anything in this build. */
+	canOpenPages: boolean;
+	/** The connection's state now, and word that it changed (the root line, the Status group). */
+	connection: ConnectionStatusSource;
 	/** Draws the runtime's default agent (issue #125, the catalog's setting) into the row. */
 	drawDefaultAgent(el: HTMLElement, runtime: RuntimeConfig): void;
 }
@@ -101,7 +117,9 @@ export function runtimesPage(settings: () => HerdrSettings, host: RuntimesHost):
 		type: 'page',
 		name: RUNTIMES_PAGE,
 		desc: 'Which herdr, herdr-core or Claude to connect to, on this machine or over SSH.',
-		displayValue: () => runtimeDisplayName(activeRuntimeOf(settings())),
+		// The root line names the active runtime; the entry only marks problems,
+		// as the list rows do.
+		status: () => (settings().runtimes.some((runtime) => problemsOf(runtime, host).length > 0) ? 'warning' : null),
 		items: [
 			runtimeList(settings, host),
 			{
@@ -182,6 +200,12 @@ export function runtimePage(
 	const coreOn = (target: string) => (r: RuntimeConfig) => r.kind === 'herdr-core' && r.target === target;
 
 	const sections: SettingDefinitionItem<TabKey>[] = [
+		{
+			type: 'group',
+			heading: 'Status',
+			visible: isActive,
+			items: [statusLinesDefinition(isActive, host)],
+		},
 		{
 			type: 'group',
 			items: [
@@ -334,6 +358,68 @@ const SPACE_DESC =
 	'Pin this runtime to one herdr-app space, by name or id. Leave empty to match the space named like the vault folder, then the terminals running inside the vault.';
 
 /**
+ * The root's one line (PRD M1): "Active runtime: <name> · connected", a
+ * warning when it is not connected or has an error, a mismatch or a kind
+ * this build cannot run. Drawn again whenever the connection changes. Where
+ * the build can open a page, it opens the active runtime's; otherwise it is
+ * plain text.
+ */
+export function activeRuntimeLine(host: RuntimesHost): SettingDefinitionRender {
+	return {
+		name: 'Active runtime',
+		aliases: ['connection status', 'connected', 'server', 'socket', 'binary', 'protocol'],
+		render: (setting) => {
+			setting.setClass('herdr-settings-active-runtime');
+			const draw = (): void => {
+				const line = connectionSummary(host.connection.status());
+				setting.setName(line.text);
+				setting.setDesc('');
+				setting.settingEl.toggleClass('mod-warning', line.warning);
+			};
+			draw();
+			const stop = host.connection.onChange(draw);
+			if (!host.canOpenPages) return stop;
+			setting.settingEl.addClass('mod-clickable');
+			const open = (): void => host.openPage([RUNTIMES_PAGE, host.connection.status().runtime.id]);
+			const onKey = (event: KeyboardEvent): void => {
+				if (event.key !== 'Enter' && event.key !== ' ') return;
+				event.preventDefault();
+				open();
+			};
+			setting.settingEl.addEventListener('click', open);
+			setting.settingEl.addEventListener('keydown', onKey);
+			return () => {
+				stop();
+				setting.settingEl.removeEventListener('click', open);
+				setting.settingEl.removeEventListener('keydown', onKey);
+			};
+		},
+	};
+}
+
+/**
+ * The active runtime's Status group: tunnel, binary, socket, server,
+ * mismatches, workspace and errors, without naming the runtime, since the
+ * page is its own. Drawn again whenever the connection changes.
+ */
+function statusLinesDefinition(isActive: () => boolean, host: RuntimesHost): SettingDefinitionRender {
+	return {
+		name: 'Connection',
+		aliases: ['connection status', 'server', 'socket', 'binary', 'protocol', 'tunnel', 'workspace'],
+		visible: isActive,
+		render: (setting) => {
+			const el = blockOf(setting, 'herdr-settings-status');
+			const draw = (): void => {
+				el.empty();
+				if (isActive()) renderStatusLines(el, connectionDetails(host.connection.status()));
+			};
+			draw();
+			return host.connection.onChange(draw);
+		},
+	};
+}
+
+/**
  * The Claude session hook on a herdr-core runtime's machine (ADR-0006): a
  * status line and the button to the review modal, for the active runtime
  * only, since it acts over the runtime's connection.
@@ -417,7 +503,7 @@ function actionDefinitions(
 		get desc(): string {
 			return isActive()
 				? 'This is the active runtime. Connect to it again.'
-				: 'Make this the active runtime and connect to it, as the agent list’s switcher does.';
+				: 'Not active. Make this the active runtime and connect to it, as the agent list’s switcher does.';
 		},
 		action: () => {
 			void host.activate(id).then(() => host.update());

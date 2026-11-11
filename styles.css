@@ -409,6 +409,15 @@ svg.svg-icon[class*='herdr-kind-'] text {
 	color: var(--text-muted);
 }
 
+/* Settings: the root's active runtime line, a link where pages can be opened. */
+.herdr-settings-active-runtime.mod-clickable {
+	cursor: pointer;
+}
+
+.herdr-settings-active-runtime.mod-warning .setting-item-name {
+	color: var(--text-warning);
+}
+
 /* Settings: a runtime page's problem line. */
 .herdr-runtime-problems .setting-item-description.mod-warning {
 	color: var(--text-warning);

@@ -1,45 +1,40 @@
 /**
  * The settings tab on Obsidian's declarative settings API (issue #156,
  * ADR-0011). {@link settingDefinitions} is the single description of the tab:
- * the connection status block on the root, then one page per area, each from
+ * the active runtime's line on the root, then one page per area, each from
  * its own module. Every control reads and writes through
  * `getControlValue`/`setControlValue`, which go to `effects.ts`: store,
  * save, then the key's effect.
  */
 
-import { App, PluginSettingTab, type SettingDefinitionItem, type SettingDefinitionRender } from 'obsidian';
+import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import type HerdrPlugin from '../main';
-import type { HerdrSettings, RenderStatus } from '../settings';
+import type { ConnectionStatusSource, HerdrSettings } from '../settings';
 import { ConfirmModal } from '../views/modals';
 import { buildDefaultAgentSetting } from '../agents/settingsSection';
 import { readSetting, writeSetting, type TabKey } from './effects';
-import { blockOf, type ListCallbacks } from './lists';
+import type { ListCallbacks } from './lists';
 import { AgentCatalogSession, isCatalogKey, readCatalogSetting, writeCatalogSetting, type CatalogKey } from './agentCatalog';
 import { parseRuntimeKey, type RuntimeField } from './runtimeKeys';
-import { redrawsPage, runtimesPage, type RuntimesHost } from './runtimes';
+import { activeRuntimeLine, redrawsPage, runtimesPage, type RuntimesHost } from './runtimes';
 import { agentsPage } from './agents';
 import { viewsPage } from './views';
 import { terminalPage } from './terminal';
 import { agentListPage } from './agentList';
 
-/** The connection status block (PRD M1-M3, M6, S5) at the top of the root. */
-function statusDefinition(renderStatus: RenderStatus): SettingDefinitionRender {
-	return {
-		name: 'Connection status',
-		aliases: ['server', 'socket', 'binary', 'protocol'],
-		render: (setting) => renderStatus(blockOf(setting, 'herdr-settings-status')),
-	};
-}
-
-/** The whole tab, root first. Values are read at render time, through `settings`. */
+/**
+ * The whole tab, root first. Values are read at render time, through
+ * `settings`. Every fact is shown in one place, next to where it is acted
+ * on: the root names the active runtime and whether it is connected, the
+ * runtime's own page says how.
+ */
 export function settingDefinitions(
 	settings: () => HerdrSettings,
-	renderStatus: RenderStatus,
 	runtimes: RuntimesHost,
 	catalog: AgentCatalogSession,
 ): SettingDefinitionItem<TabKey | CatalogKey>[] {
 	return [
-		statusDefinition(renderStatus),
+		activeRuntimeLine(runtimes),
 		runtimesPage(settings, runtimes),
 		agentsPage(settings, catalog.definitions()),
 		viewsPage(settings),
@@ -50,16 +45,16 @@ export function settingDefinitions(
 
 export class HerdrSettingTab extends PluginSettingTab {
 	private readonly plugin: HerdrPlugin;
-	private readonly renderStatus: RenderStatus;
+	private readonly connection: ConnectionStatusSource;
 	/** What a runtime page's rows redraw on: every write to a `runtimes.<id>.<field>` key. */
 	private readonly runtimeWrites = new Set<(id: string, field: RuntimeField) => void>();
 	/** The agent CLI catalog of this opening of the tab: its machine probes (issue #179). */
 	private readonly catalog: AgentCatalogSession;
 
-	constructor(app: App, plugin: HerdrPlugin, renderStatus: RenderStatus) {
+	constructor(app: App, plugin: HerdrPlugin, connection: ConnectionStatusSource) {
 		super(app, plugin);
 		this.plugin = plugin;
-		this.renderStatus = renderStatus;
+		this.connection = connection;
 		this.catalog = new AgentCatalogSession({
 			settings: () => plugin.settings,
 			probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
@@ -77,12 +72,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
-		return settingDefinitions(
-			() => this.plugin.settings,
-			this.renderStatus,
-			this.runtimesHost(this.listCallbacks()),
-			this.catalog,
-		);
+		return settingDefinitions(() => this.plugin.settings, this.runtimesHost(this.listCallbacks()), this.catalog);
 	}
 
 	getControlValue(key: string): unknown {
@@ -134,6 +124,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 			confirm: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
 			update: () => this.update(),
 			openPage: (path) => this.openPage(path),
+			canOpenPages: this.pageOpener() !== null,
+			connection: this.connection,
 			onRuntimeWrite: (listener) => {
 				this.runtimeWrites.add(listener);
 				return () => {
@@ -156,9 +148,16 @@ export class HerdrSettingTab extends PluginSettingTab {
 	 * row by hand.
 	 */
 	private openPage(path: string[]): void {
+		this.pageOpener()?.(path);
+	}
+
+	/** The settings modal's `openPagePath` for this tab, or null where the build has none. */
+	private pageOpener(): ((path: string[]) => void) | null {
 		const modal = (this.app as unknown as { setting?: { openPagePath?: (tabId: string, path: string[]) => unknown } })
 			.setting;
-		if (typeof modal?.openPagePath !== 'function') return;
-		modal.openPagePath(this.plugin.manifest.id, path);
+		if (!modal || typeof modal.openPagePath !== 'function') return null;
+		return (path) => {
+			modal.openPagePath?.(this.plugin.manifest.id, path);
+		};
 	}
 }

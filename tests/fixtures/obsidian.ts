@@ -415,6 +415,13 @@ export class FakeElement {
 	emptied = 0;
 	empty(): void {
 		this.emptied++;
+		this.created.length = 0;
+	}
+	/** What `createEl` drew into it since it was last emptied. */
+	readonly created: { tag: string; cls?: string; text?: string }[] = [];
+	createEl(tag: string, options: { cls?: string; text?: string } = {}): FakeElement {
+		this.created.push({ tag, ...options });
+		return new FakeElement();
 	}
 	addClass(...classes: string[]): void {
 		for (const cls of classes) this.classes.add(cls);

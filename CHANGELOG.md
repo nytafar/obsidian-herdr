@@ -11,10 +11,13 @@ All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
   release for it.
 - **Settings are searchable**: Obsidian's settings search finds every Gjetr
   setting by name, "terminal engine" or "status bar counts" for example.
-- **Settings in pages**: the tab opens on the connection status, then one
-  page each for Runtimes, Agents, Views, Terminal, and Agent list and
-  notifications. The entries show the active runtime, the default view and the
+- **Settings in pages**: the tab opens on one line, "Active runtime: Local ·
+  connected", then one page each for Runtimes, Agents, Views, Terminal, and
+  Agent list and notifications. The entries show the default view and the
   terminal engine. Every setting keeps its stored value and what it does.
+- **The connection's details moved to the active runtime's page**, at its
+  top, next to the fields they are about; the root line opens that page and
+  warns while the runtime is not connected.
 - **Runtimes and agent CLIs are lists with a page each**: + adds a runtime and
   opens its page, which shows only the fields its kind and target use, and
   holds use or reconnect, order and remove; your agent CLIs get a page each

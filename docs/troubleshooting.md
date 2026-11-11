@@ -1,7 +1,8 @@
 # Troubleshooting
 
-Start with the status block at the top of **Settings → Gjetr**; every problem
-below shows up there.
+Start with **Settings → Gjetr**: the line at the top says whether the active
+runtime is connected, and clicking it opens that runtime's page, whose Status
+group shows every problem below.
 
 **"Herdr binary not found", or terminals never start.** Obsidian was launched
 from the Dock and has no login `PATH`. Set the local runtime's **Herdr binary**

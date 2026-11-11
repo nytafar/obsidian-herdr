@@ -19,12 +19,12 @@ import type {
 	SettingDefinitionRender,
 } from 'obsidian';
 import { ButtonComponent, ExtraButtonComponent, Setting } from './fixtures/obsidian';
-import { recordRuntimesHost } from './fixtures/runtimesHost';
+import { fakeConnection, recordRuntimesHost } from './fixtures/runtimesHost';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { readSetting, writeSetting, type SettingsHost } from '../src/settingsTab/effects';
 import { parseRuntimeKey, runtimeKey } from '../src/settingsTab/runtimeKeys';
-import { runtimesPage, type RuntimesHost } from '../src/settingsTab/runtimes';
+import { activeRuntimeLine, runtimesPage, type RuntimesHost } from '../src/settingsTab/runtimes';
 
 function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
 	return { ...structuredClone(DEFAULT_SETTINGS), ...overrides };
@@ -215,6 +215,8 @@ describe('a runtime’s page', () => {
 
 	it('shows the local herdr’s socket, binary override and workspace', () => {
 		expect(shownNames(settingsOf(), 'local')).toEqual([
+			// The active runtime's page opens on its Status group.
+			'Connection',
 			'Name',
 			'Kind',
 			'Target',
@@ -509,5 +511,58 @@ describe('settings search', () => {
 		settings.runtimes.push(claude);
 		expect(search(settings, 'socket path')).toEqual(['Local', 'xl', 'Claude here']);
 		expect(search(settings, 'ssh host')).toEqual(['Local', 'xl', 'Claude here']);
+	});
+});
+
+describe('where the connection is shown', () => {
+	it('names the active runtime on the root, and draws the line again when the connection changes', () => {
+		const recorded = recordRuntimesHost();
+		const { setting, cleanup } = rendered(activeRuntimeLine(recorded.host));
+		expect(setting.name).toBe('Active runtime: Local · connected');
+		expect(setting.settingEl.classes.has('mod-warning')).toBe(false);
+
+		recorded.connection.current = { ...recorded.connection.current, state: 'not connected', error: 'refused' };
+		recorded.connection.changed();
+		expect(setting.name).toBe('Active runtime: Local · not connected');
+		expect(setting.settingEl.classes.has('mod-warning')).toBe(true);
+		(cleanup as () => void)();
+		expect(recorded.connection.listeners.size).toBe(0);
+	});
+
+	it('opens the active runtime’s page from the root line where the build can, and is plain text otherwise', () => {
+		const plain = rendered(activeRuntimeLine(recordRuntimesHost().host)).setting;
+		expect(plain.settingEl.listeners).toEqual([]);
+
+		const recorded = recordRuntimesHost({ canOpenPages: true, connection: fakeConnection({ runtime: twoRuntimes().runtimes[1]! }) });
+		const { setting, cleanup } = rendered(activeRuntimeLine(recorded.host));
+		expect(setting.settingEl.classes.has('mod-clickable')).toBe(true);
+		setting.settingEl.dispatch('click');
+		setting.settingEl.dispatch('keydown', { key: 'Enter', preventDefault: () => undefined });
+		setting.settingEl.dispatch('keydown', { key: 'a', preventDefault: () => undefined });
+		expect(recorded.calls).toEqual([`openPage:Runtimes/${XL}`, `openPage:Runtimes/${XL}`]);
+		expect(typeof cleanup).toBe('function');
+	});
+
+	it('gives the active runtime’s page the connection’s lines, without naming the runtime, kept current', () => {
+		const settings = twoRuntimes();
+		const recorded = recordRuntimesHost();
+		const { setting, cleanup } = rendered(named(pageOf(settings, recorded.host, 'local'), 'Connection'));
+		const lines = (): string[] => setting.settingEl.created.map((line) => line.text ?? '');
+		expect(setting.settingEl.classes.has('herdr-settings-status')).toBe(true);
+		expect(lines()).toContain('Socket: /tmp/herdr.sock');
+		expect(lines().some((line) => line.startsWith('Runtime: '))).toBe(false);
+
+		recorded.connection.current = { ...recorded.connection.current, workspace: null };
+		recorded.connection.changed();
+		expect(lines()).toContain('Workspace: no herdr workspace matches this vault yet.');
+		(cleanup as () => void)();
+		expect(recorded.connection.listeners.size).toBe(0);
+	});
+
+	it('shows no live lines on another runtime’s page, and says it is not active by Use this runtime', () => {
+		const settings = twoRuntimes();
+		const page = pageOf(settings, recordRuntimesHost().host, XL);
+		expect(shown(page.items ?? []).map((def) => def.name)).not.toContain('Connection');
+		expect(named(page, 'Use this runtime').desc).toMatch(/^Not active\./);
 	});
 });

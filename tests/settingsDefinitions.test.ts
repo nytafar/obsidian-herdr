@@ -32,7 +32,7 @@ import {
 } from '../src/settingsTab/effects';
 import { parseRuntimeKey } from '../src/settingsTab/runtimeKeys';
 import type { RuntimesHost } from '../src/settingsTab/runtimes';
-import { quietRuntimes } from './fixtures/runtimesHost';
+import { fakeConnection, quietRuntimes } from './fixtures/runtimesHost';
 import { HerdrSettingTab, settingDefinitions } from '../src/settingsTab/tab';
 import { AgentCatalogSession } from '../src/settingsTab/agentCatalog';
 import type HerdrPlugin from '../src/main';
@@ -77,8 +77,8 @@ function quietCatalog(settings: HerdrSettings): AgentCatalogSession {
 	});
 }
 
-function definitionsOf(settings: HerdrSettings, renderStatus: (el: HTMLElement) => void = () => undefined) {
-	return settingDefinitions(() => settings, renderStatus, quietRuntimes(), quietCatalog(settings));
+function definitionsOf(settings: HerdrSettings, runtimes: RuntimesHost = quietRuntimes()) {
+	return settingDefinitions(() => settings, runtimes, quietCatalog(settings));
 }
 
 const isPage = (item: SettingDefinitionItem): item is SettingDefinitionPage =>
@@ -131,9 +131,9 @@ const valueOf = <T>(value: T | (() => T) | undefined): T | undefined =>
 	typeof value === 'function' ? (value as () => T)() : value;
 
 describe('the layout (#120)', () => {
-	it('opens on the status block, then one entry per page', () => {
+	it('opens on the active runtime’s line, then one entry per page', () => {
 		const items = definitionsOf(settingsOf());
-		expect(items[0]).toMatchObject({ name: 'Connection status' });
+		expect(items[0]).toMatchObject({ name: 'Active runtime' });
 		expect(items.slice(1).map((item) => (isPage(item) ? item.name : null))).toEqual([
 			'Runtimes',
 			'Agents',
@@ -149,10 +149,11 @@ describe('the layout (#120)', () => {
 			byPage.set(page, [...(byPage.get(page) ?? []), def.name]);
 		}
 		expect(Object.fromEntries(byPage)).toEqual({
-			'': ['Connection status'],
+			'': ['Active runtime'],
 			Runtimes: ['Extra PATH entries'],
 			// The one runtime's page, inside the runtime list (#178).
 			Local: [
+				'Connection',
 				'Name',
 				'Kind',
 				'Target',
@@ -215,10 +216,14 @@ describe('the layout (#120)', () => {
 		});
 	});
 
-	it('shows the active runtime, the default view and the engine on the page entries', () => {
+	it('shows the default view and the engine on the page entries, and Runtimes only a problem', () => {
 		const settings = settingsOf({ defaultView: 'terminal', terminalEngine: 'xterm.js' });
 		const items = definitionsOf(settings);
-		expect(valueOf(pageNamed(items, 'Runtimes').displayValue)).toBe('Local');
+		// The root's line names the active runtime; the entry does not repeat it.
+		expect(pageNamed(items, 'Runtimes').displayValue).toBeUndefined();
+		expect(valueOf(pageNamed(items, 'Runtimes').status)).toBeNull();
+		settings.runtimes[0]!.target = 'ssh';
+		expect(valueOf(pageNamed(items, 'Runtimes').status)).toBe('warning');
 		expect(valueOf(pageNamed(items, 'Views').displayValue)).toBe('Terminal');
 		expect(valueOf(pageNamed(items, 'Terminal').displayValue)).toBe('xterm.js');
 		// Read at render time, so a change shows when the root is drawn again.
@@ -403,12 +408,9 @@ describe('the parts still drawn imperatively', () => {
 		return setting;
 	};
 
-	it('draws the connection status block into its row', () => {
-		const drawnInto: unknown[] = [];
-		const items = definitionsOf(settingsOf(), (el) => drawnInto.push(el));
-		const setting = rendered(definitionNamed(items, 'Connection status'));
-		expect(drawnInto).toEqual([setting.settingEl]);
-		expect(setting.settingEl.classes).toContain('herdr-settings-status');
+	it('draws the active runtime’s line on the root, and nothing more of the connection', () => {
+		const setting = rendered(definitionNamed(definitionsOf(settingsOf()), 'Active runtime'));
+		expect(setting.name).toBe('Active runtime: Local · connected');
 	});
 
 	it('puts the agent CLI catalog’s two lists on the Agents page (#179)', () => {
@@ -433,7 +435,7 @@ describe('the tab', () => {
 			nativeReachable: () => true,
 			agentCatalogs: { cachedProbeFor: () => null, refresh: async () => false },
 		};
-		const tab = new HerdrSettingTab({} as never, plugin as unknown as HerdrPlugin, () => undefined);
+		const tab = new HerdrSettingTab({} as never, plugin as unknown as HerdrPlugin, fakeConnection());
 		return { tab, calls };
 	}
 

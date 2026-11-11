@@ -8,7 +8,6 @@ import {
 	issueSentence,
 	remoteVaultPathIssue,
 	runtimeDisplayName,
-	runtimeSummary,
 	type RuntimeConfig,
 	type RuntimeSettings,
 } from './runtimes';
@@ -546,12 +545,32 @@ export function migrateRenderMode(stored: unknown): RenderModeMigration {
 }
 
 /**
- * Renders connection status at the top of the settings tab. The plugin owns the
- * connection, so it supplies this; the tab only gives it a container.
+ * Where the settings tab reads the connection's state from. The plugin owns
+ * the connection, so it supplies this: the state as it is now, and a way to
+ * hear that it changed, so the root line and the active runtime's Status
+ * group draw again.
  */
-export type RenderStatus = (el: HTMLElement) => void;
+export interface ConnectionStatusSource {
+	status(): ConnectionStatus;
+	/** Runs the listener whenever the connection may have changed; returns what stops it. */
+	onChange(listener: () => void): () => void;
+}
 
-/** The live connection state {@link renderConnectionStatus} describes. */
+/**
+ * Whether the plugin is connected to the runtime: `connected` once the
+ * connection is published and its scope primed, `connecting` while an
+ * attempt or a reconnect is under way without an error, `not connected`
+ * after a failure or for a kind this build cannot run.
+ */
+export type ConnectionState = 'connected' | 'connecting' | 'not connected';
+
+/** One line of the status, and whether it is worth a warning. */
+export interface StatusLine {
+	text: string;
+	warning: boolean;
+}
+
+/** The live connection state {@link connectionSummary} and {@link connectionDetails} describe. */
 export interface ConnectionStatus {
 	/**
 	 * The runtime this is about: the published connection's snapshot, or the
@@ -576,33 +595,56 @@ export interface ConnectionStatus {
 	workspace: { id: string; label: string | null; method: string; agentCount: number } | null;
 	/** Last connect or prime failure. */
 	error: string | null;
+	state: ConnectionState;
 }
 
 /**
- * The status block at the top of the settings tab (PRD M1-M3, M6, S5). Pure
- * rendering: `main.ts` gathers the state and this decides what to say about it.
+ * The root's one line (PRD M1): which runtime is active and whether it is
+ * connected, as a warning when it is not, or has an error, a protocol
+ * mismatch or a kind this build cannot run. Pure, like the details.
  */
-export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus): void {
-	const line = (text: string, warning = false): void => {
+export function connectionSummary(status: ConnectionStatus): StatusLine {
+	const state = status.unavailable ? 'not connected' : status.state;
+	return {
+		text: `Active runtime: ${runtimeDisplayName(status.runtime)} · ${state}`,
+		warning: state !== 'connected' || status.error !== null || status.mismatch !== null || status.unavailable !== null,
+	};
+}
+
+/** Draws status lines into a container, a paragraph each. */
+export function renderStatusLines(el: HTMLElement, lines: readonly StatusLine[]): void {
+	for (const line of lines) {
 		el.createEl('p', {
-			cls: warning ? 'herdr-status-text mod-warning' : 'herdr-status-text',
-			text,
+			cls: line.warning ? 'herdr-status-text mod-warning' : 'herdr-status-text',
+			text: line.text,
 		});
+	}
+}
+
+/**
+ * The active runtime's Status group (PRD M2, M3, M6, S5): tunnel, binary,
+ * socket, server, mismatches, workspace and errors. The page is the
+ * runtime's, so it is not named. Pure: `main.ts` gathers the state and this
+ * decides what to say about it.
+ */
+export function connectionDetails(status: ConnectionStatus): StatusLine[] {
+	const lines: StatusLine[] = [];
+	const line = (text: string, warning = false): void => {
+		lines.push({ text, warning });
 	};
 	const { discovery, runtime } = status;
-	line(`Runtime: ${runtimeDisplayName(runtime)}, ${runtimeSummary(runtime)}.`);
 	if (status.unavailable) {
 		line(issueSentence(status.unavailable), true);
-		return;
+		return lines;
 	}
 	if (status.details) {
 		for (const detail of status.details) line(detail.text, detail.warning === true);
 		if (status.error) line(issueSentence(status.error), true);
-		return;
+		return lines;
 	}
 	if (!discovery) {
 		line(status.error ? issueSentence(status.error) : 'Not connected yet.', status.error !== null);
-		return;
+		return lines;
 	}
 	const remote = runtime.target === 'ssh';
 	if (status.tunnel) {
@@ -615,7 +657,7 @@ export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus
 	} else {
 		// An SSH runtime only needs `ssh` locally, so this is not fatal there.
 		line(discovery.error ?? 'Herdr binary not found.', !remote);
-		if (!remote) return;
+		if (!remote) return lines;
 	}
 	if (remote) {
 		const remoteBinary = runtime.binary.trim();
@@ -667,5 +709,6 @@ export function renderConnectionStatus(el: HTMLElement, status: ConnectionStatus
 		line('Workspace: no herdr workspace matches this vault yet.', true);
 	}
 	if (status.error) line(status.error, true);
+	return lines;
 }
 

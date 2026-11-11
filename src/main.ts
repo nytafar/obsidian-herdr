@@ -17,10 +17,11 @@ import {
 	normalizePinnedPanes,
 	normalizeTerminalPlacement,
 	normalizeTerminalTab,
-	renderConnectionStatus,
 	withoutRemovedSettings,
 	type AttachMode,
+	type ConnectionState,
 	type ConnectionStatus,
+	type ConnectionStatusSource,
 	type HerdrSettings,
 } from './settings';
 import { HerdrSettingTab } from './settingsTab/tab';
@@ -162,9 +163,13 @@ export default class HerdrPlugin extends Plugin {
 				const changed = this.connectError !== message;
 				this.connectError = message;
 				// The agent list's "Get started" card follows a failed attempt.
-				if (changed) this.refreshAgentList();
+				if (changed) {
+					this.refreshAgentList();
+					this.connectionChanged();
+				}
 			},
 			onReplaced: () => {
+				this.primed = false;
 				// The caches belong to the connection that just went (#43, #81).
 				this.sessions.sync();
 				for (const listener of [...this.scopeListeners]) listener();
@@ -175,6 +180,7 @@ export default class HerdrPlugin extends Plugin {
 				// is live (#125); again after a reconnect if the last one failed.
 				const current = this.connection.current;
 				if (current) this.agentCatalogs.connected(current);
+				this.primed = current !== null;
 				this.updateStatusBar();
 			},
 		},
@@ -524,6 +530,10 @@ export default class HerdrPlugin extends Plugin {
 	private reconnectTimer = 0;
 	private mismatch: ProtocolMismatch | null = null;
 	private connectError: string | null = null;
+	/** The published connection's scope has loaded since it was published. */
+	private primed = false;
+	/** The settings tab's status lines, told whenever the connection may have changed. */
+	private readonly connectionListeners = new Set<() => void>();
 	private notifier!: TransitionNotifier;
 	private statusBarEl: HTMLElement | null = null;
 	/** Cached `document.hasFocus()`, kept fresh by focus/blur (notes/electron-node.md). */
@@ -564,9 +574,7 @@ export default class HerdrPlugin extends Plugin {
 			},
 		});
 		this.addSettingTab(
-			new HerdrSettingTab(this.app, this, (el) =>
-				renderConnectionStatus(el, this.connectionStatus()),
-			),
+			new HerdrSettingTab(this.app, this, this.connectionStatusSource()),
 		);
 
 		// Agent kind marks must exist before the first row is drawn (issue #19);
@@ -1426,6 +1434,8 @@ export default class HerdrPlugin extends Plugin {
 	 * and registry changes only (PRD N4).
 	 */
 	private updateStatusBar(): void {
+		// Everything that moves the counts can move the connection's state too.
+		this.connectionChanged();
 		const el = this.statusBarEl;
 		if (!el) return;
 		el.empty();
@@ -1527,7 +1537,30 @@ export default class HerdrPlugin extends Plugin {
 		return scope;
 	}
 
-	/** State the settings tab's status block describes (rendered in settings.ts). */
+	/** What the settings tab reads the connection's state from, and hears it change by. */
+	private connectionStatusSource(): ConnectionStatusSource {
+		return {
+			status: () => this.connectionStatus(),
+			onChange: (listener) => {
+				this.connectionListeners.add(listener);
+				return () => {
+					this.connectionListeners.delete(listener);
+				};
+			},
+		};
+	}
+
+	private connectionChanged(): void {
+		for (const listener of [...this.connectionListeners]) listener();
+	}
+
+	/** Whether the plugin is connected, connecting or not ({@link ConnectionState}). */
+	private connectionState(): ConnectionState {
+		if (this.connectError !== null) return 'not connected';
+		return this.connection.current && this.primed ? 'connected' : 'connecting';
+	}
+
+	/** State the settings tab's root line and Status group describe (worded in settings.ts). */
 	private connectionStatus(): ConnectionStatus {
 		const scope = this.scope;
 		const tunnel = this.tunnel;
@@ -1553,6 +1586,7 @@ export default class HerdrPlugin extends Plugin {
 					}
 				: null,
 			error: this.connectError,
+			state: this.connectionState(),
 		};
 	}
 }

@@ -1235,7 +1235,7 @@ window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
 
 The tab is declarative (Obsidian 1.13's settings API, ADR-0011, issue #156).
 `settingDefinitions` in `src/settingsTab/tab.ts` is the whole tab: the
-connection status block on the root, then one page per area, each from its
+active runtime's line on the root, then one page per area, each from its
 own module in `src/settingsTab/` (runtimes, agents, views, terminal, agent list
 and notifications). A control names a key, the stored `data.json` name, dotted
 when nested (`notifications.blocked.notice`); `getControlValue` and
@@ -1244,6 +1244,18 @@ table normalises the value, saves, and then runs the key's one effect:
 reconnect, refresh the agent list or the folder hover buttons, hand the
 setting to the open terminals, or redraw the native views. The table's type is
 total over the keys, and only a terminal setting may have the terminal effect.
+
+Every fact is shown in one place, next to where it is acted on, and state
+lives with what it describes. The root has one line, "Active runtime: <name>
+· connected" (or connecting, not connected), a warning when the connection is
+down or has an error, a mismatch or an unavailable kind, which opens that
+runtime's page; the active runtime's page opens on a Status group with the
+connection's full lines; the runtime list marks the active runtime and the
+runtimes with problems, and the Runtimes entry carries the same warning.
+`connectionSummary` and `connectionDetails` in `src/settings.ts` word the two,
+pure over the plugin's `ConnectionStatus`; both draw again when the plugin's
+`ConnectionStatusSource` says the connection changed (a published or retired
+connection, a primed scope, an error set or cleared, a scope event).
 
 The runtimes are a `list` with one `page` per runtime (#178,
 `src/settingsTab/runtimes.ts`), each page's `id` the runtime's id. Their

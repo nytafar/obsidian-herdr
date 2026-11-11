@@ -4,16 +4,21 @@ All under **Settings → Gjetr**, which needs Obsidian 1.13.4 or later. Sentence
 case names match the UI, and Obsidian's settings search finds every setting
 below by its name.
 
-The tab opens on the connection status block, then one entry per page:
-Runtimes, Agents, Views, Terminal, and Agent list and notifications. An entry
-shows the page's main value where it has one: the active runtime, the default
-view, the terminal engine.
+The tab opens on one line naming the active runtime, then one entry per
+page: Runtimes, Agents, Views, Terminal, and Agent list and notifications. An
+entry shows the page's main value where it has one: the default view, the
+terminal engine.
 
-## Connection status
+Every fact is shown in one place, next to where you act on it, and state
+lives with what it describes. The root says which runtime is active and
+whether it is connected; that runtime's page says how, at its top; the
+runtime list marks the active runtime and the ones with problems.
+
+## Active runtime
 
 | Setting | Meaning |
 |---|---|
-| Connection status | Which runtime is active, which binary was found, which socket or connection answers, the server version and protocol, and which workspace or space matched the vault. Every setup problem shows up here first; [troubleshooting.md](troubleshooting.md) explains the messages. |
+| Active runtime | "Active runtime: Local · connected", or "connecting" or "not connected", as a warning while it is not connected or has an error, a protocol mismatch or a kind this build cannot run. Click it to open that runtime's page, where the Status group says why. It follows the connection as it changes. |
 
 ## Runtimes
 
@@ -21,7 +26,8 @@ The herdr, or herdr-core, instances the plugin can connect to, on this machine
 or over SSH, or Claude run by Obsidian on this machine, and which one is
 active. Each runtime has its own binary, socket, remote vault path and
 workspace. See [runtimes.md](runtimes.md) for adding, editing, removing and
-switching, and for every field. The page's entry shows the active runtime.
+switching, and for every field. The page's entry carries a warning mark
+while any runtime has a problem, as that runtime's row does.
 
 The **Runtimes** list has one row per runtime, in the switcher's order: its
 name, what it is and where, **Active** on the active one, and a warning mark
@@ -34,6 +40,17 @@ A runtime's page shows the fields its kind and target use: changing **Kind**
 or **Target** shows and hides them. Settings search finds every field by its
 name, and finds the runtime pages by "socket path", "SSH host", "binary" or
 "workspace" whatever their kind.
+
+### Status
+
+The active runtime's page opens on its Status group; other runtimes' pages
+have none, and say "Not active" by **Use this runtime**.
+
+| Setting | Meaning |
+|---|---|
+| Connection | Which binary was found, which socket or connection answers (and the SSH tunnel), the server version and protocol, mismatches, which workspace or space matched the vault, and the last error. Every setup problem shows up here first; [troubleshooting.md](troubleshooting.md) explains the messages. It follows the connection as it changes. |
+
+### Fields
 
 | Setting | Meaning |
 |---|---|
