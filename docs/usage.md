@@ -6,8 +6,8 @@ and notifications. Where something works on one runtime only, it says so;
 
 ## The agent list
 
-**Gjetr: Show agents** opens it in the left sidebar; it stays wherever you
-drag it. Only agents are listed: plain shells stay out.
+It opens in the left sidebar when you turn the plugin on, and **Gjetr: Show
+agents** opens it again after you close it; it stays wherever you drag it. Only agents are listed: plain shells stay out.
 
 Each row is one agent: a kind icon coloured by status (orange blocked, green
 done, blue working, faint idle), the agent's name, its current task from the

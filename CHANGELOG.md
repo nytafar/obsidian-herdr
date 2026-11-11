@@ -3,6 +3,14 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## Unreleased
+
+### Changed
+
+- **The agent list opens when you turn the plugin on**, so a new user finds
+  it without the command palette. It opens only then, not on every start, so
+  a list you closed stays closed.
+
 ## 0.7.1 — 2026-11-11
 
 ### Added

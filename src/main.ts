@@ -529,6 +529,18 @@ export default class HerdrPlugin extends Plugin {
 	/** Cached `document.hasFocus()`, kept fresh by focus/blur (notes/electron-node.md). */
 	private windowFocused = true;
 
+	/**
+	 * The user turned the plugin on, at install or later: show the agent list,
+	 * so a first look does not depend on the command palette. Obsidian calls
+	 * this only on that explicit enable, never on startup, so a list the user
+	 * closed stays closed.
+	 */
+	onUserEnable(): void {
+		this.app.workspace.onLayoutReady(() => {
+			void this.activateAgentList();
+		});
+	}
+
 	async onload() {
 		// Before anything registers: an old `herdr` install of this plugin left
 		// enabled beside this one would hold the same view types.
