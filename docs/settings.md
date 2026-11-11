@@ -56,8 +56,29 @@ status bar names the active one.
 
 | Setting | Meaning |
 |---|---|
-| Agent CLIs | The active runtime's agent catalog: the agent CLIs found on its machine, then your own entries. A row says what it runs and which machines of your runtimes have it, "Found on this machine and lasse@mac. Not found on xl.", with "Checking …" until a machine answers; a machine that cannot be checked is named once, under **Agent CLIs**. Machines, not runtimes: every local runtime is this machine, and runtimes on one SSH host are that host. The active runtime's machine reads its connection's check; any other is checked directly (this machine's binary search, or one `ssh` to the host from its remote vault path, the active runtime's where two runtimes on one host differ, else the first one set), once each time the settings open. A built-in agent CLI only another machine has is listed too, greyed: it is not in the active runtime's menu. The eye hides it from the + menu. **Check again** looks again on every machine, after you install one; otherwise each connection checks once. See [runtimes.md](runtimes.md#starting-agents-the--button-and-the-agent-catalog). |
-| Add agent CLI | Your own entry: **Name**, **Agent** (which agent it is: what herdr starts and detects, and the row's mark), **Command** (empty runs the agent's own program; a name or a path, `~/` is the home of the machine it runs on) and **Arguments** (plain words, separated by spaces). **Where it starts** names the runtime kinds that can start it, and why the others cannot. A user entry shows on every runtime, greyed with the reason where it cannot start, and marked "not found" (still startable) where its command was not found. Typing checks nothing; the list checks the entry once you press **Done**. |
+| Agent CLIs | The active runtime's agent catalog, in two lists below this row: the agent CLIs found on its machine, then your own entries. Every row says what it runs and which machines of your runtimes have it, "Found on this machine and lasse@mac. Not found on xl.", with "Checking …" until a machine answers, and the rows change in place as each one does; a machine that cannot be checked is named once, on this row. Machines, not runtimes: every local runtime is this machine, and runtimes on one SSH host are that host. The active runtime's machine reads its connection's check; any other is checked directly (this machine's binary search, or one `ssh` to the host from its remote vault path, the active runtime's where two runtimes on one host differ, else the first one set), once each time the settings open, when the Agents page is first shown. **Check again** looks again on every machine, after you install one; otherwise each connection checks once. See [runtimes.md](runtimes.md#starting-agents-the--button-and-the-agent-catalog). |
+
+### Built-in agent CLIs
+
+| Setting | Meaning |
+|---|---|
+| Built-in agent CLI row | One per agent CLI the active runtime offers: herdr's agent kinds found on its machine, and on herdr-core hc's templates. A built-in only another machine has is listed too, greyed: it is not in the active runtime's menu. The eye hides it from the + menu, or shows it again. |
+
+### Your agent CLIs
+
+| Setting | Meaning |
+|---|---|
+| Add agent CLI | The + in the list's heading adds an entry at the end of the list; open it to fill it in. |
+| Your agent CLI row | One per entry, opening its page. It shows on every runtime, marked as needing attention (with the reason in its line) where it cannot start, and "not found" (still startable) where its command was not found. With the row focused, Delete or Backspace removes it, after asking. |
+| Name | On an entry's page. What the menu calls it. Empty shows the command. |
+| Agent | On an entry's page. Which agent it is: what herdr starts and detects, and the row's mark. |
+| Command | On an entry's page. Empty runs the agent's own program; a name or a path, `~/` is the home of the machine it runs on. |
+| Arguments | On an entry's page. Plain words, separated by spaces. |
+| Hide from the menu | On an entry's page. Keeps it out of the + menu on every runtime, as the eye does for a built-in. |
+| Where it starts | On an entry's page. The runtime kinds that can start it, and why the others cannot. |
+| Remove agent CLI | On an entry's page. Takes it out, after asking, with every runtime's default that named it. The page then says it was removed. |
+
+Typing on an entry's page checks nothing; going back to the Agents page checks a command the machines were not asked about yet.
 
 ### Starting agents
 

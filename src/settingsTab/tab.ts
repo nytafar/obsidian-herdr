@@ -10,10 +10,10 @@
 import { App, PluginSettingTab, type SettingDefinitionItem, type SettingDefinitionRender } from 'obsidian';
 import type HerdrPlugin from '../main';
 import type { HerdrSettings, RenderStatus } from '../settings';
-import type { MachineProbes } from '../agents/machines';
 import { ConfirmModal } from '../views/modals';
 import { readSetting, writeSetting, type ControlKey } from './effects';
-import { agentCatalogDefinition, blockOf, runtimeListDefinition, type ListCallbacks } from './lists';
+import { blockOf, runtimeListDefinition, type ListCallbacks } from './lists';
+import { AgentCatalogSession, isCatalogKey, readCatalogSetting, writeCatalogSetting, type CatalogKey } from './agentCatalog';
 import { runtimesPage } from './runtimes';
 import { agentsPage } from './agents';
 import { viewsPage } from './views';
@@ -34,11 +34,12 @@ export function settingDefinitions(
 	settings: () => HerdrSettings,
 	renderStatus: RenderStatus,
 	lists: ListCallbacks,
-): SettingDefinitionItem<ControlKey>[] {
+	catalog: AgentCatalogSession,
+): SettingDefinitionItem<ControlKey | CatalogKey>[] {
 	return [
 		statusDefinition(renderStatus),
 		runtimesPage(settings, runtimeListDefinition(settings, lists)),
-		agentsPage(settings, agentCatalogDefinition(settings, lists)),
+		agentsPage(settings, catalog.definitions()),
 		viewsPage(settings),
 		terminalPage(settings),
 		agentListPage(),
@@ -50,39 +51,57 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private readonly renderStatus: RenderStatus;
 	/** The runtime whose form is open; survives the redraws its fields cause. */
 	private editing: string | null = null;
-	/** The user agent CLI whose form is open (issue #125). */
-	private editingAgent: string | null = null;
-	/** Which machines have which agent CLIs, probed once per opening of the tab (issue #125). */
-	private machines: MachineProbes | null = null;
+	/** The agent CLI catalog of this opening of the tab: its machine probes (issue #179). */
+	private readonly catalog: AgentCatalogSession;
 
 	constructor(app: App, plugin: HerdrPlugin, renderStatus: RenderStatus) {
 		super(app, plugin);
 		this.plugin = plugin;
 		this.renderStatus = renderStatus;
+		this.catalog = new AgentCatalogSession({
+			settings: () => plugin.settings,
+			probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
+			refresh: (runtimeId, again) => plugin.agentCatalogs.refresh(runtimeId, again),
+			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
+			newMachineProbes: () => plugin.newMachineProbes(),
+			write: (key, value) => this.setControlValue(key, value),
+			saved: async () => {
+				await plugin.saveSettings();
+				plugin.refreshAgentList();
+			},
+			confirm: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
+			update: () => this.update(),
+		});
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
-		return settingDefinitions(() => this.plugin.settings, this.renderStatus, this.listCallbacks());
+		return settingDefinitions(() => this.plugin.settings, this.renderStatus, this.listCallbacks(), this.catalog);
 	}
 
 	getControlValue(key: string): unknown {
+		if (isCatalogKey(key)) return readCatalogSetting(this.plugin.settings, key);
 		return readSetting(this.plugin.settings, key);
 	}
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
+		if (isCatalogKey(key)) {
+			// A catalog value shows in its row's line and on its page's entry,
+			// so the definitions are read again; a field being typed in is kept.
+			if (await writeCatalogSetting(this.plugin.settings, key, value, this.plugin)) this.update();
+			return;
+		}
 		await writeSetting(this.plugin.settings, key, value, this.plugin);
 	}
 
 	/** Closing the tab ends its machine probes: the next opening asks again. */
 	hide(): void {
-		this.machines?.dispose();
-		this.machines = null;
+		this.catalog.end();
 		super.hide();
 	}
 
 	/**
-	 * What the runtime list and the agent catalog are handed until #178 and
-	 * #179. A redraw is `update()`, which draws the open page again.
+	 * What the runtime list is handed until #178. A redraw is `update()`,
+	 * which draws the open page again.
 	 */
 	private listCallbacks(): ListCallbacks {
 		const { plugin } = this;
@@ -111,13 +130,6 @@ export class HerdrSettingTab extends PluginSettingTab {
 			},
 			agents: {
 				probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
-				refresh: (runtimeId, again) => plugin.agentCatalogs.refresh(runtimeId, again),
-				editing: () => this.editingAgent,
-				edit: (id) => {
-					this.editingAgent = id;
-					redisplay();
-				},
-				machines: () => (this.machines ??= plugin.newMachineProbes()),
 			},
 		};
 	}
