@@ -1,12 +1,12 @@
 /**
- * The Agents page: the agent CLI catalog (still drawn by its 0.7.1 builder
- * until #179, see `lists.ts`), and what "Start agent here" does. The
+ * The Agents page: the agent CLI catalog (`agentCatalog.ts`), and what
+ * "Start agent here" does. The
  * panes-per-tab cap only means something while agents share a herdr tab, so
  * it is visible only then; the framework re-checks `visible` after each
  * change.
  */
 
-import type { SettingDefinitionPage, SettingDefinitionRender } from 'obsidian';
+import type { SettingDefinitionItem, SettingDefinitionPage } from 'obsidian';
 import {
 	clampPanesPerTab,
 	DEFAULT_SETTINGS,
@@ -15,17 +15,18 @@ import {
 	type HerdrSettings,
 } from '../settings';
 import type { ControlKey } from './effects';
+import type { CatalogKey } from './agentCatalog';
 
 export function agentsPage(
 	settings: () => HerdrSettings,
-	catalog: SettingDefinitionRender,
-): SettingDefinitionPage<ControlKey> {
+	catalog: SettingDefinitionItem<CatalogKey>[],
+): SettingDefinitionPage<ControlKey | CatalogKey> {
 	return {
 		type: 'page',
 		name: 'Agents',
 		desc: 'The agent CLIs the + button offers, and how new agents are named and placed.',
 		items: [
-			{ type: 'group', items: [catalog] },
+			...catalog,
 			{
 				type: 'group',
 				heading: 'Starting agents',

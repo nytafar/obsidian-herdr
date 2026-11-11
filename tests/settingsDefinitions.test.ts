@@ -5,9 +5,11 @@
  * holds), the one write path (a key is stored, normalised, saved, and its
  * effect runs, in that order), the key→effect table being total over the
  * controls the definitions name, and `docs/settings.md` naming every
- * setting. The runtime list and the agent CLI catalog are still their 0.7.1
- * builders inside `render` definitions; `settingsSections.test.ts` covers
- * the builders, this file that the tab draws them.
+ * setting. The runtime list is still its 0.7.1 builder inside a `render`
+ * definition; `settingsSections.test.ts` covers the builder, this file that
+ * the tab draws it. The rows of a `list` are data, not settings, so the
+ * layout and the docs check skip them; `agentCatalogSettings.test.ts` covers
+ * the agent CLI catalog's lists.
  */
 
 import { readFileSync } from 'node:fs';
@@ -30,6 +32,7 @@ import {
 } from '../src/settingsTab/effects';
 import type { ListCallbacks } from '../src/settingsTab/lists';
 import { HerdrSettingTab, settingDefinitions } from '../src/settingsTab/tab';
+import { AgentCatalogSession } from '../src/settingsTab/agentCatalog';
 import type HerdrPlugin from '../src/main';
 
 function settingsOf(overrides: Partial<HerdrSettings> = {}): HerdrSettings {
@@ -70,19 +73,37 @@ function quietLists(): ListCallbacks {
 	};
 }
 
+/** An agent catalog with nothing probed and nothing to probe with. */
+function quietCatalog(settings: HerdrSettings): AgentCatalogSession {
+	return new AgentCatalogSession({
+		settings: () => settings,
+		probe: () => null,
+		refresh: async () => false,
+		nativeReachable: () => true,
+		newMachineProbes: () => {
+			throw new Error('not drawn here');
+		},
+		write: async () => undefined,
+		saved: async () => undefined,
+		confirm: async () => true,
+		update: () => undefined,
+	});
+}
+
 function definitionsOf(settings: HerdrSettings, renderStatus: (el: HTMLElement) => void = () => undefined) {
-	return settingDefinitions(() => settings, renderStatus, quietLists());
+	return settingDefinitions(() => settings, renderStatus, quietLists(), quietCatalog(settings));
 }
 
 const isPage = (item: SettingDefinitionItem): item is SettingDefinitionPage =>
 	'type' in item && item.type === 'page';
 
-/** Every setting definition, groups and pages flattened, with its page. */
+/** Every setting definition, groups and pages flattened, with its page; not the rows of a list. */
 function flatten(items: readonly SettingDefinitionItem[], page = ''): { def: SettingDefinition; page: string }[] {
 	const out: { def: SettingDefinition; page: string }[] = [];
 	for (const item of items) {
 		if ('type' in item && item.type === 'page') out.push(...flatten(item.items ?? [], item.name));
-		else if ('type' in item && (item.type === 'group' || item.type === 'list')) out.push(...flatten(item.items ?? [], page));
+		else if ('type' in item && item.type === 'group') out.push(...flatten(item.items ?? [], page));
+		else if ('type' in item && item.type === 'list') continue;
 		else out.push({ def: item as SettingDefinition, page });
 	}
 	return out;
@@ -376,13 +397,13 @@ describe('the parts still drawn imperatively', () => {
 		expect(settingNames(setting.settingEl)).toEqual(['Local', 'Add runtime']);
 	});
 
-	it('draws the 0.7.1 agent CLI catalog inside the Agents page (until #179)', () => {
-		const items = definitionsOf(settingsOf());
-		const setting = rendered(definitionNamed(items, 'Agent CLIs'));
-		const names = settingNames(setting.settingEl);
-		expect(names[0]).toBe('Agent CLIs');
-		expect(names).toContain('Add agent CLI');
-		expect(builtSettings(setting.settingEl).length).toBeGreaterThan(2);
+	it('puts the agent CLI catalog’s two lists on the Agents page (#179)', () => {
+		const agents = pageNamed(definitionsOf(settingsOf()), 'Agents');
+		const lists = (agents.items ?? []).filter((item) => 'type' in item && item.type === 'list');
+		expect(lists.map((list) => ('heading' in list ? list.heading : null))).toEqual([
+			'Built-in agent CLIs',
+			'Your agent CLIs',
+		]);
 	});
 });
 

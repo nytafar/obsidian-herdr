@@ -1245,10 +1245,19 @@ reconnect, refresh the agent list or the folder hover buttons, hand the
 setting to the open terminals, or redraw the native views. The table's type is
 total over the keys, and only a terminal setting may have the terminal effect.
 
-The runtime list and the agent CLI catalog are still their imperative
-builders, drawn inside `render` definitions (`src/settingsTab/lists.ts`) with
-the callback bundle they always took, until #178 and #179 make them `list`s.
-Their redraw is the tab's `update()`.
+The runtime list is still its imperative builder, drawn inside a `render`
+definition (`src/settingsTab/lists.ts`) with the callback bundle it always
+took, until #178 makes it a `list`. Its redraw is the tab's `update()`.
+
+The agent CLI catalog (#179, `src/settingsTab/agentCatalog.ts`) is two
+`list`s on the Agents page: the built-ins as `render` rows that add the eye,
+and the user's entries as pages, one each, with `id` set to the entry's id.
+Its keys are the stored names with the entry's id, `hiddenAgents.<id>` and
+`agentProfiles.<id>.<field>`; the tab's `getControlValue`/`setControlValue`
+hand them to that module, whose effect is always save and repaint the agent
+lists, and then call `update()`, since a value shows in its row's line. The
+machine probes of one opening of the settings start when the catalog's first
+row is drawn and end in `hide()`; each answer calls `update()`.
 
 What the framework does, read from Obsidian 1.14.5's `app.js`:
 
@@ -1261,11 +1270,27 @@ What the framework does, read from Obsidian 1.14.5's `app.js`:
 - `update()` re-reads the definitions, re-indexes search and redraws the page
   that is open, whichever it is. A `render` callback's DOM, focus included, is
   rebuilt.
-- Pages are found by name along their path, so a page name is its identity.
-  Going back to a page redraws it, so a root `displayValue` function is read
+- Pages are found by `id ?? name` along their path, so that is a page's
+  identity. `id` is not in the 1.14.4 typings, but the framework reads it and
+  its duplicate-page error asks for it. Going back to a page redraws it, so a root `displayValue` function is read
   fresh without an `update()`.
 - `display()` is only called for a tab whose definitions are empty; with
   definitions the tab is rendered from them directly.
+- `update()` reconciles each group's rows by key: a page's `id ?? name`, else
+  a definition's control key, else its name. A kept row is cleared and drawn
+  again into the same element, except a control row that holds the focus,
+  which is left alone; so `update()` while a field is typed in keeps the
+  field, its caret and its value. It redraws only when the tab is the open
+  one, and only a declarative page or the root.
+- A `render` row is handed its `Setting` with the definition's name and
+  description already set.
+- A `list`'s `onDelete` adds a delete button to every row except a page,
+  which gets none: only Delete or Backspace on the focused row reaches it.
+  `onReorder`'s drag handle likewise skips pages. `addItem` is a + button in
+  the list's heading on desktop, a row below the list on mobile.
+- A page whose definition is gone after `update()` draws empty, and there is
+  no public call that leaves a page; `visible: false` hides a page's entry and
+  keeps the page itself findable.
 
 ## Agent prompts and session identity
 

@@ -6,8 +6,9 @@
  * a test walks the definitions to make sure of it at run time too.
  *
  * Keys are the stored `data.json` names, dotted where the value is nested
- * (`notifications.blocked.notice`). The runtime list and the agent CLI
- * catalog still write through their own builders until #178 and #179.
+ * (`notifications.blocked.notice`). The runtime list still writes through
+ * its own builder until #178. The agent CLI catalog's keys, which name an
+ * entry by its id, are `agentCatalog.ts`'s (#179).
  */
 
 import type { HerdrSettings } from '../settings';

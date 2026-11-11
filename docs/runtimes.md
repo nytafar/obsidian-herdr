@@ -82,14 +82,15 @@ and kept for that connection, never looked up per start or per repaint:
 - **herdr-core** also lists hc's own templates (`~/.config/herdr-core/templates`
   on its machine), started as hc runs them.
 - **Claude, run by Obsidian** offers Claude Code only.
-- **Your own entries** (Settings → Gjetr → Agents → **Add agent CLI**) show
-  on every runtime: a wrapper, another command, or an agent with extra
-  arguments. One that cannot start on the active runtime is greyed with the
-  reason: herdr cannot start a command of your own (herdr-core can), or the
+- **Your own entries** (Settings → Gjetr → Agents, the + of **Your agent
+  CLIs**, then the entry's own page) show on every runtime: a wrapper,
+  another command, or an agent with extra arguments. One that cannot start
+  on the active runtime is marked in settings, with the reason: herdr cannot start a command of your own (herdr-core can), or the
   runtime is Claude, run by Obsidian. One whose command was not found is
   marked "not found" and still starts, in case the check looked on another
   PATH than the one it runs on.
-- **Hidden** entries (the eye in settings) stay out of the menu.
+- **Hidden** entries (the eye on a built-in's row in settings, **Hide from
+  the menu** on your own entry's page) stay out of the menu.
 
 The **default** is per runtime, set in the runtime's form (**Default agent**),
 and falls back to the first installed entry. A left click right after

@@ -1,22 +1,19 @@
 /**
- * The two parts of the tab that are still drawn imperatively, as in 0.7.1:
- * the runtime list (#178 replaces it) and the agent CLI catalog (#179). Each
- * is a `render` definition around its old builder, and {@link ListCallbacks}
- * is what those builders were handed before the declarative tab. When both
- * slices land, this file goes with them.
+ * The part of the tab that is still drawn imperatively, as in 0.7.1: the
+ * runtime list (#178 replaces it), a `render` definition around its old
+ * builder, and {@link ListCallbacks}, what that builder is handed. The agent
+ * CLI catalog is `agentCatalog.ts` since #179.
  */
 
 import type { Setting, SettingDefinitionRender } from 'obsidian';
 import type { AgentProbe } from '../agents/catalog';
-import type { MachineProbes } from '../agents/machines';
-import { buildAgentCatalogSettings } from '../agents/settingsSection';
 import type { HerdrSettings } from '../settings';
 import type { RuntimeConfig, RuntimeKind } from '../runtimes';
 import { buildRuntimesSection } from './runtimeList';
 
 /**
- * What the runtime list and the agent catalog may do besides write into the
- * settings they were handed. The tab builds it from the plugin.
+ * What the runtime list may do besides write into the settings it was
+ * handed. The tab builds it from the plugin.
  */
 export interface ListCallbacks {
 	/** Persist the settings as they now are. */
@@ -58,22 +55,12 @@ export interface ListCallbacks {
 		review: (onDone: () => void) => void;
 	};
 	/**
-	 * The agent catalog (issue #125): the probe that landed for this runtime's
-	 * published connection (null when none did, or it is not the connected
-	 * one), a probe of the published connection (true once one landed), and
-	 * which user entry's form is open.
+	 * The probe that landed for this runtime's published connection (null
+	 * when none did, or it is not the connected one), for a runtime's
+	 * default agent (issue #125).
 	 */
 	agents?: {
 		probe: (runtimeId: string) => AgentProbe | null;
-		/** Probes this runtime if it is the published one and is not up to date; true once a new probe landed. */
-		refresh: (runtimeId: string, again?: boolean) => Promise<boolean>;
-		editing: () => string | null;
-		edit: (id: string | null) => void;
-		/**
-		 * The per-machine probes of this opening of the tab: which machines,
-		 * across every configured runtime, each agent CLI was found on.
-		 */
-		machines?: () => MachineProbes;
 	};
 }
 
@@ -98,18 +85,5 @@ export function runtimeListDefinition(
 		desc: 'The herdr, herdr-core or Claude runtimes to connect to, and which one is active.',
 		aliases: ['runtime', 'herdr', 'herdr-core', 'SSH', 'socket', 'workspace', 'add runtime'],
 		render: (setting) => buildRuntimesSection(blockOf(setting), settings(), callbacks),
-	};
-}
-
-/** The agent CLI catalog, until #179. */
-export function agentCatalogDefinition(
-	settings: () => HerdrSettings,
-	callbacks: ListCallbacks,
-): SettingDefinitionRender {
-	return {
-		name: 'Agent CLIs',
-		desc: 'The agent CLIs the + button offers, and your own entries.',
-		aliases: ['agent', 'add agent CLI', 'hide agent'],
-		render: (setting) => buildAgentCatalogSettings(blockOf(setting), settings(), callbacks),
 	};
 }
