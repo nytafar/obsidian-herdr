@@ -6,9 +6,9 @@
  * a test walks the definitions to make sure of it at run time too.
  *
  * Keys are the stored `data.json` names, dotted where the value is nested
- * (`notifications.blocked.notice`). The runtime list still writes through
- * its own builder until #178. The agent CLI catalog's keys, which name an
- * entry by its id, are `agentCatalog.ts`'s (#179).
+ * (`notifications.blocked.notice`). A runtime page's fields are keyed
+ * `runtimes.<id>.<field>` and go to `runtimeKeys.ts` (#178). The agent CLI
+ * catalog's keys, which name an entry by its id, are `agentCatalog.ts`'s (#179).
  */
 
 import type { HerdrSettings } from '../settings';
@@ -25,6 +25,7 @@ import { normalizeThemeName } from '../views/renderer/themes';
 import { normalizePaneView } from '../native/renderMode';
 import { normalizeToolGroupPresentation } from '../native/toolCalls';
 import { normalizeContextReadoutStyle, normalizePromptBoxStyle } from '../native/composerLook';
+import { parseRuntimeKey, readRuntimeField, writeRuntimeField, type RuntimeKey } from './runtimeKeys';
 
 /** Every key a control of the tab reads and writes. */
 export type ControlKey =
@@ -58,6 +59,9 @@ export type ControlKey =
 	| 'notifications.blocked.os'
 	| 'notifications.done.notice'
 	| 'notifications.done.os';
+
+/** Every key the tab's controls use: the table's, and the per-runtime ones. */
+export type TabKey = ControlKey | RuntimeKey;
 
 /**
  * What a change costs, after the save every change makes.
@@ -145,6 +149,8 @@ export interface SettingsHost {
 	refreshFolderHoverButton(): void;
 	applyTerminalSetting(setting: TerminalSetting): void;
 	refreshNativeViews(): void;
+	/** A runtime's name or place changed: retitle the switcher and the status bar. */
+	refreshRuntimes(): void;
 }
 
 /** The value at a dotted key, or undefined when a step is missing. */
@@ -172,6 +178,8 @@ function writePath(settings: HerdrSettings, key: string, value: unknown): void {
 
 /** What a control shows for `key`: the stored value, normalised. Undefined for an unknown key. */
 export function readSetting(settings: HerdrSettings, key: string): unknown {
+	const runtime = parseRuntimeKey(key);
+	if (runtime) return readRuntimeField(settings, runtime.id, runtime.field);
 	if (!isControlKey(key)) return undefined;
 	const { normalize } = SETTING_EFFECTS[key] as SettingSpec;
 	const value = readPath(settings, key);
@@ -189,6 +197,8 @@ export async function writeSetting(
 	value: unknown,
 	host: SettingsHost,
 ): Promise<void> {
+	const runtime = parseRuntimeKey(key);
+	if (runtime) return writeRuntimeField(settings, runtime.id, runtime.field, value, host);
 	if (!isControlKey(key)) {
 		console.warn(`Gjetr: no setting has the key "${key}"`);
 		return;

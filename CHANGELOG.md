@@ -15,6 +15,11 @@ All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
   page each for Runtimes, Agents, Views, Terminal, and Agent list and
   notifications. The entries show the active runtime, the default view and the
   terminal engine. Every setting keeps its stored value and what it does.
+- **Runtimes and agent CLIs are lists with a page each**: + adds a runtime and
+  opens its page, which shows only the fields its kind and target use, and
+  holds use or reconnect, order and remove; your agent CLIs get a page each
+  beside the built-in list. Delete removes after asking, and a page whose
+  runtime or entry you remove leaves for the list, or says it was removed.
 - **The agent list opens when you turn the plugin on**, so a new user finds
   it without the command palette. It opens only then, not on every start, so
   a list you closed stays closed.
