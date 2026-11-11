@@ -67,8 +67,11 @@ import {
 	InputRouter,
 	type HostKeyDecision,
 } from './input/inputRouter';
-import { pickModifiers } from './input/mouseEncoder';
+import { pickModifiers, type ModifierKeys } from './input/mouseEncoder';
 import { WheelAccumulator } from './input/wheelAccumulator';
+
+/** Most SGR wheel reports one wheel emission sends ({@link PaneTerminal.reportWheel}). */
+export const MAX_WHEEL_REPORTS = 5;
 
 /** How long a burst of container resizes is collapsed before a `terminal.resize`. */
 export const RESIZE_DEBOUNCE_MS = 100;
@@ -750,6 +753,8 @@ export class PaneTerminal {
 	private lastWheelSent = false;
 	/** Cell and modifiers of the most recent notch, for a deferred emission. */
 	private lastWheelRoute: { column?: number; row?: number; modifiers: number } = { modifiers: 0 };
+	/** The same notch's modifier keys, for a mouse report ({@link reportWheel}). */
+	private lastWheelKeys: ModifierKeys = pickModifiers({});
 	/**
 	 * True once the renderer intercepts the wheel, so the host element's own
 	 * listener stands down. Only meaningful while a renderer exists: a suspended
@@ -1549,6 +1554,7 @@ export class PaneTerminal {
 			...(route.row === undefined ? {} : { row: route.row }),
 			modifiers: route.modifiers,
 		};
+		this.lastWheelKeys = pickModifiers(event);
 		// One `terminal.scroll` per animation frame: the first notch of a frame goes
 		// out at once so the terminal answers immediately, and everything that
 		// arrives before the next frame — momentum, mostly — merges into the
@@ -1567,13 +1573,33 @@ export class PaneTerminal {
 		const session = this.session;
 		const scroll = this.wheel.take();
 		if (!session || !scroll) return false;
-		// False from an observer (`scroll` is control-only, PRD section 7) or from
-		// a session whose bridge has exited: the notch was not sent, so the
-		// renderer may as well scroll whatever it holds locally.
-		return session.scroll(scroll.direction, scroll.lines, {
+		// False from an observer (`scroll` is control-only, PRD section 7), from
+		// a session whose bridge has exited, or from one with no server-side
+		// scroll at all (herdr-core, Claude's pty).
+		const sent = session.scroll(scroll.direction, scroll.lines, {
 			source: 'wheel',
 			...this.lastWheelRoute,
 		});
+		if (sent) return true;
+		// Unsent, the renderer may scroll whatever it holds locally, unless the
+		// program asked for mouse reports: then the notch is its own.
+		return this.reportWheel(session, scroll.direction, scroll.lines);
+	}
+
+	/**
+	 * A notch as SGR wheel reports, for a program that asked for them on a
+	 * session that does not scroll server-side (see `InputRouter.wheelReport`).
+	 * One report per whole line, at most {@link MAX_WHEEL_REPORTS} per
+	 * emission, as ghostty-web caps its own wheel. False when the program asked
+	 * for none, or the tab only observes.
+	 */
+	private reportWheel(session: PaneSession, direction: 'up' | 'down', lines: number): boolean {
+		if (session.mode !== 'control') return false;
+		const { column = 0, row = 0 } = this.lastWheelRoute;
+		const report = this.input.wheelReport(direction, { column, row }, this.lastWheelKeys);
+		if (report === null) return false;
+		session.input(report.repeat(Math.min(Math.max(1, lines), MAX_WHEEL_REPORTS)));
+		return true;
 	}
 
 	/** Drops a pending coalescing frame and the gesture the accumulator held. */

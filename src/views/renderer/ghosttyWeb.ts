@@ -56,6 +56,15 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 	private terminal: Terminal | undefined;
 	private fitAddon: FitAddon | undefined;
 	private container: HTMLElement | undefined;
+	/**
+	 * The element ghostty-web is opened on: a child of the host made for this
+	 * renderer and removed with it. The library leaves listeners on the element
+	 * it opens: an anonymous `beforeinput` that cancels every insertion, and a
+	 * capture `wheel` it removes without `capture`, so neither ever comes off.
+	 * Opened on the host itself, they outlived the terminal and took every key
+	 * and wheel notch from the native view mounted there after it.
+	 */
+	private mountEl: HTMLElement | undefined;
 	private mounting: Promise<void> | undefined;
 	private disposed = false;
 
@@ -116,7 +125,9 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		});
 		const fitAddon = new FitAddon();
 		terminal.loadAddon(fitAddon);
-		terminal.open(el);
+		const mountEl = el.createDiv({ cls: 'herdr-ghostty-mount' });
+		this.mountEl = mountEl;
+		terminal.open(mountEl);
 
 		this.libraryDisposables.push(
 			terminal.onData((data) => {
@@ -379,6 +390,8 @@ export class GhosttyWebRenderer implements TerminalRenderer {
 		this.fitAddon = undefined;
 		this.terminal?.dispose();
 		this.terminal = undefined;
+		this.mountEl?.remove();
+		this.mountEl = undefined;
 		this.container = undefined;
 		this.mounting = undefined;
 	}

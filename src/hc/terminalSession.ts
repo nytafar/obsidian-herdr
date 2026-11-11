@@ -55,10 +55,10 @@
  *   {@link SeenTracker} writes `herdr.seen=<turn>` while the view says a
  *   person is looking.
  *
- * Wheel scrolling is the renderer's: hc has no scroll method, so
- * {@link HcTerminalSession.scroll} answers false and the renderer scrolls its
- * own scrollback (or encodes the wheel for a program that asked for mouse
- * reports).
+ * Wheel scrolling is the client's: hc has no scroll method, so
+ * {@link HcTerminalSession.scroll} answers false. A program that asked for
+ * mouse reports gets SGR wheel reports from `PaneTerminal` (the stream carries
+ * its modes); otherwise the renderer scrolls its own scrollback.
  *
  * No Obsidian import; the process and the timers are injected.
  */
@@ -374,7 +374,7 @@ export class HcTerminalSession {
 		stream.focus(true);
 	}
 
-	/** hc has no scroll method: the renderer scrolls its own scrollback. */
+	/** hc has no scroll method: the client reports or scrolls the wheel itself. */
 	scroll(): boolean {
 		return false;
 	}

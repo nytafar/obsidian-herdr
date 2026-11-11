@@ -19,6 +19,7 @@ import {
 	effectOf,
 	PaneTerminal,
 	planSettingEffect,
+	MAX_WHEEL_REPORTS,
 	SettingEffectQueue,
 	TERMINAL_SETTING_EFFECTS,
 	TERMINAL_SETTING_KEYS,
@@ -142,8 +143,12 @@ class FakeRenderer implements TerminalRenderer {
 		return () => {};
 	}
 
-	onWheelEvent(): Unsubscribe {
+	/** The view's wheel interceptor; true from it consumes the notch. */
+	wheelListener: ((event: WheelEvent) => boolean) | null = null;
+
+	onWheelEvent(cb: (event: WheelEvent) => boolean): Unsubscribe {
 		this.wheelCallbacks++;
+		this.wheelListener = cb;
 		return () => {};
 	}
 
@@ -257,6 +262,11 @@ class HcLikeSession extends FakeSession {
 	readonly consumedBytes: number[] = [];
 	repaints = 0;
 	readonly looking: boolean[] = [];
+
+	/** herdr-core has no scroll method (`HcTerminalSession.scroll`). */
+	override scroll(): boolean {
+		return false;
+	}
 
 	reply(data: string | Uint8Array): boolean {
 		this.replies.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
@@ -1381,5 +1391,56 @@ describe('PaneTerminal on a raw-byte session (herdr-core)', () => {
 		expect(h.renderers).toHaveLength(2);
 		expect(h.sessions).toHaveLength(1);
 		expect(h.hcSession().repaints).toBe(1);
+	});
+});
+
+describe('PaneTerminal wheel on a session with no server-side scroll', () => {
+	/** A pixel notch of three 16 px lines, the harness renderer's cell height. */
+	const notch = (deltaY: number): WheelEvent =>
+		({ deltaY, deltaMode: 0, clientX: 0, clientY: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }) as unknown as WheelEvent;
+
+	it('sends SGR wheel reports when the program asked for mouse reports', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.session().emit('frame', ...frame('\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h'));
+		h.scheduler.runFrames();
+
+		const consumed = h.renderer().wheelListener?.(notch(-48));
+
+		expect(consumed).toBe(true);
+		expect(h.session().inputs.at(-1)).toBe('\x1b[<64;1;1M'.repeat(3));
+	});
+
+	it('caps the reports one emission sends', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		h.session().emit('frame', ...frame('\x1b[?1000h\x1b[?1006h'));
+		h.scheduler.runFrames();
+
+		h.renderer().wheelListener?.(notch(16 * 40));
+
+		expect(h.session().inputs.at(-1)).toBe('\x1b[<65;1;1M'.repeat(MAX_WHEEL_REPORTS));
+	});
+
+	it('leaves the wheel to the renderer for a program that asked for none', async () => {
+		const h = harness({ hcLike: true });
+		await h.terminal.attach(h.hostEl);
+		const before = h.session().inputs.length;
+
+		const consumed = h.renderer().wheelListener?.(notch(-48));
+
+		expect(consumed).toBe(false);
+		expect(h.session().inputs).toHaveLength(before);
+	});
+
+	it('never reports from an observer', async () => {
+		const h = harness({ hcLike: true, identity: { mode: 'observe' } });
+		await h.terminal.attach(h.hostEl);
+		h.session().emit('frame', ...frame('\x1b[?1000h\x1b[?1006h'));
+		h.scheduler.runFrames();
+		const before = h.session().inputs.length;
+
+		expect(h.renderer().wheelListener?.(notch(-48))).toBe(false);
+		expect(h.session().inputs).toHaveLength(before);
 	});
 });
