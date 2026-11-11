@@ -1245,10 +1245,13 @@ reconnect, refresh the agent list or the folder hover buttons, hand the
 setting to the open terminals, or redraw the native views. The table's type is
 total over the keys, and only a terminal setting may have the terminal effect.
 
-The runtime list and the agent CLI catalog are still their imperative
-builders, drawn inside `render` definitions (`src/settingsTab/lists.ts`) with
-the callback bundle they always took, until #178 and #179 make them `list`s.
-Their redraw is the tab's `update()`.
+The runtimes are a `list` with one `page` per runtime (#178,
+`src/settingsTab/runtimes.ts`), whose controls are keyed
+`runtimes.<id>.<field>` and written by `src/settingsTab/runtimeKeys.ts`
+through the same `writeSetting`. The agent CLI catalog is still its
+imperative builder, drawn inside a `render` definition
+(`src/settingsTab/lists.ts`) with the callback bundle it always took, until
+#179 makes it a `list`. Its redraw is the tab's `update()`.
 
 What the framework does, read from Obsidian 1.14.5's `app.js`:
 
@@ -1266,6 +1269,37 @@ What the framework does, read from Obsidian 1.14.5's `app.js`:
   fresh without an `update()`.
 - `display()` is only called for a tab whose definitions are empty; with
   definitions the tab is rendered from them directly.
+- A page may carry an `id`, which is not in the typings: a page's path step
+  is its `id`, else its name, and Obsidian's own duplicate-page error says to
+  "set an explicit `id` to disambiguate". A runtime page uses the runtime's
+  id, so a rename does not lose the open page and two runtimes may share a
+  name.
+- `update()` keeps a focused control. The redraw reconciles rows by key
+  (`ctrl:<key>` for a control, `page:<id>` for a page) and leaves alone a
+  control row whose element holds the focus, so a dropdown that triggered
+  the `update()` keeps it. Other rows, `render` ones included, are rebuilt,
+  and a `render` callback's returned cleanup runs first.
+- A row's name and description are read from the definition each time the
+  row is drawn, and search reads a page's `name` when it searches, so a
+  getter on the definition object stays current without an `update()`. The
+  cached definitions only need `update()` when their shape changes.
+- Rows with the same control key in one group are reported as duplicates
+  (`duplicate setting key`); keys are checked per group, so one field may
+  appear under different names in sibling groups that `visible` switches
+  between. Such rows show the value read when they were drawn.
+- `visible` is honoured by search too: a hidden group or row is not
+  indexed while hidden, so a field found only on another kind's rows is
+  found through an alias on a row that is always shown.
+- A page inside a `list` is drawn as a navigable row only: unlike a
+  control, action or render row it gets neither the list's delete button
+  nor its drag handle. The list's keyboard handlers still apply to it:
+  Delete or Backspace calls `onDelete`, Alt+Up or Alt+Down `onReorder`, on
+  the focused row. There is no slot for a button of the plugin's on it.
+- `addItem` and `openPage` give no public way to open a page. The settings
+  modal's `openPagePath(tabId, path)` (`app.setting`, not in the typings)
+  is what search results use; it re-opens the tab, which calls the tab's
+  `hide()`, then pushes each page of the path. A page whose path no longer
+  resolves draws empty, so a page that removes its own item navigates away.
 
 ## Agent prompts and session identity
 

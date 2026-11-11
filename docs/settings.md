@@ -23,22 +23,40 @@ active. Each runtime has its own binary, socket, remote vault path and
 workspace. See [runtimes.md](runtimes.md) for adding, editing, removing and
 switching, and for every field. The page's entry shows the active runtime.
 
+The **Runtimes** list has one row per runtime, in the switcher's order: its
+name, what it is and where, **Active** on the active one, and a warning mark
+when it has a problem. A row opens the runtime's own page. The + in the
+list's header (**Add runtime**) adds a herdr runtime over SSH and opens its
+page. With a row focused, Delete removes the runtime after asking and
+Alt+Up or Alt+Down moves it; the same three are rows of the runtime's page.
+
+A runtime's page shows the fields its kind and target use: changing **Kind**
+or **Target** shows and hides them. Settings search finds every field by its
+name, and finds the runtime pages by "socket path", "SSH host", "binary" or
+"workspace" whatever their kind.
+
 | Setting | Meaning |
 |---|---|
-| Runtimes | The list of runtimes: one row each, then **Add runtime**. |
-| Runtime row | Name and what it is. The plug makes it active (or reconnects the active one), the pencil opens its form, the bin removes it after asking. The last runtime stays. |
-| Add runtime | A new herdr runtime over SSH, its form open. |
 | Name | What the switcher, the status bar and the list call it. Empty shows a name derived from kind and host. |
 | Kind | Herdr, herdr-core (hc), or Claude, run by Obsidian, which starts Claude Code itself with no multiplexer. |
-| Target | This machine or an SSH host. Claude run by Obsidian is this machine only. |
+| Target | This machine or an SSH host. Not shown for Claude run by Obsidian, which is this machine only. |
 | Claude binary | Claude run by Obsidian only. An override for auto-discovery of `claude`, empty to search. |
 | Permission mode | Claude run by Obsidian only. What its agents may do without asking; the default asks for every tool that needs a permission, on the native view's waiting card. |
+| Terminal view | Claude run by Obsidian only. Not available yet: its agents open in the native view. |
 | Socket path / Remote socket path | herdr only. The server's socket on the target. Default `~/.config/herdr/herdr.sock`. |
 | Herdr binary / Remote herdr binary | An override for discovery, empty to search: locally Homebrew, /usr/local/bin, ~/.local/bin and a login-shell PATH; over SSH the remote PATH, then Homebrew, /usr/local/bin and ~/.local/bin on the remote host. |
+| Hc binary / Remote hc binary | herdr-core only. The same for `hc`: locally the usual places and a login-shell PATH; over SSH `hc` or `herdr-core` on the remote PATH, then ~/.local/bin. |
 | SSH host, Remote vault path | SSH targets only. The vault path is required for folder actions. |
 | Workspace ID / Space | Pins the workspace (herdr) or space (herdr-core). Empty resolves by the vault folder's name, then by working directories inside the vault. |
+| Claude session hook | herdr-core only. Whether the hook that lets the native view follow Claude in its terminals is installed on the runtime's machine, and **Review** to install, update or remove it. The active runtime only. See [runtimes.md](runtimes.md#the-claude-session-hook). |
 | Default agent | herdr and herdr-core only. What the + button and **Start agent here** start on this runtime. **First installed** (the default) is the first agent CLI of its catalog found on its machine; a choice it cannot start falls back to it. |
-| Problems | What the runtime still lacks, or "None.". |
+| Problems | What the runtime still lacks, or "None.". Updated as you type. |
+| Use this runtime / Reconnect | Makes the runtime active, as the switcher does; on the active one, connects again. |
+| Order | Its place in the list and the switcher, with buttons to move it up or down. |
+| Remove runtime | Removes it after asking, and goes back to the list. Its pinned agents are forgotten. The last runtime stays. |
+
+Fields of the active runtime reconnect as you type, after a short pause;
+fields of another runtime are only saved. Renaming never reconnects.
 
 The agent list's toolbar switches runtimes once there are two or more, and
 **Gjetr: Switch runtime** does from the palette. With more than one runtime the

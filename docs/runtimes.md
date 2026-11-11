@@ -91,7 +91,7 @@ and kept for that connection, never looked up per start or per repaint:
   PATH than the one it runs on.
 - **Hidden** entries (the eye in settings) stay out of the menu.
 
-The **default** is per runtime, set in the runtime's form (**Default agent**),
+The **default** is per runtime, set on the runtime's page (**Default agent**),
 and falls back to the first installed entry. A left click right after
 connecting starts a default of the runtime's own at once; finding the first
 installed one waits for the check, and says so when that takes a moment. Upgrading keeps the old
@@ -104,17 +104,26 @@ CLI, without reconnecting.
 
 ## Adding, editing and removing
 
-- **Add runtime** creates a herdr runtime over SSH and opens its form. Change
-  **Kind** and **Target** first; the fields below them follow.
-- The pencil on a row opens that runtime's form; **Done** closes it. Fields of the
-  active runtime reconnect as you type (after a short pause); fields of another
-  runtime are only saved.
-- **Problems** under the form names anything still missing, such as an SSH
-  host or a remote vault path.
-- The plug on a row makes that runtime active; on the active one it reconnects.
-- The bin removes a runtime after asking. Its pinned agents are forgotten, and
-  terminal tabs opened on it say the runtime is no longer configured. The last
-  runtime cannot be removed.
+**Settings → Gjetr → Runtimes** lists the runtimes in the switcher's order.
+A row says what the runtime is and where, marks the active one **Active**,
+and carries a warning mark while it has a problem. A row opens that
+runtime's page.
+
+- **Add runtime**, the + in the list's header, creates a herdr runtime over
+  SSH and opens its page. Change **Kind** and **Target** first; the fields
+  below them follow.
+- Fields of the active runtime reconnect as you type (after a short pause);
+  fields of another runtime are only saved. Renaming never reconnects.
+- **Problems** on the page names anything still missing, such as an SSH host
+  or a remote vault path, as you type.
+- **Use this runtime** on the page makes it active; on the active one the
+  same row is **Reconnect**.
+- **Order** moves it up or down the list, which is the order the switcher
+  shows. With a row of the list focused, Alt+Up and Alt+Down do the same.
+- **Remove runtime** removes it after asking, as does Delete with its row
+  focused. Its pinned agents are forgotten, and terminal tabs opened on it
+  say the runtime is no longer configured. The last runtime cannot be
+  removed.
 
 A runtime keeps its identity when you edit it: terminal tabs and pins stay
 attached to it whatever you change, the host included.
@@ -315,7 +324,7 @@ runtime's own connection: for an SSH runtime, on the remote host.
 
 1. Make the herdr-core runtime active.
 2. Run **Install or remove the Claude session hook** from the command palette,
-   or press **Review** on **Claude session hook** in the runtime's form,
+   or press **Review** on **Claude session hook** on the runtime's page,
    which also shows whether it is installed, outdated or absent.
 3. The modal shows the exact script and the exact `SessionStart` entry, and
    where they go: `$CLAUDE_CONFIG_DIR` as the core's environment has it, else

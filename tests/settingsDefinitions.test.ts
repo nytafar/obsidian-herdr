@@ -5,9 +5,10 @@
  * holds), the one write path (a key is stored, normalised, saved, and its
  * effect runs, in that order), the key→effect table being total over the
  * controls the definitions name, and `docs/settings.md` naming every
- * setting. The runtime list and the agent CLI catalog are still their 0.7.1
- * builders inside `render` definitions; `settingsSections.test.ts` covers
- * the builders, this file that the tab draws them.
+ * setting. The agent CLI catalog is still its 0.7.1 builder inside a
+ * `render` definition; `settingsSections.test.ts` covers the builder, this
+ * file that the tab draws it. The runtime list and its pages (#178) are
+ * covered in `settingsRuntimes.test.ts`.
  */
 
 import { readFileSync } from 'node:fs';
@@ -29,6 +30,9 @@ import {
 	type SettingsHost,
 } from '../src/settingsTab/effects';
 import type { ListCallbacks } from '../src/settingsTab/lists';
+import { parseRuntimeKey } from '../src/settingsTab/runtimeKeys';
+import type { RuntimesHost } from '../src/settingsTab/runtimes';
+import { quietRuntimes } from './fixtures/runtimesHost';
 import { HerdrSettingTab, settingDefinitions } from '../src/settingsTab/tab';
 import type HerdrPlugin from '../src/main';
 
@@ -50,6 +54,7 @@ function hostRecorder(): { calls: string[]; host: SettingsHost } {
 			refreshFolderHoverButton: () => calls.push('refreshFolderHoverButton'),
 			applyTerminalSetting: (setting) => calls.push(`applyTerminalSetting:${setting}`),
 			refreshNativeViews: () => calls.push('refreshNativeViews'),
+			refreshRuntimes: () => calls.push('refreshRuntimes'),
 		},
 	};
 }
@@ -58,20 +63,14 @@ function hostRecorder(): { calls: string[]; host: SettingsHost } {
 function quietLists(): ListCallbacks {
 	return {
 		save: async () => undefined,
-		saveAndReconnect: async () => undefined,
 		redisplay: () => undefined,
 		refreshAgentList: () => undefined,
-		activateRuntime: async () => undefined,
-		refreshRuntimes: () => undefined,
-		kindUnavailable: () => null,
-		editingRuntime: () => null,
-		editRuntime: () => undefined,
 		confirm: async () => true,
 	};
 }
 
 function definitionsOf(settings: HerdrSettings, renderStatus: (el: HTMLElement) => void = () => undefined) {
-	return settingDefinitions(() => settings, renderStatus, quietLists());
+	return settingDefinitions(() => settings, renderStatus, quietLists(), quietRuntimes());
 }
 
 const isPage = (item: SettingDefinitionItem): item is SettingDefinitionPage =>
@@ -138,7 +137,36 @@ describe('the layout (#120)', () => {
 		}
 		expect(Object.fromEntries(byPage)).toEqual({
 			'': ['Connection status'],
-			Runtimes: ['Runtimes', 'Extra PATH entries'],
+			Runtimes: ['Extra PATH entries'],
+			// The one runtime's page, inside the runtime list (#178).
+			Local: [
+				'Name',
+				'Kind',
+				'Target',
+				'Socket path',
+				'Herdr binary',
+				'Workspace ID',
+				'SSH host',
+				'Remote socket path',
+				'Remote herdr binary',
+				'Remote vault path',
+				'Workspace ID',
+				'Hc binary',
+				'Space',
+				'SSH host',
+				'Remote hc binary',
+				'Remote vault path',
+				'Space',
+				'Claude binary',
+				'Permission mode',
+				'Terminal view',
+				'Claude session hook',
+				'Default agent',
+				'Problems',
+				'Reconnect',
+				'Order',
+				'Remove runtime',
+			],
 			Agents: [
 				'Agent CLIs',
 				'Agent name pattern',
@@ -269,10 +297,11 @@ describe('the key→effect table', () => {
 		'notifications.done.os': [],
 	};
 
+	/** The table's keys; a runtime page's `runtimes.<id>.<field>` keys have their own tests. */
 	const controlKeys = (): string[] =>
 		flatten(definitionsOf(settingsOf()))
 			.map(({ def }) => keyOf(def))
-			.filter((key): key is string => key !== null);
+			.filter((key): key is string => key !== null && parseRuntimeKey(key) === null);
 
 	it('has an effect for every control the definitions name, and nothing else', () => {
 		const keys = controlKeys();
@@ -369,13 +398,6 @@ describe('the parts still drawn imperatively', () => {
 		expect(setting.settingEl.classes).toContain('herdr-settings-status');
 	});
 
-	it('draws the 0.7.1 runtime list inside the Runtimes page (until #178)', () => {
-		const items = definitionsOf(settingsOf());
-		const setting = rendered(definitionNamed(items, 'Runtimes'));
-		expect(setting.settingEl.emptied).toBe(1);
-		expect(settingNames(setting.settingEl)).toEqual(['Local', 'Add runtime']);
-	});
-
 	it('draws the 0.7.1 agent CLI catalog inside the Agents page (until #179)', () => {
 		const items = definitionsOf(settingsOf());
 		const setting = rendered(definitionNamed(items, 'Agent CLIs'));
@@ -411,22 +433,28 @@ describe('the tab', () => {
 		expect(calls).toEqual(['save', 'refreshAgentList']);
 	});
 
-	it('draws the open page again when a runtime’s form opens, keeping which one', () => {
+	it('tells a runtime page’s rows about a write to its runtime, and redraws the page for a kind', async () => {
 		const settings = settingsOf();
-		const { tab } = tabOf(settings);
-		const list = definitionNamed(tab.getSettingDefinitions(), 'Runtimes') as SettingDefinitionRender;
-		const first = new Setting({});
-		list.render(first as never, {} as never);
-		// The pencil on the local runtime's row.
-		const pencil = builtSettings(first.settingEl)
-			.find((row) => row.name === 'Local')
-			?.components.find((component) => 'tooltip' in component && component.tooltip === 'Edit runtime');
-		(pencil as { click(): unknown }).click();
-		expect((tab as unknown as { updates: number }).updates).toBe(1);
+		const { tab, calls } = tabOf(settings);
+		const heard: string[] = [];
+		const runtimes = (tab as unknown as { runtimesHost(lists: unknown): RuntimesHost })
+			.runtimesHost({});
+		const stop = runtimes.onRuntimeWrite((id, field) => heard.push(`${id}.${field}`));
 
-		const again = new Setting({});
-		list.render(again as never, {} as never);
-		expect(settingNames(again.settingEl)).toContain('Edit Local');
+		await tab.setControlValue('runtimes.local.workspace', 'w7');
+		expect(settings.runtimes[0]?.workspace).toBe('w7');
+		// The active runtime: a connection field reconnects.
+		expect(calls).toEqual(['save', 'reconnect']);
+		expect(heard).toEqual(['local.workspace']);
+		// Typing redraws nothing: the field keeps its focus.
+		expect((tab as unknown as { updates: number }).updates).toBe(0);
+
+		await tab.setControlValue('runtimes.local.kind', 'herdr-core');
+		expect((tab as unknown as { updates: number }).updates).toBe(1);
+		stop();
+		await tab.setControlValue('runtimes.local.name', 'Laptop');
+		expect(heard).toEqual(['local.workspace', 'local.kind']);
+		expect(tab.getControlValue('runtimes.local.name')).toBe('Laptop');
 	});
 });
 
