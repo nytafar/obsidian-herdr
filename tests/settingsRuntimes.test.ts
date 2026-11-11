@@ -407,18 +407,58 @@ describe('a runtime’s page', () => {
 		expect(calls).toEqual(['save', 'refreshRuntimes', 'update']);
 	});
 
-	it('removes the runtime from its page, then goes back to the list', async () => {
+	/** The page's destructive Remove button, as the agent CLI catalog's entries have. */
+	const removeButton = (page: RuntimePage): ButtonComponent => {
+		const { setting } = rendered(named(page, 'Remove runtime'));
+		const button = setting.components.find(
+			(component): component is ButtonComponent => component instanceof ButtonComponent && component.text === 'Remove',
+		);
+		if (!button) throw new Error('no Remove button');
+		return button;
+	};
+
+	it('removes the runtime from its page after asking, then goes back to the list where the build can', async () => {
 		const settings = twoRuntimes();
-		const { calls, host } = recordRuntimesHost();
-		const remove = named(pageOf(settings, host, XL), 'Remove runtime') as SettingDefinitionAction;
-		expect(valueOf(remove.disabled, false)).toBe(false);
-		remove.action({} as HTMLElement, 0);
+		const { calls, host } = recordRuntimesHost({ canOpenPages: true });
+		const remove = removeButton(pageOf(settings, host, XL));
+		expect(remove.warning).toBe(true);
+		expect(remove.disabled).toBe(false);
+		remove.click();
 		await vi.waitFor(() => expect(calls).toContain('openPage:Runtimes'));
 		expect(settings.runtimes.map((runtime) => runtime.id)).toEqual(['local']);
 		expect(calls).toEqual(['confirm', 'save', 'refreshRuntimes', 'update', 'openPage:Runtimes']);
+		// It went back: no page is kept to say it was removed.
+		expect(host.removed.size).toBe(0);
 
-		const last = named(pageOf(settings, host, 'local'), 'Remove runtime') as SettingDefinitionAction;
-		expect(valueOf(last.disabled, false)).toBe(true);
+		expect(removeButton(pageOf(settings, host, 'local')).disabled).toBe(true);
+	});
+
+	it('leaves a removed runtime’s page saying so where the build cannot go back', async () => {
+		const settings = twoRuntimes();
+		const { calls, host } = recordRuntimesHost();
+		removeButton(pageOf(settings, host, XL)).click();
+		await vi.waitFor(() => expect(calls).toContain('update'));
+		expect(calls).toEqual(['confirm', 'save', 'refreshRuntimes', 'update']);
+		// Still found by its id, hidden from the list, saying what happened.
+		const gone = pageOf(settings, host, XL);
+		expect(gone).toMatchObject({ name: 'xl', visible: false });
+		expect(shown(gone.items ?? []).map((def) => def.name)).toEqual(['Removed']);
+		// A new runtime never takes its id while the page may be open.
+		listOf(settings, host).addItem?.action({} as HTMLElement);
+		await vi.waitFor(() => expect(settings.runtimes).toHaveLength(2));
+		expect(settings.runtimes[1]?.id).not.toBe(XL);
+		// The rows the list hands back are still the runtimes drawn.
+		expect((listOf(settings, host).items ?? []).at(-1)).toMatchObject({ id: XL, visible: false });
+	});
+
+	it('does not ask to remove a runtime the user declined to remove', async () => {
+		const settings = twoRuntimes();
+		const { calls, host } = recordRuntimesHost({ confirm: false, canOpenPages: true });
+		removeButton(pageOf(settings, host, XL)).click();
+		await vi.waitFor(() => expect(calls).toContain('confirm'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(calls).toEqual(['confirm']);
+		expect(settings.runtimes).toHaveLength(2);
 	});
 });
 
@@ -511,6 +551,30 @@ describe('settings search', () => {
 		settings.runtimes.push(claude);
 		expect(search(settings, 'socket path')).toEqual(['Local', 'xl', 'Claude here']);
 		expect(search(settings, 'ssh host')).toEqual(['Local', 'xl', 'Claude here']);
+	});
+
+	it('finds every runtime page by "permission mode", which only a Claude runtime shows', () => {
+		const settings = twoRuntimes();
+		settings.runtimes.push({ ...newRuntime('claude', 'local', []), name: 'Claude here' });
+		expect(search(settings, 'permission mode')).toEqual(['Local', 'xl', 'Claude here']);
+	});
+});
+
+describe('a runtime’s Name', () => {
+	const placeholderOf = (page: RuntimePage): string | undefined => {
+		const def = named(page, 'Name');
+		return 'control' in def && def.control?.type === 'text' ? def.control.placeholder : undefined;
+	};
+
+	it('shows the name derived from kind, target and host, read when the row is drawn', () => {
+		const settings = twoRuntimes();
+		const { host } = recordRuntimesHost();
+		const xl = pageOf(settings, host, XL);
+		expect(placeholderOf(pageOf(settings, host, 'local'))).toBe('Local herdr');
+		expect(placeholderOf(xl)).toBe('herdr on lasse@xl');
+		settings.runtimes[1]!.host = 'lasse@xl2';
+		settings.runtimes[1]!.kind = 'herdr-core';
+		expect(placeholderOf(xl)).toBe('herdr-core on lasse@xl2');
 	});
 });
 

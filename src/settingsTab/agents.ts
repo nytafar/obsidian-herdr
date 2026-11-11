@@ -15,16 +15,20 @@ import {
 	type HerdrSettings,
 } from '../settings';
 import type { ControlKey } from './effects';
-import type { CatalogKey } from './agentCatalog';
+import { AGENTS_PAGE, type CatalogKey } from './agentCatalog';
 
 export function agentsPage(
 	settings: () => HerdrSettings,
 	catalog: SettingDefinitionItem<CatalogKey>[],
+	catalogStatus: () => 'warning' | null,
 ): SettingDefinitionPage<ControlKey | CatalogKey> {
 	return {
 		type: 'page',
-		name: 'Agents',
+		name: AGENTS_PAGE,
 		desc: 'The agent CLIs the + button offers, and how new agents are named and placed.',
+		// Marks the entry while one of the user's agent CLIs needs attention, as
+		// its row does, the way the Runtimes entry marks a runtime's problem.
+		status: catalogStatus,
 		items: [
 			...catalog,
 			{
@@ -44,7 +48,8 @@ export function agentsPage(
 					{
 						name: 'Share a herdr tab between agents in the same folder',
 						desc: 'On: a second agent started in a folder splits that folder’s herdr tab instead of opening another tab. Off: every agent gets its own tab, matching how herdr is navigated. Group the agent list by folder to keep a folder’s agents together either way.',
-						aliases: ['split', 'folder tab'],
+						// The cap below is hidden while this is off, and search skips hidden rows.
+						aliases: ['split', 'folder tab', 'panes per herdr tab'],
 						control: { type: 'toggle', key: 'splitIntoFolderTab' },
 					},
 					{

@@ -9,20 +9,28 @@ All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 
 - **Requires Obsidian 1.13.4 or later.** Older Obsidian keeps 0.7.1, the last
   release for it.
-- **Settings are searchable**: Obsidian's settings search finds every Gjetr
-  setting by name, "terminal engine" or "status bar counts" for example.
+- **Settings are searchable**: Obsidian's settings search finds a Gjetr
+  setting by name, "terminal engine" or "status bar counts" for example. A
+  field hidden by another choice is found through the row or page holding
+  it: "permission mode" finds the runtime pages.
 - **Settings in pages**: the tab opens on one line, "Active runtime: Local ·
   connected", then one page each for Runtimes, Agents, Views, Terminal, and
   Agent list and notifications. The entries show the default view and the
   terminal engine. Every setting keeps its stored value and what it does.
 - **The connection's details moved to the active runtime's page**, at its
   top, next to the fields they are about; the root line opens that page and
-  warns while the runtime is not connected.
+  warns while the runtime is not connected. The Status group holds the live
+  connection only; a missing remote vault path or a kind this build cannot
+  run is under the page's Problems, once.
 - **Runtimes and agent CLIs are lists with a page each**: + adds a runtime and
   opens its page, which shows only the fields its kind and target use, and
   holds use or reconnect, order and remove; your agent CLIs get a page each
-  beside the built-in list. Delete removes after asking, and a page whose
-  runtime or entry you remove leaves for the list, or says it was removed.
+  beside the built-in list. Adding opens the new page in both lists; a red
+  **Remove** on the page, or Delete on the focused row, removes after
+  asking, and the page goes back to the list. The Agents entry carries a
+  warning mark while one of your agent CLIs needs attention, as Runtimes does
+  for a runtime. A runtime added by **Get started** or made active from the
+  agent list shows in the list at once.
 - **The agent list opens when you turn the plugin on**, so a new user finds
   it without the command palette. It opens only then, not on every start, so
   a list you closed stays closed.

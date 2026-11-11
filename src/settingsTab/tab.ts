@@ -16,6 +16,7 @@ import { readSetting, writeSetting, type TabKey } from './effects';
 import type { ListCallbacks } from './lists';
 import { AgentCatalogSession, isCatalogKey, readCatalogSetting, writeCatalogSetting, type CatalogKey } from './agentCatalog';
 import { parseRuntimeKey, type RuntimeField } from './runtimeKeys';
+import { runtimeById } from '../runtimes';
 import { activeRuntimeLine, redrawsPage, runtimesPage, type RuntimesHost } from './runtimes';
 import { agentsPage } from './agents';
 import { viewsPage } from './views';
@@ -36,12 +37,15 @@ export function settingDefinitions(
 	return [
 		activeRuntimeLine(runtimes),
 		runtimesPage(settings, runtimes),
-		agentsPage(settings, catalog.definitions()),
+		agentsPage(settings, catalog.definitions(), () => catalog.status()),
 		viewsPage(settings),
 		terminalPage(settings),
 		agentListPage(),
 	];
 }
+
+/** How long a host field rests before the page is drawn again with the derived name. */
+const HOST_REDRAW_MS = 800;
 
 export class HerdrSettingTab extends PluginSettingTab {
 	private readonly plugin: HerdrPlugin;
@@ -50,6 +54,10 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private readonly runtimeWrites = new Set<(id: string, field: RuntimeField) => void>();
 	/** The agent CLI catalog of this opening of the tab: its machine probes (issue #179). */
 	private readonly catalog: AgentCatalogSession;
+	/** Runtimes removed from their own page in this opening, where the build cannot leave a page. */
+	private readonly removedRuntimes = new Map<string, string>();
+	/** The pending redraw after a host is typed into a runtime with no name (its Name placeholder). */
+	private hostRedraw: number | null = null;
 
 	constructor(app: App, plugin: HerdrPlugin, connection: ConnectionStatusSource) {
 		super(app, plugin);
@@ -68,6 +76,8 @@ export class HerdrSettingTab extends PluginSettingTab {
 			},
 			confirm: (text) => new ConfirmModal(this.app, { ...text, warning: true }).ask(),
 			update: () => this.update(),
+			openPage: (path) => this.openPage(path),
+			canOpenPages: () => this.pageOpener() !== null,
 		});
 	}
 
@@ -92,12 +102,53 @@ export class HerdrSettingTab extends PluginSettingTab {
 		if (!runtime) return;
 		for (const listener of [...this.runtimeWrites]) listener(runtime.id, runtime.field);
 		if (redrawsPage(runtime.field)) this.update();
+		else if (runtime.field === 'host' && runtimeById(this.plugin.settings, runtime.id)?.name.trim() === '') {
+			this.redrawAfterTyping();
+		}
 	}
 
-	/** Closing the tab ends its machine probes: the next opening asks again. */
+	/**
+	 * Closing the settings ends this opening: its machine probes, the pages
+	 * of what was removed. Obsidian calls `hide()` also when it re-opens the
+	 * tab to show one of its pages (`openPagePath`, which the tab uses after
+	 * adding or removing), and then makes the tab the active one again at
+	 * once, so the opening ends only if, a microtask later, the tab is no
+	 * longer the settings modal's active one. That field is private: where it
+	 * cannot be read, the opening ends, as a real close would.
+	 */
 	hide(): void {
-		this.catalog.end();
 		super.hide();
+		void Promise.resolve().then(() => {
+			if (!this.stillShown()) this.endOpening();
+		});
+	}
+
+	/** Whether the settings modal still shows this tab; false where that cannot be told. */
+	private stillShown(): boolean {
+		const modal = (this.app as unknown as { setting?: unknown }).setting;
+		if (typeof modal !== 'object' || modal === null || !('activeTab' in modal)) return false;
+		return modal.activeTab === this;
+	}
+
+	private endOpening(): void {
+		this.catalog.end();
+		this.removedRuntimes.clear();
+		if (this.hostRedraw !== null) window.clearTimeout(this.hostRedraw);
+		this.hostRedraw = null;
+	}
+
+	/**
+	 * A runtime with no name is named after its host, and its Name field shows
+	 * that name as its placeholder, which is read when the row is drawn. So a
+	 * host typed into such a runtime redraws the page once typing pauses; the
+	 * field typed in keeps its focus and value through it.
+	 */
+	private redrawAfterTyping(): void {
+		if (this.hostRedraw !== null) window.clearTimeout(this.hostRedraw);
+		this.hostRedraw = window.setTimeout(() => {
+			this.hostRedraw = null;
+			this.update();
+		}, HOST_REDRAW_MS);
 	}
 
 	/** What a runtime page's default agent is handed (issue #125). */
@@ -125,6 +176,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			update: () => this.update(),
 			openPage: (path) => this.openPage(path),
 			canOpenPages: this.pageOpener() !== null,
+			removed: this.removedRuntimes,
 			connection: this.connection,
 			onRuntimeWrite: (listener) => {
 				this.runtimeWrites.add(listener);

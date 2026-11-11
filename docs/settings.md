@@ -1,8 +1,14 @@
 # Settings
 
 All under **Settings → Gjetr**, which needs Obsidian 1.13.4 or later. Sentence
-case names match the UI, and Obsidian's settings search finds every setting
-below by its name.
+case names match the UI.
+
+Obsidian's settings search finds a setting by its name, its description or
+the other words it is known by, but only while it is shown: a field hidden
+because of another choice (a runtime's kind or target, a toggle that is off)
+is found through the page or the row that holds it. "Permission mode" finds
+the runtime pages, through their Kind, and "panes per herdr tab" finds
+**Share a herdr tab between agents in the same folder**.
 
 The tab opens on one line naming the active runtime, then one entry per
 page: Runtimes, Agents, Views, Terminal, and Agent list and notifications. An
@@ -18,7 +24,7 @@ runtime list marks the active runtime and the ones with problems.
 
 | Setting | Meaning |
 |---|---|
-| Active runtime | "Active runtime: Local · connected", or "connecting" or "not connected", as a warning while it is not connected or has an error, a protocol mismatch or a kind this build cannot run. Click it to open that runtime's page, where the Status group says why. It follows the connection as it changes. |
+| Active runtime | "Active runtime: Local · connected", or "connecting" or "not connected", as a warning while it is not connected or has an error, a protocol mismatch or a kind this build cannot run. Click it to open that runtime's page, where the Status group says why, or Problems where its setup is the cause. It follows the connection as it changes. |
 
 ## Runtimes
 
@@ -35,11 +41,14 @@ when it has a problem. A row opens the runtime's own page. The + in the
 list's header (**Add runtime**) adds a herdr runtime over SSH and opens its
 page. With a row focused, Delete removes the runtime after asking and
 Alt+Up or Alt+Down moves it; the same three are rows of the runtime's page.
+A runtime added or made active elsewhere (**Get started**, the agent list's
+switcher, **Gjetr: Switch runtime**) shows in the list at once.
 
 A runtime's page shows the fields its kind and target use: changing **Kind**
-or **Target** shows and hides them. Settings search finds every field by its
-name, and finds the runtime pages by "socket path", "SSH host", "binary" or
-"workspace" whatever their kind.
+or **Target** shows and hides them. Settings search finds the fields shown
+now by their names, and finds every runtime page by "socket path", "SSH
+host", "binary", "workspace", "permission mode" or "default agent", whatever
+its kind.
 
 ### Status
 
@@ -48,13 +57,13 @@ have none, and say "Not active" by **Use this runtime**.
 
 | Setting | Meaning |
 |---|---|
-| Connection | Which binary was found, which socket or connection answers (and the SSH tunnel), the server version and protocol, mismatches, which workspace or space matched the vault, and the last error. Every setup problem shows up here first; [troubleshooting.md](troubleshooting.md) explains the messages. It follows the connection as it changes. |
+| Connection | The live connection: which binary was found, which socket or connection answers (and the SSH tunnel), the server version and protocol, mismatches, which workspace or space matched the vault, and the last error. What the runtime's setup lacks is under **Problems** instead. [troubleshooting.md](troubleshooting.md) explains the messages. It follows the connection as it changes. |
 
 ### Fields
 
 | Setting | Meaning |
 |---|---|
-| Name | What the switcher, the status bar and the list call it. Empty shows a name derived from kind and host. |
+| Name | What the switcher, the status bar and the list call it. Empty uses a name derived from kind and host, which the empty field shows greyed. |
 | Kind | Herdr, herdr-core (hc), or Claude, run by Obsidian, which starts Claude Code itself with no multiplexer. |
 | Target | This machine or an SSH host. Not shown for Claude run by Obsidian, which is this machine only. |
 | Claude binary | Claude run by Obsidian only. An override for auto-discovery of `claude`, empty to search. |
@@ -67,10 +76,11 @@ have none, and say "Not active" by **Use this runtime**.
 | Workspace ID / Space | Pins the workspace (herdr) or space (herdr-core). Empty resolves by the vault folder's name, then by working directories inside the vault. |
 | Claude session hook | herdr-core only. Whether the hook that lets the native view follow Claude in its terminals is installed on the runtime's machine, and **Review** to install, update or remove it. The active runtime only. See [runtimes.md](runtimes.md#the-claude-session-hook). |
 | Default agent | herdr and herdr-core only. What the + button and **Start agent here** start on this runtime. **First installed** (the default) is the first agent CLI of its catalog found on its machine; a choice it cannot start falls back to it. |
-| Problems | What the runtime still lacks, or "None.". Updated as you type. |
+| Problems | What the runtime's setup lacks, such as an SSH host or the remote vault path folder actions need, or a kind this build cannot run; else "None.". Updated as you type. |
 | Use this runtime / Reconnect | Makes the runtime active, as the switcher does; on the active one, connects again. |
 | Order | Its place in the list and the switcher, with buttons to move it up or down. |
-| Remove runtime | Removes it after asking, and goes back to the list. Its pinned agents are forgotten. The last runtime stays. |
+| Remove runtime | **Remove** takes it out after asking, and goes back to the list; on an Obsidian without a way to leave a page, the page says it was removed instead. Its pinned agents are forgotten. The last runtime stays. |
+| Add runtime | The + in the list's header. Adds a herdr runtime over SSH and opens its page. |
 
 Fields of the active runtime reconnect as you type, after a short pause;
 fields of another runtime are only saved. Renaming never reconnects.
@@ -103,15 +113,15 @@ status bar names the active one.
 
 | Setting | Meaning |
 |---|---|
-| Add agent CLI | The + in the list's heading adds an entry at the end of the list; open it to fill it in. |
-| Your agent CLI row | One per entry, opening its page. It shows on every runtime, marked as needing attention (with the reason in its line) where it cannot start, and "not found" (still startable) where its command was not found. With the row focused, Delete or Backspace removes it, after asking. |
+| Add agent CLI | The + in the list's heading adds an entry at the end of the list and opens its page to fill it in. |
+| Your agent CLI row | One per entry, opening its page. It shows on every runtime, marked as needing attention (with the reason in its line) where it cannot start, and "not found" (still startable) where its command was not found. The Agents entry carries a warning mark while one needs attention. With the row focused, Delete or Backspace removes it, after asking. |
 | Name | On an entry's page. What the menu calls it. Empty shows the command. |
 | Agent | On an entry's page. Which agent it is: what herdr starts and detects, and the row's mark. |
 | Command | On an entry's page. Empty runs the agent's own program; a name or a path, `~/` is the home of the machine it runs on. |
 | Arguments | On an entry's page. Plain words, separated by spaces. |
 | Hide from the menu | On an entry's page. Keeps it out of the + menu on every runtime, as the eye does for a built-in. |
 | Where it starts | On an entry's page. The runtime kinds that can start it, and why the others cannot. |
-| Remove agent CLI | On an entry's page. Takes it out, after asking, with every runtime's default that named it. The page then says it was removed. |
+| Remove agent CLI | On an entry's page. **Remove** takes it out, after asking, with every runtime's default that named it, and goes back to the list; on an Obsidian without a way to leave a page, the page says it was removed instead. |
 
 Typing on an entry's page checks nothing; going back to the Agents page checks a command the machines were not asked about yet.
 
@@ -122,7 +132,7 @@ Typing on an entry's page checks nothing; going back to the Agents page checks a
 | Agent name pattern | Name for started agents. `{folder}`, `{vault}` and `{n}` are replaced; `{n}` counts past names already taken anywhere in herdr. |
 | Open terminal after starting an agent | Opens the new agent's terminal tab at once. |
 | Share a herdr tab between agents in the same folder | On: a second agent in a folder splits that folder's herdr tab. Off: every agent gets its own tab, matching how herdr is navigated. |
-| Panes per herdr tab | Shown while sharing is on. How many agents share a tab before the next opens a new one. 1 to 4, default 2. |
+| Panes per herdr tab | Shown while sharing is on, and found by search through the row above. How many agents share a tab before the next opens a new one. 1 to 4, default 2. |
 
 ## Views
 

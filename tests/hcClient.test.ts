@@ -252,6 +252,14 @@ describe('the herdr-core kind', () => {
 		const lines = hcStatusLines(coordinator.current as never).map((line) => line.text);
 		expect(lines[0]).toBe('Transport: ssh -T asher hc connect');
 		expect(lines[1]).toBe('Core: oma, version 0.1.18, generation 1');
+		// A missing remote vault path is the page's Problems row, not a status line.
+		const current = coordinator.current as unknown as { client: unknown; scope: unknown };
+		const noVault = hcStatusLines({
+			client: current.client,
+			scope: current.scope,
+			endpoint: { runtime: { ...ASHER, remoteVaultPath: '' } },
+		} as never);
+		expect(noVault.some((line) => /folder actions|vault path/i.test(line.text))).toBe(false);
 		coordinator.dispose();
 	});
 

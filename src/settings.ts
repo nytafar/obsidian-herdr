@@ -6,7 +6,6 @@ import type { RowClickAction } from './views/rowModel';
 import {
 	defaultRuntimeSettings,
 	issueSentence,
-	remoteVaultPathIssue,
 	runtimeDisplayName,
 	type RuntimeConfig,
 	type RuntimeSettings,
@@ -624,8 +623,10 @@ export function renderStatusLines(el: HTMLElement, lines: readonly StatusLine[])
 /**
  * The active runtime's Status group (PRD M2, M3, M6, S5): tunnel, binary,
  * socket, server, mismatches, workspace and errors. The page is the
- * runtime's, so it is not named. Pure: `main.ts` gathers the state and this
- * decides what to say about it.
+ * runtime's, so it is not named. The live connection only: what the
+ * runtime's setup lacks or this build cannot run (a remote vault path, an
+ * unavailable kind) is the page's Problems row, and is not said again here.
+ * Pure: `main.ts` gathers the state and this decides what to say about it.
  */
 export function connectionDetails(status: ConnectionStatus): StatusLine[] {
 	const lines: StatusLine[] = [];
@@ -634,7 +635,7 @@ export function connectionDetails(status: ConnectionStatus): StatusLine[] {
 	};
 	const { discovery, runtime } = status;
 	if (status.unavailable) {
-		line(issueSentence(status.unavailable), true);
+		line('Not connected. Problems, below, says why.', true);
 		return lines;
 	}
 	if (status.details) {
@@ -666,10 +667,6 @@ export function connectionDetails(status: ConnectionStatus): StatusLine[] {
 				? `Remote terminals: ssh -T ${runtime.host} ${remoteBinary}`
 				: `Remote terminals: ssh -T ${runtime.host}, herdr searched for on the remote host`,
 		);
-		// Without it the folder actions refuse rather than send a local path to
-		// the remote host (see `remoteVaultPathIssue`).
-		const issue = remoteVaultPathIssue(runtime);
-		if (issue) line(`Folder actions are off: ${issue}.`, true);
 	}
 	line(`Socket: ${status.socketPath}`);
 	// `discovery.status` describes the *local* server. Over SSH that is the

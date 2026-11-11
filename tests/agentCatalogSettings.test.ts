@@ -45,6 +45,7 @@ function hostOf(
 		refresh?: (runtimeId: string, again?: boolean) => Promise<boolean>;
 		machines?: () => MachineProbes;
 		confirm?: boolean;
+		canOpenPages?: boolean;
 	} = {},
 ): { host: AgentCatalogHost; calls: string[] } {
 	const calls: string[] = [];
@@ -76,6 +77,8 @@ function hostOf(
 			return options.confirm ?? true;
 		},
 		update: () => calls.push('update'),
+		openPage: (path) => calls.push(`openPage:${path.join('/')}`),
+		canOpenPages: () => options.canOpenPages ?? false,
 	};
 	return { host, calls };
 }
@@ -210,6 +213,14 @@ describe('the agent CLI catalog’s lists', () => {
 		expect(page?.status).toBe('warning');
 	});
 
+	it('marks the Agents entry while a user entry needs attention, as the Runtimes entry marks a problem', () => {
+		const settings = settingsOf({ agentProfiles: [structuredClone(WORK_CODEX)] });
+		const session = new AgentCatalogSession(hostOf(settings).host);
+		expect(session.status()).toBeNull();
+		settings.agentProfiles[0]!.command = '~/bin/my-codex';
+		expect(session.status()).toBe('warning');
+	});
+
 	it('edits a user entry through its keys, and its page follows', async () => {
 		const settings = settingsOf({ agentProfiles: [structuredClone(WORK_CODEX)] });
 		const { host } = hostOf(settings);
@@ -259,7 +270,22 @@ describe('the agent CLI catalog’s lists', () => {
 		expect(settings.agentProfiles).toHaveLength(2);
 		expect(settings.agentProfiles[1]).toMatchObject({ name: '', agent: 'claude', command: '', args: [] });
 		expect(settings.agentProfiles[1]?.id).toMatch(/^user-/);
-		expect(calls).toEqual(['saved', 'update']);
+		// Its page is opened where the build can; otherwise it simply appears.
+		expect(calls).toEqual(['saved', 'update', `openPage:Agents/${settings.agentProfiles[1]?.id}`]);
+	});
+
+	it('goes back to the list after removing an entry from its own page, where the build can', async () => {
+		const settings = settingsOf({ agentProfiles: [structuredClone(WORK_CODEX)] });
+		const { host, calls } = hostOf(settings, { canOpenPages: true });
+		const session = new AgentCatalogSession(host);
+		const [page] = pagesOf(session.definitions());
+		const remove = buttonOf(drawn(fieldNamed(page as Page, 'Remove agent CLI')), (button) => button.text === 'Remove');
+		expect(remove.warning).toBe(true);
+		await remove.click();
+		await settle();
+		expect(settings.agentProfiles).toEqual([]);
+		expect(calls).toEqual(['confirm:Remove "Work codex"?', 'saved', 'update', 'openPage:Agents']);
+		expect(pagesOf(session.definitions())).toEqual([]);
 	});
 
 	it('removes a user entry only after asking, with its default and hidden mark', async () => {
@@ -303,11 +329,13 @@ describe('the agent CLI catalog’s lists', () => {
 	it('removes a focused entry with Delete through the list, after asking', async () => {
 		const settings = settingsOf({ agentProfiles: [structuredClone(WORK_CODEX)] });
 		const { host, calls } = hostOf(settings);
-		const list = listNamed(new AgentCatalogSession(host).definitions(), 'Your agent CLIs');
-		list.onDelete?.(0);
+		const session = new AgentCatalogSession(host);
+		listNamed(session.definitions(), 'Your agent CLIs').onDelete?.(0);
 		await settle();
 		expect(settings.agentProfiles).toEqual([]);
-		expect(calls[0]).toBe('confirm:Remove "Work codex"?');
+		expect(calls).toEqual(['confirm:Remove "Work codex"?', 'saved', 'update']);
+		// The list is what is open, so there is no page to keep.
+		expect(pagesOf(session.definitions())).toEqual([]);
 	});
 });
 

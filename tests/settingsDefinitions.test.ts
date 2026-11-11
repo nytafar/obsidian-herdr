@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
 	SettingDefinition,
 	SettingDefinitionItem,
+	SettingDefinitionList,
 	SettingDefinitionPage,
 	SettingDefinitionRender,
 } from 'obsidian';
@@ -74,6 +75,8 @@ function quietCatalog(settings: HerdrSettings): AgentCatalogSession {
 		saved: async () => undefined,
 		confirm: async () => true,
 		update: () => undefined,
+		openPage: () => undefined,
+		canOpenPages: () => false,
 	});
 }
 
@@ -229,6 +232,20 @@ describe('the layout (#120)', () => {
 		// Read at render time, so a change shows when the root is drawn again.
 		settings.terminalEngine = 'ghostty-web';
 		expect(valueOf(pageNamed(items, 'Terminal').displayValue)).toBe('Ghostty web');
+	});
+
+	it('marks the Agents entry while one of the user’s agent CLIs needs attention', () => {
+		const settings = settingsOf();
+		const items = definitionsOf(settings);
+		expect(valueOf(pageNamed(items, 'Agents').status)).toBeNull();
+		// A command of the user's own cannot start on the local herdr.
+		settings.agentProfiles = [{ id: 'user-a', name: 'Mine', agent: 'codex', command: '~/bin/mine', args: [] }];
+		expect(valueOf(pageNamed(items, 'Agents').status)).toBe('warning');
+	});
+
+	it('finds the panes-per-tab cap, hidden while sharing is off, through the sharing row', () => {
+		const share = definitionNamed(definitionsOf(settingsOf()), 'Share a herdr tab between agents in the same folder');
+		expect(share.aliases).toContain('panes per herdr tab');
 	});
 
 	it('shows the panes-per-tab cap only while agents share a tab', () => {
@@ -424,7 +441,7 @@ describe('the parts still drawn imperatively', () => {
 });
 
 describe('the tab', () => {
-	function tabOf(settings: HerdrSettings) {
+	function tabOf(settings: HerdrSettings, app: unknown = {}) {
 		const { calls, host } = hostRecorder();
 		const plugin = {
 			...host,
@@ -435,9 +452,75 @@ describe('the tab', () => {
 			nativeReachable: () => true,
 			agentCatalogs: { cachedProbeFor: () => null, refresh: async () => false },
 		};
-		const tab = new HerdrSettingTab({} as never, plugin as unknown as HerdrPlugin, fakeConnection());
+		const tab = new HerdrSettingTab(app as never, plugin as unknown as HerdrPlugin, fakeConnection());
 		return { tab, calls };
 	}
+
+	/** The parts of one opening of the settings a hide may end. */
+	const openingOf = (tab: HerdrSettingTab) => {
+		const inner = tab as unknown as { catalog: AgentCatalogSession; removedRuntimes: Map<string, string> };
+		const ended = vi.spyOn(inner.catalog, 'end');
+		inner.removedRuntimes.set('gone', 'Gone');
+		return { ended, removed: inner.removedRuntimes };
+	};
+	const microtask = (): Promise<void> => Promise.resolve().then(() => undefined);
+
+	it('keeps the opening when Obsidian re-opens the tab to show one of its pages', async () => {
+		// `openPagePath` re-opens the tab: `hide()`, then it is the active tab again at once.
+		const modal: { activeTab: unknown } = { activeTab: null };
+		const { tab } = tabOf(settingsOf(), { setting: modal });
+		modal.activeTab = tab;
+		const { ended, removed } = openingOf(tab);
+		tab.hide();
+		await microtask();
+		expect(ended).not.toHaveBeenCalled();
+		expect(removed.size).toBe(1);
+	});
+
+	it('ends the opening when the settings close or another tab opens', async () => {
+		const modal: { activeTab: unknown } = { activeTab: null };
+		const { tab } = tabOf(settingsOf(), { setting: modal });
+		const { ended, removed } = openingOf(tab);
+		modal.activeTab = tab;
+		tab.hide();
+		modal.activeTab = null;
+		await microtask();
+		expect(ended).toHaveBeenCalledOnce();
+		expect(removed.size).toBe(0);
+	});
+
+	it('ends the opening where it cannot tell whether the tab is still shown', async () => {
+		const { tab } = tabOf(settingsOf(), {});
+		const { ended } = openingOf(tab);
+		tab.hide();
+		await microtask();
+		expect(ended).toHaveBeenCalledOnce();
+	});
+
+	it('draws a runtime page again once a host is typed into a runtime with no name, for its Name placeholder', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('window', globalThis);
+		try {
+			const settings = settingsOf();
+			settings.runtimes.push({ ...settings.runtimes[0]!, id: 'rt-x', name: '', target: 'ssh', host: '' });
+			const { tab } = tabOf(settings);
+			const updates = (): number => (tab as unknown as { updates: number }).updates;
+			await tab.setControlValue('runtimes.rt-x.host', 'l');
+			await tab.setControlValue('runtimes.rt-x.host', 'lasse@xl');
+			expect(updates()).toBe(0);
+			vi.advanceTimersByTime(1000);
+			expect(updates()).toBe(1);
+
+			// A named runtime's Name shows its name, not the derived one: nothing to redraw.
+			settings.runtimes[1]!.name = 'XL';
+			await tab.setControlValue('runtimes.rt-x.host', 'lasse@xl2');
+			vi.advanceTimersByTime(1000);
+			expect(updates()).toBe(1);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
 
 	it('reads and writes the plugin’s settings through the table', async () => {
 		const settings = settingsOf();
@@ -489,15 +572,62 @@ describe('docs/settings.md', () => {
 			.map((line) => line.replace(/^#+\s*/, '').trim()),
 	);
 
+	/**
+	 * Settings that show every page's rows: a user agent CLI (its page's
+	 * fields), and a second runtime that is not active (its "Use this
+	 * runtime"), beside the active one ("Reconnect", Status).
+	 */
+	const everyRow = (): HerdrSettings =>
+		settingsOf({
+			runtimes: [
+				structuredClone(DEFAULT_SETTINGS.runtimes[0]!),
+				{ ...structuredClone(DEFAULT_SETTINGS.runtimes[0]!), id: 'rt-xl', name: 'xl', target: 'ssh', host: 'lasse@xl' },
+			],
+			agentProfiles: [{ id: 'user-a', name: 'Work codex', agent: 'codex', command: '', args: ['--profile', 'work'] }],
+		});
+
+	/** What the tab calls its settings: every row, and what the lists add. */
+	const tabNames = (items: readonly SettingDefinitionItem[]): Set<string> => {
+		const names = new Set(flatten(items).map(({ def }) => def.name));
+		const lists = (inner: readonly SettingDefinitionItem[]): void => {
+			for (const item of inner) {
+				if (!('type' in item)) continue;
+				if (item.type === 'list') {
+					const add = (item as SettingDefinitionList).addItem;
+					if (add) names.add(add.name);
+				}
+				if (item.type === 'page' || item.type === 'group' || item.type === 'list') lists(item.items ?? []);
+			}
+		};
+		lists(items);
+		return names;
+	};
+
+	/** Rows of the docs' tables that describe something other than a setting of the tab. */
+	const NOT_SETTINGS = new Set(['Pinned panes', 'Built-in agent CLI row', 'Your agent CLI row']);
+
+	it('walks a fixture with every kind of row', () => {
+		const names = tabNames(definitionsOf(everyRow()));
+		for (const name of ['Agent', 'Command', 'Arguments', 'Hide from the menu', 'Where it starts', 'Remove agent CLI']) {
+			expect(names.has(name), name).toBe(true);
+		}
+		expect(names.has('Use this runtime')).toBe(true);
+		expect(names.has('Reconnect')).toBe(true);
+	});
+
 	it('names every setting of the tab in a table', () => {
-		const missing = flatten(definitionsOf(settingsOf()))
-			.map(({ def }) => def.name)
-			.filter((name) => !documented.has(name));
+		const missing = [...tabNames(definitionsOf(everyRow()))].filter((name) => !documented.has(name));
 		expect(missing).toEqual([]);
 	});
 
+	it('has no table row for a setting the tab no longer has', () => {
+		const names = tabNames(definitionsOf(everyRow()));
+		const stale = [...documented].filter((name) => name && !names.has(name) && !NOT_SETTINGS.has(name));
+		expect(stale).toEqual([]);
+	});
+
 	it('has a section for every page and every group heading', () => {
-		const items = definitionsOf(settingsOf());
+		const items = definitionsOf(everyRow());
 		const missing = [...items.filter(isPage).map((page) => page.name), ...headings(items)].filter(
 			(name) => !docHeadings.has(name),
 		);

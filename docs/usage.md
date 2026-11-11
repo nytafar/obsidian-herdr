@@ -86,6 +86,6 @@ herdr client shares.
 **Settings → Gjetr** opens on a line naming the active runtime and whether
 it is connected; click it for that runtime's page, whose Status group says
 which binary was found, which socket or connection answers, the server
-version, and which workspace or space matched your vault. Every setup
-problem shows up there first;
+version, and which workspace or space matched your vault. What the
+runtime's setup still lacks is under Problems on the same page;
 [troubleshooting.md](troubleshooting.md) explains the messages.

@@ -528,6 +528,8 @@ export default class HerdrPlugin extends Plugin {
 
 	/** Pending reconnect after a connection setting changed, 0 when none. */
 	private reconnectTimer = 0;
+	/** The settings tab, told when the runtimes or the active one change from outside it. */
+	private settingTab: HerdrSettingTab | null = null;
 	private mismatch: ProtocolMismatch | null = null;
 	private connectError: string | null = null;
 	/** The published connection's scope has loaded since it was published. */
@@ -573,9 +575,8 @@ export default class HerdrPlugin extends Plugin {
 				sendOsNotification(title, body, () => void this.activateAgentList());
 			},
 		});
-		this.addSettingTab(
-			new HerdrSettingTab(this.app, this, this.connectionStatusSource()),
-		);
+		this.settingTab = new HerdrSettingTab(this.app, this, this.connectionStatusSource());
+		this.addSettingTab(this.settingTab);
 
 		// Agent kind marks must exist before the first row is drawn (issue #19);
 		// `addIcon` is global and idempotent, so once at load is enough.
@@ -758,6 +759,8 @@ export default class HerdrPlugin extends Plugin {
 		this.settings.activeRuntime = id;
 		await this.saveSettings();
 		this.refreshRuntimes();
+		// The tab's runtime list is read when its definitions are (the Active mark).
+		this.settingTab?.update();
 		await this.reconnect();
 	}
 
@@ -895,6 +898,7 @@ export default class HerdrPlugin extends Plugin {
 				this.settings.runtimes = [...this.settings.runtimes, runtime];
 				await this.saveSettings();
 				this.refreshRuntimes();
+				this.settingTab?.update();
 			},
 			switchRuntime: (id) => this.switchRuntime(id),
 			waitForRuntime: (id) => this.scopeReady(id),

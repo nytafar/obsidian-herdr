@@ -1250,8 +1250,11 @@ lives with what it describes. The root has one line, "Active runtime: <name>
 · connected" (or connecting, not connected), a warning when the connection is
 down or has an error, a mismatch or an unavailable kind, which opens that
 runtime's page; the active runtime's page opens on a Status group with the
-connection's full lines; the runtime list marks the active runtime and the
-runtimes with problems, and the Runtimes entry carries the same warning.
+live connection's full lines, and its Problems row holds what the setup lacks
+or the build cannot run (a missing remote vault path, an unavailable kind),
+which Status does not repeat; the runtime list marks the active runtime and
+the runtimes with problems, and the Runtimes entry carries the same warning,
+as the Agents entry does while a user agent CLI needs attention.
 `connectionSummary` and `connectionDetails` in `src/settings.ts` word the two,
 pure over the plugin's `ConnectionStatus`; both draw again when the plugin's
 `ConnectionStatusSource` says the connection changed (a published or retired
@@ -1263,7 +1266,19 @@ controls are keyed `runtimes.<id>.<field>` and written by
 `src/settingsTab/runtimeKeys.ts` through the same `writeSetting`; a write
 also tells the page's `render` rows (Problems), and a kind or target change
 calls `update()`, because sibling groups switched by `visible` hold the same
-field under other names.
+field under other names. The list's ids are taken when the definitions are
+built, so whatever changes the set of runtimes or the active one from
+outside the tab (Get started, the agent list's switcher, the Switch runtime
+command, all through `main.ts`) calls the tab's `update()` too; a Name
+keystroke does not. A runtime with no name shows its derived name as the Name
+field's placeholder, a getter read when the row is drawn; a host typed into
+such a runtime calls `update()` once typing pauses.
+
+Removing a runtime or a user agent CLI is the same in both lists: a
+destructive **Remove** on the item's page, after a confirm, then back to the
+list with `openPagePath`; where the build has none, a hidden "Removed" page
+under the item's id stays until the settings close. Adding opens the new
+item's page with `openPagePath`, where it exists.
 
 The agent CLI catalog (#179, `src/settingsTab/agentCatalog.ts`) is two
 `list`s on the Agents page: the built-ins as `render` rows that add the eye,
@@ -1273,7 +1288,12 @@ Its keys are the stored names with the entry's id, `hiddenAgents.<id>` and
 hand them to that module, whose effect is always save and repaint the agent
 lists, and then call `update()`, since a value shows in its row's line. The
 machine probes of one opening of the settings start when the catalog's first
-row is drawn and end in `hide()`; each answer calls `update()`.
+row is drawn and end when the settings close; each answer calls `update()`.
+`openPagePath` calls the tab's `hide()` while it re-opens the tab, so `hide()`
+ends the opening only if, a microtask later, the modal's `activeTab` is no
+longer the tab: `openTab` sets it back synchronously after `hide()`, and
+`closeActiveTab` sets it to null. `activeTab` is private; where it cannot be
+read, the opening ends.
 
 What the framework does, read from Obsidian 1.14.5's `app.js`:
 
@@ -1325,8 +1345,24 @@ What the framework does, read from Obsidian 1.14.5's `app.js`:
 - There is no public call that opens a page either. The settings modal's
   `openPagePath(tabId, path)` (`app.setting`, not in the typings) is what
   search results use; it re-opens the tab, which calls the tab's `hide()`,
-  then pushes each page of the path. The runtime list uses it to open a new
-  runtime's page and to leave the page of a runtime just removed.
+  then pushes each page of the path. Both lists use it to open a new item's
+  page and to leave the page of an item just removed.
+- `visible` hides a row from search as well as from view, and `aliases`
+  are searched, so a field hidden by another choice is made findable by an
+  alias on a row that is always shown (the runtime's Kind carries "permission
+  mode"; the sharing toggle carries "panes per herdr tab").
+
+Against 1.13.4, the `minAppVersion` (read 2026-11-11 from the release's
+`obsidian-1.13.4.asar.gz`: gunzip, then `app.js` from the asar archive, whose
+header is a JSON index after a 16-byte prefix): the settings modal has no
+`openPagePath`, and pages are keyed by `name` only, their duplicate check
+saying "Page names must be unique among siblings" with no `id`. 1.13.6 and
+1.13.7 are the same (1.13.8 shipped for Android only). 1.14.4 is the first
+desktop release with both: its page key is `id ?? name` and it has
+`openPagePath`, as 1.14.5 does. On 1.13.x the tab still loads: the root line
+is plain text, adding leaves the new row in the list, removing leaves the
+"Removed" page, and a runtime or agent CLI page is keyed by its name, so
+two with one name are reported as duplicate pages (not checked live).
 
 ## Agent prompts and session identity
 

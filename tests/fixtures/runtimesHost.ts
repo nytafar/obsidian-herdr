@@ -89,6 +89,7 @@ export function recordRuntimesHost(
 		update: () => calls.push('update'),
 		openPage: (path) => calls.push(`openPage:${path.join('/')}`),
 		canOpenPages: options.canOpenPages ?? false,
+		removed: new Map(),
 		connection,
 		onRuntimeWrite: (listener) => {
 			listeners.add(listener);

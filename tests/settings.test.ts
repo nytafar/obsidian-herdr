@@ -146,7 +146,7 @@ describe('connectionDetails', () => {
 		expect(text.some((line) => line.startsWith('Runtime: '))).toBe(false);
 	});
 
-	it('says why a runtime of an unavailable kind is not connected, and nothing else', () => {
+	it('says a runtime of an unavailable kind is not connected, and leaves the reason to Problems', () => {
 		const core = { ...newRuntime('herdr-core', 'local', [], () => 0.5), name: 'Core' };
 		expect(
 			render(
@@ -157,7 +157,7 @@ describe('connectionDetails', () => {
 					error: 'herdr-core runtimes are not available yet',
 				}),
 			),
-		).toEqual([{ text: 'Herdr-core runtimes are not available yet.', warning: true }]);
+		).toEqual([{ text: 'Not connected. Problems, below, says why.', warning: true }]);
 	});
 
 	it('reports a failure that came before discovery', () => {
@@ -176,21 +176,12 @@ describe('connectionDetails', () => {
 		expect(text).toContain('Workspace: hvelv (w4, matched by label), 3 agent panes');
 	});
 
-	it('warns that folder actions are off without a remote vault path', () => {
+	it('leaves a missing remote vault path to the page’s Problems row', () => {
 		const lines = render(
 			runtime({ host: 'lasse@xl', remoteVaultPath: '' }),
 			status(),
 		);
-		const warning = lines.find((line) => line.text.startsWith('Folder actions are off'));
-		expect(warning?.warning).toBe(true);
-	});
-
-	it('drops the warning once the remote vault path is set', () => {
-		const lines = render(
-			runtime({ host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
-			status(),
-		);
-		expect(lines.some((line) => line.text.startsWith('Folder actions are off'))).toBe(false);
+		expect(lines.some((line) => /folder actions|remote vault path/i.test(line.text))).toBe(false);
 	});
 
 	it('warns when no workspace matches the vault', () => {

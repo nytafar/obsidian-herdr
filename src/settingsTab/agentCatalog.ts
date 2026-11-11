@@ -12,9 +12,10 @@
  *
  * {@link AgentCatalogSession} is one opening of the settings: the machine
  * probes the first drawing of the catalog starts (`agents/machines.ts`), the
- * active runtime's own probe, and the user entries removed while it is open.
- * `end()`, from the tab's `hide()`, stops all of it, so the next opening
- * asks every machine again.
+ * active runtime's own probe, and, where the build cannot leave a page, the
+ * user entries removed from their own page while it is open. `end()`, from
+ * the tab's `hide()` once the settings really close, stops all of it, so the
+ * next opening asks every machine again.
  */
 
 import type { SettingDefinition, SettingDefinitionItem, SettingDefinitionPage, SettingGroupItem } from 'obsidian';
@@ -43,6 +44,9 @@ import type { SettingsHost } from './effects';
 /** The fields of a user entry a control edits. */
 export const USER_PROFILE_FIELDS = ['name', 'agent', 'command', 'args'] as const;
 export type UserProfileField = (typeof USER_PROFILE_FIELDS)[number];
+
+/** The Agents page's name, and the first step of every user entry's page path. */
+export const AGENTS_PAGE = 'Agents';
 
 /**
  * The keys of the catalog's controls, in the stored names: whether an entry
@@ -133,6 +137,13 @@ export interface AgentCatalogHost {
 	confirm(text: { title: string; body: string; confirm: string }): Promise<boolean>;
 	/** The tab's `update()`: read the definitions again and draw the open page. */
 	update(): void;
+	/**
+	 * Opens a page of the tab by its path of page ids. Obsidian has no public
+	 * call for it; where the build lacks the one the tab uses, nothing happens.
+	 */
+	openPage(path: string[]): void;
+	/** Whether {@link openPage} can open anything in this build. */
+	canOpenPages(): boolean;
 }
 
 /** A page with the `id` Obsidian finds it by (1.14.5 reads `id ?? name`; not in its typings yet). */
@@ -144,7 +155,10 @@ export class AgentCatalogSession {
 	private opening = 0;
 	/** Every probe already followed, so drawing again does not follow it twice. */
 	private readonly watched = new WeakSet<Promise<unknown>>();
-	/** User entries removed in this opening, by id, with their name: their pages say so. */
+	/**
+	 * User entries removed from their own page in this opening, by id, with
+	 * their name, where the build cannot go back to the list: their pages say so.
+	 */
 	private readonly removed = new Map<string, string>();
 
 	constructor(private readonly host: AgentCatalogHost) {}
@@ -191,7 +205,7 @@ export class AgentCatalogSession {
 		this.removed.clear();
 	}
 
-	/** A new user entry, at the end of the list. */
+	/** A new user entry, at the end of the list, its page opened where the build can. */
 	async add(): Promise<void> {
 		const settings = this.host.settings();
 		const user: UserAgentProfile = {
@@ -204,10 +218,15 @@ export class AgentCatalogSession {
 		settings.agentProfiles = [...settings.agentProfiles, user];
 		await this.host.saved();
 		this.host.update();
+		this.host.openPage([AGENTS_PAGE, user.id]);
 	}
 
-	/** Removes a user entry after asking, with every runtime's default that named it. */
-	async remove(id: string): Promise<void> {
+	/**
+	 * Removes a user entry after asking, with every runtime's default that
+	 * named it. From its own page, goes back to the list where the build can,
+	 * and otherwise leaves the page saying it was removed.
+	 */
+	async remove(id: string, fromItsPage = false): Promise<void> {
 		const settings = this.host.settings();
 		const user = settings.agentProfiles.find((entry) => entry.id === id);
 		if (!user) return;
@@ -219,9 +238,24 @@ export class AgentCatalogSession {
 		});
 		if (!confirmed || !settings.agentProfiles.some((entry) => entry.id === id)) return;
 		removeUserProfile(settings, id);
-		this.removed.set(id, name);
+		const back = fromItsPage && this.host.canOpenPages();
+		if (fromItsPage && !back) this.removed.set(id, name);
 		await this.host.saved();
 		this.host.update();
+		if (back) this.host.openPage([AGENTS_PAGE]);
+	}
+
+	/** The Agents page's mark: a warning while one of the user's entries cannot start here. */
+	status(): 'warning' | null {
+		const settings = this.host.settings();
+		const runtime = activeRuntimeOf(settings);
+		const catalog = buildCatalog({
+			runtime,
+			settings,
+			probe: this.host.probe(runtime.id),
+			nativeReachable: this.host.nativeReachable(runtime),
+		});
+		return catalog.some((entry) => entry.profile.source === 'user' && !entry.available) ? 'warning' : null;
 	}
 
 	/** The catalog's part of the Agents page: its heading row, the built-ins, the user's entries. */
@@ -360,9 +394,14 @@ export class AgentCatalogSession {
 			{ name: 'Where it starts', desc: userProfileProblems(user) },
 			{
 				name: 'Remove agent CLI',
-				desc: 'It leaves the + menu on every runtime.',
+				desc: 'Asks first. It leaves the + menu on every runtime.',
 				render: (setting) => {
-					setting.addButton((button) => button.setButtonText('Remove').setDestructive().onClick(() => void this.remove(id)));
+					setting.addButton((button) =>
+						button
+							.setButtonText('Remove')
+							.setDestructive()
+							.onClick(() => void this.remove(id, true)),
+					);
 				},
 			},
 		];
@@ -396,9 +435,9 @@ export class AgentCatalogSession {
 }
 
 /**
- * A user entry removed while its page is open: the page stays findable,
- * hidden from the list, and says so, until the settings close. Obsidian has
- * no call that leaves a page.
+ * A user entry removed from its own page where the build has no call that
+ * leaves a page: the page stays findable, hidden from the list, and says so,
+ * until the settings close.
  */
 function removedPage(id: string, name: string): IdentifiedPage<CatalogKey> {
 	return {

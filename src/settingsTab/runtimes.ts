@@ -95,6 +95,12 @@ export interface RuntimesHost {
 	};
 	/** Whether {@link openPage} can open anything in this build. */
 	canOpenPages: boolean;
+	/**
+	 * Runtimes removed from their own page in this opening of the settings,
+	 * by id, with their name, where the build cannot go back to the list:
+	 * their pages say so until the settings close. The tab holds it.
+	 */
+	removed: Map<string, string>;
 	/** The connection's state now, and word that it changed (the root line, the Status group). */
 	connection: ConnectionStatusSource;
 	/** Draws the runtime's default agent (issue #125, the catalog's setting) into the row. */
@@ -128,7 +134,7 @@ export function runtimesPage(settings: () => HerdrSettings, host: RuntimesHost):
 				items: [
 					{
 						name: 'Extra PATH entries',
-						desc: 'Colon-separated directories appended to PATH when the plugin spawns herdr, for tools your agents need.',
+						desc: 'Colon-separated directories put before PATH for every process the plugin spawns, so your agents find their tools.',
 						control: { type: 'text', key: 'extraPath', placeholder: '/opt/homebrew/bin:/usr/local/bin' },
 					},
 				],
@@ -153,7 +159,32 @@ function runtimeList(settings: () => HerdrSettings, host: RuntimesHost): Setting
 			if (id !== undefined) void removeRuntimeAfterAsking(settings(), id, host, false);
 		},
 		onReorder: (from, to) => void moveRuntime(settings(), ids, from, to, host),
-		items: ids.map((id) => runtimePage(settings, id, host)),
+		// A removed runtime's page comes last, hidden, so the indexes the list
+		// hands back still name the runtimes drawn.
+		items: [
+			...ids.map((id) => runtimePage(settings, id, host)),
+			...[...host.removed].filter(([id]) => !ids.includes(id)).map(([id, name]) => removedRuntimePage(id, name)),
+		],
+	};
+}
+
+/**
+ * A runtime removed from its own page where the build has no call that
+ * leaves a page: the page stays findable, hidden from the list, and says so,
+ * until the settings close, as a removed agent CLI's does.
+ */
+function removedRuntimePage(id: string, name: string): SettingDefinitionPage<TabKey> & { id: string } {
+	return {
+		type: 'page',
+		id,
+		name,
+		visible: false,
+		items: [
+			{
+				type: 'group',
+				items: [{ name: 'Removed', desc: `"${name}" is no longer a runtime. Go back to the runtimes.`, searchable: false }],
+			},
+		],
 	};
 }
 
@@ -212,13 +243,35 @@ export function runtimePage(
 				{
 					name: 'Name',
 					desc: 'What the switcher, the status bar and the runtime list call it. Left empty, it is named after its kind and host.',
-					control: { type: 'text', key: runtimeKey(id, 'name') },
+					control: {
+						type: 'text',
+						key: runtimeKey(id, 'name'),
+						// The name it gets when left empty. Read when the row is drawn:
+						// a kind or target change redraws the page, and so does a host
+						// change while the name is empty (the tab, after a pause).
+						get placeholder(): string {
+							const current = runtime();
+							return current ? runtimeDisplayName({ ...current, name: '' }) : '';
+						},
+					},
 				},
 				{
 					name: 'Kind',
 					desc: 'Herdr is the terminal multiplexer with tabs and splits. Herdr-core is the headless hc runtime, which has neither. Claude run by Obsidian starts Claude itself, on this machine, with no multiplexer: its agents stop when Obsidian closes and resume when opened.',
-					// The fields each kind shows, so search finds the page whatever it is now.
-					aliases: ['runtime', 'socket path', 'SSH host', 'binary', 'remote vault path', 'workspace', 'space'],
+					// The fields each kind shows, so search finds the page whatever it
+					// is now: a row hidden by `visible` is not searched.
+					aliases: [
+						'runtime',
+						'socket path',
+						'SSH host',
+						'binary',
+						'remote vault path',
+						'workspace',
+						'space',
+						'permission mode',
+						'claude session hook',
+						'default agent',
+					],
 					control: { type: 'dropdown', key: runtimeKey(id, 'kind'), options: { ...RUNTIME_KIND_LABELS } },
 				},
 				{
@@ -532,26 +585,30 @@ function actionDefinitions(
 			);
 		},
 	};
-	const remove: SettingDefinitionAction = {
+	const remove: SettingDefinitionRender = {
 		name: 'Remove runtime',
 		get desc(): string {
 			return settings().runtimes.length <= 1
 				? 'The last runtime cannot be removed: the plugin always needs one to connect to.'
 				: 'Asks first. Terminal tabs opened on it stop reconnecting, and its pinned agents are forgotten.';
 		},
-		disabled: () => settings().runtimes.length <= 1,
-		action: () => void removeRuntimeAfterAsking(settings(), id, host, true),
+		render: (setting) => {
+			setting.addButton((button) =>
+				button
+					.setButtonText('Remove')
+					.setDestructive()
+					.setDisabled(settings().runtimes.length <= 1)
+					.onClick(() => void removeRuntimeAfterAsking(settings(), id, host, true)),
+			);
+		},
 	};
 	return [use, order, remove];
 }
 
 /** **Add runtime**: a herdr runtime over SSH with a fresh id, its page opened. */
 export async function addRuntime(settings: HerdrSettings, host: RuntimesHost): Promise<void> {
-	const runtime = newRuntime(
-		'herdr',
-		'ssh',
-		settings.runtimes.map((entry) => entry.id),
-	);
+	// A removed runtime's page may still be open under its id.
+	const runtime = newRuntime('herdr', 'ssh', [...settings.runtimes.map((entry) => entry.id), ...host.removed.keys()]);
 	settings.runtimes = [...settings.runtimes, runtime];
 	await host.save();
 	host.refreshRuntimes();
@@ -562,7 +619,8 @@ export async function addRuntime(settings: HerdrSettings, host: RuntimesHost): P
 /**
  * Removes a runtime after asking, with its pins, and reconnects when it was
  * the active one. The last runtime stays: the plugin always needs one. From
- * the runtime's own page, goes back to the list, since the page is gone.
+ * the runtime's own page, goes back to the list where the build can, and
+ * otherwise leaves the page saying it was removed.
  */
 export async function removeRuntimeAfterAsking(
 	settings: HerdrSettings,
@@ -582,13 +640,16 @@ export async function removeRuntimeAfterAsking(
 		confirm: 'Remove runtime',
 	});
 	if (!confirmed) return;
+	const name = runtimeDisplayName(runtime);
 	const { removed, activeChanged } = removeRuntime(settings, id);
 	if (!removed) return;
+	const back = fromItsPage && host.canOpenPages;
+	if (fromItsPage && !back) host.removed.set(id, name);
 	if (activeChanged) await host.activate(settings.activeRuntime);
 	else await host.save();
 	host.refreshRuntimes();
 	host.update();
-	if (fromItsPage) host.openPage([RUNTIMES_PAGE]);
+	if (back) host.openPage([RUNTIMES_PAGE]);
 }
 
 /**
