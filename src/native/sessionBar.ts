@@ -347,6 +347,7 @@ export class SessionBar {
 			setTextIfChanged(this.noteEl, blocked ?? '');
 			this.noteEl.toggleClass('herdr-is-hidden', blocked === null);
 		}
+		this.rootEl?.toggleClass('herdr-has-note', blocked !== null);
 		const readout = contextReadout(info);
 		if (this.tokensEl) setTextIfChanged(this.tokensEl, readout.tokens);
 		if (this.percentEl) setTextIfChanged(this.percentEl, readout.percent);

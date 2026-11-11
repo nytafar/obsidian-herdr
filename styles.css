@@ -919,7 +919,7 @@ button.herdr-native-session-context {
  * Claude's pickers, or one may still be open in the terminal. Its own line
  * under the pickers, in the warning colour, only while it says something.
  */
-.herdr-native-session-bar:has(.herdr-native-session-note:not(.herdr-is-hidden)) {
+.herdr-native-session-bar.herdr-has-note {
 	flex-wrap: wrap;
 }
 
@@ -1185,8 +1185,8 @@ button.herdr-native-session-context {
 }
 
 .herdr-native-resume-head {
-	column-gap: var(--size-4-2);
 	display: flex;
+	gap: 0 var(--size-4-2);
 	flex-wrap: wrap;
 	justify-content: space-between;
 }
@@ -1509,7 +1509,7 @@ button.herdr-native-session-context {
  */
 .herdr-native-view .herdr-native-visually-hidden {
 	block-size: 1px;
-	clip-path: inset(50%);
+	clip: rect(0 0 0 0);
 	inline-size: 1px;
 	margin: 0;
 	overflow: hidden;
@@ -1867,7 +1867,7 @@ button.herdr-native-session-context {
 }
 
 .herdr-native-sr-only {
-	clip-path: inset(50%);
+	clip: rect(0 0 0 0);
 	height: 1px;
 	overflow: hidden;
 	position: absolute;
@@ -1995,8 +1995,8 @@ button.herdr-native-session-context {
 }
 
 .herdr-native-subagent-head {
-	column-gap: var(--size-4-2);
 	display: flex;
+	gap: 0 var(--size-4-2);
 	flex-wrap: wrap;
 }
 
