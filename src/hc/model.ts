@@ -422,6 +422,44 @@ function firstTerminalIn(node: unknown, depth = 0): string | null {
 	return null;
 }
 
+/** The document herdr-app keeps its spaces and tabs in. */
+export const HERDR_APP_DOC = 'herdr-app';
+
+/** Whether `address` is one of a node's terminals, at any depth. */
+function holdsTerminal(node: unknown, address: string, depth = 0): boolean {
+	const n = record(node);
+	if (!n || depth > 64) return false;
+	if (record(n.content)?.terminal === address) return true;
+	return Array.isArray(n.children) && n.children.some((child) => holdsTerminal(child, address, depth + 1));
+}
+
+/**
+ * The `herdr-app` document with the tab that holds `address` named `name`
+ * (#176): herdr-app adopts a terminal labelled `herdr.space` into a new tab
+ * with no name, which it shows as the tab's position. A copy with that one
+ * field changed, everything else as read, so nothing herdr-app keeps is lost
+ * on the write; `named` when the tab has a name already, which is never
+ * overwritten; null while no tab holds the terminal yet.
+ */
+export function withTabName(value: unknown, address: string, name: string): Record<string, unknown> | 'named' | null {
+	const spaces = record(value)?.spaces;
+	if (!Array.isArray(spaces)) return null;
+	for (const [s, rawSpace] of spaces.entries()) {
+		const tabs = record(rawSpace)?.tabs;
+		if (!Array.isArray(tabs)) continue;
+		for (const [t, rawTab] of tabs.entries()) {
+			const tab = record(rawTab);
+			if (!tab || !holdsTerminal(tab.root, address)) continue;
+			if (str(tab.name).trim() !== '') return 'named';
+			const copy = structuredClone(value) as Record<string, unknown> & { spaces: { tabs: Record<string, unknown>[] }[] };
+			const target = copy.spaces[s]?.tabs[t];
+			if (target) target.name = name;
+			return copy;
+		}
+	}
+	return null;
+}
+
 /** The `herdr-app` document's spaces; anything malformed is skipped. */
 export function parseSpaces(value: unknown): HcSpace[] {
 	const spaces = record(value)?.spaces;

@@ -28,11 +28,13 @@ import {
 } from './keyEncoder';
 import {
 	encodeMouseReport,
+	encodeWheelReport,
 	herdrModifierBits,
 	pickModifiers,
 	type CellPosition,
 	type MouseButton,
 	type ModifierKeys,
+	type WheelDirection,
 } from './mouseEncoder';
 import {
 	mouseReportingEnabled,
@@ -377,6 +379,23 @@ export class InputRouter {
 				: { column: input.position.column, row: input.position.row }),
 			modifiers: herdrModifierBits(pickModifiers(input)),
 		};
+	}
+
+	/**
+	 * A wheel notch as the mouse report the pane's application asked for, or
+	 * null when it asked for none (or not in SGR). For a session that has no
+	 * server-side scroll (herdr-core, Claude's pty): there the stream is the
+	 * program's own bytes, so the tracker does see its modes, and the client is
+	 * the only side that can encode the wheel. ghostty-web turns the wheel into
+	 * arrow keys on the alternate screen whatever the program asked for, which
+	 * walks a full-screen TUI's prompt history instead of scrolling it.
+	 */
+	wheelReport(
+		direction: WheelDirection,
+		position: CellPosition,
+		modifiers?: Partial<ModifierKeys>,
+	): string | null {
+		return encodeWheelReport(this.tracker.state, direction, position, modifiers);
 	}
 
 	/**
