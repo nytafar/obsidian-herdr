@@ -1233,18 +1233,137 @@ window keeps it). Measured: `echo hi` ran and printed `hi`, and a typed
 
 ## The settings tab
 
-The tab itself is an assembler. Its section builders — runtimes, connection,
-notifications, agents, file explorer, agent list, terminal, native view — are plain functions
-over a container, the settings object and a bundle of callbacks, listed in
-`SETTINGS_SECTIONS` in `src/settings.ts`; none of them ever sees the plugin. The
-callbacks bundle is the whole of what a control may do besides write into the
-settings: save, save and reconnect, redisplay, refresh the agent list or the
-folder hover buttons, hand one changed setting to the open terminals, or switch,
-open and remove runtimes, or check and review the active herdr-core runtime's
-Claude session hook. Which runtime's form is open is the tab's state, handed
-in through the same bundle. The tab
-builds that bundle from the plugin once and then just runs the list, which is
-what makes a section renderable on a bare container in a test.
+The tab is declarative (Obsidian 1.13's settings API, ADR-0011, issue #156).
+`settingDefinitions` in `src/settingsTab/tab.ts` is the whole tab: the
+active runtime's line on the root, then one page per area, each from its
+own module in `src/settingsTab/` (runtimes, agents, views, terminal, agent list
+and notifications). A control names a key, the stored `data.json` name, dotted
+when nested (`notifications.blocked.notice`); `getControlValue` and
+`setControlValue` both go to `src/settingsTab/effects.ts`, whose key→effect
+table normalises the value, saves, and then runs the key's one effect:
+reconnect, refresh the agent list or the folder hover buttons, hand the
+setting to the open terminals, or redraw the native views. The table's type is
+total over the keys, and only a terminal setting may have the terminal effect.
+
+Every fact is shown in one place, next to where it is acted on, and state
+lives with what it describes. The root has one line, "Active runtime: <name>
+· connected" (or connecting, not connected), a warning when the connection is
+down or has an error, a mismatch or an unavailable kind, which opens that
+runtime's page; the active runtime's page opens on a Status group with the
+live connection's full lines, and its Problems row holds what the setup lacks
+or the build cannot run (a missing remote vault path, an unavailable kind),
+which Status does not repeat; the runtime list marks the active runtime and
+the runtimes with problems, and the Runtimes entry carries the same warning,
+as the Agents entry does while a user agent CLI needs attention.
+`connectionSummary` and `connectionDetails` in `src/settings.ts` word the two,
+pure over the plugin's `ConnectionStatus`; both draw again when the plugin's
+`ConnectionStatusSource` says the connection changed (a published or retired
+connection, a primed scope, an error set or cleared, a scope event).
+
+The runtimes are a `list` with one `page` per runtime (#178,
+`src/settingsTab/runtimes.ts`), each page's `id` the runtime's id. Their
+controls are keyed `runtimes.<id>.<field>` and written by
+`src/settingsTab/runtimeKeys.ts` through the same `writeSetting`; a write
+also tells the page's `render` rows (Problems), and a kind or target change
+calls `update()`, because sibling groups switched by `visible` hold the same
+field under other names. The list's ids are taken when the definitions are
+built, so whatever changes the set of runtimes or the active one from
+outside the tab (Get started, the agent list's switcher, the Switch runtime
+command, all through `main.ts`) calls the tab's `update()` too; a Name
+keystroke does not. A runtime with no name shows its derived name as the Name
+field's placeholder, a getter read when the row is drawn; a host typed into
+such a runtime calls `update()` once typing pauses.
+
+Removing a runtime or a user agent CLI is the same in both lists: a
+destructive **Remove** on the item's page, after a confirm, then back to the
+list with `openPagePath`; where the build has none, a hidden "Removed" page
+under the item's id stays until the settings close. Adding opens the new
+item's page with `openPagePath`, where it exists.
+
+The agent CLI catalog (#179, `src/settingsTab/agentCatalog.ts`) is two
+`list`s on the Agents page: the built-ins as `render` rows that add the eye,
+and the user's entries as pages, one each, with `id` set to the entry's id.
+Its keys are the stored names with the entry's id, `hiddenAgents.<id>` and
+`agentProfiles.<id>.<field>`; the tab's `getControlValue`/`setControlValue`
+hand them to that module, whose effect is always save and repaint the agent
+lists, and then call `update()`, since a value shows in its row's line. The
+machine probes of one opening of the settings start when the catalog's first
+row is drawn and end when the settings close; each answer calls `update()`.
+`openPagePath` calls the tab's `hide()` while it re-opens the tab, so `hide()`
+ends the opening only if, a microtask later, the modal's `activeTab` is no
+longer the tab: `openTab` sets it back synchronously after `hide()`, and
+`closeActiveTab` sets it to null. `activeTab` is private; where it cannot be
+read, the opening ends.
+
+What the framework does, read from Obsidian 1.14.5's `app.js`:
+
+- `getSettingDefinitions()` runs when the tab is added and on `update()`, not
+  on every opening; the result is cached in `settingItems`. Values that change
+  must be read in functions (`visible`, `displayValue`, `render`) or through
+  `getControlValue`, which every render calls.
+- A control's change awaits `setControlValue`, then calls `refreshDomState()`,
+  which re-evaluates every `visible` and `disabled`; nothing else redraws.
+- `update()` re-reads the definitions, re-indexes search and redraws the page
+  that is open, whichever it is. A `render` callback's DOM, focus included, is
+  rebuilt.
+- Pages are found by `id ?? name` along their path, so that is a page's
+  identity. `id` is not in the 1.14.4 typings, but the framework reads it and
+  its duplicate-page error asks for it. Going back to a page redraws it, so a root `displayValue` function is read
+  fresh without an `update()`.
+- `display()` is only called for a tab whose definitions are empty; with
+  definitions the tab is rendered from them directly.
+- `update()` reconciles each group's rows by key: a page's `id ?? name`, else
+  a definition's control key, else its name. A kept row is cleared and drawn
+  again into the same element, except a control row that holds the focus,
+  which is left alone; so `update()` while a field is typed in keeps the
+  field, its caret and its value, and a dropdown whose change called it
+  keeps its focus. It redraws only when the tab is the open one, and only a
+  declarative page or the root. A `render` callback's returned cleanup runs
+  before its row is drawn again.
+- A `render` row is handed its `Setting` with the definition's name and
+  description already set.
+- A row's name and description are read from the definition each time the
+  row is drawn, and search reads a page's `name` when it searches, so a
+  getter on the definition object stays current without an `update()`. The
+  cached definitions only need `update()` when their shape changes.
+- Rows with the same control key in one group are reported as duplicates
+  (`duplicate setting key`); keys are checked per group, so one field may
+  appear under different names in sibling groups that `visible` switches
+  between. Such rows show the value read when they were drawn.
+- `visible` is honoured by search too: a hidden group or row is not indexed
+  while hidden, so a field found only on another kind's rows is found
+  through an alias on a row that is always shown.
+- A `list`'s `onDelete` adds a delete button to every row except a page,
+  which gets none: only Delete or Backspace on the focused row reaches it.
+  `onReorder`'s drag handle likewise skips pages; Alt+Up or Alt+Down on the
+  focused row still calls it. A page row has no slot for a button of the
+  plugin's. `addItem` is a + button in the list's heading on desktop, a row
+  below the list on mobile.
+- A page whose definition is gone after `update()` draws empty, and there is
+  no public call that leaves a page; `visible: false` hides a page's entry and
+  keeps the page itself findable.
+- There is no public call that opens a page either. The settings modal's
+  `openPagePath(tabId, path)` (`app.setting`, not in the typings) is what
+  search results use; it re-opens the tab, which calls the tab's `hide()`,
+  then pushes each page of the path. Both lists use it to open a new item's
+  page and to leave the page of an item just removed.
+- `visible` hides a row from search as well as from view, and `aliases`
+  are searched, so a field hidden by another choice is made findable by an
+  alias on a row that is always shown (the runtime's Kind carries "permission
+  mode"; the sharing toggle carries "panes per herdr tab").
+
+Against 1.13.4, the `minAppVersion` first chosen (read 2026-11-11 from the release's
+`obsidian-1.13.4.asar.gz`: gunzip, then `app.js` from the asar archive, whose
+header is a JSON index after a 16-byte prefix): the settings modal has no
+`openPagePath`, and pages are keyed by `name` only, their duplicate check
+saying "Page names must be unique among siblings" with no `id`. 1.13.6 and
+1.13.7 are the same (1.13.8 shipped for Android only). 1.14.4 is the first
+desktop release with both: its page key is `id ?? name` and it has
+`openPagePath`, as 1.14.5 does. On 1.13.x the tab still loads: the root line
+is plain text, adding leaves the new row in the list, removing leaves the
+"Removed" page, and a runtime or agent CLI page is keyed by its name, so
+two with one name are reported as duplicate pages (not checked live). So
+`minAppVersion` is 1.14.4 (ADR-0011, amended 2026-11-11).
 
 ## Agent prompts and session identity
 

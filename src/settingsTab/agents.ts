@@ -1,0 +1,72 @@
+/**
+ * The Agents page: the agent CLI catalog (`agentCatalog.ts`), and what
+ * "Start agent here" does. The
+ * panes-per-tab cap only means something while agents share a herdr tab, so
+ * it is visible only then; the framework re-checks `visible` after each
+ * change.
+ */
+
+import type { SettingDefinitionItem, SettingDefinitionPage } from 'obsidian';
+import {
+	clampPanesPerTab,
+	DEFAULT_SETTINGS,
+	MAX_PANES_PER_TAB,
+	MIN_PANES_PER_TAB,
+	type HerdrSettings,
+} from '../settings';
+import type { ControlKey } from './effects';
+import { AGENTS_PAGE, type CatalogKey } from './agentCatalog';
+
+export function agentsPage(
+	settings: () => HerdrSettings,
+	catalog: SettingDefinitionItem<CatalogKey>[],
+	catalogStatus: () => 'warning' | null,
+): SettingDefinitionPage<ControlKey | CatalogKey> {
+	return {
+		type: 'page',
+		name: AGENTS_PAGE,
+		desc: 'The agent CLIs the + button offers, and how new agents are named and placed.',
+		// Marks the entry while one of the user's agent CLIs needs attention, as
+		// its row does, the way the Runtimes entry marks a runtime's problem.
+		status: catalogStatus,
+		items: [
+			...catalog,
+			{
+				type: 'group',
+				heading: 'Starting agents',
+				items: [
+					{
+						name: 'Agent name pattern',
+						desc: 'Name given to new agents. {folder} is the folder the agent starts in, {vault} the vault name, {n} a counter that avoids collisions.',
+						control: { type: 'text', key: 'agentNamePattern', placeholder: DEFAULT_SETTINGS.agentNamePattern },
+					},
+					{
+						name: 'Open terminal after starting an agent',
+						desc: 'Open the new agent as a terminal tab as soon as it starts.',
+						control: { type: 'toggle', key: 'openTerminalAfterStart' },
+					},
+					{
+						name: 'Share a herdr tab between agents in the same folder',
+						desc: 'On: a second agent started in a folder splits that folder’s herdr tab instead of opening another tab. Off: every agent gets its own tab, matching how herdr is navigated. Group the agent list by folder to keep a folder’s agents together either way.',
+						// The cap below is hidden while this is off, and search skips hidden rows.
+						aliases: ['split', 'folder tab', 'panes per herdr tab'],
+						control: { type: 'toggle', key: 'splitIntoFolderTab' },
+					},
+					{
+						name: 'Panes per herdr tab',
+						desc: 'How many agents share one herdr tab before the next one opens a new tab.',
+						visible: () => settings().splitIntoFolderTab,
+						control: {
+							type: 'slider',
+							key: 'panesPerTab',
+							min: MIN_PANES_PER_TAB,
+							max: MAX_PANES_PER_TAB,
+							step: 1,
+							defaultValue: clampPanesPerTab(undefined),
+						},
+					},
+				],
+			},
+		],
+	};
+}

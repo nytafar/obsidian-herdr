@@ -50,7 +50,7 @@ The native view is for Claude Code; every other agent CLI gets the terminal.
 You can add several runtimes and switch between them; one is active at a time.
 Details per runtime are in [docs/runtimes.md](docs/runtimes.md).
 
-**Requirements:** Obsidian desktop 1.7.2 or newer on macOS or Linux, and one of:
+**Requirements:** Obsidian desktop 1.14.4 or newer on macOS or Linux, and one of:
 herdr 0.8.0 or newer, already running; herdr-core; or Claude Code. Over SSH:
 key-based login that does not prompt.
 

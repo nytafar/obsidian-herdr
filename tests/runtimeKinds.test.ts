@@ -516,8 +516,12 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 			discovery: null,
 		};
 		plugin.kinds = { herdr: { unavailable: null, statusLines: () => null } };
-		const status = (plugin.connectionStatus as () => { runtime: RuntimeConfig }).call(plugin);
+		plugin.connectError = null;
+		plugin.primed = false;
+		const status = (plugin.connectionStatus as () => { runtime: RuntimeConfig; state: string }).call(plugin);
 		expect(status.runtime.name).toBe('New name');
+		// Published, not yet primed, no error: still connecting.
+		expect(status.state).toBe('connecting');
 	});
 
 	it('shows the live name in the status bar and its label', () => {
@@ -535,6 +539,9 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		};
 		const spans: string[] = [];
 		const attributes = new Map<string, string>();
+		// The settings tab's status lines hear every status bar update.
+		const heard: string[] = [];
+		plugin.connectionListeners = new Set([() => heard.push('changed')]);
 		plugin.statusBarEl = {
 			empty: () => spans.splice(0),
 			createSpan: (options: { text: string }) => spans.push(options.text),
@@ -543,6 +550,7 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		(plugin.updateStatusBar as () => void).call(plugin);
 		expect(spans).toEqual(['New name']);
 		expect(attributes.get('aria-label')).toBe('Gjetr agents on New name');
+		expect(heard).toEqual(['changed']);
 	});
 });
 

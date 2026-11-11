@@ -50,7 +50,7 @@ import { BUILTIN_CATALOG_SOURCE } from '../agents/claude/commands';
 import { agentFormat } from '../agents/format';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
-import { remoteVaultPathIssue, type RuntimeConfig } from '../runtimes';
+import type { RuntimeConfig } from '../runtimes';
 import { HERDR_CORE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
 
 export { HERDR_APP_DOC };
@@ -367,10 +367,6 @@ export function hcStatusLines(connection: {
 			text: `Generation mismatch: herdr-core ${mismatch.version || ''} speaks generation ${mismatch.server ?? 'unknown'}, this plugin speaks ${mismatch.expected}. Everything still works unless a method is missing.`,
 			warning: true,
 		});
-	}
-	if (runtime.target === 'ssh') {
-		const issue = remoteVaultPathIssue(runtime);
-		if (issue) lines.push({ text: `Folder actions are off: ${issue}.`, warning: true });
 	}
 	if (!scope.spacesLoaded) {
 		lines.push({ text: 'Scope: reading the herdr-app spaces…' });

@@ -1,8 +1,8 @@
 /**
  * Settings-side pure bits: the remote vault path check both the folder actions
- * and the status block ask, and the status block itself. `renderConnectionStatus`
- * only ever calls `createEl`, so a two-line stand-in for the container is enough
- * to assert what it says — no DOM needed.
+ * and the status ask, and the status itself: the root's one line
+ * (`connectionSummary`) and the active runtime's Status group
+ * (`connectionDetails`), both plain lines, no DOM needed.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,9 @@ import {
 	pinnedPaneIds,
 	migrateRenderMode,
 	withoutRemovedSettings,
-	renderConnectionStatus,
+	connectionDetails,
+	connectionSummary,
+	renderStatusLines,
 	togglePanePin,
 	SCROLLBACK_BYTES_PER_MB,
 	scrollbackBytes,
@@ -59,23 +61,14 @@ function status(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
 		mismatch: null,
 		workspace: { id: 'w4', label: 'hvelv', method: 'label', agentCount: 3 },
 		error: null,
+		state: 'connected',
 		...overrides,
 	};
 }
 
-/** Collects the text of every line the renderer emits, plus its warning flag. */
+/** The Status group's lines for this runtime and state. */
 function render(rt: RuntimeConfig, st: ConnectionStatus): { text: string; warning: boolean }[] {
-	const lines: { text: string; warning: boolean }[] = [];
-	const el = {
-		createEl: (_tag: string, options: { cls: string; text: string }) => {
-			lines.push({ text: options.text, warning: options.cls.includes('mod-warning') });
-			return el;
-		},
-	};
-	renderConnectionStatus(el as unknown as HTMLElement, { ...st, runtime: rt });
-	// The first line names the runtime; the cases below are about the rest.
-	expect(lines[0]?.text.startsWith('Runtime: ')).toBe(true);
-	return lines.slice(1);
+	return connectionDetails({ ...st, runtime: rt });
 }
 
 describe('remoteVaultPathIssue (S5, M19)', () => {
@@ -89,23 +82,71 @@ describe('remoteVaultPathIssue (S5, M19)', () => {
 	});
 });
 
-describe('renderConnectionStatus', () => {
+describe('connectionSummary', () => {
+	it('names the active runtime and says it is connected', () => {
+		expect(connectionSummary(status({ runtime: runtime({ host: 'xl', name: 'XL' }) }))).toEqual({
+			text: 'Active runtime: XL · connected',
+			warning: false,
+		});
+	});
+
+	it('warns while connecting, and when not connected', () => {
+		expect(connectionSummary(status({ state: 'connecting' }))).toEqual({
+			text: 'Active runtime: Local · connecting',
+			warning: true,
+		});
+		expect(connectionSummary(status({ state: 'not connected', error: 'refused' }))).toEqual({
+			text: 'Active runtime: Local · not connected',
+			warning: true,
+		});
+	});
+
+	it('warns for an error or a protocol mismatch on a live connection', () => {
+		expect(connectionSummary(status({ error: 'stream dropped' })).warning).toBe(true);
+		expect(
+			connectionSummary(status({ mismatch: { server: 23, expected: 22 } as unknown as ConnectionStatus['mismatch'] }))
+				.warning,
+		).toBe(true);
+	});
+
+	it('says a runtime of an unavailable kind is not connected, whatever the state says', () => {
+		expect(connectionSummary(status({ state: 'connecting', unavailable: 'not in this build' }))).toEqual({
+			text: 'Active runtime: Local · not connected',
+			warning: true,
+		});
+	});
+});
+
+describe('renderStatusLines', () => {
+	it('draws a paragraph per line, warnings marked', () => {
+		const drawn: { tag: string; cls: string; text: string }[] = [];
+		const el = {
+			createEl: (tag: string, options: { cls: string; text: string }) => drawn.push({ tag, ...options }),
+		};
+		renderStatusLines(el as unknown as HTMLElement, [
+			{ text: 'Socket: /tmp/herdr.sock', warning: false },
+			{ text: 'Workspace: none', warning: true },
+		]);
+		expect(drawn).toEqual([
+			{ tag: 'p', cls: 'herdr-status-text', text: 'Socket: /tmp/herdr.sock' },
+			{ tag: 'p', cls: 'herdr-status-text mod-warning', text: 'Workspace: none' },
+		]);
+	});
+});
+
+describe('connectionDetails', () => {
 	it('says nothing but "not connected" before discovery ran', () => {
 		expect(render(runtime(), status({ discovery: null }))).toEqual([
 			{ text: 'Not connected yet.', warning: false },
 		]);
 	});
 
-	it('names the runtime first', () => {
-		const lines: string[] = [];
-		const el = {
-			createEl: (_tag: string, options: { text: string }) => lines.push(options.text),
-		};
-		renderConnectionStatus(el as unknown as HTMLElement, status({ runtime: runtime({ host: 'xl', name: 'XL' }) }));
-		expect(lines[0]).toBe('Runtime: XL, herdr over SSH to xl.');
+	it('does not name the runtime: the page is its own', () => {
+		const text = render(runtime({ host: 'xl', name: 'XL' }), status()).map((line) => line.text);
+		expect(text.some((line) => line.startsWith('Runtime: '))).toBe(false);
 	});
 
-	it('says why a runtime of an unavailable kind is not connected, and nothing else', () => {
+	it('says a runtime of an unavailable kind is not connected, and leaves the reason to Problems', () => {
 		const core = { ...newRuntime('herdr-core', 'local', [], () => 0.5), name: 'Core' };
 		expect(
 			render(
@@ -116,7 +157,7 @@ describe('renderConnectionStatus', () => {
 					error: 'herdr-core runtimes are not available yet',
 				}),
 			),
-		).toEqual([{ text: 'Herdr-core runtimes are not available yet.', warning: true }]);
+		).toEqual([{ text: 'Not connected. Problems, below, says why.', warning: true }]);
 	});
 
 	it('reports a failure that came before discovery', () => {
@@ -135,21 +176,12 @@ describe('renderConnectionStatus', () => {
 		expect(text).toContain('Workspace: hvelv (w4, matched by label), 3 agent panes');
 	});
 
-	it('warns that folder actions are off without a remote vault path', () => {
+	it('leaves a missing remote vault path to the page’s Problems row', () => {
 		const lines = render(
 			runtime({ host: 'lasse@xl', remoteVaultPath: '' }),
 			status(),
 		);
-		const warning = lines.find((line) => line.text.startsWith('Folder actions are off'));
-		expect(warning?.warning).toBe(true);
-	});
-
-	it('drops the warning once the remote vault path is set', () => {
-		const lines = render(
-			runtime({ host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
-			status(),
-		);
-		expect(lines.some((line) => line.text.startsWith('Folder actions are off'))).toBe(false);
+		expect(lines.some((line) => /folder actions|remote vault path/i.test(line.text))).toBe(false);
 	});
 
 	it('warns when no workspace matches the vault', () => {
