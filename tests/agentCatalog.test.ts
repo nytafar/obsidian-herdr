@@ -840,29 +840,16 @@ describe('the probe in the order a connect really runs', () => {
 	});
 
 	it('says a runtime has the native view only where its transcripts can be read, as the view does (ADR-0010)', () => {
-		const coreKind = createHerdrCoreKind({
-			extraPath: () => '',
-			spawnEnv: () => ({}),
-			vaultPath: () => '/vault',
-			vaultName: () => 'vault',
-			onMismatch: () => undefined,
-			currentScope: () => null,
-		});
-		const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin & Record<string, unknown>;
-		Object.assign(plugin, { kinds: { herdr: herdrKind, 'herdr-core': coreKind } });
+		// The runtime half (`EndpointResolver.nativeReachable`) is asserted in
+		// `endpointResolver.test.ts`; here, what the catalog does with false.
 		const sshHerdr: RuntimeConfig = { ...newRuntime('herdr', 'ssh', []), host: 'xl' };
-		expect(plugin.nativeReachable(LOCAL_HERDR)).toBe(true);
-		expect(plugin.nativeReachable(sshHerdr)).toBe(false);
-		// herdr-core reads an SSH runtime's transcripts over its connection.
-		expect(plugin.nativeReachable(SSH_HC)).toBe(true);
-
 		const settings = settingsOf();
 		const catalogs = new AgentCatalogs({
 			connection: () => null,
 			endpoint: () => endpointOf(sshHerdr),
 			settings: () => settings,
 			probe: () => null,
-			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
+			nativeReachable: (runtime) => !(runtime.kind === 'herdr' && runtime.target === 'ssh'),
 		});
 		expect(catalogs.cachedCatalog().find((entry) => entry.profile.id === 'claude')?.native).toBe(false);
 	});

@@ -348,7 +348,7 @@ export class AgentListView extends ItemView {
 	 * endpoint together; null means nothing is connected.
 	 */
 	private session(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
-		return this.plugin.endpointSession(this.plugin.endpoint.id);
+		return this.plugin.endpoints.session(this.plugin.endpoint.id);
 	}
 
 	/**
@@ -429,7 +429,7 @@ export class AgentListView extends ItemView {
 		if (!scope || !scope.workspaceId) {
 			// A runtime whose kind this build cannot run says so, rather than
 			// looking like a herdr that is down (ADR-0004).
-			const unavailable = this.plugin.kindUnavailable(activeRuntimeOf(this.plugin.settings).kind);
+			const unavailable = this.plugin.endpoints.kindUnavailable(activeRuntimeOf(this.plugin.settings).kind);
 			list.createDiv({
 				cls: 'herdr-empty',
 				text: scope
@@ -462,7 +462,7 @@ export class AgentListView extends ItemView {
 			// Pins are per endpoint (issue #35): a local pane id says nothing about
 			// a remote pane that happens to share it. herdr-core keeps them on the
 			// runtime (ADR-0005); the plugin asks the right store.
-			pinnedPaneIds: this.plugin.pinnedPaneIds(this.plugin.endpoint.id),
+			pinnedPaneIds: this.plugin.endpoints.pinnedPaneIds(this.plugin.endpoint.id),
 		});
 		for (const group of groups) this.renderGroup(list, group);
 	}
@@ -580,8 +580,8 @@ export class AgentListView extends ItemView {
 				// Graduation targets only matter where rows are resumable sessions.
 				return can.resumable ? { ...can, graduation: plugin.graduationTargets() } : can;
 			},
-			pinned: (ref) => plugin.isPanePinned(ref.endpointId, ref.paneId),
-			setPinned: (ref, pinned) => plugin.setPanePinned(ref.endpointId, ref.paneId, pinned),
+			pinned: (ref) => plugin.endpoints.isPanePinned(ref.endpointId, ref.paneId),
+			setPinned: (ref, pinned) => plugin.endpoints.setPanePinned(ref.endpointId, ref.paneId, pinned),
 			// The plugin acts on the published connection, so a ref captured on
 			// another endpoint must not be handed to it (issue #54). The dispatcher
 			// already notices on a stale target; these just refuse to act.

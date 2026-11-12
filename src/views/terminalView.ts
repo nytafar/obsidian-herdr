@@ -654,7 +654,7 @@ export class TerminalView extends ItemView {
 			},
 			// The bridge is the pinned runtime's kind's too (ADR-0005).
 			createSession: (options, endpoint) =>
-				this.plugin.kindOf(endpoint.runtime.kind).createTerminalSession(options, endpoint),
+				this.plugin.endpoints.kindOf(endpoint.runtime.kind).createTerminalSession(options, endpoint),
 			createRenderer: (options) => createRenderer(options),
 			macOS: Platform.isMacOS,
 		});
@@ -695,12 +695,12 @@ export class TerminalView extends ItemView {
 			},
 			cursorOptions: () => cursorOptions(this.plugin.settings),
 			env: () => spawnEnv(process.env, this.plugin.settings.extraPath),
-			endpointFor: (endpointId) => this.plugin.endpointFor(endpointId),
+			endpointFor: (endpointId) => this.plugin.endpoints.endpoint(endpointId),
 			// The pinned runtime's kind builds the argv: for herdr `[<herdr>]`
 			// locally and `['ssh','-T',host,<remote herdr>]` over SSH — terminals
 			// never go through the forwarded API socket (PRD S17).
 			commandFor: (endpoint) =>
-				this.plugin.kindOf(endpoint.runtime.kind).terminalCommand(endpoint),
+				this.plugin.endpoints.kindOf(endpoint.runtime.kind).terminalCommand(endpoint),
 			// Whether the plugin has connected to *anything*: a connection to the
 			// other herdr still means the binary was found (issue #54).
 			// A kind this build cannot run is not waiting for anything: the tab
@@ -773,7 +773,7 @@ export class TerminalView extends ItemView {
 	private paneSnapshot(): PaneSnapshot | null {
 		const { paneId, endpointId } = this.terminal.identity;
 		if (!paneId) return null;
-		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId) ?? null;
+		return this.plugin.endpoints.watcher(endpointId)?.snapshot(paneId) ?? null;
 	}
 
 	/**
@@ -783,7 +783,7 @@ export class TerminalView extends ItemView {
 	private paneGlance(): PaneGlance | null {
 		const { paneId, endpointId } = this.terminal.identity;
 		if (!paneId) return null;
-		return this.plugin.nativeWatcher(endpointId)?.glance?.(paneId) ?? null;
+		return this.plugin.endpoints.watcher(endpointId)?.glance?.(paneId) ?? null;
 	}
 
 	/**
@@ -794,9 +794,9 @@ export class TerminalView extends ItemView {
 	 */
 	private where(): PaneWhere {
 		const { endpointId, paneId } = this.terminal.identity;
-		const endpoint = this.plugin.endpointFor(endpointId);
+		const endpoint = this.plugin.endpoints.endpoint(endpointId);
 		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
-		const kind = this.plugin.kindOf(endpoint.runtime.kind);
+		const kind = this.plugin.endpoints.kindOf(endpoint.runtime.kind);
 		// A kind that runs but has no terminal of its own (ADR-0007) says so; a
 		// kind this build cannot run at all keeps its terminal, which says why.
 		const terminalReason =
@@ -809,7 +809,7 @@ export class TerminalView extends ItemView {
 		const block = nativeViewBlock(kind, endpoint);
 		if (block.remote || block.kindReason || !paneId) return { ...block, terminalReason };
 		return {
-			...withPaneReason(block, this.plugin.nativeWatcher(endpointId)?.unavailable?.(paneId) ?? null),
+			...withPaneReason(block, this.plugin.endpoints.watcher(endpointId)?.unavailable?.(paneId) ?? null),
 			terminalReason,
 		};
 	}
@@ -831,7 +831,7 @@ export class TerminalView extends ItemView {
 
 	/** The vault's path on the pane's machine when that is another one, else ''. */
 	private remoteVaultPath(): string {
-		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
+		const endpoint = this.plugin.endpoints.endpoint(this.terminal.identity.endpointId);
 		const runtime = endpoint?.runtime;
 		if (runtime?.target !== 'ssh') return '';
 		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
@@ -849,7 +849,7 @@ export class TerminalView extends ItemView {
 	private screenAnswering(agent?: string): ScreenAnswering | null {
 		const endpointId = this.terminal.identity.endpointId;
 		const kind = this.kind();
-		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
+		const screen = kind.screen?.(() => this.plugin.endpoints.client(endpointId));
 		const running = agent ?? this.paneGlance()?.agent ?? undefined;
 		const format = running ? agentFormat(running) : defaultAgentFormat();
 		const parse = format?.screenDialog;
@@ -877,14 +877,14 @@ export class TerminalView extends ItemView {
 
 	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
 	private kind(): RuntimeKindAdapter {
-		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
-		return this.plugin.kindOf(endpoint?.runtime.kind ?? 'herdr');
+		const endpoint = this.plugin.endpoints.endpoint(this.terminal.identity.endpointId);
+		return this.plugin.endpoints.kindOf(endpoint?.runtime.kind ?? 'herdr');
 	}
 
 	/** The adapter for a kind: the tab's own lifecycle, or a fresh native view. */
 	private createSurface(kind: PaneSurfaceKind): PaneSurface {
 		if (kind === 'terminal') return this.terminal;
-		const nativeClient = () => this.plugin.nativeClient(this.terminal.identity.endpointId);
+		const nativeClient = () => this.plugin.endpoints.client(this.terminal.identity.endpointId);
 		return new NativePaneSurface({
 			// The view's own app, per the Obsidian guidelines, for the Markdown it
 			// renders and the links it opens (#93).
@@ -969,7 +969,7 @@ export class TerminalView extends ItemView {
 					cwd: () => this.paneCwd(),
 					// The commands of the machine the agent runs on: over the
 					// runtime's connection for herdr-core over SSH (ADR-0006).
-					catalog: (agent) => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId, agent),
+					catalog: (agent) => this.plugin.endpoints.commandCatalog(this.terminal.identity.endpointId, agent),
 					// The catalogue of the agent the pane runs (ADR-0010): none
 					// named is the default agent's, one without a format has none.
 					format: () => {
@@ -1071,7 +1071,7 @@ export class TerminalView extends ItemView {
 	 * asks that question.
 	 */
 	private endpointSession(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
-		return this.plugin.endpointSession(this.terminal.identity.endpointId);
+		return this.plugin.endpoints.session(this.terminal.identity.endpointId);
 	}
 
 	/**
@@ -1339,7 +1339,7 @@ export class TerminalView extends ItemView {
 		// A pane whose native view comes and goes with its session (an hc
 		// terminal's label, ADR-0006) or its agent (#155): mount whichever
 		// surface it can show now.
-		const watcher = this.plugin.nativeWatcher(this.terminal.identity.endpointId);
+		const watcher = this.plugin.endpoints.watcher(this.terminal.identity.endpointId);
 		const off = watcher?.onAvailability?.((paneId) => {
 			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
 		});
@@ -1467,7 +1467,7 @@ export class TerminalView extends ItemView {
 		// The native view has no attach connection: its runtime's watcher writes
 		// over the plugin's own (herdr-core's `herdr.seen`; herdr has no such hook).
 		this.nativeLook.set(
-			looking.native ? this.plugin.nativeWatcher(this.terminal.identity.endpointId) : null,
+			looking.native ? this.plugin.endpoints.watcher(this.terminal.identity.endpointId) : null,
 			this.paneId,
 		);
 	}
@@ -1699,7 +1699,7 @@ export class TerminalView extends ItemView {
 		// The kind may move the agent's process with the view (ADR-0007's D2):
 		// told after the swap, so a terminal has let go of the TUI first.
 		const { paneId, endpointId } = this.terminal.identity;
-		const endpoint = this.plugin.endpointFor(endpointId);
+		const endpoint = this.plugin.endpoints.endpoint(endpointId);
 		if (paneId && endpoint) this.kind().paneViewChosen?.(endpoint, paneId, this.view());
 	}
 

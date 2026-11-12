@@ -53,9 +53,8 @@ describe('the + button on a mounted list', () => {
 			agentCatalogs,
 			capabilities: () => ({ startAgent: true }),
 			onScopeReplaced: () => () => undefined,
-			endpointSession: () => null,
+			endpoints: { session: () => null, kindUnavailable: () => null, pinnedPaneIds: () => [] },
 			showGetStarted: () => false,
-			kindUnavailable: () => null,
 			herdrVaultPath: () => '/vault',
 			actions: { startAgentHere: () => Promise.resolve(null) },
 		};

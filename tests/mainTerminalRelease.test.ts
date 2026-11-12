@@ -27,8 +27,10 @@ function plugin(options: { endpoint: boolean; shown: boolean }) {
 	});
 	const instance = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
 	const loose = instance as unknown as Record<string, unknown>;
-	loose.endpointFor = () => (options.endpoint ? { id: 'rt', runtime: { kind: 'claude' } } : null);
-	loose.kindOf = () => ({ terminalReleased: (_endpoint: unknown, paneId: string) => released.push(paneId) });
+	loose.endpoints = {
+		endpoint: () => (options.endpoint ? { id: 'rt', runtime: { kind: 'claude' } } : null),
+		kindOf: () => ({ terminalReleased: (_endpoint: unknown, paneId: string) => released.push(paneId) }),
+	};
 	loose.app = {
 		workspace: {
 			getLeavesOfType: () =>

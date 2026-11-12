@@ -844,7 +844,7 @@ session model never reopens a tail for a source that did not change.
     so a synchronous subagent is followed only once its answer names it,
     which is when it ends.
 - **Senders** are the kind's `terminal.send` / `terminal.keys` over the tab's
-  own runtime's client (`plugin.nativeClient`), as before.
+  own runtime's client (`plugin.endpoints.client`, the endpoint resolver of #182), as before.
 - **On SSH**, `@` mentions use the runtime's remote vault path (the agent opens
   the file on its machine), and relative links map a remote cwd inside the
   remote vault onto this vault.

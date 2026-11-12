@@ -28,18 +28,13 @@ import { HerdrSettingTab } from './settingsTab/tab';
 import { HerdrClient, type ProtocolMismatch } from './herdr/client';
 import {
 	ConnectionCoordinator,
-	EndpointSessions,
 	endpointOf,
 	isRemoteEndpoint,
-	resolveEndpoint,
 	type ConnectionClient,
 	type ConnectionScope,
 	type Endpoint,
-	type EndpointSession,
 } from './connection';
-import type { TabLabels } from './tabLabels';
 import { SshTunnel } from './herdr/ssh';
-import { isPanePinned, pinnedPaneIds, togglePanePin } from './settings';
 import { resolveFolderPath, type ActionHost } from './actions';
 import {
 	activeRuntimeOf,
@@ -52,12 +47,12 @@ import {
 	type RuntimeKind,
 } from './runtimes';
 import {
-	nativeAdapterFor,
 	type GraduationRelease,
 	type RuntimeActions,
 	type RuntimeCapabilities,
 	type RuntimeKindAdapter,
 } from './runtime/kind';
+import { EndpointResolver } from './runtime/endpoints';
 import { createHerdrKind } from './runtime/herdrKind';
 import { createHerdrCoreKind } from './runtime/herdrCoreKind';
 import { createClaudeKind, type ClaudeKind } from './runtime/claudeKind';
@@ -91,10 +86,6 @@ import {
 } from './terminalPlacement';
 import { SessionModelRegistry } from './native/sessionModel';
 import { PromptQueues } from './native/promptQueue';
-import type { SessionWatcher } from './native/sessionWatcher';
-import type { PromptClient } from './native/promptSender';
-import type { TranscriptSource } from './native/transcriptSource';
-import type { CommandCatalogSource } from './native/commandCatalog';
 import { ExplorerFolderButtons } from './explorerButtons';
 import { HcClient } from './hc/client';
 import { hcHookMachine } from './sessionHook/installer';
@@ -144,7 +135,7 @@ export default class HerdrPlugin extends Plugin {
 		{
 			endpoint: () => endpointOf(activeRuntimeOf(this.settings)),
 			driver: (endpoint) => {
-				const kind = this.kindOf(endpoint.runtime.kind);
+				const kind = this.endpoints.kindOf(endpoint.runtime.kind);
 				const driver = kind.connection;
 				if (kind.unavailable !== null || !driver) {
 					return { unavailable: kind.unavailable ?? `${endpoint.runtime.kind} cannot connect` };
@@ -171,7 +162,7 @@ export default class HerdrPlugin extends Plugin {
 			onReplaced: () => {
 				this.primed = false;
 				// The caches belong to the connection that just went (#43, #81).
-				this.sessions.sync();
+				this.endpoints.sync();
 				for (const listener of [...this.scopeListeners]) listener();
 				this.updateStatusBar();
 			},
@@ -243,6 +234,17 @@ export default class HerdrPlugin extends Plugin {
 		claude: this.claudeKind,
 	};
 	/**
+	 * What is behind an endpoint id (issue #182): its endpoint, kind,
+	 * connection, native adapter, client and pins, by one set of rules.
+	 */
+	readonly endpoints: EndpointResolver = new EndpointResolver({
+		kinds: this.kinds,
+		current: () => this.connection.current,
+		settings: () => this.settings,
+		save: () => this.saveSettings(),
+		listActions: () => ({ endpointId: this.endpoint.id, actions: this.actions }),
+	});
+	/**
 	 * "Get started" (ADR-0008): the card the agent list shows while no
 	 * runtime connects, and the `Get started` command's modal.
 	 */
@@ -256,8 +258,8 @@ export default class HerdrPlugin extends Plugin {
 		endpoint: () => this.endpoint,
 		settings: () => this.settings,
 		probe: (connection, programs) =>
-			this.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
-		nativeReachable: (runtime) => this.nativeReachable(runtime),
+			this.endpoints.kindOf(connection.endpoint.runtime.kind).probeAgents?.(connection, programs) ?? null,
+		nativeReachable: (runtime) => this.endpoints.nativeReachable(runtime),
 		changed: () => this.refreshAgentList(),
 		notice: (message) => {
 			new Notice(message);
@@ -291,25 +293,6 @@ export default class HerdrPlugin extends Plugin {
 	 */
 	get endpoint(): Endpoint {
 		return this.connection.current?.endpoint ?? endpointOf(activeRuntimeOf(this.settings));
-	}
-
-	/** The adapter of a kind (ADR-0004). */
-	kindOf(kind: RuntimeKind): RuntimeKindAdapter {
-		return this.kinds[kind];
-	}
-
-	/**
-	 * Whether a runtime's transcripts can be read from here (its kind's native
-	 * adapter on that target): the runtime half of the native view's gate,
-	 * which the agent catalog's native flag reads beside the agent seam's.
-	 */
-	nativeReachable(runtime: Readonly<RuntimeConfig>): boolean {
-		return nativeAdapterFor(this.kindOf(runtime.kind), endpointOf(runtime)) !== null;
-	}
-
-	/** Why runtimes of this kind cannot connect in this build, or null. */
-	kindUnavailable(kind: RuntimeKind): string | null {
-		return this.kindOf(kind).unavailable;
 	}
 
 	/**
@@ -347,91 +330,7 @@ export default class HerdrPlugin extends Plugin {
 	 * connection's, else the active runtime's. The UI leaves out what is false.
 	 */
 	capabilities(): Readonly<RuntimeCapabilities> {
-		return this.kindOf(this.endpoint.runtime.kind).capabilities;
-	}
-	/**
-	 * The endpoint-match rule, in one place (issue #81): everything a view
-	 * pinned to an endpoint may read from the published connection — its
-	 * endpoint snapshot, client, scope and tab-label cache — or null when the
-	 * connection is elsewhere. The tab-label cache is built here, on first read,
-	 * because it needs both the client and the scope and the coordinator creates
-	 * them apart; it is retired with its connection (issue #43), and views never
-	 * fetch labels themselves.
-	 */
-	private readonly sessions = new EndpointSessions<ConnectionClient, ConnectionScope, TabLabels>({
-		current: () => this.connection.current,
-		// The kind's own source: herdr's `tab.list` cache, herdr-core's
-		// `herdr-app` tabs.
-		createTabLabels: (connection) =>
-			this.kindOf(connection.endpoint.runtime.kind).createTabLabels(
-				connection,
-				() => this.connection.current === connection,
-			),
-	});
-	/**
-	 * What `endpointId` names on the published connection, or null when that
-	 * connection is another herdr's: a terminal pinned to one must not read
-	 * titles or labels from the other (issue #54).
-	 */
-	endpointSession(
-		endpointId: string,
-	): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
-		return this.sessions.for(endpointId);
-	}
-	/**
-	 * The endpoint an id names: the published connection's own snapshot when it
-	 * matches, else one rebuilt from the settings as they are now, else null
-	 * when the settings no longer describe it. The settings half is the plugin's
-	 * because a restored or pinned terminal starts without any connection.
-	 */
-	endpointFor(endpointId: string): Endpoint | null {
-		const session = this.endpointSession(endpointId);
-		return session?.endpoint ?? resolveEndpoint(endpointId, this.settings);
-	}
-
-	/**
-	 * The native view's session watcher for panes on this runtime (ADR-0006),
-	 * or null while that runtime is not the published one or cannot back a
-	 * native view. Never the published runtime's on another's behalf: the
-	 * same pane id on two runtimes is two panes.
-	 */
-	nativeWatcher(endpointId: string): SessionWatcher | null {
-		const current = this.connection.current;
-		if (!current || current.endpoint.id !== endpointId) return null;
-		const native = nativeAdapterFor(this.kindOf(current.endpoint.runtime.kind), current.endpoint);
-		return native?.watcher(current) ?? null;
-	}
-
-	/** Where this runtime's transcripts are read, or null while they cannot be. */
-	nativeTranscripts(endpointId: string): TranscriptSource | null {
-		const endpoint = this.endpointFor(endpointId);
-		if (!endpoint) return null;
-		const native = nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint);
-		const current = this.connection.current;
-		return native?.transcripts(endpoint, current?.endpoint.id === endpointId ? current : null) ?? null;
-	}
-
-	/**
-	 * Where a native tab's `/` list is read for the pane's agent (#98,
-	 * ADR-0010): its runtime's machine, by the same connection rule as
-	 * {@link nativeTranscripts}. Null is this machine's files, which the tab's
-	 * suggest walks itself, as it always has.
-	 */
-	nativeCommandCatalog(endpointId: string, agent: string): CommandCatalogSource | null {
-		const endpoint = this.endpointFor(endpointId);
-		const native = endpoint ? nativeAdapterFor(this.kindOf(endpoint.runtime.kind), endpoint) : null;
-		if (!endpoint || !native?.commandCatalog) return null;
-		const current = this.connection.current;
-		return native.commandCatalog(endpoint, current?.endpoint.id === endpointId ? current : null, agent);
-	}
-
-	/** What a native view's prompt and key senders go through: its own runtime's client. */
-	nativeClient(endpointId: string): PromptClient | null {
-		const session = this.endpointSession(endpointId);
-		if (!session) return null;
-		return nativeAdapterFor(this.kindOf(session.endpoint.runtime.kind), session.endpoint)
-			? session.client
-			: null;
+		return this.endpoints.kindOf(this.endpoint.runtime.kind).capabilities;
 	}
 	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
 	get tunnel(): SshTunnel | null {
@@ -439,42 +338,6 @@ export default class HerdrPlugin extends Plugin {
 		return tunnel instanceof SshTunnel ? tunnel : null;
 	}
 
-	/**
-	 * Pane ids pinned on an endpoint (issue #35): from the plugin's settings,
-	 * or, for a kind that keeps pins on the runtime (herdr-core's shared
-	 * `herdr.pinned`, ADR-0005), from the rows of that endpoint's connection.
-	 */
-	pinnedPaneIds(endpointId: string): string[] {
-		if (!this.sharedPins(endpointId)) return pinnedPaneIds(this.settings, endpointId);
-		return (this.endpointSession(endpointId)?.scope.list() ?? [])
-			.filter((pane) => pane.pinned === true)
-			.map((pane) => pane.paneId);
-	}
-
-	isPanePinned(endpointId: string, paneId: string): boolean {
-		if (!this.sharedPins(endpointId)) return isPanePinned(this.settings, endpointId, paneId);
-		return this.endpointSession(endpointId)?.scope.get(paneId)?.pinned === true;
-	}
-
-	/** Pins or unpins where that endpoint's kind keeps pins. */
-	async setPanePinned(endpointId: string, paneId: string, pinned: boolean): Promise<void> {
-		if (this.sharedPins(endpointId)) {
-			// Only the published connection can write the label; the row repaints
-			// when the core's `labels` event comes back.
-			if (this.endpoint.id !== endpointId) return;
-			await this.actions.setPinned?.(paneId, pinned);
-			return;
-		}
-		if (isPanePinned(this.settings, endpointId, paneId) !== pinned) {
-			togglePanePin(this.settings, endpointId, paneId);
-		}
-		await this.saveSettings();
-	}
-
-	private sharedPins(endpointId: string): boolean {
-		const endpoint = this.endpointFor(endpointId);
-		return endpoint ? this.kindOf(endpoint.runtime.kind).capabilities.sharedPins : false;
-	}
 	/** One screen answer driver per runtime and agent, shared by every tab (ADR-0009 §5). */
 	readonly screenAnswerers = new ScreenAnswerers();
 	/**
@@ -483,8 +346,8 @@ export default class HerdrPlugin extends Plugin {
 	 * transcript source as that runtime's kind supplies them (ADR-0006).
 	 */
 	readonly sessionModels = new SessionModelRegistry({
-		watcher: (endpointId) => this.nativeWatcher(endpointId),
-		source: (endpointId) => this.nativeTranscripts(endpointId),
+		watcher: (endpointId) => this.endpoints.watcher(endpointId),
+		source: (endpointId) => this.endpoints.transcripts(endpointId),
 	});
 	/**
 	 * Prompts held while a pane's agent works (#159), per runtime and pane,
@@ -493,8 +356,8 @@ export default class HerdrPlugin extends Plugin {
 	readonly promptQueues = new PromptQueues({
 		models: this.sessionModels,
 		sender: (endpointId) => {
-			const endpoint = this.endpointFor(endpointId);
-			return endpoint ? this.kindOf(endpoint.runtime.kind).promptSender(() => this.nativeClient(endpointId)) : null;
+			const kind = this.endpoints.kind(endpointId);
+			return kind ? kind.promptSender(() => this.endpoints.client(endpointId)) : null;
 		},
 		notify: (message) => new Notice(message),
 	});
@@ -512,7 +375,7 @@ export default class HerdrPlugin extends Plugin {
 		const kind = this.endpoint.runtime.kind;
 		let actions = this.kindActions.get(kind);
 		if (!actions) {
-			actions = this.kindOf(kind).createActions(this.actionHost());
+			actions = this.endpoints.kindOf(kind).createActions(this.actionHost());
 			this.kindActions.set(kind, actions);
 		}
 		return actions;
@@ -637,7 +500,7 @@ export default class HerdrPlugin extends Plugin {
 		// The `claude` kind's agents and shells are children of this plugin
 		// (ADR-0007): each one stops in its own order, which runs on from here.
 		void this.claudeKind.dispose();
-		this.sessions.dispose();
+		this.endpoints.dispose();
 		this.promptQueues.dispose();
 		this.sessionModels.dispose();
 		this.scopeListeners.clear();
@@ -785,7 +648,7 @@ export default class HerdrPlugin extends Plugin {
 			(runtime) =>
 				(runtime.kind === 'herdr' || runtime.kind === 'herdr-core') &&
 				runtime.target === 'local' &&
-				this.kindUnavailable(runtime.kind) === null,
+				this.endpoints.kindUnavailable(runtime.kind) === null,
 		);
 		return candidates.map((runtime) => {
 			const kind = runtime.kind === 'herdr' ? 'herdr' : 'herdr-core';
@@ -847,8 +710,7 @@ export default class HerdrPlugin extends Plugin {
 	async scopeReady(runtimeId: string, timeoutMs = 15000): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
 		for (;;) {
-			const current = this.connection.current;
-			if (current?.endpoint.id === runtimeId && current.scope.workspaceId) return true;
+			if (this.endpoints.connection(runtimeId)?.scope.workspaceId) return true;
 			if (Date.now() >= deadline) return false;
 			await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
 		}
@@ -862,7 +724,7 @@ export default class HerdrPlugin extends Plugin {
 		return showGetStarted({
 			runtimeCount: this.settings.runtimes.length,
 			published: this.connection.current !== null,
-			unavailable: this.kindUnavailable(activeRuntimeOf(this.settings).kind),
+			unavailable: this.endpoints.kindUnavailable(activeRuntimeOf(this.settings).kind),
 			error: this.connectError,
 		});
 	}
@@ -870,7 +732,7 @@ export default class HerdrPlugin extends Plugin {
 	/** Why the card shows: the active runtime's failure, as a sentence. */
 	getStartedReason(): string {
 		const runtime = activeRuntimeOf(this.settings);
-		const why = this.kindUnavailable(runtime.kind) ?? this.connectError ?? 'it is not connected';
+		const why = this.endpoints.kindUnavailable(runtime.kind) ?? this.connectError ?? 'it is not connected';
 		return `${runtimeDisplayName(runtime)} is not available: ${why}`;
 	}
 
@@ -940,7 +802,7 @@ export default class HerdrPlugin extends Plugin {
 		new RuntimeSuggestModal(this.app, {
 			runtimes: () => this.settings.runtimes,
 			activeId: () => activeRuntimeOf(this.settings).id,
-			unavailable: (runtime) => this.kindUnavailable(runtime.kind),
+			unavailable: (runtime) => this.endpoints.kindUnavailable(runtime.kind),
 			choose: (runtime) => void this.switchRuntime(runtime.id),
 		}).open();
 	}
@@ -1152,10 +1014,10 @@ export default class HerdrPlugin extends Plugin {
 	 * is still this plugin's process, and nothing else would end it.
 	 */
 	terminalTabReleased(paneId: string, endpointId: string): void {
-		const endpoint = this.endpointFor(endpointId);
+		const endpoint = this.endpoints.endpoint(endpointId);
 		let release: (() => void) | null = null;
 		if (endpoint) {
-			const kind = this.kindOf(endpoint.runtime.kind);
+			const kind = this.endpoints.kindOf(endpoint.runtime.kind);
 			if (kind.terminalReleased) release = () => kind.terminalReleased?.(endpoint, paneId);
 		} else if (isShellId(paneId)) {
 			release = () => void this.claudeKind.shells?.close(paneId);
@@ -1252,7 +1114,7 @@ export default class HerdrPlugin extends Plugin {
 			// the toolbar can switch herdrs while the close is in flight, and a
 			// same-id pane on the other one must keep its row (issue #54, PR #89).
 			forgetPane: (paneId: string, endpointId: string) => {
-				this.endpointSession(endpointId)?.scope.forget(paneId);
+				this.endpoints.session(endpointId)?.scope.forget(paneId);
 			},
 			sleep: (ms: number) =>
 				new Promise<void>((resolve) => {
@@ -1573,8 +1435,8 @@ export default class HerdrPlugin extends Plugin {
 		const herdr = this.client instanceof HerdrClient ? this.client : null;
 		return {
 			runtime,
-			unavailable: this.kindUnavailable(runtime.kind),
-			details: this.kindOf(runtime.kind).statusLines(this.connection.current),
+			unavailable: this.endpoints.kindUnavailable(runtime.kind),
+			details: this.endpoints.kindOf(runtime.kind).statusLines(this.connection.current),
 			discovery,
 			socketPath: herdr?.socket ?? discovery?.socketPath ?? '',
 			tunnel: tunnel
