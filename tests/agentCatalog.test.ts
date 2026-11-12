@@ -834,7 +834,6 @@ describe('the probe in the order a connect really runs', () => {
 			home: HOME,
 		},
 		sshRun: () => Promise.reject(new Error('no ssh in tests')),
-		onProtocolMismatch: () => undefined,
 		onUnsupportedMethod: () => undefined,
 		isPublished: () => true,
 	});
@@ -926,7 +925,6 @@ describe('the kinds’ own probes', () => {
 				asked.push([file, ...args]);
 				return Promise.resolve('1\nok');
 			},
-			onProtocolMismatch: () => undefined,
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});

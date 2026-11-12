@@ -837,7 +837,6 @@ describe('the kinds (#169, #170)', () => {
 		const herdr = createHerdrKind({
 			extraPath: () => '',
 			vaultPath: () => '/v',
-			onProtocolMismatch: () => undefined,
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});
@@ -865,7 +864,6 @@ describe('the kinds (#169, #170)', () => {
 		const herdr = createHerdrKind({
 			extraPath: () => '',
 			vaultPath: () => '/v',
-			onProtocolMismatch: () => undefined,
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});

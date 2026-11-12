@@ -44,6 +44,7 @@ import { LocalTranscriptSource } from '../native/transcriptSource';
 import { herdrSessionWatcher, sessionBelongsTo } from '../herdr/sessionWatcher';
 import { HerdrCommandCatalog, localPaneClaudeDeps, PaneClaudeResolver } from '../herdr/paneClaude';
 import { TabLabelCache } from '../tabLabels';
+import { herdrStatusLines } from '../herdr/status';
 import { HERDR_CAPABILITIES, type RuntimeKindAdapter } from './kind';
 
 /** What the herdr kind needs from the plugin; everything Obsidian-shaped is here. */
@@ -56,7 +57,6 @@ export interface HerdrKindHost {
 	discoveryDeps?: DiscoveryDeps;
 	/** Runs the agent probe's `ssh` (issue #125); injected in tests, never spawned there. */
 	sshRun?: RunCommand;
-	onProtocolMismatch(mismatch: ProtocolMismatch): void;
 	onUnsupportedMethod(method: string): void;
 	/**
 	 * Whether this scope's connection is the published one. The scope's one
@@ -96,6 +96,13 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		const override = runtime.binary.trim();
 		return override ? expandHome(override, home()) : (discovered.get(runtime.id) ?? '');
 	};
+	/**
+	 * The protocol mismatch the newest attempt's client reported, until the
+	 * next attempt (ADR-0004: warn, never refuse). Kept apart from the client
+	 * so the status still says it after the client's own record is cleared.
+	 */
+	let mismatch: ProtocolMismatch | null = null;
+	const mismatchOf = (client: HerdrClient | null): ProtocolMismatch | null => mismatch ?? client?.lastMismatch ?? null;
 	/** One for every local runtime of this kind: they all read this machine's files. */
 	const localTranscripts = new LocalTranscriptSource();
 	/**
@@ -151,6 +158,8 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 		},
 		connection: {
 			discover: (endpoint) => {
+				// A new attempt: what the last one's client said no longer holds.
+				mismatch = null;
 				const runtime = endpoint.runtime;
 				if (runtime.target === 'local') return discoverLocal(runtime);
 				// An SSH runtime's binary lives on the remote host; the local one
@@ -180,7 +189,9 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 			createClient: (socketPath) =>
 				new HerdrClient({
 					socketPath,
-					onProtocolMismatch: (mismatch) => host.onProtocolMismatch(mismatch),
+					onProtocolMismatch: (reported) => {
+						mismatch = reported;
+					},
 					// PRD M3: an unsupported method is reported once, then never retried.
 					onUnsupportedMethod: (method) => host.onUnsupportedMethod(method),
 				}),
@@ -274,6 +285,23 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 				alive,
 			});
 		},
-		statusLines: () => null,
+		// Binary, socket, server, tunnel and workspace (`../herdr/status.ts`).
+		statusLines: (connection, context) => {
+			const client = connection?.client ?? null;
+			const tunnel = connection?.tunnel ?? null;
+			const scope = connection?.scope ?? null;
+			return herdrStatusLines({
+				runtime: context.runtime,
+				discovery: context.discovery,
+				socketPath: client?.socket ?? context.discovery?.socketPath ?? '',
+				tunnel: tunnel ? { text: tunnel.statusText, connected: tunnel.status.state === 'connected' } : null,
+				mismatch: mismatchOf(client),
+				workspace: scope?.workspaceId
+					? { id: scope.workspaceId, label: scope.workspaceLabel, method: scope.method, agentCount: scope.size }
+					: null,
+				error: context.error,
+			});
+		},
+		mismatched: (connection) => mismatchOf(connection?.client ?? null) !== null,
 	};
 }

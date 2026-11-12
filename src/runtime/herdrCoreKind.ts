@@ -51,7 +51,7 @@ import { agentFormat } from '../agents/format';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import type { SessionWatcher } from '../native/sessionWatcher';
 import type { RuntimeConfig } from '../runtimes';
-import { HERDR_CORE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
+import { HERDR_CORE_CAPABILITIES, withStatusError, type RuntimeKindAdapter, type StatusLine } from './kind';
 
 export { HERDR_APP_DOC };
 
@@ -331,7 +331,8 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 					})
 				: null,
 		createTabLabels: (connection) => new HcTabLabels(connection.scope),
-		statusLines: (connection) => (connection ? hcStatusLines(connection) : null),
+		statusLines: (connection, context) =>
+			connection ? withStatusError(hcStatusLines(connection), context.error) : null,
 	};
 }
 

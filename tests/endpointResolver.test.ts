@@ -220,7 +220,6 @@ describe('the native adapter', () => {
 			vaultPath: () => '/vault',
 			discoveryDeps: { isExecutable: () => false, run: () => Promise.resolve({ stdout: '', stderr: '', code: 1 }), env: {}, home: '/home/u' },
 			sshRun: () => Promise.reject(new Error('no ssh in tests')),
-			onProtocolMismatch: () => undefined,
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});

@@ -53,7 +53,6 @@ function host(overrides: Partial<HerdrKindHost> = {}): HerdrKindHost {
 		extraPath: () => '',
 		vaultPath: () => '/Users/lasse/Vaults/hvelv',
 		discoveryDeps: machine(['/usr/local/bin/herdr']),
-		onProtocolMismatch: () => undefined,
 		onUnsupportedMethod: () => undefined,
 		isPublished: () => true,
 		...overrides,

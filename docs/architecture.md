@@ -1256,7 +1256,10 @@ which Status does not repeat; the runtime list marks the active runtime and
 the runtimes with problems, and the Runtimes entry carries the same warning,
 as the Agents entry does while a user agent CLI needs attention.
 `connectionSummary` and `connectionDetails` in `src/settings.ts` word the two,
-pure over the plugin's `ConnectionStatus`; both draw again when the plugin's
+pure over the plugin's `ConnectionStatus`; the Status group's lines are the
+runtime's kind's own (`RuntimeKindAdapter.statusLines`, herdr's in
+`src/herdr/status.ts` since #185), with herdr's discovery layout still shown
+for a kind that has no connection of its own yet; both draw again when the plugin's
 `ConnectionStatusSource` says the connection changed (a published or retired
 connection, a primed scope, an error set or cleared, a scope event).
 

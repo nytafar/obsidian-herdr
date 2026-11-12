@@ -921,6 +921,18 @@ describe('shell tabs', () => {
 		expect(h.kind.shells?.has(paneId)).toBe(false);
 	});
 
+	it('ends a shell whose runtime was removed under its tab, and leaves an agent of no runtime alone (#185)', async () => {
+		const h = harness();
+		const paneId = h.kind.shells?.open(h.dir) ?? '';
+		openTab(h, paneId);
+		expect(h.pty.children).toHaveLength(1);
+		h.kind.paneOrphaned?.('cl-00000000');
+		expect(h.kind.shells?.has(paneId)).toBe(true);
+		h.kind.paneOrphaned?.(paneId);
+		await waitFor(() => h.pty.last.exited, 'the shell to end');
+		expect(h.kind.shells?.has(paneId)).toBe(false);
+	});
+
 	it('types nothing into the shell when a reopened tab replays its old queries; one tab answers live ones', async () => {
 		const h = harness();
 		const paneId = h.kind.shells?.open(h.dir) ?? '';

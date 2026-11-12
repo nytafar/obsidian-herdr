@@ -578,7 +578,7 @@ export class AgentListView extends ItemView {
 			capabilities: () => {
 				const can = plugin.capabilities();
 				// Graduation targets only matter where rows are resumable sessions.
-				return can.resumable ? { ...can, graduation: plugin.graduationTargets() } : can;
+				return can.resumable ? { ...can, graduation: plugin.graduation.targets() } : can;
 			},
 			pinned: (ref) => plugin.endpoints.isPanePinned(ref.endpointId, ref.paneId),
 			setPinned: (ref, pinned) => plugin.endpoints.setPanePinned(ref.endpointId, ref.paneId, pinned),
@@ -611,7 +611,7 @@ export class AgentListView extends ItemView {
 			},
 			continueIn: async (ref, runtimeId) => {
 				if (!onCurrentEndpoint(ref)) return;
-				await plugin.continueIn(ref.paneId, ref.endpointId, runtimeId);
+				await plugin.graduation.continueIn(ref.paneId, ref.endpointId, runtimeId);
 			},
 			showRowMenu: (event, items, choose) => this.showRowMenu(event, items, choose),
 			promptRename: (text) => new PromptModal(this.app, text).ask(),

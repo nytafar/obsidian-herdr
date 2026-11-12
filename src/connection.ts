@@ -142,6 +142,11 @@ export interface ConnectionTunnel {
 	/** Resolves to the local socket path once the forward accepts connections. */
 	start(): Promise<string>;
 	stop(): Promise<void>;
+	/**
+	 * The remote user's home, once a `~` had to be expanded there; empty
+	 * until then. Absent for a transport that never learns it.
+	 */
+	readonly remoteHome?: string;
 }
 
 /**

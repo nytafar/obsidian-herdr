@@ -6,6 +6,7 @@
 
 import { defaultLocalRuntime, type RuntimeKind } from '../../src/runtimes';
 import type { ConnectionStatus, ConnectionStatusSource } from '../../src/settings';
+import { herdrStatusLines, type HerdrStatus } from '../../src/herdr/status';
 import type { RuntimeField } from '../../src/settingsTab/runtimeKeys';
 import type { RuntimesHost } from '../../src/settingsTab/runtimes';
 
@@ -16,6 +17,26 @@ export interface FakeConnection extends ConnectionStatusSource {
 	changed(): void;
 }
 
+const DISCOVERY = {
+	binary: { path: '/opt/homebrew/bin/herdr', source: 'homebrew' },
+	socketPath: '/tmp/herdr.sock',
+	status: { status: 'running', version: '0.9.5', protocol: 22 },
+	error: null,
+} as unknown as ConnectionStatus['discovery'];
+
+/** The local herdr's status lines, with this workspace or none. */
+export function herdrLines(workspace: HerdrStatus['workspace']): ConnectionStatus['details'] {
+	return herdrStatusLines({
+		runtime: defaultLocalRuntime(),
+		discovery: DISCOVERY,
+		socketPath: '/tmp/herdr.sock',
+		tunnel: null,
+		mismatch: null,
+		workspace,
+		error: null,
+	});
+}
+
 /** The local herdr, connected, with a socket, a server and a workspace. */
 export function fakeConnection(overrides: Partial<ConnectionStatus> = {}): FakeConnection {
 	const listeners = new Set<() => void>();
@@ -23,16 +44,10 @@ export function fakeConnection(overrides: Partial<ConnectionStatus> = {}): FakeC
 		current: {
 			runtime: defaultLocalRuntime(),
 			unavailable: null,
-			discovery: {
-				binary: { path: '/opt/homebrew/bin/herdr', source: 'homebrew' },
-				socketPath: '/tmp/herdr.sock',
-				status: { status: 'running', version: '0.9.5', protocol: 22 },
-				error: null,
-			} as unknown as ConnectionStatus['discovery'],
-			socketPath: '/tmp/herdr.sock',
-			tunnel: null,
-			mismatch: null,
-			workspace: { id: 'w4', label: 'hvelv', method: 'label', agentCount: 3 },
+			discovery: DISCOVERY,
+			// What the herdr adapter says of this connection (`herdr/status.ts`).
+			details: herdrLines({ id: 'w4', label: 'hvelv', method: 'label', agentCount: 3 }),
+			mismatch: false,
 			error: null,
 			state: 'connected',
 			...overrides,

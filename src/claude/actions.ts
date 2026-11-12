@@ -21,7 +21,7 @@
  */
 
 import { buildAgentName, folderName, type ActionHost } from '../actions';
-import type { GraduationRelease, RuntimeActions } from '../runtime/kind';
+import type { GraduationRelease, RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import type { ClaudeAgents } from './agents';
 import type { ClaudeShells } from './shells';
 
@@ -35,7 +35,7 @@ function describe(error: unknown): string {
  * own default, then `--resume <session>`. Every value is a plain word, which
  * herdr-core's single-quoted launch line requires.
  */
-export function graduationArgs(release: GraduationRelease): string[] {
+export function graduationArgs(release: Pick<GraduationRelease, 'sessionId' | 'permissionMode'>): string[] {
 	return [
 		...(release.permissionMode ? ['--permission-mode', release.permissionMode] : []),
 		'--resume',
@@ -76,7 +76,14 @@ export class ClaudeActions implements RuntimeActions {
 		return Promise.resolve(false);
 	}
 
-	async startAgentHere(folderAbsPath: string): Promise<StartedClaudeAgent | null> {
+	/**
+	 * Starts an agent in the folder, named by `options.name` or the
+	 * `agentNamePattern` setting, made unique among this runtime's rows: the
+	 * one way a Claude agent is started, from the menus and from "Get started"
+	 * (ADR-0008), which also pins its permission mode, sends its first prompt
+	 * and opens it in the native view itself.
+	 */
+	async startAgentHere(folderAbsPath: string, options: StartAgentOptions = {}): Promise<StartedClaudeAgent | null> {
 		if (!this.host.connection()) {
 			this.host.notice('Gjetr: not connected to Claude run by Obsidian yet.');
 			return null;
@@ -84,16 +91,27 @@ export class ClaudeActions implements RuntimeActions {
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 		const name = buildAgentName(
-			settings.agentNamePattern || '{folder}',
+			options.name ?? (settings.agentNamePattern || '{folder}'),
 			{ folder: label, vault: this.host.vaultName() },
 			this.agents.names(this.runtimeId),
 		);
+		const row = {
+			...(options.permissionMode !== undefined ? { permissionMode: options.permissionMode } : {}),
+			...(options.allowOnceOnly !== undefined ? { allowOnceOnly: options.allowOnceOnly } : {}),
+		};
 		let paneId: string;
 		try {
-			paneId = this.agents.start(this.runtimeId, folderAbsPath, name).id;
+			paneId = this.agents.start(this.runtimeId, folderAbsPath, name, row).id;
+			if (options.prompt !== undefined) await this.agents.prompt(this.runtimeId, paneId, options.prompt);
 		} catch (error) {
 			this.host.notice(`Gjetr: could not start Claude. ${describe(error)}`);
 			return null;
+		}
+		if (options.view) {
+			// The caller's own view: "Get started" answers the permission on the
+			// native view's waiting card, and says what it started itself.
+			await this.host.openTerminal(paneId, folderAbsPath, options.view);
+			return { paneId, name };
 		}
 		this.host.notice(`Gjetr: started Claude "${name}" in ${label}`);
 		if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
@@ -148,8 +166,15 @@ export class ClaudeActions implements RuntimeActions {
 		}
 		// The session as it is after the stop: a `/clear` may have rotated it.
 		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
-		const permissionMode = this.agents.permissionMode(this.runtimeId, paneId);
-		return { cwd: after.cwd, sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) };
+		const runtimeId = this.runtimeId;
+		const permissionMode = this.agents.permissionMode(runtimeId, paneId);
+		return {
+			cwd: after.cwd,
+			sessionId: after.sessionId,
+			...(permissionMode ? { permissionMode } : {}),
+			forget: () => this.agents.forget(runtimeId, paneId),
+			reclaim: () => this.agents.reclaim(runtimeId, paneId),
+		};
 	}
 
 	/**
