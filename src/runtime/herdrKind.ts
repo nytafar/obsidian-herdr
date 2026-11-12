@@ -201,23 +201,20 @@ export function createHerdrKind(host: HerdrKindHost): HerdrKind {
 			start: (client, scope) =>
 				startHerdrStream(client, scope, { subscriptions: SCOPE_SUBSCRIPTIONS }),
 		},
-		terminalCommand: (endpoint: Endpoint) => {
+		createTerminalSession: (options, endpoint) => {
 			const runtime = endpoint.runtime;
 			// SSH: `['ssh','-T',host,<remote herdr>]`, the remote shell expanding
 			// a `~` — terminals never go through the forwarded API socket (PRD
-			// S17). Local: `[<herdr>]`, or empty while the binary is still to be
-			// found, which the session then does itself.
-			if (runtime.target === 'ssh') return terminalArgvPrefix(runtime, '');
-			const local = localBinary(runtime);
-			return local ? terminalArgvPrefix(runtime, local) : [];
-		},
-		createTerminalSession: (options, endpoint) => {
-			const runtime = endpoint.runtime;
-			if (options.command.length > 0 || runtime.target !== 'local') {
-				return new TerminalSession(options);
+			// S17); a runtime with no host throws its reason. Local: `[<herdr>]`,
+			// or, while the binary is still to be found, the session finds it.
+			if (runtime.target === 'ssh') {
+				return new TerminalSession({ ...options, command: terminalArgvPrefix(runtime, '') });
 			}
+			const local = localBinary(runtime);
+			if (local) return new TerminalSession({ ...options, command: terminalArgvPrefix(runtime, local) });
 			return new TerminalSession({
 				...options,
+				command: [],
 				resolveCommand: async () => {
 					const known = localBinary(runtime);
 					if (known) return [known];

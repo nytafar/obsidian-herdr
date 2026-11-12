@@ -26,7 +26,7 @@
  */
 
 import type { ActionHost } from '../actions';
-import type { TerminalSessionOptions } from '../bridge/terminalSession';
+import type { TerminalStartOptions } from '../bridge/terminalSession';
 import type {
 	Connection,
 	ConnectionClient,
@@ -365,13 +365,13 @@ export interface RuntimeKindAdapter<
 	/** Transport, client and scope for one connection attempt; null while unavailable. */
 	readonly connection: ConnectionDriver<C, S, T> | null;
 	/**
-	 * The argv a terminal tab's bridge starts with on this endpoint. Throws a
-	 * readable error when it cannot be built yet (no binary found, no host);
-	 * the tab shows it and retries once a connection arrives.
+	 * The bridge for one terminal tab on this endpoint. The kind builds its
+	 * argv, or finds it once started (a local binary not discovered yet, which
+	 * the session searches for itself). Throws a readable error when the tab
+	 * cannot start whatever a connection does (an SSH runtime with no host, a
+	 * kind this build cannot run, no pty here); the tab shows that message.
 	 */
-	terminalCommand(endpoint: Endpoint): string[];
-	/** The bridge process for one terminal tab, from the argv above. */
-	createTerminalSession(options: TerminalSessionOptions, endpoint: Endpoint): PaneSession;
+	createTerminalSession(options: TerminalStartOptions, endpoint: Endpoint): PaneSession;
 	/**
 	 * Why a pane of this kind has no native view though the kind has one, or
 	 * null: a `claude` shell tab, which is no agent.
@@ -473,9 +473,6 @@ export function unavailableKind(
 		nativeUnavailable,
 		native: null,
 		connection: null,
-		terminalCommand: () => {
-			throw refuse();
-		},
 		createTerminalSession: () => {
 			throw refuse();
 		},

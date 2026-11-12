@@ -5,11 +5,14 @@
  * transport argv, the connection driven by the real coordinator, and the
  * action mapping.
  */
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HcClient, remoteConnectCommand, sshConnectArgv, STALL_MS, type HcTimers } from '../src/hc/client';
 import { HcActions, agentLaunchLine, hcKeyName, hcKeySender, hcPromptSender, hcTerminalName, TAB_NAME_WAIT_MS } from '../src/hc/actions';
 import { HcScope } from '../src/hc/scope';
-import { ConnectionCoordinator, endpointOf } from '../src/connection';
+import { ConnectionCoordinator, endpointOf, type Endpoint } from '../src/connection';
 import { createHerdrCoreKind, hcStatusLines, loadSpaces } from '../src/runtime/herdrCoreKind';
 import { HERDR_CORE_CAPABILITIES } from '../src/runtime/kind';
 import { newRuntime, type RuntimeConfig } from '../src/runtimes';
@@ -263,7 +266,7 @@ describe('the herdr-core kind', () => {
 		coordinator.dispose();
 	});
 
-	it('needs the hc binary locally and a host over ssh, and builds the terminal tab argv', () => {
+	it('needs the hc binary locally and a host over ssh', () => {
 		const { spawn } = fakeSpawner();
 		const kind = createHerdrCoreKind(kindHost(spawn, manualTimers().timers));
 		const driver = kind.connection;
@@ -273,25 +276,64 @@ describe('the herdr-core kind', () => {
 		expect(driver.discoveryIssue(endpointOf(ASHER), missing)).toBeNull();
 		expect(driver.discoveryIssue(endpointOf({ ...ASHER, host: '' }), missing)).toBe('the runtime has no SSH host');
 		expect(kind.terminalUnavailable).toBeNull();
-		// Not discovered yet: the tab's session searches for it on start.
-		expect(kind.terminalCommand(endpointOf(LOCAL_HC))).toEqual([]);
-		expect(kind.terminalCommand(endpointOf({ ...LOCAL_HC, binary: '/opt/hc' }))).toEqual(['/opt/hc', 'connect']);
-		const ssh = kind.terminalCommand(endpointOf(ASHER));
-		expect(ssh.slice(0, 2)).toEqual(['ssh', '-T']);
-		expect(ssh.at(-1)).toContain('connect');
-		expect(() => kind.terminalCommand(endpointOf({ ...ASHER, host: '' }))).toThrow('the runtime has no SSH host');
 		expect(kind.capabilities).toEqual(HERDR_CORE_CAPABILITIES);
 		expect(kind.unavailable).toBeNull();
+	});
+
+	/** What a terminal tab's session spawns on this endpoint. */
+	async function spawnedArgv(endpoint: Endpoint, extraPath = ''): Promise<readonly string[] | undefined> {
+		const { spawn, cores } = fakeSpawner();
+		const kind = createHerdrCoreKind({ ...kindHost(spawn, manualTimers().timers), extraPath: () => extraPath });
+		const session = kind.createTerminalSession({ target: 't7', mode: 'observe', cols: 80, rows: 24 }, endpoint);
+		session.on('error', () => undefined);
+		session.start();
+		await settle();
+		await session.dispose();
+		return cores[0]?.argv;
+	}
+
+	it('builds the terminal tab argv from the pinned runtime', async () => {
+		expect(await spawnedArgv(endpointOf({ ...LOCAL_HC, binary: '/opt/hc' }))).toEqual(['/opt/hc', 'connect']);
+		const ssh = (await spawnedArgv(endpointOf(ASHER))) ?? [];
+		expect(ssh.slice(0, 2)).toEqual(['ssh', '-T']);
+		expect(ssh.at(-1)).toContain('connect');
+		// The remote shell expands a `~` (as $HOME), not this machine.
+		const tilde = (await spawnedArgv(endpointOf({ ...ASHER, binary: '~/.local/bin/hc' }))) ?? [];
+		expect(tilde).toContain('asher');
+		expect(tilde.join(' ')).toContain('"$HOME"/.local/bin/hc');
+		// A local spawn expands it here.
+		expect(await spawnedArgv(endpointOf({ ...LOCAL_HC, binary: '~/.local/bin/hc' }))).toEqual([
+			`${homedir()}/.local/bin/hc`,
+			'connect',
+		]);
+	});
+
+	it('refuses a tab on an SSH runtime with no host, with that reason', () => {
+		const kind = createHerdrCoreKind(kindHost(fakeSpawner().spawn, manualTimers().timers));
+		expect(() =>
+			kind.createTerminalSession({ target: 't7', mode: 'observe', cols: 80, rows: 24 }, endpointOf({ ...ASHER, host: '' })),
+		).toThrow('the runtime has no SSH host');
+	});
+
+	it('finds an undiscovered local binary for a tab itself, whichever runtime is active (a cold start)', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'oh-hc-'));
+		try {
+			const hc = join(dir, 'hc');
+			writeFileSync(hc, '#!/bin/sh\n');
+			chmodSync(hc, 0o755);
+			// Nothing discovered and nothing connected: the session searches,
+			// the extra PATH included (a machine's own hc may be found first).
+			expect(await spawnedArgv(endpointOf(LOCAL_HC), dir)).toEqual([expect.stringMatching(/\/hc$/), 'connect']);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it('opens a terminal tab as its own hc connect child, attached to the pane', async () => {
 		const { spawn, cores } = fakeSpawner();
 		const kind = createHerdrCoreKind(kindHost(spawn, manualTimers().timers));
 		const endpoint = endpointOf({ ...LOCAL_HC, binary: '/opt/hc' });
-		const session = kind.createTerminalSession(
-			{ command: kind.terminalCommand(endpoint), target: 't7', mode: 'observe', cols: 80, rows: 24 },
-			endpoint,
-		);
+		const session = kind.createTerminalSession({ target: 't7', mode: 'observe', cols: 80, rows: 24 }, endpoint);
 		expect(session.mode).toBe('observe');
 		session.start();
 		await settle();
@@ -310,7 +352,6 @@ describe('the herdr-core kind', () => {
 		const endpoint = endpointOf({ ...LOCAL_HC, binary: '/opt/hc' });
 		const session = kind.createTerminalSession(
 			{
-				command: kind.terminalCommand(endpoint),
 				target: 't7',
 				mode: 'control',
 				cols: 80,

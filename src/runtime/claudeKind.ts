@@ -308,10 +308,6 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		},
 		// Nothing to find: the session attaches to a pty the plugin keeps, and
 		// the agent table knows the runtime's binary.
-		terminalCommand: () => {
-			if (!pty) throw refuse();
-			return ['script'];
-		},
 		createTerminalSession: (options, endpoint) => {
 			if (!pty) throw refuse();
 			const runtimeId = endpoint.runtime.id;

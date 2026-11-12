@@ -24,7 +24,7 @@ import type {
 	FrameMeta,
 	TerminalSessionEventMap,
 	TerminalSessionMode,
-	TerminalSessionOptions,
+	TerminalStartOptions,
 } from '../bridge/terminalSession';
 import type { PaneSession } from '../views/paneTerminal';
 import type { PtyAttachment, PtyOpen, PtyViewer } from './sharedPty';
@@ -45,7 +45,7 @@ export class ClaudeTerminalSession implements PaneSession {
 	private grid: { cols: number; rows: number };
 
 	constructor(
-		private readonly options: TerminalSessionOptions,
+		private readonly options: TerminalStartOptions,
 		private readonly open: PtyOpen,
 	) {
 		this.mode = options.mode;

@@ -978,7 +978,6 @@ describe('the claude kind over a fake claude', () => {
 	it('has the terminal view and shell tabs where a pty can be made (ADR-0007’s D2)', () => {
 		const h = harness({ host: { ptyPlatform: 'linux' } });
 		expect(h.kind.terminalUnavailable).toBeNull();
-		expect(h.kind.terminalCommand(h.connection.endpoint)).toEqual(['script']);
 		expect(h.kind.capabilities).toMatchObject({
 			tabs: false,
 			splits: false,

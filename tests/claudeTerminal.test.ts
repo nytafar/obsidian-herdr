@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path';
 import { Terminal } from '@xterm/headless';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ActionHost } from '../src/actions';
-import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
+import type { FrameMeta, TerminalStartOptions } from '../src/bridge/terminalSession';
 import {
 	AGENT_FORGOTTEN,
 	AGENT_STOPPING,
@@ -230,9 +230,9 @@ interface Tab {
 	screen(): string;
 }
 
-function openTab(h: Harness, paneId: string, options: Partial<TerminalSessionOptions> = {}): Tab {
+function openTab(h: Harness, paneId: string, options: Partial<TerminalStartOptions> = {}): Tab {
 	const session = h.kind.createTerminalSession(
-		{ command: h.kind.terminalCommand(h.connection.endpoint), target: paneId, mode: 'control', cols: 100, rows: 30, ...options },
+		{ target: paneId, mode: 'control', cols: 100, rows: 30, ...options },
 		h.connection.endpoint,
 	);
 	const tab: Tab = {
@@ -998,7 +998,7 @@ describe('on macOS, until it is verified there', () => {
 		expect(CLAUDE_TERMINAL_UNVERIFIED).toMatch(/macOS.*not .*verified/);
 		expect(h.kind.capabilities.shells).toBe(false);
 		expect(h.kind.shells).toBeNull();
-		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow(CLAUDE_TERMINAL_UNVERIFIED);
+		expect(() => openTab(h, AGENT)).toThrow(CLAUDE_TERMINAL_UNVERIFIED);
 		const lines = claudeStatusLines(
 			{ client: { setup: { binary: 'claude', permissionMode: 'manual' } }, scope: { size: 0, running: 0 } },
 			CLAUDE_TERMINAL_UNVERIFIED,
@@ -1022,6 +1022,6 @@ describe('on Windows', () => {
 		expect(CLAUDE_TERMINAL_UNAVAILABLE).toContain('Windows');
 		expect(h.kind.capabilities.shells).toBe(false);
 		expect(h.kind.shells).toBeNull();
-		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow();
+		expect(() => openTab(h, AGENT)).toThrow(CLAUDE_TERMINAL_UNAVAILABLE);
 	});
 });

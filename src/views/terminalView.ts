@@ -6,10 +6,9 @@
  * and titles its header. The pane's terminal itself — the `TerminalSession`
  * bridge, the `TerminalRenderer`, and the plumbing between them — belongs to
  * `PaneTerminal` (`./paneTerminal.ts`, issue #83), which this drives through
- * `attach`, `detach`, `setVisible`, `setIdentity`, `reconnect`,
- * `connectionArrived`, `resize` and `status`, and serves as its
- * `PaneTerminalHost`: the settings, the endpoint, the herdr argv and Obsidian's
- * `Notice` all reach it from here.
+ * `attach`, `detach`, `setVisible`, `setIdentity`, `reconnect`, `resize` and
+ * `status`, and serves as its `PaneTerminalHost`: the settings, the endpoint
+ * and Obsidian's `Notice` all reach it from here.
  *
  * Since issue #92 that lifecycle is one **pane surface** among two
  * (`../native/paneSurface.ts`, ADR-0002): the tab's **view** decides which one is
@@ -696,20 +695,6 @@ export class TerminalView extends ItemView {
 			cursorOptions: () => cursorOptions(this.plugin.settings),
 			env: () => spawnEnv(process.env, this.plugin.settings.extraPath),
 			endpointFor: (endpointId) => this.plugin.endpoints.endpoint(endpointId),
-			// The pinned runtime's kind builds the argv: for herdr `[<herdr>]`
-			// locally and `['ssh','-T',host,<remote herdr>]` over SSH — terminals
-			// never go through the forwarded API socket (PRD S17).
-			commandFor: (endpoint) =>
-				this.plugin.endpoints.kindOf(endpoint.runtime.kind).terminalCommand(endpoint),
-			// Whether the plugin has connected to *anything*: a connection to the
-			// other herdr still means the binary was found (issue #54).
-			// A kind this build cannot run is not waiting for anything: the tab
-			// shows why at once instead of "waiting for herdr" (ADR-0004).
-			// Nor is a kind whose terminal tab cannot start at all.
-			connected: () =>
-				this.plugin.client !== null ||
-				this.kind().unavailable !== null ||
-				this.kind().terminalUnavailable !== null,
 			perfEnabled: () => perfEnabled(),
 			onStatus: (line) => this.renderStatus(line),
 			// A renderer is mounted, so the grace period has something to come back
@@ -1203,11 +1188,8 @@ export class TerminalView extends ItemView {
 		this.register(
 			this.plugin.onScopeReplaced(() => {
 				// The scope object itself is replaced on every connect, so the old
-				// subscription is dead: rebind before deciding anything about a retry.
+				// subscription is dead.
 				this.bindScope();
-				// Only a start that failed for want of a herdr retries; the
-				// lifecycle knows whether this was one.
-				this.detached('reconnect', () => this.terminal.connectionArrived());
 				// What the pane can be shown as may have moved with the runtime.
 				this.detached('native availability', () => this.showSurface());
 			}),

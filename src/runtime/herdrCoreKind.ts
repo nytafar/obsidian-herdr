@@ -256,19 +256,16 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 				client.subscribe();
 			},
 		},
-		// `ssh -T <host> sh -c '… connect'`, or `[<hc>, 'connect']`; empty when
-		// the local binary is still to be found, which the session does itself.
-		terminalCommand: (endpoint) => {
-			const runtime = endpoint.runtime;
-			if (runtime.target === 'ssh') return sshConnectArgv(runtime.host, runtime.binary);
-			return localArgv(runtime) ?? [];
-		},
+		// `ssh -T <host> sh -c '… connect'` (a runtime with no host throws its
+		// reason), or `[<hc>, 'connect']`; while the local binary is still to be
+		// found, the session finds it.
 		createTerminalSession: (options, endpoint) => {
 			const runtime = endpoint.runtime;
 			const argv =
-				options.command.length > 0
-					? options.command
-					: async (): Promise<string[]> => {
+				runtime.target === 'ssh'
+					? sshConnectArgv(runtime.host, runtime.binary)
+					: (localArgv(runtime) ??
+						(async (): Promise<string[]> => {
 							const known = localArgv(runtime);
 							if (known) return known;
 							const binary = await resolveHerdrBinary({
@@ -279,7 +276,7 @@ export function createHerdrCoreKind(host: HerdrCoreKindHost): HerdrCoreKind {
 							if (!binary) throw new Error(HC_NOT_FOUND);
 							if (binary.source !== 'setting') discovered.set(runtime.id, binary.path);
 							return [binary.path, 'connect'];
-						};
+						}));
 			return new HcTerminalSession({
 				argv,
 				target: options.target,
