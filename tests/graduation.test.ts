@@ -19,12 +19,20 @@ import {
 	HERDR_CORE_CAPABILITIES,
 	type GraduationRelease,
 	type RuntimeCapabilities,
+	type StartAgentOptions,
 } from '../src/runtime/kind';
 import { newRuntime, type RuntimeConfig, type RuntimeKind } from '../src/runtimes';
+
+/** What a target was asked to start, and where. */
+interface Started {
+	folder: string;
+	start: StartAgentOptions | undefined;
+}
 
 interface World {
 	graduation: Graduation;
 	calls: string[];
+	starts: Started[];
 	targetId: string;
 }
 
@@ -43,6 +51,7 @@ function graduationOver(
 		unavailable?: Partial<Record<RuntimeKind, string>>;
 	},
 	calls: string[] = [],
+	starts: Started[] = [],
 ): Graduation {
 	return new Graduation({
 		settings: () => ({ runtimes, activeRuntime: 'claude-runtime' }),
@@ -53,8 +62,9 @@ function graduationOver(
 				calls.push('release');
 				return options.release?.(paneId) ?? Promise.resolve(null);
 			},
-			startAgentHere: () => {
+			startAgentHere: (folder: string, start?: StartAgentOptions) => {
 				calls.push('start');
+				starts.push({ folder, start });
 				return Promise.resolve(options.started ? { paneId: 'p1' } : null);
 			},
 		}),
@@ -73,6 +83,7 @@ function handle(calls: string[], runtimeId = 'claude-runtime', paneId = 'cl-1'):
 	return {
 		cwd: '/vault',
 		sessionId: '11111111-2222-4333-8444-555555555555',
+		start: { kind: 'claude', args: ['--resume', '11111111-2222-4333-8444-555555555555'] },
 		forget: () => {
 			calls.push(`forget ${runtimeId} ${paneId}`);
 			return Promise.resolve();
@@ -87,6 +98,7 @@ function world(options: {
 	started: boolean;
 }): World {
 	const calls: string[] = [];
+	const starts: Started[] = [];
 	const target = newRuntime('herdr-core', 'local', []);
 	const release = options.release;
 	const graduation = graduationOver(
@@ -101,8 +113,9 @@ function world(options: {
 			},
 		},
 		calls,
+		starts,
 	);
-	return { graduation, calls, targetId: target.id };
+	return { graduation, calls, starts, targetId: target.id };
 }
 
 const RELEASE = { cwd: '/vault', sessionId: '11111111-2222-4333-8444-555555555555' };
@@ -116,6 +129,12 @@ describe('graduation', () => {
 		const w = world({ release: 'released', ready: true, started: true });
 		await graduate(w);
 		expect(w.calls).toEqual(['release', 'switch', 'start', 'forget claude-runtime cl-1', 'detach']);
+	});
+
+	it('starts on the target what the release says resumes it, in its folder, and builds no command line itself', async () => {
+		const w = world({ release: 'released', ready: true, started: true });
+		await graduate(w);
+		expect(w.starts).toEqual([{ folder: '/vault', start: handle([]).start }]);
 	});
 
 	it('gives the row back when the target does not connect', async () => {

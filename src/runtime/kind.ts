@@ -332,6 +332,12 @@ export interface GraduationRelease {
 	sessionId: string;
 	/** The `--permission-mode` the row ran with, so the new pane keeps it; absent for none. */
 	permissionMode?: string;
+	/**
+	 * What the target's `startAgentHere` starts in `cwd` to resume the
+	 * conversation: the releasing kind's own agent and arguments, so
+	 * graduation builds no command line itself.
+	 */
+	start: StartAgentOptions;
 	/** The session runs on the target now: the held row goes for good. */
 	forget(): Promise<void>;
 	/** The session did not move: the held row comes back, stopped, to resume here. */

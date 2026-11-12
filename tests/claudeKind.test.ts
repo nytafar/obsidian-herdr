@@ -886,6 +886,33 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false).toBe(false);
 	});
 
+	it('forgets or gives back the row it released, though the list has moved to the target runtime by then (#185)', async () => {
+		const h = harness();
+		// Graduation switches runtime between the release and what it does with
+		// the row, so the action host answers with the target by then.
+		let listRuntime = { ...h.connection.endpoint.runtime };
+		const actions = h.kind.createActions({ ...actionHost(h), runtime: () => listRuntime });
+		const stored = (paneId: string): boolean => h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false;
+
+		const back = await started(h);
+		await prompt(h, back, 'hello');
+		await waitFor(() => status(h, back) === 'done', 'done');
+		const released = await actions.releaseForGraduation?.(back);
+		expect(released?.start).toEqual({ kind: 'claude', args: ['--permission-mode', 'manual', '--resume', h.stored[h.runtimeId]?.[0]?.sessionId] });
+		// Held: nothing here starts it while the target may be resuming it.
+		expect(() => h.kind.agents.resume(h.runtimeId, back)).toThrow();
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		released?.reclaim();
+		expect(() => h.kind.agents.resume(h.runtimeId, back)).not.toThrow();
+
+		listRuntime = { ...h.connection.endpoint.runtime };
+		const again = await actions.releaseForGraduation?.(back);
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		expect(stored(back)).toBe(true);
+		await again?.forget();
+		expect(stored(back)).toBe(false);
+	});
+
 	it('starts a row pinned to the asking mode in that mode, even on a runtime set to auto, and keeps it (ADR-0008)', async () => {
 		const h = harness({ permissionMode: 'auto' });
 		const modeOf = (argv: string[] | undefined): string | undefined => argv?.[(argv?.indexOf('--permission-mode') ?? -2) + 1];

@@ -5,7 +5,7 @@
  * command) calls the tab's `update()`: without it the list has no row for
  * the new runtime and no Active mark (#178, review finding 1).
  *
- * The plugin is built with `Object.create`, as in `mainGraduation.test.ts`.
+ * The plugin is built with `Object.create`, as in `mainPlacement.test.ts`.
  */
 
 import { describe, expect, it } from 'vitest';

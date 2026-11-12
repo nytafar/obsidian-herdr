@@ -6,7 +6,8 @@
  * (`RuntimeCapabilities.continueTarget`), never a list here. Moving it is an
  * order with no step to skip: release the row here (its process confirmed
  * gone, the row held), switch to the target, wait for it to connect, start
- * `claude --resume <session>` there through its own start-agent path, and
+ * what the release says resumes it (`claude --resume <session>`) there
+ * through the target's own start-agent path, and
  * only then forget the row; anything that fails on the way gives the row
  * back, stopped, where it can be resumed as before. The conversation is
  * never resumed in two places.
@@ -15,7 +16,6 @@
  * pins the order with fakes.
  */
 
-import { graduationArgs } from './claude/actions';
 import type { GraduationRelease, RuntimeActions, RuntimeKindAdapter } from './runtime/kind';
 import { runtimeById, runtimeDisplayName, type RuntimeKind, type RuntimeSettings } from './runtimes';
 import type { GraduationTarget } from './views/rowMenu';
@@ -92,10 +92,7 @@ export class Graduation {
 				);
 				return;
 			}
-			const started = await deps.actions().startAgentHere(released.cwd, {
-				kind: 'claude',
-				args: graduationArgs(released),
-			});
+			const started = await deps.actions().startAgentHere(released.cwd, released.start);
 			if (!started) return;
 			moved = true;
 			await released.forget();

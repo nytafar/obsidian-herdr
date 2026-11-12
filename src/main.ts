@@ -319,9 +319,6 @@ export default class HerdrPlugin extends Plugin {
 	capabilities(): Readonly<RuntimeCapabilities> {
 		return this.endpoints.kindOf(this.endpoint.runtime.kind).capabilities;
 	}
-	/** Non-null only while an `ssh` herdr runtime is connected (PRD S5). */
-
-
 	/** One screen answer driver per runtime and agent, shared by every tab (ADR-0009 §5). */
 	readonly screenAnswerers = new ScreenAnswerers();
 	/**

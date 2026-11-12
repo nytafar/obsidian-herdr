@@ -172,6 +172,9 @@ export class ClaudeActions implements RuntimeActions {
 			cwd: after.cwd,
 			sessionId: after.sessionId,
 			...(permissionMode ? { permissionMode } : {}),
+			start: { kind: 'claude', args: graduationArgs({ sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) }) },
+			// The row's own runtime, as it was at the release: by the time either
+			// runs, the host's runtime is the target (`tests/claudeKind.test.ts`).
 			forget: () => this.agents.forget(runtimeId, paneId),
 			reclaim: () => this.agents.reclaim(runtimeId, paneId),
 		};

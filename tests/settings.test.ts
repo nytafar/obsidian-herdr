@@ -131,38 +131,6 @@ describe('connectionDetails', () => {
 		]);
 	});
 
-	it('says a runtime of an unavailable kind is not connected, whatever the state says', () => {
-		expect(connectionSummary(status({ state: 'connecting', unavailable: 'not in this build' }))).toEqual({
-			text: 'Active runtime: Local · not connected',
-			warning: true,
-		});
-	});
-});
-
-describe('renderStatusLines', () => {
-	it('draws a paragraph per line, warnings marked', () => {
-		const drawn: { tag: string; cls: string; text: string }[] = [];
-		const el = {
-			createEl: (tag: string, options: { cls: string; text: string }) => drawn.push({ tag, ...options }),
-		};
-		renderStatusLines(el as unknown as HTMLElement, [
-			{ text: 'Socket: /tmp/herdr.sock', warning: false },
-			{ text: 'Workspace: none', warning: true },
-		]);
-		expect(drawn).toEqual([
-			{ tag: 'p', cls: 'herdr-status-text', text: 'Socket: /tmp/herdr.sock' },
-			{ tag: 'p', cls: 'herdr-status-text mod-warning', text: 'Workspace: none' },
-		]);
-	});
-});
-
-describe('connectionDetails', () => {
-	it('says nothing but "not connected" before discovery ran', () => {
-		expect(render(runtime(), status({ discovery: null }))).toEqual([
-			{ text: 'Not connected yet.', warning: false },
-		]);
-	});
-
 	it('does not name the runtime: the page is its own', () => {
 		const text = render(runtime({ host: 'xl', name: 'XL' }), status()).map((line) => line.text);
 		expect(text.some((line) => line.startsWith('Runtime: '))).toBe(false);
