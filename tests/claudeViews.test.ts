@@ -83,15 +83,15 @@ describe('the launch line with arguments (graduation on herdr-core)', () => {
 
 	it('keeps the row’s permission mode, which every mode passes as a plain word', () => {
 		const sessionId = '3b3ad50c-0000-4000-8000-000000000001';
-		expect(graduationArgs({ cwd: '/vault', sessionId, permissionMode: 'acceptEdits' })).toEqual([
+		expect(graduationArgs({ sessionId, permissionMode: 'acceptEdits' })).toEqual([
 			'--permission-mode',
 			'acceptEdits',
 			'--resume',
 			sessionId,
 		]);
-		expect(graduationArgs({ cwd: '/vault', sessionId })).toEqual(['--resume', sessionId]);
+		expect(graduationArgs({ sessionId })).toEqual(['--resume', sessionId]);
 		for (const permissionMode of CLAUDE_PERMISSION_MODES) {
-			expect(agentLaunchLine('claude', graduationArgs({ cwd: '/vault', sessionId, permissionMode }))).toContain(
+			expect(agentLaunchLine('claude', graduationArgs({ sessionId, permissionMode }))).toContain(
 				`-ic 'claude --permission-mode ${permissionMode} --resume ${sessionId}; exec`,
 			);
 		}

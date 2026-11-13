@@ -16,7 +16,11 @@ a working recorder (see "The `Setting` fixture" below). The terminal view is
 unit tested the same way: only its exported
 decisions (`parseTerminalState`, `attachFor`, `debounce`, `VisibilityTracker`,
 `spawnEnv`, `isRecoverable`, `statusLine`) — the wiring needs a
-canvas and a live herdr. `VisibilityTracker` is the whole hide/reveal state
+canvas and a live herdr. What the tab's pane is, as the native surface asks
+it (kind, availability, the cwd mapping, screen answering, the trust watch's
+wiring and the surface's senders), is the pane context
+(`src/views/paneContext.ts`, #184), tested against a fake endpoint resolver
+and fake kinds in `tests/paneContext.test.ts`. `VisibilityTracker` is the whole hide/reveal state
 machine with injected timers, so the decision to free a hidden terminal is tested
 without a DOM; what a measurement *is* (a host with no box) is not. What a
 settings change costs an open terminal is a table rather than a call path

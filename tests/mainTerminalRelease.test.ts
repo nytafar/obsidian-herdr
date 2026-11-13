@@ -1,9 +1,10 @@
 /**
  * A terminal tab closing (`HerdrPlugin.terminalTabReleased`): when no other
- * tab shows the pane, its kind is told, and a `claude` shell ends with its
- * last tab (ADR-0008). A shell whose runtime was removed while its tab was
- * open is still this plugin's process: closing that tab ends it too (the D2
- * review found it left running).
+ * tab shows the pane, its kind is told; when no runtime names the pane any
+ * more (its runtime was removed while the tab was open), every kind that
+ * keeps its own processes is asked whether the pane is one of them (#185).
+ * That a `claude` shell ends then is the claude kind's own test
+ * (`claudeTerminal.test.ts`).
  *
  * The plugin is built with `Object.create`, as in `mainPlacement.test.ts`.
  */
@@ -16,7 +17,7 @@ afterEach(() => {
 });
 
 function plugin(options: { endpoint: boolean; shown: boolean }) {
-	const closed: string[] = [];
+	const orphaned: string[] = [];
 	const released: string[] = [];
 	// The release check runs a moment later; here, at once.
 	vi.stubGlobal('window', {
@@ -27,45 +28,40 @@ function plugin(options: { endpoint: boolean; shown: boolean }) {
 	});
 	const instance = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
 	const loose = instance as unknown as Record<string, unknown>;
-	loose.endpointFor = () => (options.endpoint ? { id: 'rt', runtime: { kind: 'claude' } } : null);
-	loose.kindOf = () => ({ terminalReleased: (_endpoint: unknown, paneId: string) => released.push(paneId) });
+	loose.endpoints = {
+		endpoint: () => (options.endpoint ? { id: 'rt', runtime: { kind: 'claude' } } : null),
+		kindOf: () => ({ terminalReleased: (_endpoint: unknown, paneId: string) => released.push(paneId) }),
+	};
 	loose.app = {
 		workspace: {
 			getLeavesOfType: () =>
 				options.shown ? [{ getViewState: () => ({ state: { paneId: 'sh-0000abcd', endpointId: 'rt' } }) }] : [],
 		},
 	};
-	loose.claudeKind = {
-		shells: {
-			close: (id: string) => {
-				closed.push(id);
-				return Promise.resolve();
-			},
-		},
+	loose.kinds = {
+		herdr: {},
+		claude: { paneOrphaned: (paneId: string) => orphaned.push(paneId) },
 	};
-	return { instance, closed, released };
+	return { instance, orphaned, released };
 }
 
 describe('a terminal tab released', () => {
 	it('tells the kind when its runtime is still there', () => {
-		const { instance, closed, released } = plugin({ endpoint: true, shown: false });
+		const { instance, orphaned, released } = plugin({ endpoint: true, shown: false });
 		instance.terminalTabReleased('sh-0000abcd', 'rt');
 		expect(released).toEqual(['sh-0000abcd']);
-		expect(closed).toEqual([]);
+		expect(orphaned).toEqual([]);
 	});
 
-	it('ends a shell whose runtime was removed once its last tab is gone', () => {
-		const { instance, closed } = plugin({ endpoint: false, shown: false });
+	it('asks the kinds about a pane whose runtime was removed, once its last tab is gone', () => {
+		const { instance, orphaned } = plugin({ endpoint: false, shown: false });
 		instance.terminalTabReleased('sh-0000abcd', 'rt');
-		expect(closed).toEqual(['sh-0000abcd']);
+		expect(orphaned).toEqual(['sh-0000abcd']);
 	});
 
-	it('keeps it while another tab still shows it, and leaves other panes of a removed runtime alone', () => {
+	it('keeps it while another tab still shows it', () => {
 		const shown = plugin({ endpoint: false, shown: true });
 		shown.instance.terminalTabReleased('sh-0000abcd', 'rt');
-		expect(shown.closed).toEqual([]);
-		const pane = plugin({ endpoint: false, shown: false });
-		pane.instance.terminalTabReleased('w1:p2', 'rt');
-		expect(pane.closed).toEqual([]);
+		expect(shown.orphaned).toEqual([]);
 	});
 });

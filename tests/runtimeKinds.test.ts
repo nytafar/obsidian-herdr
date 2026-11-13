@@ -7,16 +7,15 @@
  * herdr (an `SshTunnel` does nothing until `start()`).
  */
 
-import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import HerdrPlugin from '../src/main';
 import { endpointOf } from '../src/connection';
 import type { DiscoveryDeps, DiscoveryResult } from '../src/herdr/binary';
 import type { TerminalSession } from '../src/bridge/terminalSession';
-import { createHerdrCoreKind } from '../src/runtime/herdrCoreKind';
 import { remoteHerdrCommand, SshTunnel } from '../src/herdr/ssh';
 import { WorkspaceScope } from '../src/herdr/scope';
 import { createHerdrKind, type HerdrKindHost } from '../src/runtime/herdrKind';
+import type { Endpoint } from '../src/connection';
 import {
 	HERDR_CAPABILITIES,
 	HERDR_CORE_CAPABILITIES,
@@ -26,6 +25,7 @@ import {
 	NATIVE_NO_SESSION_REASON,
 	NATIVE_NO_TRANSCRIPT_REASON,
 	unavailableKind,
+	type RuntimeKindAdapter,
 	type TranscriptAccess,
 } from '../src/runtime/kind';
 import { LocalTranscriptSource } from '../src/native/transcriptSource';
@@ -53,7 +53,6 @@ function host(overrides: Partial<HerdrKindHost> = {}): HerdrKindHost {
 		extraPath: () => '',
 		vaultPath: () => '/Users/lasse/Vaults/hvelv',
 		discoveryDeps: machine(['/usr/local/bin/herdr']),
-		onProtocolMismatch: () => undefined,
 		onUnsupportedMethod: () => undefined,
 		isPublished: () => true,
 		...overrides,
@@ -77,6 +76,18 @@ const FOUND: DiscoveryResult = {
 	error: null,
 };
 const MISSING: DiscoveryResult = { ...FOUND, binary: null, error: 'herdr was not found' };
+
+/** One terminal tab's start, as `PaneTerminal` asks a kind for it. */
+const START = { target: 'w1:p1', mode: 'observe', cols: 80, rows: 24 } as const;
+
+/**
+ * The argv prefix a herdr tab's bridge would spawn, before `terminal session`,
+ * where the kind knows it before the start.
+ */
+function spawnPrefix(kind: Pick<RuntimeKindAdapter, 'createTerminalSession'>, endpoint: Endpoint): string[] {
+	const argv = (kind.createTerminalSession(START, endpoint) as TerminalSession).argv;
+	return argv.slice(0, argv.indexOf('terminal'));
+}
 
 describe('the herdr kind (ADR-0004)', () => {
 	const kind = createHerdrKind(host());
@@ -115,15 +126,15 @@ describe('the herdr kind (ADR-0004)', () => {
 
 	it('builds terminal argv from the pinned runtime', async () => {
 		const fresh = createHerdrKind(host());
-		// Nothing discovered yet: the session finds the binary itself.
-		expect(fresh.terminalCommand(local)).toEqual([]);
+		// Nothing discovered yet, the session finds the binary itself: the
+		// cold start below.
 		await fresh.connection?.discover(local);
-		expect(fresh.terminalCommand(local)).toEqual(['/usr/local/bin/herdr']);
+		expect(spawnPrefix(fresh, local)).toEqual(['/usr/local/bin/herdr']);
 		// A local runtime naming its own binary uses it over the discovered one.
-		expect(fresh.terminalCommand(endpointOf({ ...defaultLocalRuntime(), binary: '/opt/herdr' }))).toEqual([
+		expect(spawnPrefix(fresh, endpointOf({ ...defaultLocalRuntime(), binary: '/opt/herdr' }))).toEqual([
 			'/opt/herdr',
 		]);
-		expect(fresh.terminalCommand(xl)).toEqual([
+		expect(spawnPrefix(fresh, xl)).toEqual([
 			'ssh',
 			'-T',
 			'lasse@xl',
@@ -133,8 +144,8 @@ describe('the herdr kind (ADR-0004)', () => {
 
 	it('expands a `~` override for a local spawn, and leaves it to the remote shell over SSH', () => {
 		const tilde = endpointOf({ ...defaultLocalRuntime(), binary: '~/.local/bin/herdr' });
-		expect(kind.terminalCommand(tilde)).toEqual([`${HOME}/.local/bin/herdr`]);
-		expect(kind.terminalCommand(endpointOf({ ...XL, binary: '~/.local/bin/herdr' }))).toEqual([
+		expect(spawnPrefix(kind, tilde)).toEqual([`${HOME}/.local/bin/herdr`]);
+		expect(spawnPrefix(kind, endpointOf({ ...XL, binary: '~/.local/bin/herdr' }))).toEqual([
 			'ssh',
 			'-T',
 			'lasse@xl',
@@ -143,7 +154,7 @@ describe('the herdr kind (ADR-0004)', () => {
 	});
 
 	it('searches the remote host for herdr when an SSH runtime names no binary', () => {
-		expect(kind.terminalCommand(endpointOf({ ...XL, binary: '' }))).toEqual([
+		expect(spawnPrefix(kind, endpointOf({ ...XL, binary: '' }))).toEqual([
 			'ssh',
 			'-T',
 			'lasse@xl',
@@ -151,30 +162,30 @@ describe('the herdr kind (ADR-0004)', () => {
 		]);
 	});
 
-	it('finds the local binary for a tab itself, whichever runtime is active', async () => {
-		// The plugin is connected to some other runtime (an SSH hc one, say):
-		// this kind has discovered nothing, and asks nobody else.
+	it('refuses a tab on an SSH runtime with no host, with that reason', () => {
+		expect(() => kind.createTerminalSession(START, endpointOf({ ...XL, host: '  ' }))).toThrow(
+			'the runtime has no SSH host',
+		);
+	});
+
+	it('finds the local binary for a tab itself, whichever runtime is active (a cold start)', async () => {
+		// The plugin is connected to some other runtime (an SSH hc one, say),
+		// or to none yet: this kind has discovered nothing, and asks nobody else.
 		const fresh = createHerdrKind(host());
-		const session = fresh.createTerminalSession(
-			{ command: fresh.terminalCommand(local), target: 'w1:p1', mode: 'observe', cols: 80, rows: 24 },
-			local,
-		) as TerminalSession;
+		const session = fresh.createTerminalSession(START, local) as TerminalSession;
 		const exited = new Promise<void>((resolve) => session.on('exit', () => resolve()));
 		session.on('error', () => undefined);
 		session.start();
 		await exited;
 		expect(session.argv[0]).toBe('/usr/local/bin/herdr');
 		// Found once, kept for the next tab.
-		expect(fresh.terminalCommand(local)).toEqual(['/usr/local/bin/herdr']);
+		expect(spawnPrefix(fresh, local)).toEqual(['/usr/local/bin/herdr']);
 		await session.dispose();
 	});
 
 	it('says why when no local binary can be found', async () => {
 		const none = createHerdrKind(host({ discoveryDeps: machine([]) }));
-		const session = none.createTerminalSession(
-			{ command: [], target: 'w1:p1', mode: 'observe', cols: 80, rows: 24 },
-			local,
-		);
+		const session = none.createTerminalSession(START, local);
 		const errors: Error[] = [];
 		const exited = new Promise<void>((resolve) => session.on('exit', () => resolve()));
 		session.on('error', (error) => errors.push(error));
@@ -229,33 +240,6 @@ describe('the herdr kind (ADR-0004)', () => {
 	});
 });
 
-describe('the herdr-core kind’s terminal argv', () => {
-	const core = createHerdrCoreKind({
-		extraPath: () => '',
-		spawnEnv: () => ({}),
-		vaultPath: () => '/v',
-		vaultName: () => 'v',
-		onMismatch: () => undefined,
-		currentScope: () => null,
-	});
-
-	it('expands a `~` override for a local spawn, and leaves it to the remote shell over SSH', () => {
-		const tilde = endpointOf({ ...newRuntime('herdr-core', 'local', []), binary: '~/.local/bin/hc' });
-		expect(core.terminalCommand(tilde)).toEqual([`${homedir()}/.local/bin/hc`, 'connect']);
-		const remote = core.terminalCommand(
-			endpointOf({ ...newRuntime('herdr-core', 'ssh', []), host: 'asher', binary: '~/.local/bin/hc' }),
-		);
-		expect(remote.slice(0, 2)).toEqual(['ssh', '-T']);
-		expect(remote).toContain('asher');
-		// The remote shell expands it (as $HOME), not this machine.
-		expect(remote.join(' ')).toContain('"$HOME"/.local/bin/hc');
-	});
-
-	it('leaves an undiscovered local binary to the session, whichever runtime is active', () => {
-		expect(core.terminalCommand(endpointOf(newRuntime('herdr-core', 'local', [])))).toEqual([]);
-	});
-});
-
 describe('a kind this build cannot run yet', () => {
 	const core = unavailableKind(
 		'herdr-core',
@@ -271,7 +255,7 @@ describe('a kind this build cannot run yet', () => {
 	});
 
 	it('refuses a terminal tab with the same reason', () => {
-		expect(() => core.terminalCommand(endpoint)).toThrow(HERDR_CORE_UNAVAILABLE);
+		expect(() => core.createTerminalSession(START, endpoint)).toThrow(HERDR_CORE_UNAVAILABLE);
 	});
 
 	it('answers an action with a notice instead of a request', async () => {
@@ -515,7 +499,8 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 			current: { endpoint: endpointOf(snapshot), client: null, scope: null, tunnel: null },
 			discovery: null,
 		};
-		plugin.kinds = { herdr: { unavailable: null, statusLines: () => null } };
+		const herdr = { unavailable: null, statusLines: () => null };
+		plugin.endpoints = { kindOf: () => herdr, kindUnavailable: () => null };
 		plugin.connectError = null;
 		plugin.primed = false;
 		const status = (plugin.connectionStatus as () => { runtime: RuntimeConfig; state: string }).call(plugin);
@@ -551,82 +536,5 @@ describe('the plugin’s status after a rename (no reconnect)', () => {
 		expect(spans).toEqual(['New name']);
 		expect(attributes.get('aria-label')).toBe('Gjetr agents on New name');
 		expect(heard).toEqual(['changed']);
-	});
-});
-
-/**
- * The plugin's three native-view entry points (ADR-0006), over fake kinds:
- * each must answer for the runtime it is asked about and never hand out the
- * published runtime's watcher, connection or client on another's behalf.
- */
-describe('the plugin’s native view inputs, per runtime', () => {
-	const CORE_A: RuntimeConfig = { ...newRuntime('herdr-core', 'local', [], () => 0.1), id: 'rt-core-a', name: 'Core A' };
-	const CORE_B: RuntimeConfig = { ...newRuntime('herdr-core', 'local', [], () => 0.2), id: 'rt-core-b', name: 'Core B' };
-
-	function harness(published: RuntimeConfig) {
-		const plugin = Object.create(HerdrPlugin.prototype) as HerdrPlugin;
-		// The private fields the methods read, set the way the other cases do.
-		const raw = plugin as unknown as Record<string, unknown>;
-		plugin.settings = {
-			...structuredClone(DEFAULT_SETTINGS),
-			runtimes: [defaultLocalRuntime(), XL, CORE_A, CORE_B],
-			activeRuntime: published.id,
-		};
-		const client = { name: `client of ${published.id}` };
-		const current = { endpoint: endpointOf(published), client, scope: {}, tunnel: null };
-		raw.connection = { current, discovery: null };
-		// The endpoint-match rule (`EndpointSessions.for`), without its caches.
-		raw.endpointSession = (id: string) =>
-			current.endpoint.id === id ? { endpoint: current.endpoint, client } : null;
-		const transcriptCalls: [string, string | null][] = [];
-		const source = new LocalTranscriptSource();
-		// herdr reads only local transcripts; herdr-core reads them everywhere.
-		const native = (access: (target: string) => TranscriptAccess | null) => ({
-			transcriptAccess: (endpoint: { runtime: RuntimeConfig }) => access(endpoint.runtime.target),
-			watcher: (connection: { endpoint: { id: string } }) => ({ watching: connection.endpoint.id }),
-			transcripts: (endpoint: { id: string }, connection: { endpoint: { id: string } } | null) => {
-				transcriptCalls.push([endpoint.id, connection?.endpoint.id ?? null]);
-				return source;
-			},
-		});
-		raw.kinds = {
-			herdr: {
-				capabilities: HERDR_CAPABILITIES,
-				native: native((target) => (target === 'ssh' ? null : 'local')),
-			},
-			'herdr-core': { capabilities: HERDR_CORE_CAPABILITIES, native: native(() => 'local') },
-		};
-		return { plugin, client, transcriptCalls, source };
-	}
-
-	it('gives a watcher only for the published runtime', () => {
-		const { plugin } = harness(CORE_A);
-		expect(plugin.nativeWatcher(CORE_A.id)).toEqual({ watching: CORE_A.id });
-		// The same pane id on two runtimes is two panes: never A's on B's behalf.
-		expect(plugin.nativeWatcher(CORE_B.id)).toBeNull();
-		expect(plugin.nativeWatcher('rt-gone')).toBeNull();
-	});
-
-	it('passes a runtime’s transcript source its own connection, and null for another’s', () => {
-		const { plugin, transcriptCalls, source } = harness(CORE_A);
-		expect(plugin.nativeTranscripts(CORE_A.id)).toBe(source);
-		expect(plugin.nativeTranscripts(CORE_B.id)).toBe(source);
-		expect(transcriptCalls).toEqual([
-			[CORE_A.id, CORE_A.id],
-			// B's source must not read through A's connection.
-			[CORE_B.id, null],
-		]);
-		expect(plugin.nativeTranscripts('rt-gone')).toBeNull();
-	});
-
-	it('hands out the client only where the kind can back a native view on that endpoint', () => {
-		// herdr over SSH: no transcripts from here, so no native view to send for.
-		expect(harness(XL).plugin.nativeClient(XL.id)).toBeNull();
-		const local = harness(defaultLocalRuntime());
-		expect(local.plugin.nativeClient('local')).toBe(local.client);
-		const core = harness(CORE_A);
-		expect(core.plugin.nativeClient(CORE_A.id)).toBe(core.client);
-		// And never the published runtime's client for another runtime.
-		expect(core.plugin.nativeClient(CORE_B.id)).toBeNull();
 	});
 });

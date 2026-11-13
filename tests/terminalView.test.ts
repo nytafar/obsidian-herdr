@@ -12,12 +12,12 @@ import {
 	keymapReturn,
 	VisibilityTracker,
 	TERMINAL_VIEW_TYPE,
-	withPaneReason,
 	lookingAt,
 	NativeLook,
 	type TitleContext,
 } from '../src/views/terminalView';
 import type { SessionWatcher } from '../src/native/sessionWatcher';
+import { withPaneReason } from '../src/views/paneContext';
 import { NATIVE_NO_LABEL_REASON } from '../src/hc/sessionWatcher';
 import { effectivePaneView } from '../src/native/paneSurface';
 // The session-and-renderer half of the view moved to the lifecycle module (#83);

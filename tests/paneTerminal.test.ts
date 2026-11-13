@@ -32,7 +32,7 @@ import {
 } from '../src/views/paneTerminal';
 import type {
 	TerminalSessionEventMap,
-	TerminalSessionOptions,
+	TerminalStartOptions,
 } from '../src/bridge/terminalSession';
 import type {
 	CursorOptions,
@@ -186,7 +186,7 @@ class FakeSession implements PaneSession {
 	private readonly listeners = new Map<string, ((...args: unknown[]) => void)[]>();
 	private release: (() => void) | null = null;
 
-	constructor(readonly options: TerminalSessionOptions) {
+	constructor(readonly options: TerminalStartOptions) {
 		this.size = { cols: options.cols, rows: options.rows };
 	}
 
@@ -357,8 +357,8 @@ function harness(options: HarnessOptions = {}) {
 	const state = {
 		deferMounts: options.deferMounts ?? false,
 		endpoint: LOCAL as Endpoint | null,
-		command: ['/usr/bin/herdr'] as string[] | null,
-		connected: true,
+		/** What the kind throws instead of a session (no SSH host, an unavailable kind). */
+		refusal: null as string | null,
 		// What the settings say right now; read fresh on every mount and on every
 		// effect, exactly as the view's host does (#84).
 		rendererOptions: { engine: 'ghostty-web', theme: 'obsidian' } as RendererOptions,
@@ -371,11 +371,6 @@ function harness(options: HarnessOptions = {}) {
 		cursorOptions: () => ({ ...state.cursor }),
 		env: () => ({ PATH: '/usr/bin' }),
 		endpointFor: () => state.endpoint,
-		commandFor: () => {
-			if (!state.command) throw new Error('herdr binary not found');
-			return state.command;
-		},
-		connected: () => state.connected,
 		perfEnabled: () => false,
 		onStatus: (line) => statuses.push(line),
 		onStarted: () => started.push(renderers.length),
@@ -393,6 +388,7 @@ function harness(options: HarnessOptions = {}) {
 		host,
 		scheduler,
 		createSession: (sessionOptions) => {
+			if (state.refusal) throw new Error(state.refusal);
 			const session = options.hcLike ? new HcLikeSession(sessionOptions) : new FakeSession(sessionOptions);
 			sessions.push(session);
 			return session;
@@ -454,7 +450,6 @@ describe('PaneTerminal.attach', () => {
 		expect(h.renderer().dataCallbacks).toBe(1);
 		expect(h.sessions).toHaveLength(1);
 		expect(h.session().options).toMatchObject({
-			command: ['/usr/bin/herdr'],
 			target: 'w4:p1',
 			mode: 'control',
 			takeover: true,
@@ -556,37 +551,28 @@ describe('PaneTerminal generation races', () => {
 		expect(h.renderer().writes).toEqual(['live']);
 	});
 
-	it('starts once when the connection arrives after the start gave up', async () => {
-		const h = harness();
-		h.state.command = null;
-		h.state.connected = false;
-		await h.terminal.attach(h.hostEl);
-
-		expect(h.sessions).toHaveLength(0);
-		expect(h.lastStatus().text).toBe(
-			'Session closed: waiting for herdr. Reconnect to attach again.',
-		);
-
-		h.state.command = ['/usr/bin/herdr'];
-		h.state.connected = true;
-		await h.terminal.connectionArrived();
-		expect(h.sessions).toHaveLength(1);
-
-		// A later connection to some other endpoint must not respawn this bridge.
-		await h.terminal.connectionArrived();
-		expect(h.sessions).toHaveLength(1);
+	it('shows what the kind refuses the start with, at once and whatever the connection (#183)', async () => {
+		for (const reason of ['the runtime has no SSH host', 'herdr-core runtimes are not available in this version of the plugin yet']) {
+			const h = harness();
+			h.state.refusal = reason;
+			await h.terminal.attach(h.hostEl);
+			expect(h.sessions).toHaveLength(0);
+			// Its own reason, never "waiting for herdr": no connection can cure it.
+			expect(h.lastStatus().text).toBe(`Session closed: ${reason}. Reconnect to attach again.`);
+			// Reconnect asks the kind again; once it can start, it does.
+			h.state.refusal = null;
+			await h.terminal.reconnect();
+			expect(h.sessions).toHaveLength(1);
+		}
 	});
 
-	it('reports the endpoint itself when herdr was found but the endpoint is gone', async () => {
+	it('reports the endpoint itself when the endpoint is gone', async () => {
 		const h = harness();
 		h.state.endpoint = null;
 		await h.terminal.attach(h.hostEl);
 
 		expect(h.sessions).toHaveLength(0);
 		expect(h.lastStatus().text).toContain('the runtime local is no longer configured');
-		// Not a "waiting for herdr" case, so a connection does not retry it.
-		await h.terminal.connectionArrived();
-		expect(h.sessions).toHaveLength(0);
 	});
 });
 

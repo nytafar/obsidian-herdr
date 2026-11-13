@@ -12,10 +12,9 @@
  * the hide/reveal tracker, the tab title) and drives this through the interface
  * below: {@link PaneTerminal.attach}, {@link PaneTerminal.detach},
  * {@link PaneTerminal.setVisible}, {@link PaneTerminal.setIdentity},
- * {@link PaneTerminal.reconnect}, {@link PaneTerminal.connectionArrived},
- * {@link PaneTerminal.resize} and {@link PaneTerminal.status}. Everything this
- * cannot do itself — Obsidian's `Notice`, the settings, endpoint resolution,
- * the herdr argv — arrives through {@link PaneTerminalHost}, and the session
+ * {@link PaneTerminal.reconnect}, {@link PaneTerminal.resize} and {@link PaneTerminal.status}. Everything this
+ * cannot do itself — Obsidian's `Notice`, the settings, endpoint resolution
+ * — arrives through {@link PaneTerminalHost}, and the session
  * factory, the renderer factory and the scheduler are injected too, so
  * `tests/paneTerminal.test.ts` drives the whole lifecycle, races included,
  * without a canvas, a child process or an `ItemView`.
@@ -53,7 +52,7 @@ import type {
 	ScrollOptions,
 	TerminalSessionEventMap,
 	TerminalSessionMode,
-	TerminalSessionOptions,
+	TerminalStartOptions,
 } from '../bridge/terminalSession';
 import type { AttachMode, HerdrSettings } from '../settings';
 import type {
@@ -649,10 +648,6 @@ export interface PaneTerminalHost {
 	env(): NodeJS.ProcessEnv;
 	/** The endpoint snapshot to pin to, or null when it is no longer configured. */
 	endpointFor(endpointId: string): Endpoint | null;
-	/** argv prefix for the bridge. Throws while herdr has not been found yet. */
-	commandFor(endpoint: Endpoint): string[];
-	/** Whether the plugin has connected to *any* herdr; decides a late retry. */
-	connected(): boolean;
 	/** `window.herdrPerf`, asked once per start (#24). */
 	perfEnabled(): boolean;
 	/** The status text changed; the view repaints its strip. */
@@ -677,7 +672,7 @@ export interface PaneTerminalOptions {
 	 * The bridge for one start, given the endpoint the tab is pinned to, whose
 	 * runtime's kind decides what the bridge is (ADR-0004, ADR-0005).
 	 */
-	createSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
+	createSession: (options: TerminalStartOptions, endpoint: Endpoint) => PaneSession;
 	createRenderer: (options: RendererOptions) => TerminalRenderer;
 	/** Decides the host-key policy (#47); `Platform.isMacOS` in the view. */
 	macOS: boolean;
@@ -693,7 +688,7 @@ const ERASE_DISPLAY = '\x1b[H\x1b[2J\x1b[3J';
 export class PaneTerminal {
 	private readonly host: PaneTerminalHost;
 	private readonly scheduler: PaneTerminalScheduler;
-	private readonly newSession: (options: TerminalSessionOptions, endpoint: Endpoint) => PaneSession;
+	private readonly newSession: (options: TerminalStartOptions, endpoint: Endpoint) => PaneSession;
 	private readonly newRenderer: (options: RendererOptions) => TerminalRenderer;
 
 	private paneIdentity: PaneIdentity;
@@ -724,8 +719,6 @@ export class PaneTerminal {
 	private stderr: string[] = [];
 	/** True while the renderer and the session are given up for a hidden leaf. */
 	private isSuspended = false;
-	/** The last start failed before the plugin had found herdr; retried on connect. */
-	private awaitingConnection = false;
 	/** Scrollback carried across a suspend, as plain text. Null when there is none. */
 	private snapshot: string[] | null = null;
 	/** Guards against an old start finishing after a newer one began. */
@@ -899,15 +892,6 @@ export class PaneTerminal {
 
 	/** Header action: attach again after a close, a takeover or an exit. */
 	async reconnect(): Promise<void> {
-		await this.start();
-	}
-
-	/**
-	 * The plugin published a connection. Only a start that failed for want of one
-	 * retries, so a reconnect elsewhere never respawns this bridge.
-	 */
-	async connectionArrived(): Promise<void> {
-		if (!this.awaitingConnection) return;
 		await this.start();
 	}
 
@@ -1144,7 +1128,7 @@ export class PaneTerminal {
 	/**
 	 * (Re)starts the bridge: releases the old session, makes sure the renderer is
 	 * mounted, fits it, then spawns `herdr terminal session <mode> <pane>`.
-	 * `revealed`: a hidden leaf shown again (`TerminalSessionOptions.revealed`).
+	 * `revealed`: a hidden leaf shown again (`TerminalStartOptions.revealed`).
 	 */
 	private async start({ revealed = false }: { revealed?: boolean } = {}): Promise<void> {
 		const { paneId, mode, endpointId } = this.paneIdentity;
@@ -1181,34 +1165,6 @@ export class PaneTerminal {
 		// with no timer left to suspend it. `arm()` is a no-op while visible.
 		this.host.onStarted();
 
-		let command: string[];
-		const endpoint = this.endpoint;
-		try {
-			// The pinned runtime's kind builds the argv, from the endpoint's
-			// snapshot (issue #54, ADR-0004): for herdr `[<herdr>]` locally and
-			// `['ssh','-T',host,<remote herdr>]` over SSH — terminals never go
-			// through the forwarded API socket (PRD S17).
-			if (!endpoint) {
-				throw new Error(`the runtime ${endpointId} is no longer configured`);
-			}
-			command = this.host.commandFor(endpoint);
-		} catch (error) {
-			// A restored tab opens before `connect()` has discovered the binary
-			// (discovery is async); the plugin announces the connection, and the
-			// view retries this start once through `connectionArrived`. The
-			// question here is whether the plugin has connected to *anything* yet:
-			// a connection to the other herdr still means the binary was found, and
-			// the error above is then the honest answer.
-			this.awaitingConnection = !this.host.connected();
-			this.closedReason = this.awaitingConnection
-				? 'waiting for herdr'
-				: (error as Error).message;
-			this.exited = true;
-			this.host.onStatus(this.status());
-			return;
-		}
-		this.awaitingConnection = false;
-
 		const fit = renderer.fit();
 		// #65: the wheel's pixels-per-line divisor, and a fresh session is a fresh
 		// gesture, so nothing of the previous one is carried.
@@ -1219,20 +1175,32 @@ export class PaneTerminal {
 		const cols = measured ? fit.cols : FALLBACK_COLS;
 		const rows = measured ? fit.rows : FALLBACK_ROWS;
 		const attach = attachFor(mode);
-		const session = this.newSession(
-			{
-				command,
-				target: paneId,
-				mode: attach.mode,
-				takeover: attach.takeover,
-				cols,
-				rows,
-				...(measured ? {} : { provisionalSize: true }),
-				...(revealed ? { revealed: true } : {}),
-				env: this.host.env(),
-			},
-			endpoint,
-		);
+		let session: PaneSession;
+		try {
+			if (!this.endpoint) throw new Error(`the runtime ${endpointId} is no longer configured`);
+			// The pinned runtime's kind builds the bridge and its argv from the
+			// endpoint's snapshot (issue #54, ADR-0004), finding a local binary
+			// not discovered yet itself. What it throws no connection can cure
+			// (no SSH host, a kind this build cannot run): the tab says so.
+			session = this.newSession(
+				{
+					target: paneId,
+					mode: attach.mode,
+					takeover: attach.takeover,
+					cols,
+					rows,
+					...(measured ? {} : { provisionalSize: true }),
+					...(revealed ? { revealed: true } : {}),
+					env: this.host.env(),
+				},
+				this.endpoint,
+			);
+		} catch (error) {
+			this.closedReason = error instanceof Error ? error.message : String(error);
+			this.exited = true;
+			this.host.onStatus(this.status());
+			return;
+		}
 		this.session = session;
 		this.sessionSized = measured;
 

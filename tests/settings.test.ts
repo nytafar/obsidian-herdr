@@ -50,16 +50,9 @@ function status(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
 	return {
 		runtime: defaultLocalRuntime(),
 		unavailable: null,
-		discovery: {
-			binary: { path: '/opt/homebrew/bin/herdr', source: 'homebrew' },
-			socketPath: '/tmp/herdr.sock',
-			status: { status: 'running', version: '0.8.0', protocol: 19 },
-			error: null,
-		} as unknown as ConnectionStatus['discovery'],
-		socketPath: '/tmp/herdr.sock',
-		tunnel: null,
-		mismatch: null,
-		workspace: { id: 'w4', label: 'hvelv', method: 'label', agentCount: 3 },
+		details: null,
+		discovery: null,
+		mismatch: false,
 		error: null,
 		state: 'connected',
 		...overrides,
@@ -103,10 +96,7 @@ describe('connectionSummary', () => {
 
 	it('warns for an error or a protocol mismatch on a live connection', () => {
 		expect(connectionSummary(status({ error: 'stream dropped' })).warning).toBe(true);
-		expect(
-			connectionSummary(status({ mismatch: { server: 23, expected: 22 } as unknown as ConnectionStatus['mismatch'] }))
-				.warning,
-		).toBe(true);
+		expect(connectionSummary(status({ mismatch: true })).warning).toBe(true);
 	});
 
 	it('says a runtime of an unavailable kind is not connected, whatever the state says', () => {
@@ -166,82 +156,25 @@ describe('connectionDetails', () => {
 		]);
 	});
 
-	it('reports binary, socket, server and workspace', () => {
-		const text = render(runtime(), status())
-			.map((line) => line.text)
-			.join('\n');
-		expect(text).toContain('/opt/homebrew/bin/herdr');
-		expect(text).toContain('Socket: /tmp/herdr.sock');
-		expect(text).toContain('protocol 19');
-		expect(text).toContain('Workspace: hvelv (w4, matched by label), 3 agent panes');
+	it('passes a kind’s own lines through, the last error among them, and adds nothing', () => {
+		const details = [{ text: 'Transport: hc connect' }, { text: 'Refused.', warning: true }];
+		expect(render(runtime(), status({ details, error: 'refused' }))).toEqual([
+			{ text: 'Transport: hc connect', warning: false },
+			{ text: 'Refused.', warning: true },
+		]);
 	});
 
-	it('leaves a missing remote vault path to the page’s Problems row', () => {
-		const lines = render(
-			runtime({ host: 'lasse@xl', remoteVaultPath: '' }),
-			status(),
-		);
-		expect(lines.some((line) => /folder actions|remote vault path/i.test(line.text))).toBe(false);
-	});
-
-	it('warns when no workspace matches the vault', () => {
-		const lines = render(runtime(), status({ workspace: null }));
-		expect(lines.at(-1)).toEqual({
-			text: 'Workspace: no herdr workspace matches this vault yet.',
-			warning: true,
-		});
-	});
-
-	it('warns when the chosen binary speaks another protocol than the server (#87)', () => {
-		const lines = render(
-			runtime(),
-			status({
-				discovery: {
-					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
-					socketPath: '/tmp/herdr.sock',
-					status: { status: 'running', version: '0.8.2', protocol: 20 },
-					identity: { version: '0.8.0', protocol: 19 },
-					error: null,
-				} as unknown as ConnectionStatus['discovery'],
-			}),
-		);
-		const warning = lines.find((line) => line.text.startsWith('Binary protocol mismatch'));
-		expect(warning?.warning).toBe(true);
-		expect(warning?.text).toContain('/Users/test/.local/bin/herdr');
-		expect(warning?.text).toContain('protocol 19');
-		expect(warning?.text).toContain('the server speaks 20');
-	});
-
-	it('says nothing about the binary protocol when it matches the server', () => {
-		const lines = render(
-			runtime(),
-			status({
-				discovery: {
-					binary: { path: '/usr/bin/herdr', source: 'login-shell' },
-					socketPath: '/tmp/herdr.sock',
-					status: { status: 'running', version: '0.8.2', protocol: 20 },
-					identity: { version: '0.8.2', protocol: 20 },
-					error: null,
-				} as unknown as ConnectionStatus['discovery'],
-			}),
-		);
-		expect(lines.some((line) => line.text.startsWith('Binary protocol mismatch'))).toBe(false);
-	});
-
-	it('stays quiet about the local binary protocol on an SSH runtime', () => {
-		const lines = render(
-			runtime({ host: 'lasse@xl', remoteVaultPath: '/home/lasse/hvelv' }),
-			status({
-				discovery: {
-					binary: { path: '/Users/test/.local/bin/herdr', source: 'directory' },
-					socketPath: '/tmp/herdr.sock',
-					status: { status: 'running', version: '0.8.2', protocol: 20 },
-					identity: { version: '0.8.0', protocol: 19 },
-					error: null,
-				} as unknown as ConnectionStatus['discovery'],
-			}),
-		);
-		expect(lines.some((line) => line.text.startsWith('Binary protocol mismatch'))).toBe(false);
+	it('shows the discovery layout for a kind with nothing of its own yet, as it always has (#185)', () => {
+		const core = { ...newRuntime('herdr-core', 'local', [], () => 0.5), name: 'Core' };
+		const discovery = {
+			binary: { path: '/usr/bin/hc', source: 'directory' },
+			socketPath: '',
+			status: null,
+			error: null,
+		} as unknown as ConnectionStatus['discovery'];
+		const text = render(core, status({ discovery })).map((line) => line.text);
+		expect(text).toContain('Binary: /usr/bin/hc (directory)');
+		expect(text).toContain('Workspace: no herdr workspace matches this vault yet.');
 	});
 });
 

@@ -19,7 +19,7 @@ import type {
 	SettingDefinitionRender,
 } from 'obsidian';
 import { ButtonComponent, ExtraButtonComponent, Setting } from './fixtures/obsidian';
-import { fakeConnection, recordRuntimesHost } from './fixtures/runtimesHost';
+import { fakeConnection, herdrLines, recordRuntimesHost } from './fixtures/runtimesHost';
 import { DEFAULT_SETTINGS, type HerdrSettings } from '../src/settings';
 import { defaultLocalRuntime, newRuntime, type RuntimeConfig } from '../src/runtimes';
 import { readSetting, writeSetting, type SettingsHost } from '../src/settingsTab/effects';
@@ -616,7 +616,7 @@ describe('where the connection is shown', () => {
 		expect(lines()).toContain('Socket: /tmp/herdr.sock');
 		expect(lines().some((line) => line.startsWith('Runtime: '))).toBe(false);
 
-		recorded.connection.current = { ...recorded.connection.current, workspace: null };
+		recorded.connection.current = { ...recorded.connection.current, details: herdrLines(null) };
 		recorded.connection.changed();
 		expect(lines()).toContain('Workspace: no herdr workspace matches this vault yet.');
 		(cleanup as () => void)();

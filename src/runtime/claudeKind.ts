@@ -61,7 +61,7 @@ import type { SessionWatcher } from '../native/sessionWatcher';
 import { LocalTranscriptSource } from '../native/transcriptSource';
 import { CLAUDE_PERMISSION_MODE_LABELS, normalizePermissionMode } from '../runtimes';
 import { clearTimer, setTimer } from '../timers';
-import { CLAUDE_CAPABILITIES, type RuntimeKindAdapter, type StatusLine } from './kind';
+import { CLAUDE_CAPABILITIES, withStatusError, type RuntimeKindAdapter, type StatusLine } from './kind';
 
 /** Why a `claude` tab has no terminal view on Windows: no `script(1)`, and ConPTY needs native code. */
 export const CLAUDE_TERMINAL_UNAVAILABLE = 'not available on Windows, which has no script(1)';
@@ -181,7 +181,7 @@ export interface ClaudeKindHost {
 }
 
 export type ClaudeKind = RuntimeKindAdapter<ClaudeClient, ClaudeScope, ConnectionTunnel> & {
-	/** The agent table, for unload and for pruning removed runtimes. */
+	/** The agent table. */
 	readonly agents: ClaudeAgents;
 	/** Shell tabs; null where there is no pty (Windows). */
 	readonly shells: ClaudeShells | null;
@@ -255,6 +255,19 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		dispose: async () => {
 			await Promise.all([agents.stopAll(), shells?.stopAll()]);
 		},
+		// A removed runtime's agents stop with it.
+		registryChanged: (runtimes) => {
+			agents.prune(new Set(runtimes.filter((runtime) => runtime.kind === 'claude').map((runtime) => runtime.id)));
+		},
+		// A shell whose runtime was removed while its tab was open is still
+		// this plugin's process, and nothing else would end it.
+		paneOrphaned: (paneId) => {
+			if (isShellId(paneId)) void shells?.close(paneId);
+		},
+		openShell: (folderAbsPath, command) => {
+			if (!shells) throw refuse();
+			return shells.open(folderAbsPath, command);
+		},
 		unavailable: null,
 		terminalUnavailable,
 		capabilities: pty ? CLAUDE_CAPABILITIES : { ...CLAUDE_CAPABILITIES, shells: false },
@@ -308,10 +321,6 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 		},
 		// Nothing to find: the session attaches to a pty the plugin keeps, and
 		// the agent table knows the runtime's binary.
-		terminalCommand: () => {
-			if (!pty) throw refuse();
-			return ['script'];
-		},
 		createTerminalSession: (options, endpoint) => {
 			if (!pty) throw refuse();
 			const runtimeId = endpoint.runtime.id;
@@ -407,7 +416,8 @@ export function createClaudeKind(host: ClaudeKindHost): ClaudeKind {
 			},
 		}),
 		createTabLabels: () => new NoTabLabels(),
-		statusLines: (connection) => (connection ? claudeStatusLines(connection, terminalUnavailable) : null),
+		statusLines: (connection, context) =>
+			connection ? withStatusError(claudeStatusLines(connection, terminalUnavailable), context.error) : null,
 	};
 }
 

@@ -6,10 +6,9 @@
  * and titles its header. The pane's terminal itself — the `TerminalSession`
  * bridge, the `TerminalRenderer`, and the plumbing between them — belongs to
  * `PaneTerminal` (`./paneTerminal.ts`, issue #83), which this drives through
- * `attach`, `detach`, `setVisible`, `setIdentity`, `reconnect`,
- * `connectionArrived`, `resize` and `status`, and serves as its
- * `PaneTerminalHost`: the settings, the endpoint, the herdr argv and Obsidian's
- * `Notice` all reach it from here.
+ * `attach`, `detach`, `setVisible`, `setIdentity`, `reconnect`, `resize` and
+ * `status`, and serves as its `PaneTerminalHost`: the settings, the endpoint
+ * and Obsidian's `Notice` all reach it from here.
  *
  * Since issue #92 that lifecycle is one **pane surface** among two
  * (`../native/paneSurface.ts`, ADR-0002): the tab's **view** decides which one is
@@ -61,7 +60,6 @@
  */
 
 import {
-	FileSystemAdapter,
 	ItemView,
 	Menu,
 	Notice,
@@ -76,7 +74,6 @@ import {
 import type HerdrPlugin from '../main';
 import {
 	cursorOptions,
-	normalizeTerminalPlacement,
 	normalizeTerminalTitleSource,
 	scrollbackBytes,
 	type AttachMode,
@@ -89,8 +86,6 @@ import {
 	type EndpointSession,
 } from '../connection';
 import type { TerminalSessionMode } from '../bridge/terminalSession';
-import { nativeViewBlock, type RuntimeKindAdapter } from '../runtime/kind';
-import type { WaitingAnswer } from '../native/pendingRequest';
 import { createRenderer } from './renderer/create';
 import {
 	isTerminalEngine,
@@ -110,12 +105,8 @@ import {
 	type TerminalSetting,
 } from './paneTerminal';
 import type { PaneState } from '../herdr/scope';
-import type { PaneGlance, PaneSnapshot, SessionWatcher } from '../native/sessionWatcher';
-import { agentFormat } from '../agents/format';
-import { defaultAgentFormat } from '../agents/catalog';
-import { ScreenAnswerer } from '../native/screenAnswer';
-import type { ScreenAnswering } from '../native/screenAnswerers';
-import { TrustWatch } from '../native/trustWatch';
+import type { SessionWatcher } from '../native/sessionWatcher';
+import { PaneContext } from './paneContext';
 
 import type { TabLabels } from '../tabLabels';
 import type { HostKeyDecision } from './input/inputRouter';
@@ -140,20 +131,12 @@ import {
 	type PaneWhere,
 } from '../native/paneSurface';
 import { NativePaneSurface } from '../native/surface';
-import { imagesUnavailable } from '../native/promptSender';
 import { PromptSuggest } from '../native/promptSuggest';
-import { normalizeCommandUsage, withCommandUsed } from '../native/commandCatalog';
-import { normalizeToolGroupPresentation } from '../native/toolCalls';
-import { normalizeContextReadoutStyle, normalizePromptBoxStyle } from '../native/composerLook';
-import { linkSourcePath } from '../native/noteLinks';
 
 /** How often a tab looks for its pane's trust prompt while the agent has no session (#167). */
 const TRUST_WATCH_MS = 1000;
 
 export const TERMINAL_VIEW_TYPE = 'herdr-terminal';
-
-/** Why a tab whose runtime was removed from the registry offers no native view. */
-export const NATIVE_UNKNOWN_RUNTIME_REASON = 'runtime no longer configured';
 
 /**
  * Persisted view state. `paneId` is a herdr pane id such as `w4:p1`;
@@ -268,19 +251,6 @@ export function terminalHeaderActions(
 		},
 		controlToggle: where.view === 'terminal',
 	};
-}
-
-/**
- * Where a pane lives, with the pane's own reason against the native view on
- * top of its runtime's (ADR-0006): an hc terminal whose Claude has not
- * labelled it with its session stays a terminal and names the install
- * command, and a pane running another agent than Claude names it (#155).
- * The runtime's reason comes first; only a connected runtime has a
- * pane reason, so a tab on one that is not keeps what it shows.
- */
-export function withPaneReason(block: PaneWhere, paneReason: string | null): PaneWhere {
-	if (block.remote || block.kindReason || !paneReason) return block;
-	return { remote: false, kindReason: paneReason };
 }
 
 /**
@@ -591,21 +561,11 @@ export class TerminalView extends ItemView {
 	/** Unsubscribes from the scope currently bound; replaced by `bindScope`. */
 	private unbindScope: (() => void)[] = [];
 	/**
-	 * "Trust new folders automatically" for this tab's pane (#167): looks at
-	 * the screen while the pane's agent has no session yet, whichever surface
-	 * the tab shows, since an hc terminal at the prompt has no native view.
-	 * It reads the pane by `glance`, never `snapshot`, which on herdr may read
-	 * the Claude process of a pane this tab does not follow.
+	 * What this tab's pane is (#184): its kind and endpoint, availability, the
+	 * cwd mapping, screen answering, the trust watch and the native surface's
+	 * dependencies, over the endpoint resolver and this tab's identity.
 	 */
-	private readonly trustWatch = new TrustWatch({
-		enabled: () => this.plugin.settings.nativeAutoTrustFolders === true,
-		claimed: () => this.plugin.screenAnswerers.trustClaimed(this.trustKey()),
-		pane: () => this.paneGlance(),
-		answering: (agent) => this.screenAnswering(agent),
-		claim: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
-		release: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
-		notify: (message) => new Notice(message),
-	});
+	private readonly context: PaneContext;
 	/** Pending `updateHeader` frame, so a burst of `changed` retitles once (#36). */
 	private pendingHeader = 0;
 	/**
@@ -654,10 +614,23 @@ export class TerminalView extends ItemView {
 			},
 			// The bridge is the pinned runtime's kind's too (ADR-0005).
 			createSession: (options, endpoint) =>
-				this.plugin.kindOf(endpoint.runtime.kind).createTerminalSession(options, endpoint),
+				this.plugin.endpoints.kindOf(endpoint.runtime.kind).createTerminalSession(options, endpoint),
 			createRenderer: (options) => createRenderer(options),
 			macOS: Platform.isMacOS,
 		});
+		this.context = new PaneContext(
+			{
+				endpoints: plugin.endpoints,
+				screenAnswerers: plugin.screenAnswerers,
+				models: plugin.sessionModels,
+				queues: plugin.promptQueues,
+				settings: () => plugin.settings,
+				saveSettings: () => void plugin.saveSettings(),
+				vaultPath: () => plugin.vaultPath(),
+				notify: (message) => new Notice(message),
+			},
+			() => this.terminal.identity,
+		);
 		// #47: consulted by the workspace scope while this leaf is active, ahead
 		// of the app's hotkeys, which are its parent and run on `undefined`. One
 		// catch-all handler; the policy itself is the input router's. Obsidian
@@ -695,21 +668,7 @@ export class TerminalView extends ItemView {
 			},
 			cursorOptions: () => cursorOptions(this.plugin.settings),
 			env: () => spawnEnv(process.env, this.plugin.settings.extraPath),
-			endpointFor: (endpointId) => this.plugin.endpointFor(endpointId),
-			// The pinned runtime's kind builds the argv: for herdr `[<herdr>]`
-			// locally and `['ssh','-T',host,<remote herdr>]` over SSH — terminals
-			// never go through the forwarded API socket (PRD S17).
-			commandFor: (endpoint) =>
-				this.plugin.kindOf(endpoint.runtime.kind).terminalCommand(endpoint),
-			// Whether the plugin has connected to *anything*: a connection to the
-			// other herdr still means the binary was found (issue #54).
-			// A kind this build cannot run is not waiting for anything: the tab
-			// shows why at once instead of "waiting for herdr" (ADR-0004).
-			// Nor is a kind whose terminal tab cannot start at all.
-			connected: () =>
-				this.plugin.client !== null ||
-				this.kind().unavailable !== null ||
-				this.kind().terminalUnavailable !== null,
+			endpointFor: (endpointId) => this.plugin.endpoints.endpoint(endpointId),
 			perfEnabled: () => perfEnabled(),
 			onStatus: (line) => this.renderStatus(line),
 			// A renderer is mounted, so the grace period has something to come back
@@ -747,7 +706,7 @@ export class TerminalView extends ItemView {
 			// ADR-0002: the native view reads a transcript on the pane's own host,
 			// so a tab pinned to a remote runtime keeps its terminal surface, as
 			// does one whose kind has no agent session (ADR-0005).
-			...this.where(),
+			...this.context.where(),
 		});
 	}
 
@@ -760,262 +719,30 @@ export class TerminalView extends ItemView {
 		return effectiveEngine(this.storedEngine, this.plugin.settings.terminalEngine);
 	}
 
-	/**
-	 * The pane's working directory as its runtime's session watcher last
-	 * reported it, or empty when it has none: what the prompt box's `/` and `@`
-	 * are relative to (#98).
-	 */
-	private paneCwd(): string {
-		return this.paneSnapshot()?.cwd ?? '';
-	}
-
-	/** The pane as its runtime's session watcher last reported it, or null. */
-	private paneSnapshot(): PaneSnapshot | null {
-		const { paneId, endpointId } = this.terminal.identity;
-		if (!paneId) return null;
-		return this.plugin.nativeWatcher(endpointId)?.snapshot(paneId) ?? null;
-	}
-
-	/**
-	 * This tab's pane as its runtime last reported it, read with no side
-	 * effects (`SessionWatcher.glance`), or null for a kind that offers none.
-	 */
-	private paneGlance(): PaneGlance | null {
-		const { paneId, endpointId } = this.terminal.identity;
-		if (!paneId) return null;
-		return this.plugin.nativeWatcher(endpointId)?.glance?.(paneId) ?? null;
-	}
-
-	/**
-	 * Where this tab's pane lives, for the native view's availability (issue
-	 * #54, ADR-0002, ADR-0004): on another machine, and whether its runtime's
-	 * kind rules the view out by itself. A runtime that is no longer in the
-	 * registry can show nothing; its terminal says why.
-	 */
-	private where(): PaneWhere {
-		const { endpointId, paneId } = this.terminal.identity;
-		const endpoint = this.plugin.endpointFor(endpointId);
-		if (!endpoint) return { remote: false, kindReason: NATIVE_UNKNOWN_RUNTIME_REASON };
-		const kind = this.plugin.kindOf(endpoint.runtime.kind);
-		// A kind that runs but has no terminal of its own (ADR-0007) says so; a
-		// kind this build cannot run at all keeps its terminal, which says why.
-		const terminalReason =
-			kind.unavailable === null
-				? (kind.terminalUnavailable ?? (paneId ? (kind.paneTerminalReason?.(endpoint, paneId) ?? null) : null))
-				: null;
-		// A pane that is no agent (a `claude` shell tab) has nothing to show natively.
-		const paneReason = paneId ? (kind.paneNativeReason?.(paneId) ?? null) : null;
-		if (paneReason) return { remote: false, kindReason: paneReason, terminalReason };
-		const block = nativeViewBlock(kind, endpoint);
-		if (block.remote || block.kindReason || !paneId) return { ...block, terminalReason };
-		return {
-			...withPaneReason(block, this.plugin.nativeWatcher(endpointId)?.unavailable?.(paneId) ?? null),
-			terminalReason,
-		};
-	}
-
-	/**
-	 * The pane's cwd on this machine, for what is looked up here: relative
-	 * links. A pane on an SSH runtime working inside the remote vault maps
-	 * onto this vault; anywhere else it stays as reported. The `/` catalog
-	 * is the pane's own machine's instead (`nativeCommandCatalog`).
-	 */
-	private paneCwdHere(): string {
-		const cwd = this.paneCwd();
-		const remoteVault = this.remoteVaultPath();
-		if (!remoteVault || !cwd) return cwd;
-		const local = this.plugin.vaultPath();
-		if (cwd === remoteVault) return local;
-		return cwd.startsWith(`${remoteVault}/`) ? `${local}${cwd.slice(remoteVault.length)}` : cwd;
-	}
-
-	/** The vault's path on the pane's machine when that is another one, else ''. */
-	private remoteVaultPath(): string {
-		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
-		const runtime = endpoint?.runtime;
-		if (runtime?.target !== 'ssh') return '';
-		return runtime.remoteVaultPath.trim().replace(/\/+$/, '');
-	}
-
-	/**
-	 * Reading and answering this pane's dialog on its screen (ADR-0009), or
-	 * null for a kind with no screen (the `claude` kind) or an agent whose
-	 * format reads none. The driver is the plugin's one for this runtime and
-	 * agent, so every tab on the pane shares its one-answer guard, and it
-	 * reads the runtime's client per call. `agent` is the one the trust watch
-	 * saw running; the card's is its session's. Nothing here reads the pane
-	 * by `snapshot`, so the trust watch's use costs no process read.
-	 */
-	private screenAnswering(agent?: string): ScreenAnswering | null {
-		const endpointId = this.terminal.identity.endpointId;
-		const kind = this.kind();
-		const screen = kind.screen?.(() => this.plugin.nativeClient(endpointId));
-		const running = agent ?? this.paneGlance()?.agent ?? undefined;
-		const format = running ? agentFormat(running) : defaultAgentFormat();
-		const parse = format?.screenDialog;
-		if (!screen || !format || !parse) return null;
-		const answerer = this.plugin.screenAnswerers.answerer(
-			`${endpointId}\n${kind.kind}\n${format.agent}`,
-			() => new ScreenAnswerer({ screen, parse }),
-		);
-		return {
-			answerer,
-			screen,
-			parse,
-			statusMessage: () => this.paneGlance()?.blockMessage ?? null,
-			cwd: () => this.paneGlance()?.cwd ?? '',
-			claimTrust: () => this.plugin.screenAnswerers.claimTrust(this.trustKey()),
-			releaseTrust: () => this.plugin.screenAnswerers.releaseTrust(this.trustKey()),
-		};
-	}
-
-	/** This tab's pane, plugin-wide, for the trust prompt's one claim (#167). */
-	private trustKey(): string {
-		const { endpointId, paneId } = this.terminal.identity;
-		return `${endpointId}\n${paneId}`;
-	}
-
-	/** The kind adapter of this tab's runtime; herdr's while the runtime is unknown. */
-	private kind(): RuntimeKindAdapter {
-		const endpoint = this.plugin.endpointFor(this.terminal.identity.endpointId);
-		return this.plugin.kindOf(endpoint?.runtime.kind ?? 'herdr');
-	}
-
 	/** The adapter for a kind: the tab's own lifecycle, or a fresh native view. */
 	private createSurface(kind: PaneSurfaceKind): PaneSurface {
 		if (kind === 'terminal') return this.terminal;
-		const nativeClient = () => this.plugin.nativeClient(this.terminal.identity.endpointId);
 		return new NativePaneSurface({
+			...this.context.surfaceDependencies(),
 			// The view's own app, per the Obsidian guidelines, for the Markdown it
 			// renders and the links it opens (#93).
 			app: this.app,
 			identity: this.terminal.identity,
 			onStatus: (line) => this.renderStatus(line),
-			// Plugin-held and reference counted, so two tabs on one pane read one
-			// transcript (ADR-0003).
-			models: this.plugin.sessionModels,
-			// Prompts typed while the agent works wait in the plugin's queue (#159).
-			queues: this.plugin.promptQueues,
-			// Prompts go through the tab's own runtime, its kind's sender over its
-			// own client, and only while that runtime is the connected one and can
-			// show a native view at all (ADR-0002, ADR-0006); `--wait` is never
-			// asked for (#97, ADR-0003).
-			sender: {
-				send: (paneId, text, images, options) =>
-					this.kind().promptSender(nativeClient).send(paneId, text, images, options),
-				// Whether images can go with a prompt (#144), asked of the kind as
-				// it is now: herdr-core's answer depends on the core's version.
-				imagesUnavailable: (paneId) => imagesUnavailable(this.kind().promptSender(nativeClient), paneId),
-				// The pane gate (review of #169): nothing typed into a picker the
-				// session bar opened, nor one that may still be open.
-				blocked: (paneId) => this.kind().promptSender(nativeClient).blocked?.(paneId) ?? null,
-				// Stop, for a kind with a real interrupt (ADR-0007).
-				...(this.kind().promptSender(nativeClient).interrupt
-					? {
-							interrupt: (paneId: string) =>
-								this.kind().promptSender(nativeClient).interrupt?.(paneId) ?? Promise.resolve(),
-						}
-					: {}),
-			},
-			// The waiting card's answers, for a kind whose agents' dialogs are its
-			// own requests (ADR-0007), over the same client.
-			...(this.kind().responder
-				? {
-						responder: {
-							respond: (paneId: string, requestId: string, answer: WaitingAnswer) => {
-								const responder = this.kind().responder?.(nativeClient);
-								return responder
-									? responder.respond(paneId, requestId, answer)
-									: Promise.reject(new Error('this runtime does not answer requests'));
-							},
-						},
-					}
-				: {}),
-			// The waiting card's answers on the pane's screen (ADR-0009), for a
-			// kind with one and an agent whose dialogs its format reads.
-			screen: () => this.screenAnswering(),
-			// The session bar's pickers (#161), for a kind that can change the
-			// model, effort and mode; asked of the kind as it is now, every draw,
-			// so the pane is read by `glance`. herdr and herdr-core drive the
-			// agent's own pickers, read by its format (#169, #170).
-			sessionSettings: () => {
-				const agent = this.paneGlance()?.agent;
-				const format = agent ? agentFormat(agent) : defaultAgentFormat();
-				return this.kind().sessionSettings?.(nativeClient, format ?? null) ?? null;
-			},
-			// The readout's breakdown (#171), for a kind that asks without
-			// writing to the conversation; the others send `/context`.
-			contextUsage: () => this.kind().contextUsage?.(nativeClient) ?? null,
-			// The waiting card's "Trust this folder" (#99), over the same client and
-			// only ever `Down Enter` on the workspace trust prompt.
-			keySender: {
-				sendKeys: (paneId, keys) => this.kind().keySender(nativeClient).sendKeys(paneId, keys),
-			},
 			// "Open in terminal": the tab's own view switch (#92, #104), which is
-			// how a block this view must never press Enter on gets answered. Only
-			// the view moves; the terminal it comes back to is the tab's own
-			// engine, or the vault's default for a tab that never chose one.
+			// how a block this view must never press Enter on gets answered.
 			openInTerminal: () => {
 				this.detached('open in terminal', () => this.setPaneView('terminal'));
 			},
-			// Read per block, so the setting reaches an open view (#99).
-			autoTrustFolders: () => this.plugin.settings.nativeAutoTrustFolders === true,
-			// `/` offers the pane's commands and skills, `@` the vault's files
-			// (#98). The pane's own cwd decides the project scope and the form a
-			// mention takes, on the pane's own machine (ADR-0006).
 			onPromptInput: (inputEl) => {
-				const suggest = new PromptSuggest(inputEl, {
-					app: this.app,
-					cwd: () => this.paneCwd(),
-					// The commands of the machine the agent runs on: over the
-					// runtime's connection for herdr-core over SSH (ADR-0006).
-					catalog: (agent) => this.plugin.nativeCommandCatalog(this.terminal.identity.endpointId, agent),
-					// The catalogue of the agent the pane runs (ADR-0010): none
-					// named is the default agent's, one without a format has none.
-					format: () => {
-						const agent = this.paneSnapshot()?.agent;
-						return agent ? agentFormat(agent) : undefined;
-					},
-					paneId: () => this.paneId,
-					// The most used commands first (#149), counted in the plugin's
-					// data whatever runtime the pane is on.
-					usage: () => normalizeCommandUsage(this.plugin.settings.commandUsage),
-					onCommandUsed: (name) => {
-						this.plugin.settings.commandUsage = withCommandUsed(
-							normalizeCommandUsage(this.plugin.settings.commandUsage),
-							name,
-						);
-						void this.plugin.saveSettings();
-					},
-					// The agent opens a mention on its own machine: on an SSH
-					// runtime, the remote vault's copy of the file.
-					vaultPath: () => {
-						const remote = this.remoteVaultPath();
-						if (remote) return remote;
-						const adapter = this.app.vault.adapter;
-						return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : '';
-					},
-				});
+				const suggest = new PromptSuggest(inputEl, { app: this.app, ...this.context.promptSource() });
 				// Closed with the box: a popover open on a mode switch or a closed
 				// tab must not outlive the text area it belongs to. `isShowing` is
 				// how the box knows the enter is the popover's, not a send (#103).
 				return { close: () => suggest.close(), isShowing: () => suggest.isShowing() };
 			},
-			// Both read fresh on every draw, so a setting change and a vault the
-			// user moved reach a view that is already open (#95).
-			presentation: () => normalizeToolGroupPresentation(this.plugin.settings.nativeToolGroups),
-			composer: () => ({
-				boxStyle: normalizePromptBoxStyle(this.plugin.settings.nativePromptBoxStyle),
-				readout: normalizeContextReadoutStyle(this.plugin.settings.nativeContextReadout),
-			}),
-			vaultPath: () => this.plugin.vaultPath(),
-			// Links open beside this leaf, never in it (#114), on the side
-			// opposite the one a terminal is placed on beside its note.
+			// Links open beside this leaf, never in it (#114).
 			leaf: () => this.leaf,
-			noteSplitBefore: () =>
-				normalizeTerminalPlacement(this.plugin.settings.terminalPlacement) !== 'split-left',
-			// Relative links resolve from the pane's cwd when it is in the vault.
-			linkSourcePath: () => linkSourcePath(this.paneCwdHere(), this.plugin.vaultPath()),
 		});
 	}
 
@@ -1071,7 +798,7 @@ export class TerminalView extends ItemView {
 	 * asks that question.
 	 */
 	private endpointSession(): EndpointSession<ConnectionClient, ConnectionScope, TabLabels> | null {
-		return this.plugin.endpointSession(this.terminal.identity.endpointId);
+		return this.plugin.endpoints.session(this.terminal.identity.endpointId);
 	}
 
 	/**
@@ -1088,7 +815,7 @@ export class TerminalView extends ItemView {
 		if (pane) this.lastTitle = terminalTabTitle(pane, paneId, this.titleContext(pane));
 		// A pane no scope lists, whose kind names it (a `claude` shell tab).
 		if (!pane && paneId) {
-			const named = this.kind().paneTitle?.(paneId);
+			const named = this.context.kind().paneTitle?.(paneId);
 			if (named) return named;
 		}
 		return this.lastTitle || terminalTabTitle(pane, paneId);
@@ -1198,16 +925,13 @@ export class TerminalView extends ItemView {
 		this.bindWindow(window);
 		this.bindWindow(this.containerEl.win);
 		this.registerEvent(this.app.workspace.on('window-open', (_workspaceWindow, win) => this.bindWindow(win)));
-		this.registerInterval(this.containerEl.win.setInterval(() => this.trustWatch.tick(), TRUST_WATCH_MS));
+		this.registerInterval(this.containerEl.win.setInterval(() => this.context.trustWatch.tick(), TRUST_WATCH_MS));
 		this.bindScope();
 		this.register(
 			this.plugin.onScopeReplaced(() => {
 				// The scope object itself is replaced on every connect, so the old
-				// subscription is dead: rebind before deciding anything about a retry.
+				// subscription is dead.
 				this.bindScope();
-				// Only a start that failed for want of a herdr retries; the
-				// lifecycle knows whether this was one.
-				this.detached('reconnect', () => this.terminal.connectionArrived());
 				// What the pane can be shown as may have moved with the runtime.
 				this.detached('native availability', () => this.showSurface());
 			}),
@@ -1339,7 +1063,7 @@ export class TerminalView extends ItemView {
 		// A pane whose native view comes and goes with its session (an hc
 		// terminal's label, ADR-0006) or its agent (#155): mount whichever
 		// surface it can show now.
-		const watcher = this.plugin.nativeWatcher(this.terminal.identity.endpointId);
+		const watcher = this.plugin.endpoints.watcher(this.terminal.identity.endpointId);
 		const off = watcher?.onAvailability?.((paneId) => {
 			if (paneId === this.paneId) this.detached('native availability', () => this.showSurface());
 		});
@@ -1467,7 +1191,7 @@ export class TerminalView extends ItemView {
 		// The native view has no attach connection: its runtime's watcher writes
 		// over the plugin's own (herdr-core's `herdr.seen`; herdr has no such hook).
 		this.nativeLook.set(
-			looking.native ? this.plugin.nativeWatcher(this.terminal.identity.endpointId) : null,
+			looking.native ? this.plugin.endpoints.watcher(this.terminal.identity.endpointId) : null,
 			this.paneId,
 		);
 	}
@@ -1597,7 +1321,7 @@ export class TerminalView extends ItemView {
 	 */
 	private async togglePaneView(): Promise<void> {
 		const target = otherPaneView(this.view());
-		if (!paneViewAvailability(target, this.where()).available) return;
+		if (!paneViewAvailability(target, this.context.where()).available) return;
 		await this.setPaneView(target);
 	}
 
@@ -1608,7 +1332,7 @@ export class TerminalView extends ItemView {
 	 * in the header moves as a tab is switched back and forth.
 	 */
 	private updateViewActions(): void {
-		const header = terminalHeaderActions({ view: this.view(), ...this.where() });
+		const header = terminalHeaderActions({ view: this.view(), ...this.context.where() });
 		const el = this.viewActionEl;
 		if (el) {
 			const { icon, label, disabled } = header.viewToggle;
@@ -1652,7 +1376,7 @@ export class TerminalView extends ItemView {
 	 */
 	private addRenderModeItems(menu: Menu): void {
 		const currentView = this.view();
-		const where = this.where();
+		const where = this.context.where();
 		for (const view of PANE_VIEWS) {
 			const { available, reason } = paneViewAvailability(view, where);
 			const name = PANE_VIEW_NAMES[view];
@@ -1698,9 +1422,9 @@ export class TerminalView extends ItemView {
 		await this.showSurface();
 		// The kind may move the agent's process with the view (ADR-0007's D2):
 		// told after the swap, so a terminal has let go of the TUI first.
-		const { paneId, endpointId } = this.terminal.identity;
-		const endpoint = this.plugin.endpointFor(endpointId);
-		if (paneId && endpoint) this.kind().paneViewChosen?.(endpoint, paneId, this.view());
+		const paneId = this.terminal.identity.paneId;
+		const endpoint = this.context.endpoint();
+		if (paneId && endpoint) this.context.kind().paneViewChosen?.(endpoint, paneId, this.view());
 	}
 
 	/**

@@ -67,7 +67,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 			settings: () => plugin.settings,
 			probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
 			refresh: (runtimeId, again) => plugin.agentCatalogs.refresh(runtimeId, again),
-			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
+			nativeReachable: (runtime) => plugin.endpoints.nativeReachable(runtime),
 			newMachineProbes: () => plugin.newMachineProbes(),
 			write: (key, value) => this.setControlValue(key, value),
 			saved: async () => {
@@ -157,7 +157,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 		return {
 			save: () => plugin.saveSettings(),
 			refreshAgentList: () => plugin.refreshAgentList(),
-			nativeReachable: (runtime) => plugin.nativeReachable(runtime),
+			nativeReachable: (runtime) => plugin.endpoints.nativeReachable(runtime),
 			agents: {
 				probe: (runtimeId) => plugin.agentCatalogs.cachedProbeFor(runtimeId),
 			},
@@ -168,7 +168,7 @@ export class HerdrSettingTab extends PluginSettingTab {
 	private runtimesHost(lists: ListCallbacks): RuntimesHost {
 		const { plugin } = this;
 		return {
-			kindUnavailable: (kind) => plugin.kindUnavailable(kind),
+			kindUnavailable: (kind) => plugin.endpoints.kindUnavailable(kind),
 			activate: (id) => plugin.switchRuntime(id),
 			save: () => plugin.saveSettings(),
 			refreshRuntimes: () => plugin.refreshRuntimes(),

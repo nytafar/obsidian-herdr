@@ -158,7 +158,7 @@ function harness(options: HarnessOptions = {}): Harness {
 	return { kind, client, scope, connection, stored, notices, runtimeId: runtime.id, dir, log };
 }
 
-function actionHost(h: Harness, opened: string[] = []): ActionHost {
+function actionHost(h: Harness, opened: string[] = [], views: (string | undefined)[] = []): ActionHost {
 	return {
 		settings: () => ({ ...DEFAULT_SETTINGS, openTerminalAfterStart: true }),
 		runtime: () => ({ ...h.connection.endpoint.runtime }),
@@ -169,8 +169,9 @@ function actionHost(h: Harness, opened: string[] = []): ActionHost {
 		agentPanes: () => [],
 		vaultName: () => 'vault',
 		notice: (message) => h.notices.push(message),
-		openTerminal: async (paneId) => {
+		openTerminal: async (paneId, _cwd, view) => {
 			opened.push(paneId);
+			views.push(view);
 		},
 		detachTerminalLeaves: () => undefined,
 		forgetPane: () => undefined,
@@ -873,12 +874,62 @@ describe('the claude kind over a fake claude', () => {
 		await waitFor(() => status(h, paneId) === 'done', 'done');
 		expect(h.scope.get(paneId)?.started).toBe(true);
 		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId;
-		expect(await actions.releaseForGraduation?.(paneId)).toEqual({
+		const released = await actions.releaseForGraduation?.(paneId);
+		expect(released).toMatchObject({
 			cwd: h.dir,
 			sessionId,
 			permissionMode: h.connection.endpoint.runtime.permissionMode,
 		});
 		expect(h.scope.get(paneId)?.stopped).toBe(true);
+		// The release handle acts on the held row: once moved, it goes for good (#185).
+		await released?.forget();
+		expect(h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false).toBe(false);
+	});
+
+	it('forgets or gives back the row it released, though the list has moved to the target runtime by then (#185)', async () => {
+		const h = harness();
+		// Graduation switches runtime between the release and what it does with
+		// the row, so the action host answers with the target by then.
+		let listRuntime = { ...h.connection.endpoint.runtime };
+		const actions = h.kind.createActions({ ...actionHost(h), runtime: () => listRuntime });
+		const stored = (paneId: string): boolean => h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false;
+
+		const back = await started(h);
+		await prompt(h, back, 'hello');
+		await waitFor(() => status(h, back) === 'done', 'done');
+		const released = await actions.releaseForGraduation?.(back);
+		expect(released?.start).toEqual({ kind: 'claude', args: ['--permission-mode', 'manual', '--resume', h.stored[h.runtimeId]?.[0]?.sessionId] });
+		// Held: nothing here starts it while the target may be resuming it.
+		expect(() => h.kind.agents.resume(h.runtimeId, back)).toThrow();
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		released?.reclaim();
+		expect(() => h.kind.agents.resume(h.runtimeId, back)).not.toThrow();
+
+		listRuntime = { ...h.connection.endpoint.runtime };
+		const again = await actions.releaseForGraduation?.(back);
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		expect(stored(back)).toBe(true);
+		await again?.forget();
+		expect(stored(back)).toBe(false);
+	});
+
+	it('keeps the source runtime when the list switches while the release is still stopping the agent', async () => {
+		const h = harness();
+		let listRuntime = { ...h.connection.endpoint.runtime };
+		const actions = h.kind.createActions({ ...actionHost(h), runtime: () => listRuntime });
+		const stored = (paneId: string): boolean => h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false;
+
+		const paneId = await started(h);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId;
+		// The switch lands while `release` still waits for the process to go.
+		const releasing = actions.releaseForGraduation?.(paneId);
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		const released = await releasing;
+		expect(released).toMatchObject({ sessionId, permissionMode: h.connection.endpoint.runtime.permissionMode });
+		await released?.forget();
+		expect(stored(paneId)).toBe(false);
 	});
 
 	it('starts a row pinned to the asking mode in that mode, even on a runtime set to auto, and keeps it (ADR-0008)', async () => {
@@ -903,6 +954,44 @@ describe('the claude kind over a fake claude', () => {
 		expect(h.kind.agents.permissionMode(h.runtimeId, pinned.id)).toBe('manual');
 		expect(h.kind.agents.permissionMode(h.runtimeId)).toBe('auto');
 		expect((await actions.releaseForGraduation?.(pinned.id))?.permissionMode).toBe('manual');
+	});
+
+	it('starts the get-started agent through the one start path: its name, mode, allow once and first prompt, in the native view (#185)', async () => {
+		const h = harness();
+		const opened: string[] = [];
+		const views: (string | undefined)[] = [];
+		const actions = h.kind.createActions(actionHost(h, opened, views));
+		const first = (await actions.startAgentHere(h.dir, {
+			name: 'Install herdr-core',
+			prompt: 'install hc',
+			permissionMode: 'manual',
+			allowOnceOnly: true,
+			view: 'native',
+		})) as { paneId: string; name: string } | null;
+		// Made into an agent name by the menus' rule, as the flow's own did.
+		expect(first?.name).toBe('install-herdr-core');
+		const paneId = first?.paneId ?? '';
+		const row = h.stored[h.runtimeId]?.find((stored) => stored.id === paneId);
+		expect(row).toMatchObject({ name: 'install-herdr-core', permissionMode: 'manual', allowOnceOnly: true });
+		await waitFor(() => stdin(h.log).some((message) => message.type === 'user'), 'the first prompt');
+		expect(JSON.stringify(stdin(h.log).find((message) => message.type === 'user'))).toContain('install hc');
+		// Opened in the native view whatever the settings say; the flow says what it started.
+		expect(opened).toEqual([paneId]);
+		expect(views).toEqual(['native']);
+		expect(h.notices).toEqual([]);
+		// The same naming rule as the menus: a second one is made unique.
+		const second = (await actions.startAgentHere(h.dir, { name: 'Install herdr-core', view: 'native' })) as {
+			name: string;
+		} | null;
+		expect(second?.name).not.toBe('install-herdr-core');
+		expect(second?.name).toMatch(/^install-herdr-core/);
+		// The menus' start: the pattern, no pinned mode, a notice, the setting's view.
+		const menu = (await actions.startAgentHere(h.dir)) as { paneId: string } | null;
+		const menuRow = h.stored[h.runtimeId]?.find((stored) => stored.id === menu?.paneId);
+		expect(menuRow?.permissionMode).toBeUndefined();
+		expect(menuRow?.allowOnceOnly).toBeUndefined();
+		expect(h.notices.at(-1)).toMatch(/^Gjetr: started Claude "/);
+		expect(views.at(-1)).toBeUndefined();
 	});
 
 	it('offers an installer row only Allow once and Deny, never a session or project grant, after a resume too (ADR-0008)', async () => {
@@ -978,7 +1067,6 @@ describe('the claude kind over a fake claude', () => {
 	it('has the terminal view and shell tabs where a pty can be made (ADR-0007’s D2)', () => {
 		const h = harness({ host: { ptyPlatform: 'linux' } });
 		expect(h.kind.terminalUnavailable).toBeNull();
-		expect(h.kind.terminalCommand(h.connection.endpoint)).toEqual(['script']);
 		expect(h.kind.capabilities).toMatchObject({
 			tabs: false,
 			splits: false,

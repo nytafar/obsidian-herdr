@@ -17,7 +17,7 @@ import {
 import type { Unsubscribe } from '../src/native/sessionWatcher';
 import { nativeAgentReason } from '../src/native/agentSupport';
 import { paneViewAvailability } from '../src/native/paneSurface';
-import { withPaneReason } from '../src/views/terminalView';
+import { withPaneReason } from '../src/views/paneContext';
 import type { HerdrEvent } from '../src/herdr/client';
 import type { PaneState } from '../src/herdr/scope';
 import type { AgentStatus, PaneInfo } from '../src/herdr/types.gen';

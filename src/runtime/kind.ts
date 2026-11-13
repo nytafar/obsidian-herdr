@@ -26,7 +26,7 @@
  */
 
 import type { ActionHost } from '../actions';
-import type { TerminalSessionOptions } from '../bridge/terminalSession';
+import type { TerminalStartOptions } from '../bridge/terminalSession';
 import type {
 	Connection,
 	ConnectionClient,
@@ -44,7 +44,8 @@ import type { SessionWatcher } from '../native/sessionWatcher';
 import type { TranscriptSource } from '../native/transcriptSource';
 import type { CommandCatalogSource } from '../native/commandCatalog';
 import type { PaneSession } from '../views/paneTerminal';
-import type { RuntimeKind } from '../runtimes';
+import { issueSentence, type ClaudePermissionMode, type RuntimeConfig, type RuntimeKind } from '../runtimes';
+import type { DiscoveryResult } from '../herdr/binary';
 import type { TabLabels } from '../tabLabels';
 import type { AgentProbe } from '../agents/catalog';
 import type { AgentFormat } from '../agents/format';
@@ -85,6 +86,11 @@ export interface RuntimeCapabilities {
 	 */
 	shells: boolean;
 	/**
+	 * A resumable row can continue here (graduation, ADR-0007): the kind runs
+	 * `claude --resume <session>` in a pane of its own, on this machine.
+	 */
+	continueTarget: boolean;
+	/**
 	 * The native view, which follows the agent session the kind reports. A
 	 * kind that has it supplies {@link RuntimeKindAdapter.native}, which also
 	 * says on which targets its transcripts can be read (ADR-0002, ADR-0006).
@@ -102,6 +108,7 @@ export const HERDR_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze({
 	sharedPins: false,
 	resumable: false,
 	shells: false,
+	continueTarget: true,
 	nativeView: true,
 });
 
@@ -119,6 +126,7 @@ export const HERDR_CORE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.fre
 	sharedPins: true,
 	resumable: false,
 	shells: false,
+	continueTarget: true,
 	nativeView: true,
 });
 
@@ -137,6 +145,7 @@ export const CLAUDE_CAPABILITIES: Readonly<RuntimeCapabilities> = Object.freeze(
 	sharedPins: false,
 	resumable: true,
 	shells: true,
+	continueTarget: false,
 	nativeView: true,
 });
 
@@ -254,6 +263,21 @@ export interface StatusLine {
 	warning?: boolean;
 }
 
+/** What the plugin knows of a connection that its kind's status lines may need. */
+export interface StatusContext {
+	/** The runtime, by its live name. */
+	runtime: Readonly<RuntimeConfig>;
+	/** The newest attempt's discovery, or null before the first. */
+	discovery: DiscoveryResult | null;
+	/** The last connect or prime failure, or null. */
+	error: string | null;
+}
+
+/** A kind's own status lines, then the last failure as a sentence. */
+export function withStatusError(lines: StatusLine[], error: string | null): StatusLine[] {
+	return error ? [...lines, { text: issueSentence(error), warning: true }] : lines;
+}
+
 /**
  * The folder and row actions, as the plugin calls them. herdr's are
  * `HerdrActions` (`actions.ts`); results are the kind's own and only the two
@@ -308,6 +332,16 @@ export interface GraduationRelease {
 	sessionId: string;
 	/** The `--permission-mode` the row ran with, so the new pane keeps it; absent for none. */
 	permissionMode?: string;
+	/**
+	 * What the target's `startAgentHere` starts in `cwd` to resume the
+	 * conversation: the releasing kind's own agent and arguments, so
+	 * graduation builds no command line itself.
+	 */
+	start: StartAgentOptions;
+	/** The session runs on the target now: the held row goes for good. */
+	forget(): Promise<void>;
+	/** The session did not move: the held row comes back, stopped, to resume here. */
+	reclaim(): void;
 }
 
 /**
@@ -328,6 +362,23 @@ export interface StartAgentOptions {
 	template?: string;
 	/** What the notice calls the agent; the kind when absent. */
 	label?: string;
+	/**
+	 * The agent's name, or a pattern of it (`{folder}`, `{vault}`), instead
+	 * of the `agentNamePattern` setting; made unique the same way. The
+	 * `claude` kind only, like the four below (ADR-0008's get-started flow).
+	 */
+	name?: string;
+	/** The first prompt, sent as soon as the agent is started. */
+	prompt?: string;
+	/** The permission mode the row is pinned to, instead of the runtime's. */
+	permissionMode?: ClaudePermissionMode;
+	/** The row's cards offer only Allow once and Deny. */
+	allowOnceOnly?: boolean;
+	/**
+	 * Open the agent's tab in this view whatever the settings say, and say
+	 * nothing about the start: the caller does.
+	 */
+	view?: 'native';
 }
 
 /**
@@ -365,13 +416,13 @@ export interface RuntimeKindAdapter<
 	/** Transport, client and scope for one connection attempt; null while unavailable. */
 	readonly connection: ConnectionDriver<C, S, T> | null;
 	/**
-	 * The argv a terminal tab's bridge starts with on this endpoint. Throws a
-	 * readable error when it cannot be built yet (no binary found, no host);
-	 * the tab shows it and retries once a connection arrives.
+	 * The bridge for one terminal tab on this endpoint. The kind builds its
+	 * argv, or finds it once started (a local binary not discovered yet, which
+	 * the session searches for itself). Throws a readable error when the tab
+	 * cannot start whatever a connection does (an SSH runtime with no host, a
+	 * kind this build cannot run, no pty here); the tab shows that message.
 	 */
-	terminalCommand(endpoint: Endpoint): string[];
-	/** The bridge process for one terminal tab, from the argv above. */
-	createTerminalSession(options: TerminalSessionOptions, endpoint: Endpoint): PaneSession;
+	createTerminalSession(options: TerminalStartOptions, endpoint: Endpoint): PaneSession;
 	/**
 	 * Why a pane of this kind has no native view though the kind has one, or
 	 * null: a `claude` shell tab, which is no agent.
@@ -398,6 +449,28 @@ export interface RuntimeKindAdapter<
 	 * terminal that attaches asks for the TUI itself.
 	 */
 	paneViewChosen?(endpoint: Endpoint, paneId: string, view: 'native' | 'terminal'): void;
+	/**
+	 * A terminal tab closed whose runtime is no longer in the registry, so no
+	 * endpoint names it: the `claude` kind ends a shell that is still its own
+	 * process. Called for every kind that has it.
+	 */
+	paneOrphaned?(paneId: string): void;
+	/**
+	 * Opens a plain shell in the folder, outside any row (ADR-0008), and
+	 * returns its pane id: only a kind that has shell tabs at all, whether or
+	 * not this machine can run them ({@link RuntimeCapabilities.shells}).
+	 */
+	openShell?(folderAbsPath: string, command?: string): string;
+	/**
+	 * The plugin unloads: a kind whose agents are the plugin's own processes
+	 * stops them, each in its own order (ADR-0007).
+	 */
+	dispose?(): Promise<void>;
+	/**
+	 * The runtime registry changed: a kind whose agents are the plugin's own
+	 * stops those of a runtime that is gone.
+	 */
+	registryChanged?(runtimes: readonly Readonly<RuntimeConfig>[]): void;
 	/** Folder and row actions over the plugin's action host. */
 	createActions(host: ActionHost): RuntimeActions;
 	/**
@@ -446,10 +519,16 @@ export interface RuntimeKindAdapter<
 	 */
 	createTabLabels(connection: Connection<C, S, T>, alive: () => boolean): TabLabels;
 	/**
-	 * The settings tab's status lines for this kind, below the runtime line, or
-	 * null for the herdr layout (binary, socket, server, workspace).
+	 * The settings tab's status lines for this kind, below the runtime line,
+	 * the last error included, or null while it has none of its own (no
+	 * connection yet; the tab then shows the discovery layout).
 	 */
-	statusLines(connection: Connection<C, S, T> | null): StatusLine[] | null;
+	statusLines(connection: Connection<C, S, T> | null, context: StatusContext): StatusLine[] | null;
+	/**
+	 * A protocol mismatch on this connection, which the root status line
+	 * warns about (herdr's, ADR-0004: warn, never refuse).
+	 */
+	mismatched?(connection: Connection<C, S, T> | null): boolean;
 }
 
 /**
@@ -473,9 +552,6 @@ export function unavailableKind(
 		nativeUnavailable,
 		native: null,
 		connection: null,
-		terminalCommand: () => {
-			throw refuse();
-		},
 		createTerminalSession: () => {
 			throw refuse();
 		},

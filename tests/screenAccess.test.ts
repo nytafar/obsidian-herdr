@@ -263,7 +263,6 @@ describe('screen access through the kind adapter', () => {
 		const herdr = createHerdrKind({
 			extraPath: () => '',
 			vaultPath: () => '/v',
-			onProtocolMismatch: () => undefined,
 			onUnsupportedMethod: () => undefined,
 			isPublished: () => true,
 		});

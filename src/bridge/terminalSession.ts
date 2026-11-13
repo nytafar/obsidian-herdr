@@ -75,6 +75,12 @@ export interface TerminalSessionOptions {
 	killGraceMs?: number;
 }
 
+/**
+ * What a terminal tab asks a kind for (`RuntimeKindAdapter.createTerminalSession`):
+ * everything but the argv, which the kind builds or finds itself.
+ */
+export type TerminalStartOptions = Omit<TerminalSessionOptions, 'command' | 'resolveCommand'>;
+
 export interface FrameMeta {
 	seq: number;
 	encoding: string;

@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path';
 import { Terminal } from '@xterm/headless';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ActionHost } from '../src/actions';
-import type { FrameMeta, TerminalSessionOptions } from '../src/bridge/terminalSession';
+import type { FrameMeta, TerminalStartOptions } from '../src/bridge/terminalSession';
 import {
 	AGENT_FORGOTTEN,
 	AGENT_STOPPING,
@@ -230,9 +230,9 @@ interface Tab {
 	screen(): string;
 }
 
-function openTab(h: Harness, paneId: string, options: Partial<TerminalSessionOptions> = {}): Tab {
+function openTab(h: Harness, paneId: string, options: Partial<TerminalStartOptions> = {}): Tab {
 	const session = h.kind.createTerminalSession(
-		{ command: h.kind.terminalCommand(h.connection.endpoint), target: paneId, mode: 'control', cols: 100, rows: 30, ...options },
+		{ target: paneId, mode: 'control', cols: 100, rows: 30, ...options },
 		h.connection.endpoint,
 	);
 	const tab: Tab = {
@@ -921,6 +921,18 @@ describe('shell tabs', () => {
 		expect(h.kind.shells?.has(paneId)).toBe(false);
 	});
 
+	it('ends a shell whose runtime was removed under its tab, and leaves an agent of no runtime alone (#185)', async () => {
+		const h = harness();
+		const paneId = h.kind.shells?.open(h.dir) ?? '';
+		openTab(h, paneId);
+		expect(h.pty.children).toHaveLength(1);
+		h.kind.paneOrphaned?.('cl-00000000');
+		expect(h.kind.shells?.has(paneId)).toBe(true);
+		h.kind.paneOrphaned?.(paneId);
+		await waitFor(() => h.pty.last.exited, 'the shell to end');
+		expect(h.kind.shells?.has(paneId)).toBe(false);
+	});
+
 	it('types nothing into the shell when a reopened tab replays its old queries; one tab answers live ones', async () => {
 		const h = harness();
 		const paneId = h.kind.shells?.open(h.dir) ?? '';
@@ -998,7 +1010,7 @@ describe('on macOS, until it is verified there', () => {
 		expect(CLAUDE_TERMINAL_UNVERIFIED).toMatch(/macOS.*not .*verified/);
 		expect(h.kind.capabilities.shells).toBe(false);
 		expect(h.kind.shells).toBeNull();
-		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow(CLAUDE_TERMINAL_UNVERIFIED);
+		expect(() => openTab(h, AGENT)).toThrow(CLAUDE_TERMINAL_UNVERIFIED);
 		const lines = claudeStatusLines(
 			{ client: { setup: { binary: 'claude', permissionMode: 'manual' } }, scope: { size: 0, running: 0 } },
 			CLAUDE_TERMINAL_UNVERIFIED,
@@ -1022,6 +1034,6 @@ describe('on Windows', () => {
 		expect(CLAUDE_TERMINAL_UNAVAILABLE).toContain('Windows');
 		expect(h.kind.capabilities.shells).toBe(false);
 		expect(h.kind.shells).toBeNull();
-		expect(() => h.kind.terminalCommand(h.connection.endpoint)).toThrow();
+		expect(() => openTab(h, AGENT)).toThrow(CLAUDE_TERMINAL_UNAVAILABLE);
 	});
 });

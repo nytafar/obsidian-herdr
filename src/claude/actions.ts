@@ -21,7 +21,7 @@
  */
 
 import { buildAgentName, folderName, type ActionHost } from '../actions';
-import type { GraduationRelease, RuntimeActions } from '../runtime/kind';
+import type { GraduationRelease, RuntimeActions, StartAgentOptions } from '../runtime/kind';
 import type { ClaudeAgents } from './agents';
 import type { ClaudeShells } from './shells';
 
@@ -35,7 +35,7 @@ function describe(error: unknown): string {
  * own default, then `--resume <session>`. Every value is a plain word, which
  * herdr-core's single-quoted launch line requires.
  */
-export function graduationArgs(release: GraduationRelease): string[] {
+export function graduationArgs(release: Pick<GraduationRelease, 'sessionId' | 'permissionMode'>): string[] {
 	return [
 		...(release.permissionMode ? ['--permission-mode', release.permissionMode] : []),
 		'--resume',
@@ -76,7 +76,14 @@ export class ClaudeActions implements RuntimeActions {
 		return Promise.resolve(false);
 	}
 
-	async startAgentHere(folderAbsPath: string): Promise<StartedClaudeAgent | null> {
+	/**
+	 * Starts an agent in the folder, named by `options.name` or the
+	 * `agentNamePattern` setting, made unique among this runtime's rows: the
+	 * one way a Claude agent is started, from the menus and from "Get started"
+	 * (ADR-0008), which also pins its permission mode, sends its first prompt
+	 * and opens it in the native view itself.
+	 */
+	async startAgentHere(folderAbsPath: string, options: StartAgentOptions = {}): Promise<StartedClaudeAgent | null> {
 		if (!this.host.connection()) {
 			this.host.notice('Gjetr: not connected to Claude run by Obsidian yet.');
 			return null;
@@ -84,16 +91,27 @@ export class ClaudeActions implements RuntimeActions {
 		const settings = this.host.settings();
 		const label = folderName(folderAbsPath);
 		const name = buildAgentName(
-			settings.agentNamePattern || '{folder}',
+			options.name ?? (settings.agentNamePattern || '{folder}'),
 			{ folder: label, vault: this.host.vaultName() },
 			this.agents.names(this.runtimeId),
 		);
+		const row = {
+			...(options.permissionMode !== undefined ? { permissionMode: options.permissionMode } : {}),
+			...(options.allowOnceOnly !== undefined ? { allowOnceOnly: options.allowOnceOnly } : {}),
+		};
 		let paneId: string;
 		try {
-			paneId = this.agents.start(this.runtimeId, folderAbsPath, name).id;
+			paneId = this.agents.start(this.runtimeId, folderAbsPath, name, row).id;
+			if (options.prompt !== undefined) await this.agents.prompt(this.runtimeId, paneId, options.prompt);
 		} catch (error) {
 			this.host.notice(`Gjetr: could not start Claude. ${describe(error)}`);
 			return null;
+		}
+		if (options.view) {
+			// The caller's own view: "Get started" answers the permission on the
+			// native view's waiting card, and says what it started itself.
+			await this.host.openTerminal(paneId, folderAbsPath, options.view);
+			return { paneId, name };
 		}
 		this.host.notice(`Gjetr: started Claude "${name}" in ${label}`);
 		if (settings.openTerminalAfterStart) await this.host.openTerminal(paneId, folderAbsPath);
@@ -135,21 +153,34 @@ export class ClaudeActions implements RuntimeActions {
 	}
 
 	async releaseForGraduation(paneId: string): Promise<GraduationRelease | null> {
-		const agent = this.agents.get(this.runtimeId, paneId);
+		// The row's own runtime, read once before any await: graduation switches
+		// the host's runtime to the target, possibly while `release` is still
+		// stopping the process (`tests/claudeKind.test.ts`).
+		const runtimeId = this.runtimeId;
+		const agent = this.agents.get(runtimeId, paneId);
 		// A session with no turn has no transcript, so `--resume` elsewhere
 		// would find no conversation; the menu does not offer it either.
 		if (!agent?.started) return null;
 		// Held from here on: nothing in this plugin starts the session again
 		// while the target resumes it, and it is not handed over until its
 		// process here is confirmed gone.
-		if (!(await this.agents.release(this.runtimeId, paneId))) {
-			this.agents.reclaim(this.runtimeId, paneId);
+		if (!(await this.agents.release(runtimeId, paneId))) {
+			this.agents.reclaim(runtimeId, paneId);
 			throw new Error('the agent did not stop, so it was not moved');
 		}
 		// The session as it is after the stop: a `/clear` may have rotated it.
-		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
-		const permissionMode = this.agents.permissionMode(this.runtimeId, paneId);
-		return { cwd: after.cwd, sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) };
+		const after = this.agents.get(runtimeId, paneId) ?? agent;
+		const permissionMode = this.agents.permissionMode(runtimeId, paneId);
+		return {
+			cwd: after.cwd,
+			sessionId: after.sessionId,
+			...(permissionMode ? { permissionMode } : {}),
+			start: { kind: 'claude', args: graduationArgs({ sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) }) },
+			// The row's own runtime, as it was at the release: by the time either
+			// runs, the host's runtime is the target.
+			forget: () => this.agents.forget(runtimeId, paneId),
+			reclaim: () => this.agents.reclaim(runtimeId, paneId),
+		};
 	}
 
 	/**

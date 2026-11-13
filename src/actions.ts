@@ -23,6 +23,7 @@ import { remoteVaultPathIssue, type RuntimeConfig } from './runtimes';
 import { HerdrError } from './herdr/client';
 import type { PaneInfo, TabInfo } from './herdr/types.gen';
 import type { StartAgentOptions } from './runtime/kind';
+import type { PaneView } from './native/renderMode';
 
 /** herdr's own rule from `src/app/agents.rs`: `[a-z][a-z0-9_-]{0,31}`. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -100,7 +101,7 @@ export interface ActionHost {
 	 * HerdrActions.startAgentHere} creates the pane itself — so the terminal is
 	 * placed beside the note the same way attaching to that folder is (#28).
 	 */
-	openTerminal(paneId: string, cwd?: string): Promise<void>;
+	openTerminal(paneId: string, cwd?: string, view?: PaneView): Promise<void>;
 	/**
 	 * Detaches every open terminal leaf for `paneId` on `endpointId` (issue #66).
 	 * Called after a successful `pane.close` from the row menu, so the tab
