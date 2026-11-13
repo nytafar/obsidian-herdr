@@ -3,6 +3,24 @@
 All notable changes to Gjetr (Herdr for Obsidian). Versions are the bare
 `manifest.json` version, which is also the release tag.
 
+## 0.7.3 — 2026-11-13
+
+### Fixed
+
+- **A terminal tab whose runtime cannot start says why.** A tab on an SSH
+  runtime with no host, or on a runtime that has been removed, shows that
+  reason at once instead of "waiting for herdr" until a connection that
+  could never cure it.
+
+### Notes
+
+- Architecture batch (#181): one endpoint resolver answers what is behind an
+  endpoint id (#182); the terminal seam is one call on the kind adapter
+  (#183); the native surface's wiring moves out of the terminal view into a
+  pane context (#184); the plugin root no longer names a runtime kind, with
+  Claude lifecycle, graduation and herdr status behind the adapters (#185).
+  No other behaviour change.
+
 ## 0.7.2 — 2026-11-11
 
 ### Changed
