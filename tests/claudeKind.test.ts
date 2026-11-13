@@ -913,6 +913,25 @@ describe('the claude kind over a fake claude', () => {
 		expect(stored(back)).toBe(false);
 	});
 
+	it('keeps the source runtime when the list switches while the release is still stopping the agent', async () => {
+		const h = harness();
+		let listRuntime = { ...h.connection.endpoint.runtime };
+		const actions = h.kind.createActions({ ...actionHost(h), runtime: () => listRuntime });
+		const stored = (paneId: string): boolean => h.stored[h.runtimeId]?.some((row) => row.id === paneId) ?? false;
+
+		const paneId = await started(h);
+		await prompt(h, paneId, 'hello');
+		await waitFor(() => status(h, paneId) === 'done', 'done');
+		const sessionId = h.stored[h.runtimeId]?.[0]?.sessionId;
+		// The switch lands while `release` still waits for the process to go.
+		const releasing = actions.releaseForGraduation?.(paneId);
+		listRuntime = { ...listRuntime, id: 'the-target-runtime' };
+		const released = await releasing;
+		expect(released).toMatchObject({ sessionId, permissionMode: h.connection.endpoint.runtime.permissionMode });
+		await released?.forget();
+		expect(stored(paneId)).toBe(false);
+	});
+
 	it('starts a row pinned to the asking mode in that mode, even on a runtime set to auto, and keeps it (ADR-0008)', async () => {
 		const h = harness({ permissionMode: 'auto' });
 		const modeOf = (argv: string[] | undefined): string | undefined => argv?.[(argv?.indexOf('--permission-mode') ?? -2) + 1];

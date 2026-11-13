@@ -153,20 +153,23 @@ export class ClaudeActions implements RuntimeActions {
 	}
 
 	async releaseForGraduation(paneId: string): Promise<GraduationRelease | null> {
-		const agent = this.agents.get(this.runtimeId, paneId);
+		// The row's own runtime, read once before any await: graduation switches
+		// the host's runtime to the target, possibly while `release` is still
+		// stopping the process (`tests/claudeKind.test.ts`).
+		const runtimeId = this.runtimeId;
+		const agent = this.agents.get(runtimeId, paneId);
 		// A session with no turn has no transcript, so `--resume` elsewhere
 		// would find no conversation; the menu does not offer it either.
 		if (!agent?.started) return null;
 		// Held from here on: nothing in this plugin starts the session again
 		// while the target resumes it, and it is not handed over until its
 		// process here is confirmed gone.
-		if (!(await this.agents.release(this.runtimeId, paneId))) {
-			this.agents.reclaim(this.runtimeId, paneId);
+		if (!(await this.agents.release(runtimeId, paneId))) {
+			this.agents.reclaim(runtimeId, paneId);
 			throw new Error('the agent did not stop, so it was not moved');
 		}
 		// The session as it is after the stop: a `/clear` may have rotated it.
-		const after = this.agents.get(this.runtimeId, paneId) ?? agent;
-		const runtimeId = this.runtimeId;
+		const after = this.agents.get(runtimeId, paneId) ?? agent;
 		const permissionMode = this.agents.permissionMode(runtimeId, paneId);
 		return {
 			cwd: after.cwd,
@@ -174,7 +177,7 @@ export class ClaudeActions implements RuntimeActions {
 			...(permissionMode ? { permissionMode } : {}),
 			start: { kind: 'claude', args: graduationArgs({ sessionId: after.sessionId, ...(permissionMode ? { permissionMode } : {}) }) },
 			// The row's own runtime, as it was at the release: by the time either
-			// runs, the host's runtime is the target (`tests/claudeKind.test.ts`).
+			// runs, the host's runtime is the target.
 			forget: () => this.agents.forget(runtimeId, paneId),
 			reclaim: () => this.agents.reclaim(runtimeId, paneId),
 		};
